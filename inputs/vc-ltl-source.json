@@ -1,0 +1,75 @@
+{
+  "version": "5.3.1",
+  "url": "https://github.com/Chuyu-Team/VC-LTL5/releases/download/v5.3.1/VC-LTL-Binary.7z",
+  "archive_sha256": "7a18799ed3aa84a225610a5447a56bc534c5c98ccb8dec05caba0e3f633431ad",
+  "libraries": {
+    "5.1.2600.0/lib/Win32": [
+      {
+        "name": "libucrt.lib",
+        "sha256": "bf090453467b3e43d69c818936caeffa1ec01eeacc9885b9d4ac5bd02a4c1d69"
+      },
+      {
+        "name": "libucrtd.lib",
+        "sha256": "98e14630859d32c3cd10e6e26648abbde7c0ae94569416eeb574ac35a5cf51ed"
+      },
+      {
+        "name": "libvcruntime.lib",
+        "sha256": "2eb9e575d74e6adc9087a75648e4ea034bcf040d6871a6905ec61e6d5ab6ae71"
+      },
+      {
+        "name": "libvcruntimed.lib",
+        "sha256": "6b6c5cbfb84558aafc74794a1739a1f645c59f79d0868d71555bfe996a370f32"
+      },
+      {
+        "name": "ucrt.lib",
+        "sha256": "61d7edb94b4b55d13e5179f3c0cf2513d2c99fb1d8a618cc18a162a2f6d943c8"
+      },
+      {
+        "name": "ucrtd.lib",
+        "sha256": "58f397a94f22f1a738654a303b1c5520fb0349d08319bbfbe7500214b8d26d2b"
+      },
+      {
+        "name": "vcruntime.lib",
+        "sha256": "eaec46c22f6d2b07dffdd3ce78d7a8854ec7335708aa2260af5e1ce254bef5fd"
+      },
+      {
+        "name": "vcruntimed.lib",
+        "sha256": "e744b1e063cfc43ed7f5c7ba77c72697c8e2908693f64788a5694d93e58b4435"
+      }
+    ],
+    "5.2.3790.0/lib/x64": [
+      {
+        "name": "libucrt.lib",
+        "sha256": "911910dc7dd2c293666db9c605dc95710d422a6ea8f41b5d3826ba2a20c0d8b7"
+      },
+      {
+        "name": "libucrtd.lib",
+        "sha256": "486890220215cd4acd156adf5c6b67b755535e03bab558d817219be51934a27b"
+      },
+      {
+        "name": "libvcruntime.lib",
+        "sha256": "f2811a65984877b7c5779eda05e35ae50fa6d514baee856c2748313c0e171422"
+      },
+      {
+        "name": "libvcruntimed.lib",
+        "sha256": "eadaaceab6d96ba96f608ffeb082c371c625f8fe616f9b5a313a20e9670dc14e"
+      },
+      {
+        "name": "ucrt.lib",
+        "sha256": "6cbb30b7640e8b5abdc1f84efadfa40921ce61f1a10522525cf94a81f46edc73"
+      },
+      {
+        "name": "ucrtd.lib",
+        "sha256": "249705234f83b276f975ffa88bb406fd5732a425ae5e7e0da8286ea1496490f1"
+      },
+      {
+        "name": "vcruntime.lib",
+        "sha256": "330b22d827aa30d5c50610d942b26734375759c04ef5bdb32dc63ef6b7438dc2"
+      },
+      {
+        "name": "vcruntimed.lib",
+        "sha256": "894a6ff452aa1f58d1149a54fa315619c0cd244120968df9145c24e22d5c5364"
+      }
+    ]
+  }
+}

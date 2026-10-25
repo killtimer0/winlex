@@ -1,0 +1,9 @@
+{
+  "version": "1.2.3",
+  "url": "https://github.com/Chuyu-Team/YY-Thunks/releases/download/v1.2.3/YY-Thunks-Objs.zip",
+  "archive_sha256": "4dc68ec8784e0afed7284e4393aec672873608161c3a5ae52faf618875d95b81",
+  "objects": {
+    "x64": "cee5640889310990f28520147dc895a559d7c3b1caacd3473047db71ed766ab5",
+    "x86": "5a099db07a08c50380c24407e7481376230d737fdc818766b68a3b119de9877b"
+  }
+}

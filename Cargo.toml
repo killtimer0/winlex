@@ -1,0 +1,26 @@
+[package]
+name = "winlex"
+version = "0.1.0"
+edition = "2024"
+build = "build.rs"
+default-run = "winlex"
+
+[workspace]
+members = ["crates/winlex-core", "crates/winlex-cli"]
+default-members = ["."]
+exclude = ["vendor/windows-metadata"]
+resolver = "3"
+
+[dependencies]
+winlex-cli = { path = "crates/winlex-cli" }
+
+[workspace.dependencies]
+windows-metadata = "=0.100.0"
+repc = "=0.1.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+anyhow = "1"
+
+[patch.crates-io]
+windows-metadata = { path = "vendor/windows-metadata" }

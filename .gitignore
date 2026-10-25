@@ -1,0 +1,7 @@
+/tmp/
+/inputs/*.winmd
+/target/
+**/target/
+**/__pycache__/
+**/bin/
+**/obj/
