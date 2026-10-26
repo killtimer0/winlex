@@ -8,7 +8,7 @@ using System.Collections.Immutable;
 
 using var stream = File.OpenRead(args[0]);
 using var pe = new PEReader(stream);
-var r = pe.GetMetadataReader();
+var r = pe.GetMetadataReader(MetadataReaderOptions.None);
 var names = new SortedDictionary<string, List<uint>>(StringComparer.Ordinal);
 var values = new SortedDictionary<string, List<uint>>(StringComparer.Ordinal);
 var guids = new SortedDictionary<string, List<uint>>(StringComparer.Ordinal);
@@ -68,7 +68,19 @@ var signatures=new Dictionary<string,int[]>();
 var provider=new Refs();
 foreach(var h in r.FieldDefinitions)signatures[MetadataTokens.GetToken(h).ToString()]=r.GetFieldDefinition(h).DecodeSignature(provider,0).ToArray();
 foreach(var h in r.MethodDefinitions){var s=r.GetMethodDefinition(h).DecodeSignature(provider,0);signatures[MetadataTokens.GetToken(h).ToString()]=s.ReturnType.Concat(s.ParameterTypes.SelectMany(p=>p)).ToArray();}
-File.WriteAllText(args[1],JsonSerializer.Serialize(new{type_rows=r.TypeDefinitions.Count,field_rows=r.FieldDefinitions.Count,method_rows=r.MethodDefinitions.Count,constants,field_layout_rows=r.GetTableRowCount(TableIndex.FieldLayout),names,values,guids,sample,layouts,scopes,signature_type_tokens=signatures}));
+object Identity(StringHandle name, Version v, StringHandle culture, BlobHandle key, System.Reflection.AssemblyFlags flags) {
+ var bytes=r.GetBlobBytes(key);
+ if ((flags & System.Reflection.AssemblyFlags.PublicKey)!=0 && bytes.Length>0)
+  bytes=System.Security.Cryptography.SHA1.HashData(bytes).TakeLast(8).Reverse().ToArray();
+ return new{name=r.GetString(name),version=new[]{v.Major,v.Minor,v.Build,v.Revision},culture=r.GetString(culture),public_key_token=Convert.ToHexString(bytes).ToLowerInvariant(),content_type=(int)flags & 0xe00};
+}
+var ad=r.GetAssemblyDefinition();
+var assembly=Identity(ad.Name,ad.Version,ad.Culture,ad.PublicKey,ad.Flags);
+var references=r.AssemblyReferences.Select(h=>{var a=r.GetAssemblyReference(h);return Identity(a.Name,a.Version,a.Culture,a.PublicKeyOrToken,a.Flags);}).ToArray();
+object[] Accessors(params (int flags,MethodDefinitionHandle method)[] items) => items.Where(a=>!a.method.IsNil).OrderBy(a=>MetadataTokens.GetToken(a.method)).Select(a=>(object)new{a.flags,method=MetadataTokens.GetToken(a.method)}).ToArray();
+var properties=r.TypeDefinitions.SelectMany(t=>r.GetTypeDefinition(t).GetProperties().Select(h=>{var p=r.GetPropertyDefinition(h);var a=p.GetAccessors();return new{token=MetadataTokens.GetToken(h),name=r.GetString(p.Name),parent=MetadataTokens.GetToken(t),accessors=Accessors(new[]{(1,a.Setter),(2,a.Getter)}.Concat(a.Others.Select(m=>(4,m))).ToArray())};})).ToArray();
+var events=r.TypeDefinitions.SelectMany(t=>r.GetTypeDefinition(t).GetEvents().Select(h=>{var e=r.GetEventDefinition(h);var a=e.GetAccessors();return new{token=MetadataTokens.GetToken(h),name=r.GetString(e.Name),parent=MetadataTokens.GetToken(t),accessors=Accessors(new[]{(8,a.Adder),(16,a.Remover),(32,a.Raiser)}.Concat(a.Others.Select(m=>(4,m))).ToArray())};})).ToArray();
+File.WriteAllText(args[1],JsonSerializer.Serialize(new{assembly,references,properties=properties.OrderBy(p=>p.token),events=events.OrderBy(e=>e.token),type_rows=r.TypeDefinitions.Count,field_rows=r.FieldDefinitions.Count,method_rows=r.MethodDefinitions.Count,constants,field_layout_rows=r.GetTableRowCount(TableIndex.FieldLayout),names,values,guids,sample,layouts,scopes,signature_type_tokens=signatures}));
 Console.WriteLine(JsonSerializer.Serialize(new{types=r.TypeDefinitions.Count,fields=r.FieldDefinitions.Count,methods=r.MethodDefinitions.Count,constants,field_layout_rows=r.GetTableRowCount(TableIndex.FieldLayout)}));
 
 sealed class Refs : ISignatureTypeProvider<ImmutableArray<int>,int> {

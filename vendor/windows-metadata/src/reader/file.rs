@@ -4,7 +4,7 @@ pub struct File {
     bytes: Vec<u8>,
     strings: usize,
     blobs: usize,
-    tables: [Table; 19],
+    tables: [Table; 24],
 }
 
 impl File {
@@ -122,11 +122,8 @@ impl File {
         let mut unused_assembly_os = Table::default();
         let mut unused_assembly_processor = Table::default();
         let mut unused_assembly_ref_os = Table::default();
-        let mut unused_assembly_ref = Table::default();
         let mut unused_assembly_ref_processor = Table::default();
         let mut unused_decl_security = Table::default();
-        let mut unused_event = Table::default();
-        let mut unused_event_map = Table::default();
         let mut unused_exported_type = Table::default();
         let mut unused_field_marshal = Table::default();
         let mut unused_field_rva = Table::default();
@@ -134,10 +131,7 @@ impl File {
         let mut unused_generic_param_constraint = Table::default();
         let mut unused_manifest_resource = Table::default();
         let mut unused_method_impl = Table::default();
-        let mut unused_method_semantics = Table::default();
         let mut unused_method_spec = Table::default();
-        let mut unused_property = Table::default();
-        let mut unused_property_map = Table::default();
         let mut unused_standalone_sig = Table::default();
         let mut unused_module = Table::default();
 
@@ -165,11 +159,11 @@ impl File {
                 0x0f => result.tables[ClassLayout::TABLE].len = len,
                 0x10 => result.tables[FieldLayout::TABLE].len = len,
                 0x11 => unused_standalone_sig.len = len,
-                0x12 => unused_event_map.len = len,
-                0x14 => unused_event.len = len,
-                0x15 => unused_property_map.len = len,
-                0x17 => unused_property.len = len,
-                0x18 => unused_method_semantics.len = len,
+                0x12 => result.tables[EventMap::TABLE].len = len,
+                0x14 => result.tables[Event::TABLE].len = len,
+                0x15 => result.tables[PropertyMap::TABLE].len = len,
+                0x17 => result.tables[Property::TABLE].len = len,
+                0x18 => result.tables[MethodSemantics::TABLE].len = len,
                 0x19 => unused_method_impl.len = len,
                 0x1a => result.tables[ModuleRef::TABLE].len = len,
                 0x1b => result.tables[TypeSpec::TABLE].len = len,
@@ -178,7 +172,7 @@ impl File {
                 0x20 => result.tables[Assembly::TABLE].len = len,
                 0x21 => unused_assembly_processor.len = len,
                 0x22 => unused_assembly_os.len = len,
-                0x23 => unused_assembly_ref.len = len,
+                0x23 => result.tables[AssemblyRef::TABLE].len = len,
                 0x24 => unused_assembly_ref_processor.len = len,
                 0x25 => unused_assembly_ref_os.len = len,
                 0x26 => unused_file.len = len,
@@ -201,7 +195,7 @@ impl File {
         let has_constant = coded_index_size(&[
             tables[Field::TABLE].len,
             tables[MethodParam::TABLE].len,
-            unused_property.len,
+            tables[Property::TABLE].len,
         ]);
         let has_field_marshal =
             coded_index_size(&[tables[Field::TABLE].len, tables[MethodParam::TABLE].len]);
@@ -217,14 +211,14 @@ impl File {
             tables[MethodDef::TABLE].len,
             tables[TypeSpec::TABLE].len,
         ]);
-        let has_semantics = coded_index_size(&[unused_event.len, unused_property.len]);
+        let has_semantics = coded_index_size(&[tables[Event::TABLE].len, tables[Property::TABLE].len]);
         let method_def_or_ref =
             coded_index_size(&[tables[MethodDef::TABLE].len, tables[MemberRef::TABLE].len]);
         let member_forwarded =
             coded_index_size(&[tables[Field::TABLE].len, tables[MethodDef::TABLE].len]);
         let implementation = coded_index_size(&[
             unused_file.len,
-            unused_assembly_ref.len,
+            tables[AssemblyRef::TABLE].len,
             unused_exported_type.len,
         ]);
         let custom_attribute_type = coded_index_size(&[
@@ -237,7 +231,7 @@ impl File {
         let resolution_scope = coded_index_size(&[
             unused_module.len,
             tables[ModuleRef::TABLE].len,
-            unused_assembly_ref.len,
+            tables[AssemblyRef::TABLE].len,
             tables[TypeRef::TABLE].len,
         ]);
         let type_or_method_def =
@@ -252,13 +246,13 @@ impl File {
             tables[InterfaceImpl::TABLE].len,
             tables[MemberRef::TABLE].len,
             unused_module.len,
-            unused_property.len,
-            unused_event.len,
+            tables[Property::TABLE].len,
+            tables[Event::TABLE].len,
             unused_standalone_sig.len,
             tables[ModuleRef::TABLE].len,
             tables[TypeSpec::TABLE].len,
             tables[Assembly::TABLE].len,
-            unused_assembly_ref.len,
+            tables[AssemblyRef::TABLE].len,
             unused_file.len,
             unused_exported_type.len,
             unused_manifest_resource.len,
@@ -277,7 +271,7 @@ impl File {
         );
         unused_assembly_os.set_columns(4, 4, 4, 0, 0, 0);
         unused_assembly_processor.set_columns(4, 0, 0, 0, 0, 0);
-        unused_assembly_ref.set_columns(
+        result.tables[AssemblyRef::TABLE].set_columns(
             8,
             4,
             blob_index_size,
@@ -285,8 +279,8 @@ impl File {
             string_index_size,
             blob_index_size,
         );
-        unused_assembly_ref_os.set_columns(4, 4, 4, unused_assembly_ref.index_width(), 0, 0);
-        unused_assembly_ref_processor.set_columns(4, unused_assembly_ref.index_width(), 0, 0, 0, 0);
+        unused_assembly_ref_os.set_columns(4, 4, 4, result.tables[AssemblyRef::TABLE].index_width(), 0, 0);
+        unused_assembly_ref_processor.set_columns(4, result.tables[AssemblyRef::TABLE].index_width(), 0, 0, 0, 0);
         result.tables[ClassLayout::TABLE].set_columns(
             2,
             4,
@@ -305,15 +299,15 @@ impl File {
             0,
         );
         unused_decl_security.set_columns(2, has_decl_security, blob_index_size, 0, 0, 0);
-        unused_event_map.set_columns(
+        result.tables[EventMap::TABLE].set_columns(
             result.tables[TypeDef::TABLE].index_width(),
-            unused_event.index_width(),
+            result.tables[Event::TABLE].index_width(),
             0,
             0,
             0,
             0,
         );
-        unused_event.set_columns(2, string_index_size, type_def_or_ref, 0, 0, 0);
+        result.tables[Event::TABLE].set_columns(2, string_index_size, type_def_or_ref, 0, 0, 0);
         unused_exported_type.set_columns(
             4,
             4,
@@ -384,7 +378,7 @@ impl File {
             0,
             0,
         );
-        unused_method_semantics.set_columns(
+        result.tables[MethodSemantics::TABLE].set_columns(
             2,
             result.tables[MethodDef::TABLE].index_width(),
             has_semantics,
@@ -411,10 +405,10 @@ impl File {
             0,
         );
         result.tables[MethodParam::TABLE].set_columns(2, 2, string_index_size, 0, 0, 0);
-        unused_property.set_columns(2, string_index_size, blob_index_size, 0, 0, 0);
-        unused_property_map.set_columns(
+        result.tables[Property::TABLE].set_columns(2, string_index_size, blob_index_size, 0, 0, 0);
+        result.tables[PropertyMap::TABLE].set_columns(
             result.tables[TypeDef::TABLE].index_width(),
-            unused_property.index_width(),
+            result.tables[Property::TABLE].index_width(),
             0,
             0,
             0,
@@ -454,11 +448,11 @@ impl File {
         result.tables[ClassLayout::TABLE].set_data(&mut view);
         result.tables[FieldLayout::TABLE].set_data(&mut view);
         unused_standalone_sig.set_data(&mut view);
-        unused_event_map.set_data(&mut view);
-        unused_event.set_data(&mut view);
-        unused_property_map.set_data(&mut view);
-        unused_property.set_data(&mut view);
-        unused_method_semantics.set_data(&mut view);
+        result.tables[EventMap::TABLE].set_data(&mut view);
+        result.tables[Event::TABLE].set_data(&mut view);
+        result.tables[PropertyMap::TABLE].set_data(&mut view);
+        result.tables[Property::TABLE].set_data(&mut view);
+        result.tables[MethodSemantics::TABLE].set_data(&mut view);
         unused_method_impl.set_data(&mut view);
         result.tables[ModuleRef::TABLE].set_data(&mut view);
         result.tables[TypeSpec::TABLE].set_data(&mut view);
@@ -467,7 +461,7 @@ impl File {
         result.tables[Assembly::TABLE].set_data(&mut view);
         unused_assembly_processor.set_data(&mut view);
         unused_assembly_os.set_data(&mut view);
-        unused_assembly_ref.set_data(&mut view);
+        result.tables[AssemblyRef::TABLE].set_data(&mut view);
         unused_assembly_ref_processor.set_data(&mut view);
         unused_assembly_ref_os.set_data(&mut view);
         unused_file.set_data(&mut view);
@@ -489,6 +483,12 @@ impl File {
             4 => self.bytes.copy_as::<u32>(offset).map_or(0, |v| v as usize),
             _ => self.bytes.copy_as::<u64>(offset).map_or(0, |v| v as usize),
         }
+    }
+
+    pub(crate) fn version(&self, row: usize, table: usize, column: usize) -> [u16; 4] {
+        let table = &self.tables[table];
+        let offset = table.offset + row * table.width + table.columns[column].offset;
+        std::array::from_fn(|i| self.bytes.copy_as::<u16>(offset + i * 2).unwrap_or(0))
     }
 
     pub(crate) fn str(&self, row: usize, table: usize, column: usize) -> &str {

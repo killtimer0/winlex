@@ -23,7 +23,8 @@ impl<'a> Field<'a> {
         let prolog = blob.read_u8();
         debug_assert_eq!(prolog, 0x6);
 
-        blob.read_type_signature(&[])
+        let parent: TypeDef = self.parent_row(4);
+        blob.read_type_signature(&parent.generic_types())
     }
 
     pub fn constant(&self) -> Option<Constant<'a>> {

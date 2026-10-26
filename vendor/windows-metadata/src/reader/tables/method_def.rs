@@ -71,7 +71,35 @@ impl<'a> MethodDef<'a> {
     }
 
     pub fn signature(&self, generics: &[Type]) -> Signature {
-        self.blob(4).read_method_signature(generics)
+        let parent: TypeDef = self.parent_row(5);
+        let defaults;
+        let generics = if generics.is_empty() {
+            defaults = parent.generic_types();
+            &defaults
+        } else { generics };
+        let mut signature = self.blob(4).read_method_signature(generics);
+        let names: HashMap<_, _> = self.generic_params()
+            .map(|p| (p.sequence(), p.name().to_owned())).collect();
+        fn name_parameters(t: &mut Type, names: &HashMap<u16, String>) {
+            match t {
+                Type::MethodGeneric(name, index) => {
+                    if let Some(value) = names.get(index) { *name = value.clone(); }
+                }
+                Type::ClassName(n) | Type::ValueName(n) => {
+                    for t in &mut n.generics { name_parameters(t, names); }
+                }
+                Type::Array(t) | Type::ArrayFixed(t, _) | Type::PtrMut(t, _)
+                | Type::PtrConst(t, _) | Type::RefMut(t) | Type::RefConst(t) => name_parameters(t, names),
+                _ => {}
+            }
+        }
+        name_parameters(&mut signature.return_type, &names);
+        for t in &mut signature.types { name_parameters(t, &names); }
+        signature
+    }
+
+    pub fn generic_params(&self) -> RowIterator<'a, GenericParam<'a>> {
+        self.equal_range(2, TypeOrMethodDef::MethodDef(*self).encode())
     }
 
     /// Iterates the method's `Param` rows in physical table order.

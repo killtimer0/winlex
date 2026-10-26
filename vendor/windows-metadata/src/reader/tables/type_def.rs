@@ -39,6 +39,12 @@ impl<'a> TypeDef<'a> {
         self.equal_range(2, TypeOrMethodDef::TypeDef(*self).encode())
     }
 
+    pub fn generic_types(&self) -> Vec<Type> {
+        let mut params: Vec<_> = self.generic_params().collect();
+        params.sort_by_key(|p| p.sequence());
+        params.into_iter().map(|p| Type::Generic(p.name().into(), p.sequence())).collect()
+    }
+
     pub fn interface_impls(&self) -> RowIterator<'a, InterfaceImpl<'a>> {
         self.equal_range(0, self.pos() + 1)
     }

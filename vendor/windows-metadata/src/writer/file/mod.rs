@@ -507,6 +507,10 @@ impl File {
                 buffer.push(ELEMENT_TYPE_VAR);
                 buffer.write_compressed((*number).into());
             }
+            Type::MethodGeneric(_, number) => {
+                buffer.push(ELEMENT_TYPE_MVAR);
+                buffer.write_compressed(*number as usize);
+            }
 
             Type::ClassName(ty) => {
                 self.TypeName(false, &ty.namespace, &ty.name, &ty.generics, buffer);
@@ -569,6 +573,7 @@ impl File {
     /// Stores a method signature and returns its blob offset.
     fn MethodDefSig(&mut self, signature: &Signature) -> BlobId {
         let mut buffer = vec![signature.flags.0];
+        assert_eq!(signature.flags.0 & 0x10, 0, "generic method signature writing is not supported");
         buffer.write_compressed(signature.types.len());
         self.Type(&signature.return_type, &mut buffer);
 

@@ -81,6 +81,9 @@ impl<'a> Blob<'a> {
 
     pub fn read_method_signature(&mut self, generics: &[Type]) -> Signature {
         let flags = MethodCallAttributes(self.read_u8());
+        if flags.0 & 0x10 != 0 {
+            let _generic_parameter_count = self.read_compressed();
+        }
         let param_count = self.read_compressed();
         let return_type = self.read_type_signature(generics);
 
@@ -182,7 +185,15 @@ impl<'a> Blob<'a> {
                     Type::ClassName(tdr.type_name())
                 }
             }
-            ELEMENT_TYPE_VAR => generics[self.read_compressed()].clone(),
+            ELEMENT_TYPE_VAR => {
+                let index = self.read_compressed();
+                generics.get(index).cloned().unwrap_or_else(||
+                    Type::Generic(format!("!{index}"), index.try_into().expect("generic parameter index")))
+            }
+            ELEMENT_TYPE_MVAR => {
+                let index = self.read_compressed();
+                Type::MethodGeneric(format!("!!{index}"), index.try_into().expect("generic parameter index"))
+            }
             ELEMENT_TYPE_ARRAY => {
                 // See II.23.2.13 ArrayShape
                 let ty = self.read_type_signature(generics);
@@ -213,7 +224,7 @@ impl<'a> Blob<'a> {
                 let mut ty_generics = vec![];
 
                 for _ in 0..self.read_compressed() {
-                    ty_generics.push(self.read_type_code(generics));
+                    ty_generics.push(self.read_type_signature(generics));
                 }
 
                 let type_name = TypeName {

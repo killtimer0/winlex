@@ -1,4 +1,5 @@
 use crate::metadata::{Db, supports, token};
+use crate::source::{Key, Source};
 use anyhow::{Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value as Json, json};
@@ -52,6 +53,7 @@ pub enum SearchMode {
     Guid,
 }
 pub struct SearchOptions<'a> {
+    pub source: Option<&'a str>,
     pub case_sensitive: bool,
     pub mode: SearchMode,
     pub architecture: Option<Architecture>,
@@ -62,6 +64,7 @@ pub struct SearchOptions<'a> {
 impl Default for SearchOptions<'_> {
     fn default() -> Self {
         Self {
+            source: None,
             case_sensitive: false,
             mode: SearchMode::Contains,
             architecture: None,
@@ -73,6 +76,8 @@ impl Default for SearchOptions<'_> {
 }
 #[derive(Debug, Serialize)]
 pub struct EntitySummary {
+    pub id: String,
+    pub source_id: String,
     pub token: String,
     pub name: String,
     pub full_name: String,
@@ -89,7 +94,7 @@ pub struct SearchPage {
 
 pub struct Catalog {
     db: Db,
-    names: Vec<String>,
+    names: HashMap<Key, String>,
 }
 fn hex(t: u32) -> String {
     format!("0x{t:08x}")
@@ -159,44 +164,57 @@ fn guid<'a>(r: impl HasAttributes<'a>) -> Option<String> {
         n[0], n[1], n[2], n[3], n[4], n[5], n[6], n[7], n[8], n[9], n[10]
     ))
 }
-fn signature(t: &Type) -> Json {
+fn signature(t: &Type, db: &Db) -> Json {
     match t {
         Type::ClassName(n) | Type::ValueName(n) => {
-            json!({"kind":"named","name":n.name,"namespace":n.namespace,"reference_token":n.identity.map(|(_,t)|hex(t)),"arguments":n.generics.iter().map(signature).collect::<Vec<_>>()})
+            json!({"kind":"named","name":n.name,"namespace":n.namespace,"reference_token":n.identity.map(|(_,t)|hex(t)),"reference_id":n.identity.map(|(file,token)|db.id(Key { file, token })),"arguments":n.generics.iter().map(|t|signature(t,db)).collect::<Vec<_>>()})
         }
         Type::PtrMut(t, d) => {
-            json!({"kind":"pointer","depth":d,"const":false,"element":signature(t)})
+            json!({"kind":"pointer","depth":d,"const":false,"element":signature(t,db)})
         }
         Type::PtrConst(t, d) => {
-            json!({"kind":"pointer","depth":d,"const":true,"element":signature(t)})
+            json!({"kind":"pointer","depth":d,"const":true,"element":signature(t,db)})
         }
-        Type::ArrayFixed(t, n) => json!({"kind":"array","length":n,"element":signature(t)}),
-        Type::Array(t) => json!({"kind":"array","length":null,"element":signature(t)}),
-        Type::RefMut(t) => json!({"kind":"byref","element":signature(t)}),
-        Type::RefConst(t) => json!({"kind":"const","element":signature(t)}),
-        Type::Generic(n, i) => json!({"kind":"generic","name":n,"index":i}),
+        Type::ArrayFixed(t, n) => json!({"kind":"array","length":n,"element":signature(t,db)}),
+        Type::Array(t) => json!({"kind":"array","length":null,"element":signature(t,db)}),
+        Type::RefMut(t) => json!({"kind":"byref","element":signature(t,db)}),
+        Type::RefConst(t) => json!({"kind":"const","element":signature(t,db)}),
+        Type::Generic(n, i) => json!({"kind":"generic","scope":"type","name":n,"index":i}),
+        Type::MethodGeneric(n, i) => json!({"kind":"generic","scope":"method","name":n,"index":i}),
         other => json!({"kind":"primitive","name":format!("{other:?}")}),
     }
 }
 
 impl Catalog {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        let db = Db::open(path.as_ref())?;
-        let parents: HashMap<_, _> = db
-            .index
-            .rows::<NestedClass>(0)
-            .map(|n| (n.usize(0) - 1, n.usize(1) - 1))
+        Self::open_many([path])
+    }
+    pub fn open_many<P: AsRef<Path>>(paths: impl IntoIterator<Item = P>) -> Result<Self> {
+        let db = Db::open_many(paths)?;
+        let parents: HashMap<_, _> = (0..db.sources.len())
+            .flat_map(|file| {
+                db.index
+                    .rows::<NestedClass>(file)
+                    .map(move |n| ((file, n.usize(0) - 1), n.usize(1) - 1))
+            })
             .collect();
         fn full(
             db: &Db,
-            p: usize,
-            parents: &HashMap<usize, usize>,
+            t: TypeDef<'_>,
+            parents: &HashMap<(usize, usize), usize>,
             depth: usize,
         ) -> Result<String> {
             ensure!(depth < 128, "nested type depth exceeds limit");
-            let t = db.ty(p);
-            Ok(if let Some(parent) = parents.get(&p) {
-                format!("{}+{}", full(db, *parent, parents, depth + 1)?, t.name())
+            let file = t.to_row().file;
+            Ok(if let Some(parent) = parents.get(&(file, t.pos())) {
+                let p = db.row::<TypeDef>(
+                    Key {
+                        file,
+                        token: 0x02000000 | (*parent as u32 + 1),
+                    },
+                    2,
+                )?;
+                format!("{}+{}", full(db, p, parents, depth + 1)?, t.name())
             } else if t.namespace().is_empty() {
                 t.name().into()
             } else {
@@ -204,21 +222,29 @@ impl Catalog {
             })
         }
         let names = (0..db.type_count)
-            .map(|p| full(&db, p, &parents, 0))
-            .collect::<Result<Vec<_>>>()?;
+            .map(|p| {
+                let t = db.ty(p);
+                Ok((db.key(t, 2), full(&db, t, &parents, 0)?))
+            })
+            .collect::<Result<HashMap<_, _>>>()?;
         Ok(Self { db, names })
     }
-    pub fn source_sha256(&self) -> &str {
-        &self.db.sha
+    pub fn source_sha256(&self) -> Option<&str> {
+        (self.db.sources.len() == 1).then_some(self.db.sources[0].id.as_str())
+    }
+    pub fn sources(&self) -> &[Source] {
+        &self.db.sources
     }
     pub fn summary(&self) -> Json {
-        json!({"sha256":self.db.sha,"type_rows":self.db.type_count,"field_rows":self.db.field_count,"method_rows":self.db.method_count})
+        json!({"sources":self.sources(),"type_rows":self.db.type_count,"field_rows":self.db.field_count,"method_rows":self.db.method_count})
     }
     fn type_name(&self, t: TypeDef<'_>) -> String {
-        self.names[t.pos()].clone()
+        self.names[&self.db.key(t, 2)].clone()
     }
     fn type_summary(&self, t: TypeDef<'_>) -> EntitySummary {
         EntitySummary {
+            id: self.db.id(self.db.key(t, 2)),
+            source_id: self.db.sources[t.to_row().file].id.clone(),
             token: hex(token(t, 2)),
             name: t.name().into(),
             full_name: self.type_name(t),
@@ -239,6 +265,11 @@ impl Catalog {
         mask: i32,
     ) -> EntitySummary {
         EntitySummary {
+            id: self.db.id(Key {
+                file: t.to_row().file,
+                token: tok,
+            }),
+            source_id: self.db.sources[t.to_row().file].id.clone(),
             token: hex(tok),
             name: name.into(),
             full_name: format!("{}.{}", self.type_name(t), name),
@@ -247,6 +278,7 @@ impl Catalog {
         }
     }
     pub fn search(&self, q: &str, o: SearchOptions<'_>) -> Result<SearchPage> {
+        let source_file = o.source.map(|s| self.db.source_file(s)).transpose()?;
         ensure!(o.limit <= 1000, "limit must be <= 1000");
         ensure!(!q.is_empty(), "empty search query");
         let q = if o.case_sensitive {
@@ -313,6 +345,9 @@ impl Catalog {
         for p in 0..self.db.type_count {
             check_cancel(o.cancel)?;
             let t = self.db.ty(p);
+            if source_file.is_some_and(|f| f != t.to_row().file) {
+                continue;
+            }
             if matches!(o.mode, SearchMode::Integer) {
             } else {
                 accept(
@@ -351,6 +386,20 @@ impl Catalog {
                 );
             }
             if !matches!(o.mode, SearchMode::Integer | SearchMode::Guid) {
+                for p in t.properties() {
+                    accept(
+                        self.member_summary(t, p.name(), token(p, 0x17), "property", raw_mask(p)),
+                        None,
+                        None,
+                    );
+                }
+                for e in t.events() {
+                    accept(
+                        self.member_summary(t, e.name(), token(e, 0x14), "event", raw_mask(e)),
+                        None,
+                        None,
+                    );
+                }
                 for m in t.methods() {
                     accept(
                         self.member_summary(
@@ -372,13 +421,30 @@ impl Catalog {
         }
         Ok(page)
     }
-    fn select(&self, s: &str, arch: Option<Architecture>) -> Result<u32> {
-        if let Some(h) = s.strip_prefix("0x") {
-            return Ok(u32::from_str_radix(h, 16)?);
+    fn selector<'a>(&self, s: &'a str) -> Result<(Option<usize>, &'a str)> {
+        if let Some((source, name)) = s.split_once("::") {
+            Ok((Some(self.db.source_file(source)?), name))
+        } else {
+            Ok((None, s))
         }
+    }
+    fn select(&self, s: &str, arch: Option<Architecture>) -> Result<Key> {
+        let (file, s) = self.selector(s)?;
+        if let Some(h) = s.strip_prefix("0x") {
+            ensure!(
+                file.is_some() || self.sources().len() == 1,
+                "token requires SOURCE::TOKEN with multiple sources"
+            );
+            return Ok(Key {
+                file: file.unwrap_or(0),
+                token: u32::from_str_radix(h, 16)?,
+            });
+        }
+        let source = file.map(|f| self.db.sources[f].id.as_str());
         let mut p = self.search(
             s,
             SearchOptions {
+                source,
                 mode: SearchMode::Exact,
                 architecture: arch,
                 limit: 10,
@@ -390,6 +456,7 @@ impl Catalog {
             p = self.search(
                 s,
                 SearchOptions {
+                    source,
                     mode: SearchMode::Exact,
                     architecture: arch,
                     limit: 10,
@@ -403,70 +470,121 @@ impl Catalog {
             p.total,
             p.matches
                 .iter()
-                .map(|m| format!("{} {}", m.token, m.full_name))
+                .map(|m| format!("{} {}", m.id, m.full_name))
                 .collect::<Vec<_>>()
                 .join(", ")
         );
-        Ok(u32::from_str_radix(
-            p.matches[0].token.trim_start_matches("0x"),
-            16,
-        )?)
+        Ok(Key {
+            file: self.db.source_file(&p.matches[0].source_id)?,
+            token: u32::from_str_radix(p.matches[0].token.trim_start_matches("0x"), 16)?,
+        })
     }
     pub fn describe(&self, s: &str, arch: Option<Architecture>) -> Result<Json> {
         self.describe_token(self.select(s, arch)?, arch)
     }
-    fn select_type(&self, s: &str, a: Architecture) -> Result<u32> {
+    fn select_type(&self, selector: &str, a: Architecture) -> Result<Key> {
+        let (file, s) = self.selector(selector)?;
         if s.starts_with("0x") {
-            let t = self.select(s, Some(a))?;
-            ensure!(t >> 24 == 2, "expected a TypeDef token");
+            let t = self.select(selector, Some(a))?;
+            self.db.row::<TypeDef>(t, 2)?;
             return Ok(t);
         }
         let mut found: Vec<_> = (0..self.db.type_count)
             .map(|p| self.db.ty(p))
             .filter(|t| {
                 supports(*t, a.bit())
+                    && file.is_none_or(|f| f == t.to_row().file)
                     && (t.name().eq_ignore_ascii_case(s)
-                        || self.names[t.pos()].eq_ignore_ascii_case(s))
+                        || self.type_name(*t).eq_ignore_ascii_case(s))
             })
             .collect();
         if found
             .iter()
-            .any(|t| t.name() == s || self.names[t.pos()] == s)
+            .any(|t| t.name() == s || self.type_name(*t) == s)
         {
-            found.retain(|t| t.name() == s || self.names[t.pos()] == s);
+            found.retain(|t| t.name() == s || self.type_name(*t) == s);
         }
         ensure!(
             found.len() == 1,
-            "expected one type, found {}; use qualified name or token",
-            found.len()
+            "expected one type, found {}; use SOURCE::NAME or SOURCE::TOKEN. Candidates: {}",
+            found.len(),
+            found
+                .iter()
+                .take(10)
+                .map(|t| self.db.id(self.db.key(*t, 2)))
+                .collect::<Vec<_>>()
+                .join(", ")
         );
-        Ok(token(found[0], 2))
+        Ok(self.db.key(found[0], 2))
     }
-    fn describe_token(&self, tok: u32, arch: Option<Architecture>) -> Result<Json> {
-        let pos = (tok & 0xffffff)
-            .checked_sub(1)
-            .ok_or_else(|| anyhow::anyhow!("nil token"))? as usize;
+    fn describe_token(&self, key: Key, arch: Option<Architecture>) -> Result<Json> {
+        let tok = key.token;
+        let file = key.file;
         let row = match tok >> 24 {
-            2 if pos < self.db.type_count => {
-                let t = self.db.ty(pos);
+            2 => {
+                let t: TypeDef = self.db.row(key, 2)?;
                 ensure!(
                     arch.is_none_or(|a| supports(t, a.bit())),
                     "type unavailable on architecture"
                 );
-                json!({"entity":self.type_summary(t),"flags":t.flags().0,"guid":guid(t),"attributes":attributes(t),"layout_constraints":t.class_layout().map(|l|json!({"pack_bytes":l.packing_size(),"declared_size_bytes":l.class_size()})),"layout_kind":if t.flags().contains(TypeAttributes::ExplicitLayout){"explicit"}else if t.flags().contains(TypeAttributes::SequentialLayout){"sequential"}else{"auto"},
-                "interfaces":t.interface_impls().map(|i|signature(&i.interface(&[]))).collect::<Vec<_>>(),"fields":t.fields().filter(|f|arch.is_none_or(|a|supports(*f,a.bit()))).map(|f|self.describe_token(token(f,4),arch)).collect::<Result<Vec<_>>>()?,"methods":t.methods().filter(|m|arch.is_none_or(|a|supports(*m,a.bit()))).map(|m|self.describe_token(token(m,6),arch)).collect::<Result<Vec<_>>>()?})
+                let mut result = json!({"entity":self.type_summary(t),"flags":t.flags().0,"guid":guid(t),"attributes":attributes(t),"generic_parameters":t.generic_params().map(|p|json!({"name":p.name(),"index":p.sequence(),"flags":p.flags().0})).collect::<Vec<_>>(),"layout_constraints":t.class_layout().map(|l|json!({"pack_bytes":l.packing_size(),"declared_size_bytes":l.class_size()})),"layout_kind":if t.flags().contains(TypeAttributes::ExplicitLayout){"explicit"}else if t.flags().contains(TypeAttributes::SequentialLayout){"sequential"}else{"auto"},
+                "fields":t.fields().filter(|f|arch.is_none_or(|a|supports(*f,a.bit()))).map(|f|self.describe_token(self.db.key(f,4),arch)).collect::<Result<Vec<_>>>()?,"methods":t.methods().filter(|m|arch.is_none_or(|a|supports(*m,a.bit()))).map(|m|self.describe_token(self.db.key(m,6),arch)).collect::<Result<Vec<_>>>()?});
+                result["properties"] = json!(
+                    t.properties()
+                        .filter(|p| arch.is_none_or(|a| supports(*p, a.bit())))
+                        .map(|p| self.describe_token(self.db.key(p, 0x17), arch))
+                        .collect::<Result<Vec<_>>>()?
+                );
+                result["events"] = json!(
+                    t.events()
+                        .filter(|e| arch.is_none_or(|a| supports(*e, a.bit())))
+                        .map(|e| self.describe_token(self.db.key(e, 0x14), arch))
+                        .collect::<Result<Vec<_>>>()?
+                );
+                result["interface_implementations"] = json!(t.interface_impls().map(|i|json!({"type":signature(&i.interface(&t.generic_types()),&self.db),"default":i.has_attribute("DefaultAttribute"),"attributes":attributes(i)})).collect::<Vec<_>>());
+                result["base_type"] = t
+                    .extends()
+                    .map(|b| {
+                        let ty = match b {
+                            TypeDefOrRef::TypeSpec(s) => s.ty(&t.generic_types()),
+                            b => Type::ClassName(b.type_name()),
+                        };
+                        signature(&ty, &self.db)
+                    })
+                    .unwrap_or(Json::Null);
+                result["windows_runtime"] = json!(t.flags().0 & 0x4000 != 0);
+                result
             }
-            4 if pos < self.db.field_count => {
-                let f = self.db.field(pos);
+            0x17 => {
+                let p: Property = self.db.row(key, 0x17)?;
+                let parent = p.parent();
+                ensure!(
+                    arch.is_none_or(|a| supports(parent, a.bit()) && supports(p, a.bit())),
+                    "property unavailable on architecture"
+                );
+                let s = p.signature();
+                json!({"entity":self.member_summary(parent,p.name(),tok,"property",raw_mask(p)),"parent_id":self.db.id(self.db.key(parent,2)),"flags":p.flags(),"type":signature(&s.return_type,&self.db),"index_parameters":s.types.iter().map(|t|signature(t,&self.db)).collect::<Vec<_>>(),"attributes":attributes(p),"accessors":p.accessors().map(|s|json!({"semantics":s.flags(),"method_id":self.db.id(self.db.key(s.method(),6)),"name":s.method().name()})).collect::<Vec<_>>()})
+            }
+            0x14 => {
+                let e: Event = self.db.row(key, 0x14)?;
+                let parent = e.parent();
+                ensure!(
+                    arch.is_none_or(|a| supports(parent, a.bit()) && supports(e, a.bit())),
+                    "event unavailable on architecture"
+                );
+                json!({"entity":self.member_summary(parent,e.name(),tok,"event",raw_mask(e)),"parent_id":self.db.id(self.db.key(parent,2)),"flags":e.flags(),"type":signature(&e.ty(),&self.db),"attributes":attributes(e),"accessors":e.accessors().map(|s|json!({"semantics":s.flags(),"method_id":self.db.id(self.db.key(s.method(),6)),"name":s.method().name()})).collect::<Vec<_>>()})
+            }
+            4 => {
+                let f: Field = self.db.row(key, 4)?;
                 let parent: TypeDef = f.parent_row(4);
                 ensure!(
                     arch.is_none_or(|a| supports(parent, a.bit()) && supports(f, a.bit())),
                     "field unavailable on architecture"
                 );
-                json!({"entity":self.member_summary(parent,f.name(),tok,if f.constant().is_some(){"constant"}else{"field"},raw_mask(f)),"parent_token":hex(token(parent,2)),"type":signature(&f.ty()),"declared_offset_bytes":f.explicit_offset(),"bitfields":crate::metadata::bitfields(f)?,"value":f.constant().map(|c|value(&c.value())),"guid":guid(f),"attributes":attributes(f)})
+                json!({"entity":self.member_summary(parent,f.name(),tok,if f.constant().is_some(){"constant"}else{"field"},raw_mask(f)),"parent_token":hex(token(parent,2)),"parent_id":self.db.id(self.db.key(parent,2)),"type":signature(&f.ty(),&self.db),"declared_offset_bytes":f.explicit_offset(),"bitfields":crate::metadata::bitfields(f)?,"value":f.constant().map(|c|value(&c.value())),"guid":guid(f),"attributes":attributes(f)})
             }
-            6 if pos < self.db.method_count => {
-                let m = self.db.method(pos);
+            6 => {
+                let m: MethodDef = self.db.row(key, 6)?;
                 let parent: TypeDef = m.parent_row(5);
                 let s = m.signature(&[]);
                 let ps = m.params_by_sequence(s.types.len())?;
@@ -474,21 +592,24 @@ impl Catalog {
                     arch.is_none_or(|a| supports(parent, a.bit()) && supports(m, a.bit())),
                     "method unavailable on architecture"
                 );
-                json!({"entity":self.member_summary(parent,m.name(),tok,if parent.name()=="Apis"{"function"}else{"method"},raw_mask(m)),"parent_token":hex(token(parent,2)),"return_type":signature(&s.return_type),"signature_flags":s.flags.0,"return_attributes":ps.return_param().map(attributes),"attributes":attributes(m),"import":m.impl_map().map(|i|json!({"dll":i.import_scope().name(),"entry_point":i.import_name(),"flags":i.flags().0,"calling_convention":m.calling_convention()})),
-                "parameters":s.types.iter().zip(ps.params()).enumerate().map(|(i,(t,p))|json!({"sequence":i+1,"name":p.map(|p|p.name().to_owned()),"type":signature(t),"flags":p.map(|p|p.flags().0),"direction":p.map(|p|format!("{:?}",p.direction())),"optional":p.map(|p|p.is_optional()),"attributes":p.map(attributes)})).collect::<Vec<_>>()})
+                json!({"entity":self.member_summary(parent,m.name(),tok,if parent.name()=="Apis"{"function"}else{"method"},raw_mask(m)),"parent_token":hex(token(parent,2)),"parent_id":self.db.id(self.db.key(parent,2)),"return_type":signature(&s.return_type,&self.db),"signature_flags":s.flags.0,"return_attributes":ps.return_param().map(attributes),"attributes":attributes(m),"import":m.impl_map().map(|i|json!({"dll":i.import_scope().name(),"entry_point":i.import_name(),"flags":i.flags().0,"calling_convention":m.calling_convention()})),
+                "generic_parameters":m.generic_params().map(|p|json!({"name":p.name(),"index":p.sequence(),"flags":p.flags().0})).collect::<Vec<_>>(),"parameters":s.types.iter().zip(ps.params()).enumerate().map(|(i,(t,p))|json!({"sequence":i+1,"name":p.map(|p|p.name().to_owned()),"type":signature(t,&self.db),"flags":p.map(|p|p.flags().0),"direction":p.map(|p|format!("{:?}",p.direction())),"optional":p.map(|p|p.is_optional()),"attributes":p.map(attributes)})).collect::<Vec<_>>()})
             }
-            1 if pos < self.db.index.rows::<TypeRef>(0).len() => {
-                let r = TypeRef::from_row(Row {
-                    index: &self.db.index,
-                    file: 0,
-                    pos,
-                });
+            1 => {
+                let r: TypeRef = self.db.row(key, 1)?;
                 let n = TypeDefOrRef::TypeRef(r).type_name();
-                let resolution = arch.map(|a| match self.db.resolve(&n, self.db.ty(0), a.bit()) {
-                    Ok(t) => json!({"target_token":hex(token(t,2))}),
+                let owner: TypeDef = self.db.row(
+                    Key {
+                        file,
+                        token: 0x02000001,
+                    },
+                    2,
+                )?;
+                let resolution = arch.map(|a| match self.db.resolve(&n, owner, a.bit()) {
+                    Ok(t) => json!({"target_token":hex(token(t,2)),"target_id":self.db.id(self.db.key(t,2)),"target_source_id":self.db.sources[t.to_row().file].id}),
                     Err(e) => json!({"unresolved":e.to_string()}),
                 });
-                json!({"entity":{"token":hex(tok),"kind":"type_reference","name":r.name(),"namespace":r.namespace()},"scope_token":hex(r.scope_token()),"resolution":resolution})
+                json!({"entity":{"id":self.db.id(key),"source_id":self.db.sources[file].id,"token":hex(tok),"kind":"type_reference","name":r.name(),"namespace":r.namespace()},"scope_token":hex(r.scope_token()),"resolution":resolution})
             }
             _ => bail!("unsupported or out-of-range token {}", hex(tok)),
         };
@@ -496,11 +617,11 @@ impl Catalog {
     }
     pub fn layout(&self, s: &str, a: Architecture) -> Result<Json> {
         let tok = self.select_type(s, a)?;
-        crate::layout::derive_token(&self.db, tok, a.name())
+        crate::layout::derive_key(&self.db, tok, a.name())
     }
     pub fn vtable(&self, s: &str, a: Architecture) -> Result<Json> {
         let tok = self.select_type(s, a)?;
-        let mut result = self.db.vtable_token(tok, a.name())?;
+        let mut result = self.db.vtable_key(tok, a.name())?;
         if let Some(slots) = result["slots"].as_array_mut() {
             for slot in slots {
                 slot["byte_offset"] = json!(
@@ -514,19 +635,22 @@ impl Catalog {
     /// Reverse type uses. A member is reported once even if several parameters use it.
     pub fn references(&self, s: &str, a: Architecture, o: SearchOptions<'_>) -> Result<Json> {
         ensure!(o.limit <= 1000, "limit must be <= 1000");
+        let source_file = o.source.map(|s| self.db.source_file(s)).transpose()?;
         let target = self.select_type(s, a)?;
         fn uses(
             db: &Db,
             t: &Type,
             owner: TypeDef<'_>,
             arch: i32,
-            target: u32,
+            target: Key,
             unresolved: &mut usize,
         ) -> bool {
             match t {
                 Type::ClassName(n) | Type::ValueName(n) => {
-                    let direct = match db.resolve(n, owner, arch) {
-                        Ok(t) => token(t, 2) == target,
+                    let mut definition = n.clone();
+                    definition.generics.clear();
+                    let direct = match db.resolve(&definition, owner, arch) {
+                        Ok(t) => db.key(t, 2) == target,
                         Err(_) => {
                             *unresolved += 1;
                             false
@@ -561,7 +685,7 @@ impl Catalog {
         for p in 0..self.db.type_count {
             check_cancel(o.cancel)?;
             let t = self.db.ty(p);
-            if !supports(t, a.bit()) {
+            if !supports(t, a.bit()) || source_file.is_some_and(|f| f != t.to_row().file) {
                 continue;
             }
             for f in t.fields().filter(|f| supports(*f, a.bit())) {
@@ -589,7 +713,7 @@ impl Catalog {
             for i in t.interface_impls() {
                 if uses(
                     &self.db,
-                    &i.interface(&[]),
+                    &i.interface(&t.generic_types()),
                     t,
                     a.bit(),
                     target,
@@ -599,9 +723,31 @@ impl Catalog {
                     break;
                 }
             }
+            for p in t.properties().filter(|p| supports(*p, a.bit())) {
+                let sig = p.signature();
+                let mut hit = uses(
+                    &self.db,
+                    &sig.return_type,
+                    t,
+                    a.bit(),
+                    target,
+                    &mut unresolved,
+                );
+                for ty in &sig.types {
+                    hit = uses(&self.db, ty, t, a.bit(), target, &mut unresolved) || hit;
+                }
+                if hit {
+                    add(self.member_summary(t, p.name(), token(p, 0x17), "property", raw_mask(p)));
+                }
+            }
+            for e in t.events().filter(|e| supports(*e, a.bit())) {
+                if uses(&self.db, &e.ty(), t, a.bit(), target, &mut unresolved) {
+                    add(self.member_summary(t, e.name(), token(e, 0x14), "event", raw_mask(e)));
+                }
+            }
         }
         Ok(
-            json!({"target_token":hex(target),"architecture":a,"page":page,"unresolved_type_uses":unresolved,"scope":"field/method signatures and interface bases; attribute-only and macro relations not included"}),
+            json!({"target_token":hex(target.token),"target_id":self.db.id(target),"target_source_id":self.db.sources[target.file].id,"architecture":a,"page":page,"unresolved_type_uses":unresolved,"scope":"field/method/property/event signatures and interface requirements"}),
         )
     }
 }

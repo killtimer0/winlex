@@ -24,3 +24,13 @@ public class OuterA { public struct Child { public int Value; } }
 public class OuterB { public struct Child { public long Value; } }
 public struct Holder { public OuterA.Child A; public OuterB.Child B; }
 public struct External { public System.DateTime Value; }
+
+public interface IBox<T> {
+    T Value { get; set; }
+    event System.Action<T> Changed;
+    U Convert<U>(T input, U fallback);
+    System.Collections.Generic.IEnumerable<T[]> Arrays();
+}
+public struct Box<T> { public T Value; }
+public struct Box<T, U> { public T First; public U Second; }
+public struct BoxUses { public Box<int> One; public Box<int, long> Two; }

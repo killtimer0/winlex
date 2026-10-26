@@ -31,4 +31,5 @@ pub const ELEMENT_TYPE_U4: CorElementType = 9;
 pub const ELEMENT_TYPE_U8: CorElementType = 11;
 pub const ELEMENT_TYPE_VALUETYPE: CorElementType = 17;
 pub const ELEMENT_TYPE_VAR: CorElementType = 19;
+pub const ELEMENT_TYPE_MVAR: CorElementType = 30;
 pub const ELEMENT_TYPE_VOID: CorElementType = 1;

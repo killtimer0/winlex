@@ -15,7 +15,7 @@ def main():
     actual = json.loads(p.stdout)
     oracle = json.loads((out / "oracle.json").read_text())
     counts = {}
-    for key in ("layouts", "scopes", "signature_type_tokens"):
+    for key in ("assembly", "references", "layouts", "scopes", "signature_type_tokens", "properties", "events"):
         assert actual[key] == oracle[key], f"independent mismatch: {key}"
         counts[key] = len(actual[key])
     result = {"passed": True, "compared": counts, "scope": "Named type tokens in field/method signatures; modifiers and TypeSpec expansion are not a lossless AST guarantee"}

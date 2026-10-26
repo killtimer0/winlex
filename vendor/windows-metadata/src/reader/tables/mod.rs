@@ -18,6 +18,7 @@ mod nested_class;
 mod type_def;
 mod type_ref;
 mod type_spec;
+mod members;
 
 pub use method_def::{MethodParamMap, MethodParamSequenceError};
 pub use method_param::{BufferRelationship, ParamDirection};
@@ -60,4 +61,9 @@ tables! {
     (TypeRef, 16)
     (TypeSpec, 17)
     (FieldLayout, 18)
+    (Property, 19)
+    (PropertyMap, 20)
+    (Event, 21)
+    (EventMap, 22)
+    (MethodSemantics, 23)
 }

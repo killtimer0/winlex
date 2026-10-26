@@ -23,6 +23,7 @@ pub enum Type {
     ValueName(TypeName),          // ELEMENT_TYPE_VALUETYPE
     Array(Box<Self>),             // ELEMENT_TYPE_SZARRAY
     Generic(String, u16),         // ELEMENT_TYPE_VAR
+    MethodGeneric(String, u16),   // ELEMENT_TYPE_MVAR; separate from type parameters
     RefMut(Box<Self>),            // ELEMENT_TYPE_BYREF
     RefConst(Box<Self>),          // ELEMENT_TYPE_CMOD_REQD (IsConst)
     PtrMut(Box<Self>, usize),     // ELEMENT_TYPE_PTR

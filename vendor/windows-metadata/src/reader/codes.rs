@@ -80,6 +80,8 @@ code! { HasAttribute(5)
     (MethodParam, 4)
     (InterfaceImpl, 5)
     (MemberRef, 6)
+    (Property, 9)
+    (Event, 10)
     (TypeSpec, 13)
     (GenericParam, 19)
 }

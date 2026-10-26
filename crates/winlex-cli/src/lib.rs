@@ -3,12 +3,13 @@ use serde_json::{Value, json};
 use std::{ffi::OsString, io::Write, path::PathBuf};
 use winlex_core::{Architecture, Catalog, SearchMode, SearchOptions};
 
-pub const HELP: &str = "Winlex - offline Win32 metadata queries\n\nUsage: winlex [options] COMMAND [QUERY]\n\nCommands:\n  summary                 Input identity and row counts\n  search TEXT             Case-insensitive partial name search\n  value INTEGER           Decimal or 0x hexadecimal integer search\n  guid GUID               GUID lookup (optional braces)\n  show NAME|TOKEN         Declaration, members and typed references\n  layout TYPE             Compute size/alignment/offsets (bits)\n  vtable INTERFACE        Compute inherited method slots\n  references TYPE         Reverse type uses in signatures and bases\n\nOptions:\n  --winmd PATH            Input file; otherwise WINLEX_WINMD or beside exe\n  --arch x86|x64|arm64     Required for layout/vtable/references\n  --json                  Versioned machine-readable output\n  --exact | --prefix      Name search mode (default: contains)\n  --limit N               Page size, 0..1000 (default: 50)\n  --offset N              Matching rows to skip\n  --help, --version\n\nNames can be qualified. Ambiguous show queries require --arch or a token.\nToken IDs belong to the input WinMD SHA256. Numeric queries compare mathematical\nintegers: -1 is not the same key as 0xffffffff.\n";
+pub const HELP: &str = "Winlex - offline Win32 metadata queries\n\nUsage: winlex [options] COMMAND [QUERY]\n\nCommands:\n  summary                 Sources, assembly identities and row counts\n  search TEXT             Case-insensitive partial name search\n  value INTEGER           Decimal or 0x hexadecimal integer search\n  guid GUID               GUID lookup (optional braces)\n  show NAME|ID            Declaration, members and typed references\n  layout TYPE             Compute size/alignment/offsets (bits)\n  vtable INTERFACE        Compute inherited method slots\n  references TYPE         Reverse type uses across loaded sources\n\nOptions:\n  --winmd PATH            Input file (repeat to load multiple files)\n  --source SOURCE         Source SHA256 or unique assembly name\n  --arch x86|x64|arm64     Required for layout/vtable/references\n  --json                  Versioned machine-readable output\n  --exact | --prefix      Name search mode (default: contains)\n  --limit N               Page size, 0..1000 (default: 50)\n  --offset N              Matching rows to skip\n  --help, --version\n\nDeclaration selectors accept SOURCE::NAME or SOURCE::0xTOKEN.\nBare tokens require a single input source. Names can be namespace-qualified.\nDefault input: WINLEX_WINMD or Windows.Win32.winmd beside the executable.\nNumeric queries compare mathematical integers: -1 differs from 0xffffffff.\n";
 
 struct Options {
     command: String,
     query: Option<String>,
-    path: PathBuf,
+    paths: Vec<PathBuf>,
+    source: Option<String>,
     arch: Option<Architecture>,
     json: bool,
     mode: SearchMode,
@@ -16,7 +17,8 @@ struct Options {
     offset: usize,
 }
 fn parse(args: &[OsString]) -> Result<Options, String> {
-    let mut path = None;
+    let mut paths = vec![];
+    let mut source = None;
     let mut arch = None;
     let mut json = false;
     let mut mode = SearchMode::Contains;
@@ -34,13 +36,14 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
         let a = text(&args[i])?;
         i += 1;
         match a.as_str() {
-            "--winmd" | "--arch" | "--limit" | "--offset" => {
+            "--winmd" | "--source" | "--arch" | "--limit" | "--offset" => {
                 let v = args
                     .get(i)
                     .ok_or_else(|| format!("missing value for {a}"))?;
                 i += 1;
                 match a.as_str() {
-                    "--winmd" => path = Some(PathBuf::from(v)),
+                    "--winmd" => paths.push(PathBuf::from(v)),
+                    "--source" => source = Some(text(v)?),
                     "--arch" => {
                         arch = Some(
                             text(v)?
@@ -96,17 +99,29 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
     if ["layout", "vtable", "references"].contains(&command.as_str()) && arch.is_none() {
         return Err(format!("{command} requires --arch"));
     }
-    let path = path
-        .or_else(|| std::env::var_os("WINLEX_WINMD").map(PathBuf::from))
-        .unwrap_or_else(|| {
-            std::env::current_exe()
-                .unwrap_or_default()
-                .with_file_name("Windows.Win32.winmd")
-        });
+    if source.is_some()
+        && (command == "summary" || positional.get(1).is_some_and(|q| q.contains("::")))
+    {
+        return Err(
+            "--source applies to queries; do not combine it with SOURCE:: selectors".into(),
+        );
+    }
+    if paths.is_empty() {
+        paths.push(
+            std::env::var_os("WINLEX_WINMD")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| {
+                    std::env::current_exe()
+                        .unwrap_or_default()
+                        .with_file_name("Windows.Win32.winmd")
+                }),
+        );
+    }
     Ok(Options {
         command,
         query: positional.get(1).cloned(),
-        path,
+        paths,
+        source,
         arch,
         json,
         mode,
@@ -142,7 +157,7 @@ pub fn run(
         Ok(v) => v,
         Err(e) => return error(out, err, want_json, 2, "invalid_arguments", &e),
     };
-    let db = match Catalog::open(&o.path) {
+    let db = match Catalog::open_many(&o.paths) {
         Ok(v) => v,
         Err(e) => {
             return error(
@@ -151,12 +166,17 @@ pub fn run(
                 o.json,
                 3,
                 "input_error",
-                &format!("{}: {e}", o.path.display()),
+                &format!("{:?}: {e}", o.paths),
             );
         }
     };
     let q = o.query.as_deref().unwrap_or("");
+    let selector = o
+        .source
+        .as_ref()
+        .map_or_else(|| q.to_owned(), |s| format!("{s}::{q}"));
     let options = || SearchOptions {
+        source: None,
         case_sensitive: false,
         mode: o.mode,
         architecture: o.arch,
@@ -169,6 +189,7 @@ pub fn run(
             "summary" => db.summary(),
             "search" | "value" | "guid" => {
                 let mut opt = options();
+                opt.source = o.source.as_deref();
                 if o.command == "value" {
                     opt.mode = SearchMode::Integer;
                 }
@@ -177,10 +198,10 @@ pub fn run(
                 }
                 serde_json::to_value(db.search(q, opt)?)?
             }
-            "show" => db.describe(q, o.arch)?,
-            "layout" => db.layout(q, o.arch.unwrap())?,
-            "vtable" => db.vtable(q, o.arch.unwrap())?,
-            "references" => db.references(q, o.arch.unwrap(), options())?,
+            "show" => db.describe(&selector, o.arch)?,
+            "layout" => db.layout(&selector, o.arch.unwrap())?,
+            "vtable" => db.vtable(&selector, o.arch.unwrap())?,
+            "references" => db.references(&selector, o.arch.unwrap(), options())?,
             _ => unreachable!(),
         })
     })();
@@ -189,7 +210,7 @@ pub fn run(
         Err(e) => return error(out, err, o.json, 3, "query_error", &e.to_string()),
     };
     let written = if o.json {
-        serde_json::to_writer_pretty(&mut *out,&json!({"schema":"winlex-cli-1","ok":true,"source_sha256":db.source_sha256(),"command":o.command,"result":result})).map_err(std::io::Error::other).and_then(|_|writeln!(out))
+        serde_json::to_writer_pretty(&mut *out,&json!({"schema":"winlex-cli-2","ok":true,"sources":db.sources(),"source_sha256":db.source_sha256(),"command":o.command,"result":result})).map_err(std::io::Error::other).and_then(|_|writeln!(out))
     } else {
         render(&result, out, 0)
     };
@@ -213,7 +234,7 @@ fn error(
     let result = if json_mode {
         serde_json::to_writer(
             &mut *out,
-            &json!({"schema":"winlex-cli-1","ok":false,"error":{"code":code,"message":message}}),
+            &json!({"schema":"winlex-cli-2","ok":false,"error":{"code":code,"message":message}}),
         )
         .map_err(std::io::Error::other)
         .and_then(|_| writeln!(out))
@@ -228,7 +249,20 @@ fn s(v: &Value) -> &str {
 fn ty(v: &Value) -> String {
     match s(&v["kind"]) {
         "primitive" => s(&v["name"]).into(),
-        "named" => format!("{} -> {}", s(&v["name"]), s(&v["reference_token"])),
+        "named" => {
+            let args = v["arguments"]
+                .as_array()
+                .filter(|a| !a.is_empty())
+                .map(|a| format!("<{}>", a.iter().map(ty).collect::<Vec<_>>().join(", ")))
+                .unwrap_or_default();
+            format!("{}{} -> {}", s(&v["name"]), args, s(&v["reference_id"]))
+        }
+        "generic" => format!(
+            "{} ({} parameter {})",
+            s(&v["name"]),
+            s(&v["scope"]),
+            v["index"]
+        ),
         "pointer" => format!(
             "{}{}{}",
             if v["const"] == true { "const " } else { "" },
@@ -253,7 +287,7 @@ fn render(v: &Value, out: &mut dyn Write, depth: usize) -> std::io::Result<()> {
             writeln!(
                 out,
                 "{}  {:10} arch={}  {}",
-                s(&item["token"]),
+                s(&item["id"]),
                 s(&item["kind"]),
                 item["architecture_mask"],
                 s(&item["full_name"])
@@ -265,7 +299,7 @@ fn render(v: &Value, out: &mut dyn Write, depth: usize) -> std::io::Result<()> {
         writeln!(
             out,
             "References to {} (unresolved uses: {})",
-            s(&v["target_token"]),
+            s(&v["target_id"]),
             v["unresolved_type_uses"]
         )?;
         return render(&v["page"], out, depth);
@@ -279,7 +313,11 @@ fn render(v: &Value, out: &mut dyn Write, depth: usize) -> std::io::Result<()> {
                 slot["index"],
                 s(&slot["declaring_type"]),
                 s(&slot["method"]),
-                s(&slot["token"]),
+                if slot["implicit"] == true {
+                    "[implicit ABI]"
+                } else {
+                    s(&slot["id"])
+                },
                 slot["byte_offset"]
             )?;
         }
@@ -319,7 +357,7 @@ fn render(v: &Value, out: &mut dyn Write, depth: usize) -> std::io::Result<()> {
         writeln!(
             out,
             "{pad}{} {} {}",
-            s(&e["token"]),
+            s(&e["id"]),
             s(&e["kind"]),
             e["full_name"].as_str().unwrap_or(s(&e["name"]))
         )?;
@@ -358,6 +396,19 @@ fn render(v: &Value, out: &mut dyn Write, depth: usize) -> std::io::Result<()> {
         if !v["return_type"].is_null() {
             writeln!(out, "{pad}  returns: {}", ty(&v["return_type"]))?;
         }
+        if !v["base_type"].is_null() {
+            writeln!(out, "{pad}  extends: {}", ty(&v["base_type"]))?;
+        }
+        if let Some(accessors) = v["accessors"].as_array() {
+            for a in accessors {
+                writeln!(
+                    out,
+                    "{pad}  accessor {}: {}",
+                    s(&a["name"]),
+                    s(&a["method_id"])
+                )?;
+            }
+        }
         if !v["import"].is_null() {
             writeln!(out, "{pad}  import: {}", v["import"])?;
         }
@@ -378,13 +429,22 @@ fn render(v: &Value, out: &mut dyn Write, depth: usize) -> std::io::Result<()> {
                 writeln!(out, "{pad}  @{} {}", s(&a["name"]), a["arguments"])?;
             }
         }
-        if let Some(bases) = v["interfaces"].as_array() {
-            for b in bases {
-                writeln!(out, "{pad}  base: {}", ty(b))?;
+        if let Some(interfaces) = v["interface_implementations"].as_array() {
+            for interface in interfaces {
+                writeln!(
+                    out,
+                    "{pad}  interface: {}{}",
+                    ty(&interface["type"]),
+                    if interface["default"] == true {
+                        " [default]"
+                    } else {
+                        ""
+                    }
+                )?;
             }
         }
     }
-    for key in ["fields", "methods"] {
+    for key in ["fields", "properties", "events", "methods"] {
         if let Some(items) = v[key].as_array() {
             for item in items {
                 render(item, out, depth + 1)?;
