@@ -5,14 +5,19 @@ edition = "2024"
 build = "build.rs"
 default-run = "winlex"
 
+[[bin]]
+name = "winlex-gui"
+path = "src/gui.rs"
+
 [workspace]
-members = ["crates/winlex-core", "crates/winlex-cli"]
+members = ["crates/winlex-core", "crates/winlex-cli", "crates/winlex-gui"]
 default-members = ["."]
 exclude = ["vendor/windows-metadata"]
 resolver = "3"
 
 [dependencies]
 winlex-cli = { path = "crates/winlex-cli" }
+winlex-gui = { path = "crates/winlex-gui" }
 
 [workspace.dependencies]
 windows-metadata = "=0.100.0"

@@ -1,0 +1,39 @@
+LANGUAGE 4, 2
+IDR_MAIN_MENU MENU
+BEGIN
+    POPUP "文件(&F)"
+    BEGIN
+        MENUITEM "新建 x86 文档(&X)\tCtrl+N", NEW_X86
+        MENUITEM "新建 x64 文档(&6)", NEW_X64
+        MENUITEM "关闭文档(&C)\tCtrl+F4", CLOSE
+        MENUITEM "退出(&E)", EXIT
+    END
+    POPUP "窗口(&W)"
+    BEGIN
+        MENUITEM "左右平铺(&S)", COLUMNS
+        MENUITEM "上下平铺(&T)", ROWS
+        MENUITEM "自由排列(&F)", FREE
+        MENUITEM "最大化文档(&M)", MAXIMIZE
+    END
+END
+STRINGTABLE
+BEGIN
+    IDS_APP_TITLE "Winlex — 图形界面骨架"
+    IDS_OPEN "打开页面(&O)"
+    IDS_WORKSPACE "工作区"
+    IDS_NEW_X86 "新建 x86 文档"
+    IDS_NEW_X64 "新建 x64 文档"
+    IDS_DOCUMENT "文档"
+    IDS_UNTITLED "未命名"
+    IDS_DECLARATION "声明"
+    IDS_LAYOUT "布局"
+    IDS_REFERENCES "引用"
+    IDS_PROPERTY "属性"
+    IDS_VALUE "值"
+    IDS_ARCHITECTURE "架构"
+    IDS_CATALOG "目录"
+    IDS_NOT_LOADED "尚未加载"
+    IDS_PLACEHOLDER "{title}\r\n\r\n架构：{arch}\r\n\r\n图形界面骨架已就绪，尚未连接元数据查询。\r\n\r\n使用“窗口”菜单并排比较文档。\r\nTab 在文档内部导航；F6 在公共区域和活动文档之间切换。"
+    IDS_X86 "x86"
+    IDS_X64 "x64"
+END

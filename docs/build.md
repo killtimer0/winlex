@@ -28,8 +28,10 @@ $link = Join-Path $env:VCToolsInstallDir 'bin/Hostx64/x86/link.exe'
 ```
 
 x64 构建将架构、链接器和 OBJ 路径改为 x64。
-产物位于 `target/<Rust target>/release/winlex.exe`，旁边的 `.build.json` 记录构建版本和哈希。
-部署文件为 `winlex.exe` 和所需 WinMD。
+脚本自动查找 Windows SDK 的 Microsoft `rc.exe`，也可用 `-RcExe PATH` 固定版本。
+GUI 菜单、字符串、版本信息和清单从 `crates/winlex-gui/res/gui.rc` 编译并嵌入。
+产物位于 `target/<Rust target>/release/`：`winlex.exe` 为 CLI，`winlex-gui.exe` 为 GUI 骨架。
+各自的 `.build.json` 记录构建版本和哈希。CLI 查询另需所需 WinMD。
 
 ## 系统兼容性
 
@@ -54,6 +56,19 @@ python verify/run.py
 ```
 
 `verify/run.py` 比较 Rust 读取结果与 .NET `System.Reflection.Metadata`，并验证布局、泛型及跨源引用样例。报告写入 `tmp/verify/`。
+
+GUI 骨架检查使用 Windows 10 1703+ API，默认在独立桌面运行；双屏 DPI 不同时检查跨屏布局：
+
+```powershell
+cargo clippy -p winlex-gui --all-targets --locked -- -D warnings
+python verify/gui.py --exe target/i686-pc-windows-msvc/release/winlex-gui.exe --dpi pmv2
+python verify/gui.py --exe target/i686-pc-windows-msvc/release/winlex-gui.exe --dpi pmv1 --lang zh-CN
+python verify/gui_resources.py --exe target/i686-pc-windows-msvc/release/winlex-gui.exe
+```
+
+`--dpi` 可改为 `pmv1`、`system`、`unaware` 或 `auto`。`--desktop current` 使用当前桌面。
+GUI 检查默认使用英文，`--lang zh-CN` 检查中文文案及选项映射。资源检查验证双语字符串、菜单、清单和版本号。
+检查通过窗口消息操作控件，不替代真实鼠标输入测试。诊断写入 `tmp/gui-check/`。
 
 可选的 SDK ABI 检查使用真实 SDK 声明验证布局、COM 槽位及位域初始化字节：
 

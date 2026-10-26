@@ -1,0 +1,88 @@
+//! Native RC resources with explicit language lookup, including on XP.
+use crate::native::*;
+use std::sync::OnceLock;
+
+include!(concat!(env!("OUT_DIR"), "/resource_ids.rs"));
+
+const ENGLISH: u16 = 0x0409;
+const CHINESE: u16 = 0x0804;
+// RT_STRING is misplaced under KernelStreaming in windows-sys 0.59.
+const RT_STRING: *const u16 = 6usize as *const u16;
+static LANGUAGE: OnceLock<u16> = OnceLock::new();
+
+pub fn initialize(language: &str) -> Result<(), String> {
+    let selected = match language {
+        "en-US" => ENGLISH,
+        "zh-CN" => CHINESE,
+        "auto" => match unsafe { windows_sys::Win32::Globalization::GetUserDefaultUILanguage() } {
+            0x0804 | 0x1004 => CHINESE,
+            _ => ENGLISH,
+        },
+        _ => return Err(format!("Unknown UI language: {language}")),
+    };
+    let _ = LANGUAGE.set(selected);
+    // Validate before entering window callbacks, where Rust unwinding is forbidden.
+    for id in STRING_IDS {
+        load_text(*id)?;
+    }
+    data(RT_MENU, IDR_MAIN_MENU)?;
+    Ok(())
+}
+
+fn data(kind: *const u16, id: u16) -> Result<&'static [u8], String> {
+    unsafe {
+        let module = instance();
+        let language = *LANGUAGE.get().unwrap_or(&ENGLISH);
+        let mut resource = FindResourceExW(module, kind, id as usize as *const u16, language);
+        if resource.is_null() && language != ENGLISH {
+            resource = FindResourceExW(module, kind, id as usize as *const u16, ENGLISH);
+        }
+        if resource.is_null() {
+            return Err(format!("Missing GUI resource {id}"));
+        }
+        let size = SizeofResource(module, resource) as usize;
+        let loaded = LoadResource(module, resource);
+        let pointer = LockResource(loaded);
+        if pointer.is_null() || size == 0 {
+            return Err(format!("Cannot load GUI resource {id}"));
+        }
+        // Resources belong to the executable module, which stays loaded for the process lifetime.
+        Ok(std::slice::from_raw_parts(pointer.cast(), size))
+    }
+}
+fn load_text(id: u16) -> Result<String, String> {
+    let bytes = data(RT_STRING, id / 16 + 1)?;
+    let mut words = bytes
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|b| u16::from_le_bytes([b[0], b[1]]));
+    for index in 0..=id % 16 {
+        let count = words
+            .next()
+            .ok_or_else(|| format!("Invalid string resource {id}"))? as usize;
+        let value: Vec<_> = words.by_ref().take(count).collect();
+        if value.len() != count {
+            return Err(format!("Truncated string resource {id}"));
+        }
+        if index == id % 16 {
+            if value.is_empty() {
+                return Err(format!("Missing string resource {id}"));
+            }
+            return String::from_utf16(&value).map_err(|_| format!("Invalid UTF-16 resource {id}"));
+        }
+    }
+    unreachable!()
+}
+pub fn text(id: u16) -> String {
+    load_text(id).expect("validated GUI string resource")
+}
+pub fn menu() -> Result<HMENU, String> {
+    let bytes = data(RT_MENU, IDR_MAIN_MENU)?;
+    let menu = unsafe { LoadMenuIndirectW(bytes.as_ptr().cast()) };
+    if menu.is_null() {
+        Err(error("Load GUI menu"))
+    } else {
+        Ok(menu)
+    }
+}

@@ -1,0 +1,39 @@
+LANGUAGE 9, 1
+IDR_MAIN_MENU MENU
+BEGIN
+    POPUP "&File"
+    BEGIN
+        MENUITEM "New &x86 document\tCtrl+N", NEW_X86
+        MENUITEM "New x&64 document", NEW_X64
+        MENUITEM "&Close document\tCtrl+F4", CLOSE
+        MENUITEM "E&xit", EXIT
+    END
+    POPUP "&Window"
+    BEGIN
+        MENUITEM "Tile &side by side", COLUMNS
+        MENUITEM "Tile &top and bottom", ROWS
+        MENUITEM "&Free arrangement", FREE
+        MENUITEM "&Maximize document", MAXIMIZE
+    END
+END
+STRINGTABLE
+BEGIN
+    IDS_APP_TITLE "Winlex — GUI shell"
+    IDS_OPEN "&Open page"
+    IDS_WORKSPACE "Workspace"
+    IDS_NEW_X86 "New x86 document"
+    IDS_NEW_X64 "New x64 document"
+    IDS_DOCUMENT "Document"
+    IDS_UNTITLED "Untitled"
+    IDS_DECLARATION "Declaration"
+    IDS_LAYOUT "Layout"
+    IDS_REFERENCES "References"
+    IDS_PROPERTY "Property"
+    IDS_VALUE "Value"
+    IDS_ARCHITECTURE "Architecture"
+    IDS_CATALOG "Catalog"
+    IDS_NOT_LOADED "Not loaded"
+    IDS_PLACEHOLDER "{title}\r\n\r\nArchitecture: {arch}\r\n\r\nThe GUI shell is ready. Metadata queries are not connected yet.\r\n\r\nUse Window commands to compare documents side by side.\r\nTab moves within a document; F6 switches between search and the active document."
+    IDS_X86 "x86"
+    IDS_X64 "x64"
+END

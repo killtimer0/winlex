@@ -25,6 +25,21 @@ winlex vtable IStream --arch x64 --json
 
 查询架构与程序自身架构无关。命令、输出及限制见 [CLI 文档](docs/cli.md)。
 
+### 图形界面骨架
+
+`winlex-gui.exe` 提供 MDI 文档、文档标签栏、架构选择、Tab 页面、可拖动分栏和窗口平铺。
+点击文档标签切换活动文档，鼠标中键点击标签关闭对应文档；平铺时仍同时显示多个文档。
+目前用于验证窗口、键盘导航与 DPI 布局，尚未连接元数据查询。
+
+```powershell
+winlex-gui --dpi auto
+```
+
+可指定 `pmv2`、`pmv1`、`system` 或 `unaware`；不支持的显式模式会报错。
+界面语言默认跟随系统，支持 `--lang zh-CN`、`--lang en-US`；其他语言回退到英文。
+`F6` 切换公共区域与文档，`Ctrl+L` 聚焦输入框，`Ctrl+N` 新建文档。
+模块职责和资源约定见 [GUI 设计](docs/gui.md)。
+
 ## 开发
 
 使用 Rust MSVC 工具链。准备固定版本输入并运行核心测试：
@@ -41,6 +56,7 @@ cargo test -p winlex-core -p winlex-cli --release --locked
 - `src/`：程序入口。
 - `crates/winlex-core/`：同步查询库。
 - `crates/winlex-cli/`：命令行适配与集成测试。
+- `crates/winlex-gui/`：原生 MDI 图形界面。
 - `vendor/`：元数据读取器及本地补丁说明。
 - `inputs/`：外部输入的版本、下载来源和校验值。
 - `scripts/`、`verify/`：依赖准备、构建和独立验证。

@@ -52,4 +52,46 @@ fn main() {
     // Upstream's object route specifically requires MSVC link.exe, not lld-link.
     println!("cargo:rustc-link-arg-bin=winlex={}", object.display());
     println!("cargo:rustc-link-arg-bin=winlex=/SUBSYSTEM:CONSOLE,{subsystem}");
+    println!("cargo:rustc-link-arg-bin=winlex-gui={}", object.display());
+    println!("cargo:rustc-link-arg-bin=winlex-gui=/SUBSYSTEM:WINDOWS,{subsystem}");
+    compile_gui_resources();
+}
+
+fn compile_gui_resources() {
+    println!("cargo:rerun-if-env-changed=WINLEX_RC_EXE");
+    println!("cargo:rerun-if-changed=crates/winlex-gui/res");
+    let root = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
+    let out = PathBuf::from(env::var_os("OUT_DIR").unwrap());
+    let version = env::var("CARGO_PKG_VERSION").unwrap();
+    let numbers: Vec<_> = version
+        .split('.')
+        .map(|n| n.parse::<u16>().expect("numeric package version"))
+        .collect();
+    assert_eq!(numbers.len(), 3);
+    fs::write(
+        out.join("version.h"),
+        format!(
+            "#define VERSION_NUMBER {},{},{},0\n#define VERSION_TEXT \"{version}.0\"\n",
+            numbers[0], numbers[1], numbers[2]
+        ),
+    )
+    .unwrap();
+    let resource = out.join("winlex-gui.res");
+    let rc = env::var_os("WINLEX_RC_EXE")
+        .expect("Set WINLEX_RC_EXE to Microsoft rc.exe; use scripts/build.ps1");
+    let status = std::process::Command::new(rc)
+        .current_dir(root.join("crates/winlex-gui/res"))
+        .arg("/nologo")
+        .arg("/c65001")
+        .arg("/i")
+        .arg(&out)
+        .arg("/fo")
+        .arg(&resource)
+        .arg("gui.rc")
+        .status()
+        .expect("Run Microsoft resource compiler");
+    assert!(status.success(), "GUI resource compilation failed");
+    println!("cargo:rustc-link-arg-bin=winlex-gui={}", resource.display());
+    // The RC resource is the single owner of manifest ID 1.
+    println!("cargo:rustc-link-arg-bin=winlex-gui=/MANIFEST:NO");
 }
