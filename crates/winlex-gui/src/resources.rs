@@ -9,6 +9,7 @@ const CHINESE: u16 = 0x0804;
 // RT_STRING is misplaced under KernelStreaming in windows-sys 0.59.
 const RT_STRING: *const u16 = 6usize as *const u16;
 static LANGUAGE: OnceLock<u16> = OnceLock::new();
+static STRINGS: OnceLock<std::collections::HashMap<u16, String>> = OnceLock::new();
 
 pub fn initialize(language: &str) -> Result<(), String> {
     let selected = match language {
@@ -22,9 +23,11 @@ pub fn initialize(language: &str) -> Result<(), String> {
     };
     let _ = LANGUAGE.set(selected);
     // Validate before entering window callbacks, where Rust unwinding is forbidden.
-    for id in STRING_IDS {
-        load_text(*id)?;
-    }
+    let strings = STRING_IDS
+        .iter()
+        .map(|&id| load_text(id).map(|text| (id, text)))
+        .collect::<Result<_, _>>()?;
+    let _ = STRINGS.set(strings);
     data(RT_MENU, IDR_MAIN_MENU)?;
     Ok(())
 }
@@ -75,7 +78,7 @@ fn load_text(id: u16) -> Result<String, String> {
     unreachable!()
 }
 pub fn text(id: u16) -> String {
-    load_text(id).expect("validated GUI string resource")
+    STRINGS.get().expect("initialized resources")[&id].clone()
 }
 pub fn menu() -> Result<HMENU, String> {
     let bytes = data(RT_MENU, IDR_MAIN_MENU)?;

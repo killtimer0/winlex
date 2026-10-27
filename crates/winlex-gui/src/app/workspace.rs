@@ -11,10 +11,21 @@ pub(super) fn active() -> HWND {
     let mdi = read(|a| a.mdi);
     send(mdi, WM_MDIGETACTIVE, 0, 0) as HWND
 }
+pub(super) fn activate_document(hwnd: HWND) {
+    let mdi = read(|a| a.mdi);
+    if unsafe { IsIconic(hwnd) } != 0 {
+        send(mdi, WM_MDIRESTORE, hwnd as usize, 0);
+    }
+    send(mdi, WM_MDIACTIVATE, hwnd as usize, 0);
+    document::restore_focus(hwnd);
+}
 pub(super) fn register_document(doc: Document) {
     write(|a| a.documents.push(doc));
 }
 pub(super) fn unregister_document(hwnd: HWND) {
+    if let Some(doc) = document(hwnd) {
+        doc.query.cancel();
+    }
     write(|a| a.documents.retain(|d| d.hwnd != hwnd));
 }
 pub(super) fn document_destroyed() {
@@ -72,24 +83,49 @@ pub(super) unsafe extern "system" fn document_tabs_proc(
     }
 }
 pub(super) fn refresh_document_tabs() {
-    let (tabs, docs) = read(|a| (a.document_tabs, a.documents.clone()));
+    let (tabs, docs) = read(|a| {
+        (
+            a.document_tabs,
+            a.documents
+                .iter()
+                .map(|d| (d.title.clone(), d.architecture, d.query.is_source()))
+                .collect::<Vec<_>>(),
+        )
+    });
     let count = send(tabs, TCM_GETITEMCOUNT, 0, 0).max(0) as usize;
     for index in (docs.len()..count).rev() {
         send(tabs, TCM_DELETEITEM, index, 0);
     }
-    for (index, doc) in docs.iter().enumerate() {
-        let arch = doc.architecture_name();
-        let ordinal = docs[..index]
-            .iter()
-            .filter(|d| d.title == doc.title && d.architecture == doc.architecture)
-            .count()
-            + 1;
-        let suffix = if ordinal > 1 {
+    let mut ordinals = std::collections::HashMap::new();
+    for (index, (title, architecture, source)) in docs.iter().enumerate() {
+        let arch = architecture.label();
+        let ordinal = ordinals.entry((title, architecture.index())).or_insert(0);
+        *ordinal += 1;
+        let suffix = if *ordinal > 1 {
             format!(" ({ordinal})")
         } else {
             String::new()
         };
-        let mut label = wide(&format!("{} — {arch}{suffix}", doc.title));
+        let mut label = wide(&if *source {
+            title.clone()
+        } else {
+            format!("{title} — {arch}{suffix}")
+        });
+        if index < count {
+            let mut old = vec![0u16; label.len() + 1];
+            let mut item = TCITEMW {
+                mask: TCIF_TEXT,
+                pszText: old.as_mut_ptr(),
+                cchTextMax: old.len() as i32,
+                ..unsafe { std::mem::zeroed() }
+            };
+            if send(tabs, TCM_GETITEMW, index, &mut item as *mut _ as isize) != 0
+                && old[..old.iter().position(|&c| c == 0).unwrap_or(old.len())]
+                    == label[..label.len() - 1]
+            {
+                continue;
+            }
+        }
         let item = TCITEMW {
             mask: TCIF_TEXT,
             pszText: label.as_mut_ptr(),
@@ -109,19 +145,25 @@ pub(super) fn refresh_document_tabs() {
     sync_document_selection();
 }
 pub(super) fn activate_document_tab() {
-    let (tabs, mdi) = read(|a| (a.document_tabs, a.mdi));
+    let tabs = read(|a| a.document_tabs);
     let index = send(tabs, TCM_GETCURSEL, 0, 0);
     let target = read(|a| a.documents.get(index as usize).map(|d| d.hwnd));
     if let Some(hwnd) = target {
-        if unsafe { IsIconic(hwnd) } != 0 {
-            send(mdi, WM_MDIRESTORE, hwnd as usize, 0);
-        }
-        send(mdi, WM_MDIACTIVATE, hwnd as usize, 0);
+        activate_document(hwnd);
     }
     sync_document_selection();
 }
 pub(super) fn arrange_documents() {
-    let (mdi, arrangement, docs) = read(|a| (a.mdi, a.arrangement, a.documents.clone()));
+    let (mdi, arrangement, docs) = read(|a| {
+        (
+            a.mdi,
+            a.arrangement,
+            a.documents
+                .iter()
+                .map(|d| (d.hwnd, d.placement))
+                .collect::<Vec<_>>(),
+        )
+    });
     if mdi.is_null() {
         return;
     }
@@ -131,40 +173,45 @@ pub(super) fn arrange_documents() {
     }
     let visible: Vec<_> = docs
         .iter()
-        .filter(|d| unsafe { IsIconic(d.hwnd) } == 0)
+        .filter(|d| unsafe { IsIconic(d.0) } == 0)
         .collect();
     let area = client(mdi);
     for (index, doc) in visible.iter().enumerate() {
         let r = match arrangement {
-            Arrangement::Free => doc.placement.at(dpi().window(doc.hwnd)),
+            Arrangement::Free => doc.1.at(dpi().window(doc.0)),
             _ => layout::tile(area, arrangement, index, visible.len()),
         };
-        place(doc.hwnd, r);
+        place(doc.0, r);
     }
 }
 pub(super) fn tiled_bounds(hwnd: HWND) -> Option<RECT> {
-    let (mdi, arrangement, docs) = read(|a| (a.mdi, a.arrangement, a.documents.clone()));
+    let (mdi, arrangement) = read(|a| (a.mdi, a.arrangement));
     if arrangement == Arrangement::Free {
         return None;
     }
-    let docs: Vec<_> = docs
-        .iter()
-        .filter(|d| unsafe { IsIconic(d.hwnd) } == 0)
+    let docs: Vec<_> = read(|a| a.documents.iter().map(|d| d.hwnd).collect::<Vec<_>>())
+        .into_iter()
+        .filter(|&h| unsafe { IsIconic(h) } == 0)
         .collect();
-    let index = docs.iter().position(|d| d.hwnd == hwnd)?;
+    let index = docs.iter().position(|&h| h == hwnd)?;
     Some(layout::tile(client(mdi), arrangement, index, docs.len()))
 }
 pub(super) fn capture_placements() {
-    let (mdi, docs) = read(|a| (a.mdi, a.documents.clone()));
-    for doc in docs {
-        if unsafe { IsZoomed(doc.hwnd) != 0 || IsIconic(doc.hwnd) != 0 } {
+    let (mdi, docs) = read(|a| {
+        (
+            a.mdi,
+            a.documents.iter().map(|d| d.hwnd).collect::<Vec<_>>(),
+        )
+    });
+    for hwnd in docs {
+        if unsafe { IsZoomed(hwnd) != 0 || IsIconic(hwnd) != 0 } {
             continue;
         }
         let p = Placement {
-            bounds: bounds(doc.hwnd, mdi),
-            dpi: dpi().window(doc.hwnd),
+            bounds: bounds(hwnd, mdi),
+            dpi: dpi().window(hwnd),
         };
-        edit_document(doc.hwnd, |d| d.placement = p);
+        edit_document(hwnd, |d| d.placement = p);
     }
 }
 pub(super) fn begin_free_placement() {
@@ -186,9 +233,24 @@ pub(super) fn set_arrangement(arrangement: Arrangement) {
         capture_placements();
     }
 }
-pub(super) fn new_document(title: &str, architecture: Architecture) -> Result<HWND, String> {
+pub(super) struct DocumentInit<'a> {
+    pub title: &'a str,
+    pub architecture: Architecture,
+    pub binding: super::catalog::Binding,
+}
+pub(super) fn create_document(
+    title: &str,
+    architecture: Architecture,
+    binding: super::catalog::Binding,
+) -> Result<HWND, String> {
     let (mdi, count) = read(|a| (a.mdi, a.documents.len()));
     let value = dpi().window(mdi);
+    // CreateMDIWindowW consumes this pointer synchronously in WM_CREATE.
+    let init = DocumentInit {
+        title,
+        architecture,
+        binding,
+    };
     let hwnd = unsafe {
         CreateMDIWindowW(
             wide("Winlex.Document").as_ptr(),
@@ -200,16 +262,21 @@ pub(super) fn new_document(title: &str, architecture: Architecture) -> Result<HW
             layout::scale(400, value),
             mdi,
             instance(),
-            architecture.index() as isize,
+            &init as *const DocumentInit<'_> as isize,
         )
     };
     if hwnd.is_null() {
         return Err(error("Create MDI document"));
     }
-    edit_document(hwnd, |d| d.title = title.to_owned());
+    if let Err(error) = document::create_actions(hwnd) {
+        close_document(hwnd);
+        return Err(error);
+    }
     document::refresh_title(hwnd);
-    document::refresh_content(hwnd);
-    document::select_page(hwnd);
+    super::catalog::request_document(hwnd);
+    if let Some(doc) = document(hwnd) {
+        document::prepare_document(&doc);
+    }
     document::layout_document(hwnd);
     if read(|a| a.arrangement) != Arrangement::Free {
         arrange_documents();

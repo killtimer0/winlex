@@ -1,64 +1,97 @@
-//! Document-owned controls, content, page selection and focus.
+//! Bound document controls and focus. Every document has content and relevant actions only.
+use super::catalog::{Binding, DocumentQuery};
 use super::workspace::{
     arrange_documents, capture_placements, refresh_document_tabs, sync_document_selection,
     tiled_bounds,
 };
-use super::{
-    ARCH, DECLARATION, Document, TABLE, TABS, bind, document, dpi, edit_document, font_for, read,
-    workspace,
-};
-use super::{ARCHITECTURES, Architecture};
-use crate::resources::{
-    self, IDS_ARCHITECTURE, IDS_CATALOG, IDS_DECLARATION, IDS_LAYOUT, IDS_NOT_LOADED,
-    IDS_PLACEHOLDER, IDS_PROPERTY, IDS_REFERENCES, IDS_VALUE,
-};
+use super::{Document, bind, document, dpi, edit_document, font_for, read, workspace};
 use crate::{
     layout::{self, Placement},
     native::*,
+    resources::{self, *},
 };
+use std::sync::Arc;
 
 pub(super) fn prepare_document(doc: &Document) {
     let (font, _) = font_for(dpi().window(doc.hwnd));
-    for hwnd in [doc.arch, doc.tabs, doc.declaration, doc.table] {
-        bind(hwnd, font);
+    bind(doc.declaration, font);
+    for &(_, h) in &doc.actions {
+        bind(h, font);
     }
+}
+pub(super) fn create_actions(hwnd: HWND) -> Result<(), String> {
+    let doc = document(hwnd).ok_or("Document no longer exists")?;
+    let commands: &[(u16, u16)] = if doc.query.is_source() {
+        &[
+            (LOAD_METADATA, IDS_LOAD_METADATA),
+            (REMOVE_SOURCE, IDS_UNLOAD),
+            (RELOAD_SOURCE, IDS_RELOAD),
+            (REPLACE_SOURCE, IDS_REPLACE),
+            (REFRESH_SOURCE, IDS_REFRESH),
+        ]
+    } else {
+        &[
+            (OPEN_OTHER_ARCH, IDS_OPEN_OTHER_ARCH),
+            (OPEN_CURRENT, IDS_OPEN_CURRENT),
+        ]
+    };
+    let mut actions = Vec::new();
+    for &(id, label) in commands {
+        let caption = resources::text(label).replace("{arch}", &doc.architecture.other().label());
+        let h = child(hwnd, "BUTTON", &caption, WS_TABSTOP, id);
+        if h.is_null() || unsafe { set_subclass(h, Some(focus_proc), 1, hwnd as usize) } == 0 {
+            return Err(error("Create document action"));
+        }
+        if id == OPEN_OTHER_ARCH
+            && let Binding::Entity {
+                architecture_mask, ..
+            } = &doc.query.binding
+        {
+            unsafe {
+                EnableWindow(
+                    h,
+                    i32::from(doc.architecture.other().supported_by(*architecture_mask)),
+                );
+            }
+        }
+        actions.push((id, h));
+    }
+    edit_document(hwnd, |d| d.actions = actions);
+    Ok(())
 }
 pub(super) fn layout_document(hwnd: HWND) {
     let Some(doc) = document(hwnd) else { return };
     let value = dpi().window(hwnd);
-    prepare_document(&doc);
     let (_, font_height) = font_for(value);
     let px = |n| layout::scale(n, value);
     let r = client(hwnd);
     let margin = px(8);
     let row = font_height + px(12);
-    // Combo box window height includes its drop-down list.
-    place(
-        doc.arch,
-        layout::rect(margin, margin, px(110), row + px(100)),
-    );
-    place(
-        doc.tabs,
-        layout::rect(
-            margin,
-            margin + row + px(6),
-            r.right - margin * 2,
-            r.bottom - margin * 2 - row - px(6),
-        ),
-    );
-    let mut page = client(doc.tabs);
-    send(doc.tabs, TCM_ADJUSTRECT, 0, &mut page as *mut _ as isize);
-    unsafe {
-        MapWindowPoints(doc.tabs, hwnd, (&mut page as *mut RECT).cast(), 2);
+    let available = (r.right - margin * 2).max(1);
+    let width = px(if doc.query.is_source() { 100 } else { 180 }).min(available);
+    let columns = (available / width).max(1);
+    let mut count = 0;
+    for &(_, h) in doc
+        .actions
+        .iter()
+        .filter(|&&(id, _)| id != OPEN_CURRENT || doc.old_version)
+    {
+        place(
+            h,
+            layout::rect(
+                margin + count % columns * width,
+                margin + count / columns * row,
+                width,
+                row,
+            ),
+        );
+        count += 1;
     }
-    place(doc.declaration, page);
-    place(doc.table, page);
-    for (index, width) in doc.column_widths.iter().enumerate() {
-        let width = px(*width);
-        if send(doc.table, LVM_GETCOLUMNWIDTH, index, 0) != width as isize {
-            send(doc.table, LVM_SETCOLUMNWIDTH, index, width as isize);
-        }
-    }
+    let top = margin + (count + columns - 1) / columns * row + px(6);
+    place(
+        doc.declaration,
+        layout::rect(margin, top, available, r.bottom - top - margin),
+    );
 }
 pub(super) fn restore_focus(hwnd: HWND) {
     if let Some(doc) = document(hwnd) {
@@ -70,51 +103,77 @@ pub(super) fn restore_focus(hwnd: HWND) {
                     && IsWindowVisible(h) != 0
                     && IsWindowEnabled(h) != 0
             };
-        focus(if valid { h } else { doc.arch });
-    }
-}
-pub(super) fn remember_focus() {
-    let h = unsafe { GetFocus() };
-    let docs = read(|a| a.documents.iter().map(|d| d.hwnd).collect::<Vec<_>>());
-    if let Some(owner) = docs.into_iter().find(|&d| unsafe { IsChild(d, h) } != 0) {
-        edit_document(owner, |d| d.last_focus = h);
+        focus(if valid { h } else { doc.declaration });
     }
 }
 pub(super) fn refresh_title(hwnd: HWND) {
     let Some(doc) = document(hwnd) else { return };
     set_text(
         hwnd,
-        &format!("{} — {}", doc.title, doc.architecture_name()),
+        &if doc.query.is_source() {
+            doc.title.clone()
+        } else {
+            format!("{} — {}", doc.title, doc.architecture_name())
+        },
     );
     refresh_document_tabs();
 }
 pub(super) fn refresh_content(hwnd: HWND) {
     let Some(doc) = document(hwnd) else { return };
-    let arch = doc.architecture_name();
-    set_text(
-        doc.declaration,
-        &resources::text(IDS_PLACEHOLDER)
-            .replace("{arch}", &arch)
-            .replace("{title}", &doc.title),
-    );
-    send(doc.table, LVM_DELETEALLITEMS, 0, 0);
-    list_row(doc.table, 0, &[&resources::text(IDS_ARCHITECTURE), &arch]);
-    list_row(
-        doc.table,
-        1,
-        &[
-            &resources::text(IDS_CATALOG),
-            &resources::text(IDS_NOT_LOADED),
-        ],
-    );
+    let header = if doc.query.is_source() {
+        format!("{}\r\n\r\n", doc.title)
+    } else {
+        format!(
+            "{} — {}\r\n{}\r\n{}\r\n\r\n",
+            doc.title,
+            doc.architecture_name(),
+            doc.query.source,
+            doc.query.entity().unwrap_or("")
+        )
+    };
+    let old = super::catalog::old_version(&doc.query.binding);
+    edit_document(hwnd, |d| d.old_version = old);
+    let content = if old {
+        format!(
+            "{}\r\n{header}{}",
+            resources::text(IDS_OLD_VERSION),
+            doc.query.content
+        )
+    } else {
+        header + &doc.query.content
+    };
+    set_text(doc.declaration, &content);
+    for (id, h) in doc.actions {
+        if id == OPEN_CURRENT {
+            show(h, old);
+        }
+    }
+    layout_document(hwnd);
 }
-pub(super) fn select_page(hwnd: HWND) {
+fn open_other_arch(hwnd: HWND) {
     let Some(doc) = document(hwnd) else { return };
-    let page = send(doc.tabs, TCM_GETCURSEL, 0, 0);
-    show(doc.declaration, page == 0);
-    show(doc.table, page != 0);
+    let Binding::Entity {
+        id,
+        catalog,
+        architecture_mask,
+    } = &doc.query.binding
+    else {
+        return;
+    };
+    let arch = doc.architecture.other();
+    if !arch.supported_by(*architecture_mask) {
+        return;
+    }
+    let existing = read(|a| {
+        a.documents.iter().find(|d| d.architecture == arch && matches!(&d.query.binding,
+        Binding::Entity { id: other, catalog: snapshot, .. } if other == id && Arc::ptr_eq(snapshot, catalog))).map(|d| d.hwnd)
+    });
+    if let Some(h) = existing {
+        workspace::activate_document(h);
+    } else if let Err(error) = workspace::create_document(&doc.title, arch, doc.query.binding) {
+        super::catalog::set_status(error);
+    }
 }
-
 pub(super) unsafe extern "system" fn document_proc(
     hwnd: HWND,
     msg: u32,
@@ -130,18 +189,7 @@ pub(super) unsafe extern "system" fn document_proc(
             WM_CREATE => {
                 let create = &*(l as *const CREATESTRUCTW);
                 let mdi_create = &*(create.lpCreateParams as *const MDICREATESTRUCTW);
-                let Some(architecture) = Architecture::from_index(mdi_create.lParam as usize)
-                else {
-                    return -1;
-                };
-                let arch = child(
-                    hwnd,
-                    "COMBOBOX",
-                    "",
-                    WS_TABSTOP | CBS_DROPDOWNLIST as u32 | WS_VSCROLL,
-                    ARCH,
-                );
-                let tabs = child(hwnd, "SysTabControl32", "", WS_TABSTOP, TABS);
+                let init = &*(mdi_create.lParam as *const workspace::DocumentInit<'_>);
                 let declaration = child(
                     hwnd,
                     "EDIT",
@@ -153,58 +201,27 @@ pub(super) unsafe extern "system" fn document_proc(
                         | ES_AUTOVSCROLL as u32,
                     DECLARATION,
                 );
-                let table = child(
-                    hwnd,
-                    "SysListView32",
-                    "",
-                    WS_TABSTOP | LVS_REPORT | LVS_SINGLESEL,
-                    TABLE,
-                );
-                if [arch, tabs, declaration, table].iter().any(|h| h.is_null()) {
-                    return -1;
-                }
-                if set_subclass(table, Some(table_proc), 1, hwnd as usize) == 0 {
-                    return -1;
-                }
-                for (_, id) in ARCHITECTURES {
-                    send(
-                        arch,
-                        CB_ADDSTRING,
-                        0,
-                        wide(&resources::text(id)).as_ptr() as isize,
-                    );
-                }
-                send(arch, CB_SETCURSEL, architecture.index(), 0);
-                for (index, id) in [IDS_DECLARATION, IDS_LAYOUT, IDS_REFERENCES]
-                    .iter()
-                    .enumerate()
+                if declaration.is_null()
+                    || set_subclass(declaration, Some(focus_proc), 1, hwnd as usize) == 0
                 {
-                    let mut s = wide(&resources::text(*id));
-                    let item = TCITEMW {
-                        mask: TCIF_TEXT,
-                        pszText: s.as_mut_ptr(),
-                        ..std::mem::zeroed()
-                    };
-                    send(tabs, TCM_INSERTITEMW, index, &item as *const _ as isize);
+                    return -1;
                 }
-                list_column(table, 0, &resources::text(IDS_PROPERTY), 140);
-                list_column(table, 1, &resources::text(IDS_VALUE), 240);
-                let mdi = read(|a| a.mdi);
+                send(declaration, EM_SETLIMITTEXT, 0x7ffffffe, 0);
                 let placement = Placement {
-                    bounds: bounds(hwnd, mdi),
+                    bounds: bounds(hwnd, read(|a| a.mdi)),
                     dpi: dpi().window(hwnd),
                 };
                 workspace::register_document(Document {
+                    actions: Vec::new(),
+                    old_version: false,
+                    id: super::write(|a| a.session.next_id()),
                     hwnd,
-                    tabs,
-                    arch,
                     declaration,
-                    table,
-                    last_focus: arch,
+                    last_focus: declaration,
                     placement,
-                    title: String::new(),
-                    architecture,
-                    column_widths: [140, 240],
+                    title: init.title.to_owned(),
+                    architecture: init.architecture,
+                    query: DocumentQuery::new(init.binding.clone()),
                 });
                 return 0;
             }
@@ -218,8 +235,7 @@ pub(super) unsafe extern "system" fn document_proc(
             WM_WINDOWPOSCHANGING => {
                 let result = DefMDIChildProcW(hwnd, msg, w, l);
                 let r = if IsZoomed(hwnd) != 0 {
-                    let mdi = read(|a| a.mdi);
-                    Some(dpi().child_outer(hwnd, client(mdi)))
+                    Some(dpi().child_outer(hwnd, client(read(|a| a.mdi))))
                 } else if IsIconic(hwnd) == 0 {
                     tiled_bounds(hwnd)
                 } else {
@@ -255,23 +271,22 @@ pub(super) unsafe extern "system" fn document_proc(
                 sync_document_selection();
                 return result;
             }
-            WM_COMMAND if w as u16 == ARCH && (w >> 16) as u32 == CBN_SELCHANGE => {
-                let Some(selected) =
-                    Architecture::from_index(send(l as HWND, CB_GETCURSEL, 0, 0) as usize)
-                else {
-                    return 0;
-                };
-                edit_document(hwnd, |d| d.architecture = selected);
-                refresh_title(hwnd);
-                refresh_content(hwnd);
+            WM_COMMAND if w as u16 == OPEN_OTHER_ARCH => {
+                open_other_arch(hwnd);
                 return 0;
             }
-            WM_NOTIFY => {
-                let hdr = &*(l as *const NMHDR);
-                if hdr.idFrom == TABS as usize && hdr.code == TCN_SELCHANGE {
-                    select_page(hwnd);
-                    return 0;
-                }
+            WM_COMMAND if w as u16 == OPEN_CURRENT => {
+                super::catalog::open_current(hwnd);
+                return 0;
+            }
+            WM_COMMAND
+                if matches!(
+                    w as u16,
+                    LOAD_METADATA | REMOVE_SOURCE | REPLACE_SOURCE | RELOAD_SOURCE | REFRESH_SOURCE
+                ) =>
+            {
+                super::sources::action(hwnd, w as u16);
+                return 0;
             }
             WM_NCDESTROY => {
                 workspace::unregister_document(hwnd);
@@ -284,8 +299,7 @@ pub(super) unsafe extern "system" fn document_proc(
         DefMDIChildProcW(hwnd, msg, w, l)
     }
 }
-
-unsafe extern "system" fn table_proc(
+unsafe extern "system" fn focus_proc(
     hwnd: HWND,
     msg: u32,
     w: usize,
@@ -294,22 +308,12 @@ unsafe extern "system" fn table_proc(
     owner: usize,
 ) -> isize {
     unsafe {
-        let result = default_subclass(hwnd, msg, w, l);
-        if msg == WM_NOTIFY {
-            let hdr = &*(l as *const NMHDR);
-            if hdr.code == HDN_ENDTRACKW || hdr.code == HDN_ENDTRACKA {
-                let value = dpi().window(owner as HWND);
-                let widths = [
-                    send(hwnd, LVM_GETCOLUMNWIDTH, 0, 0) as i32,
-                    send(hwnd, LVM_GETCOLUMNWIDTH, 1, 0) as i32,
-                ]
-                .map(|v| MulDiv(v, 96, value as i32));
-                edit_document(owner as HWND, |d| d.column_widths = widths);
-            }
+        if msg == WM_SETFOCUS {
+            edit_document(owner as HWND, |d| d.last_focus = hwnd);
         }
         if msg == WM_NCDESTROY {
-            remove_subclass(hwnd, Some(table_proc), 1);
+            remove_subclass(hwnd, Some(focus_proc), 1);
         }
-        result
+        default_subclass(hwnd, msg, w, l)
     }
 }

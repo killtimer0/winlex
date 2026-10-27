@@ -47,37 +47,3 @@ pub fn tile(area: RECT, arrangement: Arrangement, index: usize, count: usize) ->
         rect(0, y, area.right, area.bottom * (index + 1) / count - y)
     }
 }
-
-pub struct FrameLayout {
-    pub edit: RECT,
-    pub button: RECT,
-    pub results: RECT,
-    pub splitter: RECT,
-    pub documents: RECT,
-    pub mdi: RECT,
-}
-pub fn frame(size: RECT, dpi: u32, font_height: i32, sidebar: i32) -> FrameLayout {
-    let margin = scale(8, dpi);
-    let gap = scale(6, dpi);
-    let row = font_height + scale(12, dpi);
-    let button = scale(88, dpi).min((size.right - margin * 2).max(0));
-    let y = margin + row + gap;
-    let width = scale(sidebar, dpi).min((size.right - scale(160, dpi)).max(0));
-    let bar = scale(5, dpi);
-    let workspace_x = width + bar;
-    let workspace_width = (size.right - workspace_x).max(0);
-    let tab_height = row + scale(4, dpi);
-    FrameLayout {
-        edit: rect(margin, margin, size.right - margin * 2 - gap - button, row),
-        button: rect(size.right - margin - button, margin, button, row),
-        results: rect(0, y, width, size.bottom - y),
-        splitter: rect(width, y, bar, size.bottom - y),
-        documents: rect(workspace_x, y, workspace_width, tab_height),
-        mdi: rect(
-            workspace_x,
-            y + tab_height,
-            workspace_width,
-            size.bottom - y - tab_height,
-        ),
-    }
-}

@@ -318,6 +318,7 @@ name = "winlex-gui"
 version = "0.1.0"
 dependencies = [
  "windows-sys",
+ "winlex-core",
 ]
 
 [[package]]

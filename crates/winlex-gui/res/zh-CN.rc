@@ -3,8 +3,6 @@ IDR_MAIN_MENU MENU
 BEGIN
     POPUP "文件(&F)"
     BEGIN
-        MENUITEM "新建 x86 文档(&X)\tCtrl+N", NEW_X86
-        MENUITEM "新建 x64 文档(&6)", NEW_X64
         MENUITEM "关闭文档(&C)\tCtrl+F4", CLOSE
         MENUITEM "退出(&E)", EXIT
     END
@@ -15,25 +13,53 @@ BEGIN
         MENUITEM "自由排列(&F)", FREE
         MENUITEM "最大化文档(&M)", MAXIMIZE
     END
+    POPUP "设置(&O)"
+    BEGIN
+        POPUP "语言(&L)"
+        BEGIN
+            MENUITEM "跟随系统(&S)", LANGUAGE_AUTO
+            MENUITEM "English(&E)", LANGUAGE_ENGLISH
+            MENUITEM "简体中文(&C)", LANGUAGE_CHINESE
+        END
+    END
 END
 STRINGTABLE
 BEGIN
-    IDS_APP_TITLE "Winlex — 图形界面骨架"
-    IDS_OPEN "打开页面(&O)"
-    IDS_WORKSPACE "工作区"
-    IDS_NEW_X86 "新建 x86 文档"
-    IDS_NEW_X64 "新建 x64 文档"
-    IDS_DOCUMENT "文档"
-    IDS_UNTITLED "未命名"
-    IDS_DECLARATION "声明"
-    IDS_LAYOUT "布局"
-    IDS_REFERENCES "引用"
-    IDS_PROPERTY "属性"
-    IDS_VALUE "值"
-    IDS_ARCHITECTURE "架构"
-    IDS_CATALOG "目录"
+    IDS_OPEN_OTHER_ARCH "以 {arch} 打开"
+    IDS_LOADED "已加载"
+    IDS_FORGET_LOCATION "移除位置"
+    IDS_INSPECTED_VERSION "详情快照版本"
+    IDS_DISK_VERSION "最近发现的磁盘版本"
+    IDS_FAILED "失败"
+    IDS_MISSING "缺失"
+    IDS_LOAD_STATE "活动版本"
+    IDS_CURRENT_UNAVAILABLE "当前版本不可用或名称有歧义。"
+    IDS_SEARCH_PROGRESS "搜索中：{count} 个结果"
+    IDS_PANEL_SEARCH "搜索"
+    IDS_PANEL_SOURCES "元数据"
+    IDS_ADD "添加"
+    IDS_REFRESH "刷新"
+    IDS_DIRECTORY "目录"
+    IDS_OLD_VERSION "旧版本"
+    IDS_OPEN_CURRENT "打开当前版本"
+    IDS_RELOAD "重新加载"
+    IDS_UNLOAD "卸载"
+    IDS_REPLACE "替换"
+    IDS_LANGUAGE_RESTART "语言已保存，重新启动 Winlex 后生效。"
+    IDS_UNSUPPORTED_ARCH "此声明不支持 x86 或 x64。"
+    IDS_APP_TITLE "Winlex"
     IDS_NOT_LOADED "尚未加载"
-    IDS_PLACEHOLDER "{title}\r\n\r\n架构：{arch}\r\n\r\n图形界面骨架已就绪，尚未连接元数据查询。\r\n\r\n使用“窗口”菜单并排比较文档。\r\nTab 在文档内部导航；F6 在公共区域和活动文档之间切换。"
     IDS_X86 "x86"
     IDS_X64 "x64"
+    IDS_EMPTY_CATALOG "尚未加载元数据。打开来源详情后加载。"
+    IDS_LOADING "正在加载元数据…"
+    IDS_LOAD_FAILED "加载失败，已保留原目录：{error}"
+    IDS_ENTER_QUERY "已就绪。输入名称自动搜索，回车立即执行。"
+    IDS_SEARCHING "正在搜索…"
+    IDS_SEARCH_STATUS "共 {total} 条。双击或按回车打开。"
+    IDS_QUERYING "正在加载声明…"
+    IDS_SOURCE "来源"
+    IDS_WINMD_FILES "Windows 元数据 (*.winmd)"
+    IDS_ALL_FILES "所有文件 (*.*)"
+    IDS_LOAD_METADATA "加载元数据"
 END

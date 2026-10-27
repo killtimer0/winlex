@@ -91,6 +91,11 @@ pub fn set_text(hwnd: HWND, text: &str) {
         SetWindowTextW(hwnd, wide(text).as_ptr());
     }
 }
+pub fn set_status_text(hwnd: HWND, text: &str) {
+    let text = wide(text);
+    send(hwnd, SB_SETTEXTW, 0, text.as_ptr() as isize);
+    send(hwnd, SB_SETTIPTEXTW, 0, text.as_ptr() as isize);
+}
 pub fn send(hwnd: HWND, msg: u32, w: usize, l: isize) -> isize {
     unsafe { SendMessageW(hwnd, msg, w, l) }
 }
@@ -117,29 +122,6 @@ pub fn list_column(hwnd: HWND, index: usize, title: &str, width: i32) {
     };
     send(hwnd, LVM_INSERTCOLUMNW, index, &col as *const _ as isize);
 }
-pub fn list_row(hwnd: HWND, index: usize, values: &[&str]) {
-    for (column, value) in values.iter().enumerate() {
-        let mut value = wide(value);
-        let item = LVITEMW {
-            mask: LVIF_TEXT,
-            iItem: index as i32,
-            iSubItem: column as i32,
-            pszText: value.as_mut_ptr(),
-            ..unsafe { std::mem::zeroed() }
-        };
-        send(
-            hwnd,
-            if column == 0 {
-                LVM_INSERTITEMW
-            } else {
-                LVM_SETITEMTEXTW
-            },
-            index,
-            &item as *const _ as isize,
-        );
-    }
-}
-
 type SubclassProc =
     Option<unsafe extern "system" fn(HWND, u32, usize, isize, usize, usize) -> isize>;
 type SetSubclass = unsafe extern "system" fn(HWND, SubclassProc, usize, usize) -> BOOL;
