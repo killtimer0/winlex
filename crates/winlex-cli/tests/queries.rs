@@ -14,6 +14,85 @@ fn catalog() -> &'static Catalog {
     static DB: OnceLock<Catalog> = OnceLock::new();
     DB.get_or_init(|| Catalog::open(input()).expect("prepare pinned inputs/Windows.Win32.winmd"))
 }
+
+#[test]
+fn streaming_search_is_complete_deterministic_and_cancellable() {
+    use std::sync::atomic::Ordering;
+    let db = catalog();
+    let collect = |size| {
+        let mut ids = Vec::new();
+        let total = db
+            .search_batches("file", size, None, |batch| {
+                assert!(batch.len() <= size);
+                ids.extend(batch.into_iter().map(|e| e.id));
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(total, ids.len());
+        ids
+    };
+    let ids = collect(17);
+    assert!(ids.len() > 100);
+    assert_eq!(ids, collect(128));
+    assert!(ids.windows(2).all(|p| p[0] < p[1]));
+    let mut paged = Vec::new();
+    loop {
+        let page = db
+            .search(
+                "file",
+                SearchOptions {
+                    offset: paged.len(),
+                    limit: 1000,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        paged.extend(page.matches.into_iter().map(|e| e.id));
+        if paged.len() == page.total {
+            break;
+        }
+    }
+    paged.sort();
+    assert_eq!(ids, paged);
+    let cancel = AtomicBool::new(false);
+    let mut batches = 0;
+    assert!(
+        db.search_batches("file", 8, Some(&cancel), |_| {
+            batches += 1;
+            cancel.store(true, Ordering::Relaxed);
+            Ok(())
+        })
+        .is_err()
+    );
+    assert_eq!(batches, 1);
+    let mut calls = 0;
+    assert!(
+        db.search_batches("file", 8, None, |_| {
+            calls += 1;
+            Err(winlex_core::Error::msg("consumer stopped"))
+        })
+        .is_err()
+    );
+    assert_eq!(calls, 1);
+}
+
+#[cfg(windows)]
+#[test]
+fn source_paths_preserve_native_utf16_without_changing_json() {
+    use std::os::windows::ffi::OsStringExt;
+    let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tmp/native-path-test");
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join(OsString::from_wide(&[
+        0xd800, 0x2e, 0x77, 0x69, 0x6e, 0x6d, 0x64,
+    ]));
+    std::fs::copy(input(), &path).unwrap();
+    let db = Catalog::open(&path).unwrap();
+    assert_eq!(db.sources()[0].native_path, path);
+    let value = serde_json::to_value(&db.sources()[0]).unwrap();
+    assert!(value.get("native_path").is_none());
+    assert!(value["path"].as_str().unwrap().contains('\u{fffd}'));
+    std::fs::remove_file(path).unwrap();
+}
 fn cli(args: &[&str]) -> (u8, Value, String) {
     let mut argv = vec![
         OsString::from("--winmd"),

@@ -95,6 +95,7 @@ pub struct SearchPage {
 pub struct Catalog {
     db: Db,
     names: HashMap<Key, String>,
+    search_index: Vec<(Key, Key)>,
 }
 fn hex(t: u32) -> String {
     format!("0x{t:08x}")
@@ -190,7 +191,18 @@ impl Catalog {
         Self::open_many([path])
     }
     pub fn open_many<P: AsRef<Path>>(paths: impl IntoIterator<Item = P>) -> Result<Self> {
-        let db = Db::open_many(paths)?;
+        Self::from_inputs(
+            paths
+                .into_iter()
+                .map(crate::SourceData::read)
+                .collect::<Result<Vec<_>>>()?,
+        )
+    }
+    pub fn inputs(&self) -> &[crate::SourceData] {
+        &self.db.inputs
+    }
+    pub fn from_inputs(inputs: impl IntoIterator<Item = crate::SourceData>) -> Result<Self> {
+        let db = Db::from_inputs(inputs)?;
         let parents: HashMap<_, _> = (0..db.sources.len())
             .flat_map(|file| {
                 db.index
@@ -227,7 +239,102 @@ impl Catalog {
                 Ok((db.key(t, 2), full(&db, t, &parents, 0)?))
             })
             .collect::<Result<HashMap<_, _>>>()?;
-        Ok(Self { db, names })
+        let mut search_index = Vec::new();
+        for p in 0..db.type_count {
+            let t = db.ty(p);
+            let owner = db.key(t, 2);
+            search_index.push((owner, owner));
+            search_index.extend(t.fields().map(|r| (db.key(r, 4), owner)));
+            search_index.extend(t.methods().map(|r| (db.key(r, 6), owner)));
+            search_index.extend(t.events().map(|r| (db.key(r, 0x14), owner)));
+            search_index.extend(t.properties().map(|r| (db.key(r, 0x17), owner)));
+        }
+        search_index.sort_unstable_by_key(|(key, _)| (key.file, key.token));
+        Ok(Self {
+            db,
+            names,
+            search_index,
+        })
+    }
+    /// Case-insensitive name search, ordered by source SHA256 then metadata token.
+    /// The synchronous callback provides backpressure and may stop iteration with an error.
+    /// This stream has no offset/limit; the existing CLI paging API remains unchanged.
+    pub fn search_batches(
+        &self,
+        query: &str,
+        batch_size: usize,
+        cancel: Option<&AtomicBool>,
+        mut emit: impl FnMut(Vec<EntitySummary>) -> Result<()>,
+    ) -> Result<usize> {
+        ensure!(!query.is_empty(), "empty search query");
+        ensure!(
+            (1..=1000).contains(&batch_size),
+            "batch size must be 1..1000"
+        );
+        let query = query.to_lowercase();
+        let mut batch = Vec::with_capacity(batch_size);
+        let mut total = 0;
+        for &(key, owner) in &self.search_index {
+            check_cancel(cancel)?;
+            let t = self.db.row::<TypeDef>(owner, 2)?;
+            let summary = match key.token >> 24 {
+                2 => self.type_summary(t),
+                4 => {
+                    let r = self.db.row::<Field>(key, 4)?;
+                    self.member_summary(
+                        t,
+                        r.name(),
+                        key.token,
+                        if r.constant().is_some() {
+                            "constant"
+                        } else {
+                            "field"
+                        },
+                        raw_mask(r),
+                    )
+                }
+                6 => {
+                    let r = self.db.row::<MethodDef>(key, 6)?;
+                    self.member_summary(
+                        t,
+                        r.name(),
+                        key.token,
+                        if t.name() == "Apis" {
+                            "function"
+                        } else {
+                            "method"
+                        },
+                        raw_mask(r),
+                    )
+                }
+                0x14 => {
+                    let r = self.db.row::<Event>(key, 0x14)?;
+                    self.member_summary(t, r.name(), key.token, "event", raw_mask(r))
+                }
+                0x17 => {
+                    let r = self.db.row::<Property>(key, 0x17)?;
+                    self.member_summary(t, r.name(), key.token, "property", raw_mask(r))
+                }
+                _ => unreachable!(),
+            };
+            if summary.name.to_lowercase().contains(&query)
+                || summary.full_name.to_lowercase().contains(&query)
+            {
+                batch.push(summary);
+                total += 1;
+                if batch.len() == batch_size {
+                    emit(std::mem::replace(
+                        &mut batch,
+                        Vec::with_capacity(batch_size),
+                    ))?;
+                }
+            }
+        }
+        check_cancel(cancel)?;
+        if !batch.is_empty() {
+            emit(batch)?;
+        }
+        Ok(total)
     }
     pub fn source_sha256(&self) -> Option<&str> {
         (self.db.sources.len() == 1).then_some(self.db.sources[0].id.as_str())

@@ -1,7 +1,7 @@
 use super::*;
 
 pub struct File {
-    bytes: Vec<u8>,
+    bytes: std::sync::Arc<[u8]>,
     strings: usize,
     blobs: usize,
     tables: [Table; 24],
@@ -14,6 +14,11 @@ impl File {
     }
 
     pub fn new(bytes: Vec<u8>) -> Option<Self> {
+        Self::new_shared(bytes.into())
+    }
+
+    /// Share immutable source bytes between independent metadata indexes.
+    pub fn new_shared(bytes: std::sync::Arc<[u8]>) -> Option<Self> {
         let mut result = Self {
             bytes,
             strings: 0,

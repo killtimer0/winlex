@@ -2,7 +2,7 @@
 //! Public query results own their data; no borrowed metadata rows escape Catalog.
 mod api;
 mod source;
-pub use source::{AssemblyIdentity, Source};
+pub use source::{AssemblyIdentity, Source, SourceData};
 // Low-level adapters for independent metadata verification.
 mod layout;
 #[doc(hidden)]

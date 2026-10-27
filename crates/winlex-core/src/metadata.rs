@@ -1,7 +1,6 @@
 use crate::source::{AssemblyIdentity, Key, Source};
 use anyhow::{Result, bail, ensure};
 use serde_json::{Value as J, json};
-use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, HashSet},
     path::Path,
@@ -9,6 +8,7 @@ use std::{
 use windows_metadata::{reader::*, *};
 
 pub struct Db {
+    pub inputs: Vec<crate::SourceData>,
     pub index: Index,
     pub type_count: usize,
     pub field_count: usize,
@@ -109,24 +109,32 @@ impl Db {
         Self::open_many([path])
     }
     pub fn open_many<P: AsRef<Path>>(paths: impl IntoIterator<Item = P>) -> Result<Self> {
+        Self::from_inputs(
+            paths
+                .into_iter()
+                .map(crate::SourceData::read)
+                .collect::<Result<Vec<_>>>()?,
+        )
+    }
+    pub fn from_inputs(data: impl IntoIterator<Item = crate::SourceData>) -> Result<Self> {
         let mut inputs = BTreeMap::new();
-        for path in paths {
-            let path = path.as_ref();
-            let bytes = std::fs::read(path)?;
-            let sha = format!("{:x}", Sha256::digest(&bytes));
-            inputs
-                .entry(sha)
-                .or_insert((path.display().to_string(), bytes));
+        for source in data {
+            inputs.entry(source.id.clone()).or_insert(source);
         }
         ensure!(!inputs.is_empty(), "at least one WinMD is required");
         let mut files = vec![];
         let mut sources = vec![];
-        for (id, (path, bytes)) in inputs {
-            files
-                .push(File::new(bytes).ok_or_else(|| anyhow::anyhow!("invalid metadata: {path}"))?);
+        let inputs: Vec<_> = inputs.into_values().collect();
+        for input in &inputs {
+            let path = &input.path;
+            files.push(
+                File::new_shared(input.bytes.clone())
+                    .ok_or_else(|| anyhow::anyhow!("invalid metadata: {}", path.display()))?,
+            );
             sources.push(Source {
-                id,
-                path,
+                id: input.id.clone(),
+                path: path.display().to_string(),
+                native_path: path.clone(),
                 assembly: None,
                 references: vec![],
             });
@@ -151,6 +159,7 @@ impl Db {
             method_count += index.rows::<MethodDef>(file).len();
         }
         Ok(Self {
+            inputs,
             index,
             type_count: types.len(),
             field_count,
