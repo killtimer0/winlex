@@ -1,4 +1,4 @@
-//! Discovered locations are distinct from active content identities and pinned document versions.
+//! Source locations, loading intent and inspection documents.
 use super::{
     catalog,
     metadata::{self, Binding},
@@ -127,7 +127,7 @@ pub(super) fn refresh() {
         let mut files = s.sources.settings.files.clone();
         files.extend(s.sources.settings.auto_load.clone());
         files.extend(s.sources.extra.clone());
-        files.extend(s.inputs.iter().map(|s| s.path().to_path_buf()));
+        files.extend(s.inputs().iter().map(|s| s.path().to_path_buf()));
         let mut directories = s.sources.settings.directories.clone();
         if let Ok(exe) = std::env::current_exe()
             && let Some(dir) = exe.parent()
@@ -186,7 +186,6 @@ pub(super) fn apply_discovery(c: Completion) {
                     path: path.clone(),
                     size: None,
                     error: None,
-                    id: None,
                 });
             }
         }
@@ -223,11 +222,7 @@ pub(super) fn cell(row: usize, detail: bool) -> String {
         let Some(e) = a.session.sources.entries.get(row) else {
             return String::new();
         };
-        let loaded = a
-            .session
-            .inputs
-            .iter()
-            .any(|s| s.path() == e.path || e.id.as_deref() == Some(s.id()));
+        let loaded = a.session.inputs().iter().any(|s| s.path() == e.path);
         let failure = e.error.as_ref();
         let state = resources::text(if a.session.pending(&e.path) {
             IDS_LOADING
@@ -244,10 +239,9 @@ pub(super) fn cell(row: usize, detail: bool) -> String {
         });
         if detail {
             format!(
-                "{}\r\n{}\r\n{}\r\n{}",
+                "{}\r\n{}\r\n{}",
                 e.path.display(),
                 state,
-                e.id.as_deref().unwrap_or(""),
                 failure.map(String::as_str).unwrap_or("")
             )
         } else {
@@ -354,9 +348,8 @@ pub(super) fn inspected(hwnd: HWND, snapshot: Arc<Catalog>) {
             .sources
             .entries
             .iter_mut()
-            .find(|e| e.path == source.native_path)
+            .find(|e| e.path == source.path)
         {
-            e.id = Some(source.id.clone());
             e.error = None;
             e.missing = false;
             e.size = Some(snapshot.inputs()[0].len() as u64);
@@ -379,41 +372,27 @@ pub(super) fn inspection_failed(path: &Path, error: &str) {
             .find(|e| e.path == path)
         {
             e.error = Some(error.into());
-            e.id = None;
         }
     });
     refresh_views();
 }
 pub(super) fn details(path: &Path, snapshot: &Catalog) -> String {
-    let (disk, failure) = read(|a| {
+    let failure = read(|a| {
         let entry = a.session.sources.entries.iter().find(|e| e.path == path);
-        (
-            entry.and_then(|e| e.id.clone()),
-            entry
-                .and_then(|e| e.error.as_ref())
-                .cloned()
-                .unwrap_or_default(),
-        )
+        entry
+            .and_then(|e| e.error.as_ref())
+            .cloned()
+            .unwrap_or_default()
     });
-    let active = read(|a| {
-        a.session
-            .inputs
-            .iter()
-            .find(|s| s.path() == path || s.id() == snapshot.sources()[0].id)
-            .map(|s| s.id().to_owned())
-    });
+    let active = read(|a| a.session.inputs().iter().any(|s| s.path() == path));
     format!(
-        "{}\r\n{}: {} ({} B)\r\n{}: {}\r\n{}: {}\r\n{}\r\n\r\n{}",
+        "{}\r\n{} B\r\n{}: {}\r\n{}\r\n\r\n{}",
         path.display(),
-        resources::text(IDS_INSPECTED_VERSION),
-        snapshot.sources()[0].id,
         snapshot.inputs()[0].len(),
-        resources::text(IDS_DISK_VERSION),
-        disk.as_deref().unwrap_or("—"),
         resources::text(IDS_LOAD_STATE),
-        active.as_deref().unwrap_or("—"),
+        resources::text(if active { IDS_LOADED } else { IDS_NOT_LOADED }),
         failure,
-        format!("{:#}", snapshot.summary()).replace('\n', "\r\n")
+        format!("{:#}", winlex_format::summary(snapshot)).replace('\n', "\r\n")
     )
 }
 pub(super) fn refresh_views() {
@@ -431,43 +410,19 @@ pub(super) fn refresh_views() {
     metadata::refresh_all();
 }
 pub(super) fn action(hwnd: HWND, command: u16) {
-    let Some(Binding::Source {
-        path,
-        catalog: inspected,
-    }) = metadata::get(hwnd, |_, d| d.binding.clone())
-    else {
+    let Some(Binding::Source { path, .. }) = metadata::get(hwnd, |_, d| d.binding.clone()) else {
         return;
     };
     if command == REFRESH_SOURCE {
         catalog::request_document(hwnd);
         return;
     }
-    let id = inspected.as_ref().map(|c| c.sources()[0].id.as_str());
     let mut paths = catalog::paths();
-    let aliases = read(|a| {
-        let mut paths = a
-            .session
-            .inputs
-            .iter()
-            .filter(|s| s.path() == path || id == Some(s.id()))
-            .map(|s| s.path().to_path_buf())
-            .collect::<Vec<_>>();
-        for e in &a.session.sources.entries {
-            if (e.path == path || id.is_some() && e.id.as_deref() == id) && !paths.contains(&e.path)
-            {
-                paths.push(e.path.clone());
-            }
-        }
-        if !paths.contains(&path) {
-            paths.push(path.clone());
-        }
-        paths
-    });
     let (remove, add) = match command {
-        REMOVE_SOURCE => (aliases, vec![]),
+        REMOVE_SOURCE => (vec![path.clone()], vec![]),
         REPLACE_SOURCE => {
             match input::choose_files(read(|a| a.frame), read(|a| a.system_version), false) {
-                Ok(p) if !p.is_empty() => (aliases, p),
+                Ok(p) if !p.is_empty() => (vec![path.clone()], p),
                 Ok(_) => return,
                 Err(e) => {
                     catalog::set_status(e);

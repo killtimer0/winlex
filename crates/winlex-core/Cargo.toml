@@ -4,10 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+serde.workspace = true
 windows-metadata.workspace = true
 repc.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-sha2.workspace = true
 sha1.workspace = true
 anyhow.workspace = true

@@ -2,20 +2,22 @@
 use crate::worker::Ticket;
 use anyhow::{Context, bail};
 use std::{path::PathBuf, sync::Arc};
-use winlex_core::{Architecture, Catalog, EntitySummary, SourceData};
+use winlex_core::{
+    Architecture, Catalog, EntityId, EntitySummary, SearchMode, SearchOptions, SourceData,
+};
 
 pub enum Job {
     Reopen {
         document: u64,
         previous: Arc<Catalog>,
         current: Arc<Catalog>,
-        source: String,
-        entity: String,
+        source: usize,
+        entity: EntityId,
         arch: Architecture,
     },
     Load {
         paths: Vec<PathBuf>,
-        previous: Vec<SourceData>,
+        previous: Option<Arc<Catalog>>,
         reload: Vec<PathBuf>,
     },
     Search {
@@ -25,7 +27,7 @@ pub enum Job {
     Describe {
         document: u64,
         catalog: Arc<Catalog>,
-        entity: String,
+        entity: EntityId,
         arch: Architecture,
     },
     Discover {
@@ -61,23 +63,18 @@ impl Job {
 #[derive(Clone)]
 pub struct Discovered {
     pub missing: bool,
-    pub id: Option<String>,
     pub path: PathBuf,
     pub size: Option<u64>,
     pub error: Option<String>,
-}
-pub struct Snapshot {
-    pub catalog: Option<Arc<Catalog>>,
-    pub inputs: Vec<SourceData>,
 }
 pub enum Output {
     Reopened {
         catalog: Arc<Catalog>,
         entity: Option<EntitySummary>,
     },
-    Loaded(Snapshot),
+    Loaded(Option<Arc<Catalog>>),
     Matches(Vec<EntitySummary>),
-    SearchDone(usize),
+    SearchDone,
     Discovered(Vec<Discovered>),
     Inspected(Arc<Catalog>),
     Description(String),
@@ -113,34 +110,23 @@ fn execute(
             arch,
             ..
         } => {
-            let old = previous.describe(&entity, Some(arch))?;
-            let name = old["entity"]["full_name"]
-                .as_str()
-                .context("Missing full name")?;
-            let target = current
-                .sources()
-                .iter()
-                .find(|s| s.id == source)
-                .context("Current source unavailable")?;
-            let mut matches = Vec::new();
-            current.search_batches(name, 128, Some(&ticket.cancel), |batch| {
-                let mask = match arch {
-                    Architecture::X86 => 1,
-                    Architecture::X64 => 2,
-                    Architecture::Arm64 => 4,
-                };
-                matches.extend(batch.into_iter().filter(|e| {
-                    e.full_name == name
-                        && e.source_id == target.id
-                        && e.architecture_mask & mask != 0
-                }));
-                Ok(())
-            })?;
-            let entity = match matches.len() {
-                0 => None,
-                1 => matches.pop(),
-                _ => bail!("Current entity is ambiguous"),
-            };
+            let old = previous.entity(entity)?;
+            let mut matches = current.search(
+                &old.full_name,
+                SearchOptions {
+                    source: Some(source),
+                    mode: SearchMode::Exact,
+                    case_sensitive: true,
+                    architecture: Some(arch),
+                    cancel: Some(&ticket.cancel),
+                    ..Default::default()
+                },
+            )?;
+            let entity = matches.next().transpose()?;
+            if matches.next().transpose()?.is_some() {
+                bail!("Current entity is ambiguous");
+            }
+            drop(matches);
             Ok(Output::Reopened {
                 catalog: current,
                 entity,
@@ -152,10 +138,7 @@ fn execute(
             reload,
         } => {
             if paths.is_empty() {
-                return Ok(Output::Loaded(Snapshot {
-                    catalog: None,
-                    inputs: vec![],
-                }));
+                return Ok(Output::Loaded(None));
             }
             let mut inputs: Vec<SourceData> = Vec::new();
             for path in paths {
@@ -163,30 +146,43 @@ fn execute(
                     bail!("cancelled");
                 }
                 let data = if !reload.contains(&path)
-                    && let Some(data) = previous.iter().find(|s| s.path() == path)
+                    && let Some(data) = previous
+                        .as_ref()
+                        .and_then(|c| c.inputs().iter().find(|s| s.path() == path))
                 {
                     data.clone()
                 } else {
                     SourceData::read(&path).with_context(|| format!("Read {}", path.display()))?
                 };
-                let data = inputs
-                    .iter()
-                    .find(|s| s.id() == data.id())
-                    .map(|s| s.with_path(path))
-                    .unwrap_or(data);
                 inputs.push(data);
             }
-            let catalog = Arc::new(Catalog::from_inputs(inputs.clone())?);
-            Ok(Output::Loaded(Snapshot {
-                catalog: Some(catalog),
+            Ok(Output::Loaded(Some(Arc::new(Catalog::from_inputs(
                 inputs,
-            }))
+            )?))))
         }
-        Job::Search { catalog, query } => catalog
-            .search_batches(&query, 128, Some(&ticket.cancel), |batch| {
-                publish(Ok(Output::Matches(batch))).map_err(winlex_core::Error::msg)
-            })
-            .map(Output::SearchDone),
+        Job::Search { catalog, query } => {
+            let mut batch = Vec::with_capacity(128);
+            for item in catalog.search(
+                &query,
+                SearchOptions {
+                    cancel: Some(&ticket.cancel),
+                    ..Default::default()
+                },
+            )? {
+                batch.push(item?);
+                if batch.len() == 128 {
+                    publish(Ok(Output::Matches(std::mem::replace(
+                        &mut batch,
+                        Vec::with_capacity(128),
+                    ))))
+                    .map_err(winlex_core::Error::msg)?;
+                }
+            }
+            if !batch.is_empty() {
+                publish(Ok(Output::Matches(batch))).map_err(winlex_core::Error::msg)?;
+            }
+            Ok(Output::SearchDone)
+        }
         Job::Discover { files, directories } => {
             let mut paths = files;
             let mut entries = Vec::new();
@@ -203,14 +199,12 @@ fn execute(
                                     if path
                                         .extension()
                                         .is_some_and(|s| s.eq_ignore_ascii_case("winmd"))
-                                        && !paths.contains(&path)
                                     {
                                         paths.push(path);
                                     }
                                 }
                                 Err(e) => entries.push(Discovered {
                                     missing: e.kind() == std::io::ErrorKind::NotFound,
-                                    id: None,
                                     path: directory.clone(),
                                     size: None,
                                     error: Some(e.to_string()),
@@ -220,7 +214,6 @@ fn execute(
                     }
                     Err(e) => entries.push(Discovered {
                         missing: e.kind() == std::io::ErrorKind::NotFound,
-                        id: None,
                         path: directory,
                         size: None,
                         error: Some(e.to_string()),
@@ -233,25 +226,17 @@ fn execute(
                 if ticket.cancelled() {
                     bail!("cancelled");
                 }
-                let (size, id, error, missing) = match SourceData::read(&path) {
-                    Ok(data) => (
-                        Some(data.len() as u64),
-                        Some(data.id().to_owned()),
-                        None,
-                        false,
-                    ),
+                let (size, error, missing) = match std::fs::metadata(&path) {
+                    Ok(data) => (Some(data.len()), None, false),
                     Err(e) => {
-                        let missing = e
-                            .downcast_ref::<std::io::Error>()
-                            .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound);
-                        (None, None, Some(e.to_string()), missing)
+                        let missing = e.kind() == std::io::ErrorKind::NotFound;
+                        (None, Some(e.to_string()), missing)
                     }
                 };
                 entries.push(Discovered {
                     missing,
                     path,
                     size,
-                    id,
                     error,
                 });
             }
@@ -264,8 +249,7 @@ fn execute(
             entity,
             arch,
             ..
-        } => catalog
-            .describe(&entity, Some(arch))
+        } => winlex_format::describe(&catalog, entity, Some(arch))
             .map(|value| Output::Description(format!("{value:#}").replace('\n', "\r\n"))),
     }
 }

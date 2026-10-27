@@ -1,8 +1,8 @@
-use crate::metadata::{Db, arch_bit, supports, token};
-use crate::source::Key;
+use crate::metadata::{Db, supports};
+use crate::source::EntityId;
+use crate::{Architecture, Layout};
 use anyhow::{Result, bail, ensure};
 use repc::{Target, compute_layout, layout as l};
-use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use windows_metadata::{reader::*, *};
 
@@ -17,8 +17,8 @@ fn builtin(b: l::BuiltinType) -> l::Type<()> {
 struct Lower<'a> {
     db: &'a Db,
     arch: i32,
-    active: HashSet<Key>,
-    cache: HashMap<Key, l::Type<()>>,
+    active: HashSet<EntityId>,
+    cache: HashMap<EntityId, l::Type<()>>,
 }
 impl Lower<'_> {
     fn sig(&mut self, ty: Type, owner: TypeDef<'_>) -> Result<l::Type<()>> {
@@ -56,7 +56,7 @@ impl Lower<'_> {
             t.generic_params().next().is_none(),
             "open generic layout is not supported"
         );
-        let key = self.db.key(t, 2);
+        let key = crate::metadata::key(t, 2);
         if let Some(x) = self.cache.get(&key) {
             return Ok(x.clone());
         }
@@ -138,8 +138,8 @@ impl Lower<'_> {
     }
 }
 
-pub(crate) fn derive_key(db: &Db, key: Key, arch: &str) -> Result<Value> {
-    let bit = arch_bit(arch)?;
+pub(crate) fn derive_key(db: &Db, key: EntityId, arch: Architecture) -> Result<Layout> {
+    let bit = arch.bit();
     let t: TypeDef = db.row(key, 2)?;
     ensure!(supports(t, bit), "type unavailable on architecture");
     let name = t.name();
@@ -151,10 +151,9 @@ pub(crate) fn derive_key(db: &Db, key: Key, arch: &str) -> Result<Value> {
     };
     let input = lower.record(t)?;
     let target = match arch {
-        "x86" => Target::I686PcWindowsMsvc,
-        "x64" => Target::X86_64PcWindowsMsvc,
-        "arm64" => Target::Aarch64PcWindowsMsvc,
-        _ => unreachable!(),
+        Architecture::X86 => Target::I686PcWindowsMsvc,
+        Architecture::X64 => Target::X86_64PcWindowsMsvc,
+        Architecture::Arm64 => Target::Aarch64PcWindowsMsvc,
     };
     let output = compute_layout(target, &input).map_err(|e| anyhow::anyhow!("{e:?}"))?;
     fn render(
@@ -162,7 +161,7 @@ pub(crate) fn derive_key(db: &Db, key: Key, arch: &str) -> Result<Value> {
         t: TypeDef<'_>,
         output: &l::Type<l::TypeLayout>,
         bit: i32,
-    ) -> Result<Vec<Value>> {
+    ) -> Result<Vec<crate::FieldLayout>> {
         let mut fields = vec![];
         if let l::TypeVariant::Record(record) = &output.variant {
             for (f, computed) in t
@@ -173,33 +172,44 @@ pub(crate) fn derive_key(db: &Db, key: Key, arch: &str) -> Result<Value> {
                 let position = computed
                     .layout
                     .ok_or_else(|| anyhow::anyhow!("missing field layout"))?;
-                let mut field = json!({"name":f.name(),"token":format!("0x{:08x}",token(f,4)),"id":db.id(db.key(f,4)),"source_id":db.sources[f.to_row().file].id,"offset_bits":position.offset_bits,"size_bits":position.size_bits});
-                let mut bits = crate::metadata::bitfields(f)?;
-                for b in &mut bits {
-                    let offset = b["relative_offset_bits"].as_u64().unwrap();
-                    let width = b["width_bits"].as_u64().unwrap();
+                let bits = crate::metadata::bitfields(f)?;
+                for b in &bits {
+                    let offset = b.relative_offset_bits;
+                    let width = b.width_bits;
                     ensure!(
                         offset
                             .checked_add(width)
                             .is_some_and(|end| end <= position.size_bits),
                         "bitfield exceeds backing field"
                     );
-                    b["offset_bits"] = json!(position.offset_bits + offset);
                 }
-                field["bitfields"] = json!(bits);
-                if let l::TypeVariant::Record(_) = &computed.ty.variant
+                let nested = if let l::TypeVariant::Record(_) = &computed.ty.variant
                     && let Type::ValueName(n) | Type::ClassName(n) = f.ty()
                 {
-                    field["fields"] =
-                        json!(render(db, db.resolve(&n, t, bit)?, &computed.ty, bit)?);
-                }
-                fields.push(field);
+                    render(db, db.resolve(&n, t, bit)?, &computed.ty, bit)?
+                } else {
+                    vec![]
+                };
+                fields.push(crate::FieldLayout {
+                    name: f.name().into(),
+                    id: crate::metadata::key(f, 4),
+                    offset_bits: position.offset_bits,
+                    size_bits: position.size_bits,
+                    bitfields: bits,
+                    fields: nested,
+                });
             }
         }
         Ok(fields)
     }
     let fields = render(db, t, &output, bit)?;
-    Ok(
-        json!({"name":name,"arch":arch,"token":format!("0x{:08x}",token(t,2)),"id":db.id(key),"source_id":db.sources[key.file].id,"size_bits":output.layout.size_bits,"alignment_bits":output.layout.pointer_alignment_bits,"fields":fields,"dependencies_loaded":lower.cache.len(),"backend":"repc 0.1.1","scope":"sequential and all-zero explicit overlays"}),
-    )
+    Ok(Layout {
+        name: name.into(),
+        architecture: arch,
+        id: key,
+        size_bits: output.layout.size_bits,
+        alignment_bits: output.layout.pointer_alignment_bits,
+        fields,
+        dependencies_loaded: lower.cache.len(),
+    })
 }

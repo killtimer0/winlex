@@ -1,0 +1,160 @@
+//! Presentation adapters shared by the CLI and native declaration viewer.
+use serde_json::{Value as Json, json};
+use winlex_core::metadata::key;
+use winlex_core::windows_metadata::{reader::*, *};
+use winlex_core::{Architecture, Catalog, Declaration, EntityId, Result, guid, integer};
+
+pub fn summary(c: &Catalog) -> Json {
+    let (types, fields, methods) = c.row_counts();
+    json!({"sources":c.sources(),"type_rows":types,"field_rows":fields,"method_rows":methods})
+}
+fn value(v: &Value) -> Json {
+    if let Value::EnumValue(n, x) = v {
+        return json!({"kind":"enum","name":n.name,"namespace":n.namespace,"value":value(x)});
+    }
+    if let Some(n) = integer(v) {
+        let bits = match v {
+            Value::U8(_) | Value::I8(_) => 8,
+            Value::U16(_) | Value::I16(_) => 16,
+            Value::U32(_) | Value::I32(_) => 32,
+            _ => 64,
+        };
+        return json!({"kind":"integer","type":format!("{:?}",v.ty()),"decimal":n.to_string(),"hex":format!("0x{:0width$x}",n&((1i128<<bits)-1),width=bits/4),"bits":bits});
+    }
+    match v {
+        Value::Bool(x) => json!({"kind":"boolean","value":x}),
+        Value::F32(x) => json!({"kind":"float","type":"F32","value":x.to_string()}),
+        Value::F64(x) => json!({"kind":"float","type":"F64","value":x.to_string()}),
+        Value::Utf8(x) | Value::Utf16(x) => json!({"kind":"string","value":x}),
+        Value::TypeName(n) => json!({"kind":"type_name","name":n.name,"namespace":n.namespace}),
+        _ => unreachable!(),
+    }
+}
+fn attributes<'a>(r: impl HasAttributes<'a>) -> Json {
+    json!(r.attributes().map(|a|json!({"name":a.name(),"arguments":a.value().iter().map(|(n,v)|json!({"name":n,"value":value(v)})).collect::<Vec<_>>()})).collect::<Vec<_>>())
+}
+fn signature(t: &Type) -> Json {
+    match t {
+        Type::ClassName(n) | Type::ValueName(n) => {
+            json!({"kind":"named","name":n.name,"namespace":n.namespace,"reference_id":n.identity.map(|(source_id,token)|EntityId{source_id,token}),"arguments":n.generics.iter().map(signature).collect::<Vec<_>>()})
+        }
+        Type::PtrMut(t, d) => {
+            json!({"kind":"pointer","depth":d,"const":false,"element":signature(t)})
+        }
+        Type::PtrConst(t, d) => {
+            json!({"kind":"pointer","depth":d,"const":true,"element":signature(t)})
+        }
+        Type::ArrayFixed(t, n) => json!({"kind":"array","length":n,"element":signature(t)}),
+        Type::Array(t) => json!({"kind":"array","length":null,"element":signature(t)}),
+        Type::RefMut(t) => json!({"kind":"byref","element":signature(t)}),
+        Type::RefConst(t) => json!({"kind":"const","element":signature(t)}),
+        Type::Generic(n, i) => json!({"kind":"generic","scope":"type","name":n,"index":i}),
+        Type::MethodGeneric(n, i) => json!({"kind":"generic","scope":"method","name":n,"index":i}),
+        other => json!({"kind":"primitive","name":format!("{other:?}")}),
+    }
+}
+fn generic(p: GenericParam<'_>) -> Json {
+    json!({"name":p.name(),"index":p.sequence(),"flags":p.flags().0})
+}
+fn accessor(s: MethodSemantics<'_>) -> Json {
+    json!({"semantics":s.flags(),"method_id":key(s.method(),6),"name":s.method().name()})
+}
+/// Member identities filtered for presentation, preserving metadata order.
+pub fn member_ids<'a, R: HasAttributes<'a> + AsRow<'a>>(
+    rows: impl Iterator<Item = R>,
+    table: u32,
+    arch: Option<Architecture>,
+) -> impl Iterator<Item = EntityId> {
+    rows.filter(move |r| arch.is_none_or(|a| winlex_core::metadata::supports(*r, a.bit())))
+        .map(move |r| key(r, table))
+}
+pub fn describe(c: &Catalog, id: EntityId, arch: Option<Architecture>) -> Result<Json> {
+    let row = c.declaration(id, arch)?;
+    let e = c.summarize(id, &row);
+    Ok(match row {
+        Declaration::Type(t) => {
+            let mut result = json!({"entity":e,"flags":t.flags().0,"guid":guid(t),"attributes":attributes(t),"generic_parameters":t.generic_params().map(generic).collect::<Vec<_>>(),"layout_constraints":t.class_layout().map(|l|json!({"pack_bytes":l.packing_size(),"declared_size_bytes":l.class_size()})),"layout_kind":if t.flags().contains(TypeAttributes::ExplicitLayout){"explicit"}else if t.flags().contains(TypeAttributes::SequentialLayout){"sequential"}else{"auto"},
+                "fields":member_ids(t.fields(),4,arch).map(|id|describe(c,id,arch)).collect::<Result<Vec<_>>>()?,"methods":member_ids(t.methods(),6,arch).map(|id|describe(c,id,arch)).collect::<Result<Vec<_>>>()?,
+                "properties":member_ids(t.properties(),0x17,arch).map(|id|describe(c,id,arch)).collect::<Result<Vec<_>>>()?,"events":member_ids(t.events(),0x14,arch).map(|id|describe(c,id,arch)).collect::<Result<Vec<_>>>()?});
+            result["interface_implementations"]=json!(t.interface_impls().map(|i|json!({"type":signature(&i.interface(&t.generic_types())),"default":i.has_attribute("DefaultAttribute"),"attributes":attributes(i)})).collect::<Vec<_>>());
+            result["base_type"] = t
+                .extends()
+                .map(|b| {
+                    signature(&match b {
+                        TypeDefOrRef::TypeSpec(s) => s.ty(&t.generic_types()),
+                        b => Type::ClassName(b.type_name()),
+                    })
+                })
+                .unwrap_or(Json::Null);
+            result["windows_runtime"] = json!(t.flags().contains(TypeAttributes::WindowsRuntime));
+            result
+        }
+        Declaration::Property(p) => {
+            let s = p.signature();
+            json!({"entity":e,"parent_id":key(p.parent(),2),"flags":p.flags(),"type":signature(&s.return_type),"index_parameters":s.types.iter().map(signature).collect::<Vec<_>>(),"attributes":attributes(p),"accessors":p.accessors().map(accessor).collect::<Vec<_>>()})
+        }
+        Declaration::Event(r) => {
+            json!({"entity":e,"parent_id":key(r.parent(),2),"flags":r.flags(),"type":signature(&r.ty()),"attributes":attributes(r),"accessors":r.accessors().map(accessor).collect::<Vec<_>>()})
+        }
+        Declaration::Field(f) => {
+            json!({"entity":e,"parent_id":key(f.parent_row::<TypeDef>(4),2),"type":signature(&f.ty()),"declared_offset_bytes":f.explicit_offset(),"bitfields":winlex_core::metadata::bitfields(f)?,"value":f.constant().map(|v|value(&v.value())),"guid":guid(f),"attributes":attributes(f)})
+        }
+        Declaration::Method(m) => {
+            let s = m.signature(&[]);
+            let ps = m.params_by_sequence(s.types.len())?;
+            json!({"entity":e,"parent_id":key(m.parent_row::<TypeDef>(5),2),"return_type":signature(&s.return_type),"signature_flags":s.flags.0,"return_attributes":ps.return_param().map(attributes),"attributes":attributes(m),"import":m.impl_map().map(|i|json!({"dll":i.import_scope().name(),"entry_point":i.import_name(),"flags":i.flags().0,"calling_convention":m.calling_convention()})),
+                "generic_parameters":m.generic_params().map(generic).collect::<Vec<_>>(),"parameters":s.types.iter().zip(ps.params()).enumerate().map(|(i,(t,p))|json!({"sequence":i+1,"name":p.map(|p|p.name().to_owned()),"type":signature(t),"flags":p.map(|p|p.flags().0),"direction":p.map(|p|format!("{:?}",p.direction())),"optional":p.map(|p|p.is_optional()),"attributes":p.map(attributes)})).collect::<Vec<_>>()})
+        }
+        Declaration::Reference(r) => {
+            json!({"entity":e,"scope_token":format!("0x{:08x}",r.scope_token()),"resolution":arch.map(|a|match c.resolve_reference(id,a){Ok(id)=>json!({"target_id":id}),Err(e)=>json!({"unresolved":e.to_string()})})})
+        }
+    })
+}
+pub fn layout(l: &winlex_core::Layout) -> Json {
+    fn offsets(fields: &[winlex_core::FieldLayout], values: &mut Json) {
+        for (f, v) in fields.iter().zip(values.as_array_mut().unwrap()) {
+            for (b, value) in f
+                .bitfields
+                .iter()
+                .zip(v["bitfields"].as_array_mut().unwrap())
+            {
+                value["offset_bits"] = json!(f.offset_bits + b.relative_offset_bits);
+            }
+            if !f.fields.is_empty() {
+                offsets(&f.fields, &mut v["fields"]);
+            }
+        }
+    }
+    let mut result = json!(l);
+    offsets(&l.fields, &mut result["fields"]);
+    result["backend"] = json!("repc 0.1.1");
+    result["scope"] = json!("sequential and all-zero explicit overlays");
+    result
+}
+pub fn vtable(v: &winlex_core::Vtable) -> Json {
+    let mut result = json!(v);
+    result.as_object_mut().unwrap().remove("windows_runtime");
+    for (index, (s, value)) in v
+        .slots
+        .iter()
+        .zip(result["slots"].as_array_mut().unwrap())
+        .enumerate()
+    {
+        value["index"] = json!(index);
+        value["byte_offset"] = json!(
+            index
+                * if v.architecture == Architecture::X86 {
+                    4
+                } else {
+                    8
+                }
+        );
+        value["implicit"] = json!(s.id.is_none());
+    }
+    if v.windows_runtime {
+        result["abi"] = json!("winrt");
+        result["scope"] =
+            json!("method slots only; metadata signatures are not lowered ABI signatures");
+    }
+    result
+}

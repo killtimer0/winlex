@@ -1,9 +1,37 @@
 //! CLI adapter; no process exit, global output or terminal dependency in the core.
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::{ffi::OsString, io::Write, path::PathBuf};
 use winlex_core::{Architecture, Catalog, SearchMode, SearchOptions};
 
-pub const HELP: &str = "Winlex - offline Win32 metadata queries\n\nUsage: winlex [options] COMMAND [QUERY]\n\nCommands:\n  summary                 Sources, assembly identities and row counts\n  search TEXT             Case-insensitive partial name search\n  value INTEGER           Decimal or 0x hexadecimal integer search\n  guid GUID               GUID lookup (optional braces)\n  show NAME|ID            Declaration, members and typed references\n  layout TYPE             Compute size/alignment/offsets (bits)\n  vtable INTERFACE        Compute inherited method slots\n  references TYPE         Reverse type uses across loaded sources\n\nOptions:\n  --winmd PATH            Input file (repeat to load multiple files)\n  --source SOURCE         Source SHA256 or unique assembly name\n  --arch x86|x64|arm64     Required for layout/vtable/references\n  --json                  Versioned machine-readable output\n  --exact | --prefix      Name search mode (default: contains)\n  --limit N               Page size, 0..1000 (default: 50)\n  --offset N              Matching rows to skip\n  --help, --version\n\nDeclaration selectors accept SOURCE::NAME or SOURCE::0xTOKEN.\nBare tokens require a single input source. Names can be namespace-qualified.\nDefault input: WINLEX_WINMD or Windows.Win32.winmd beside the executable.\nNumeric queries compare mathematical integers: -1 differs from 0xffffffff.\n";
+pub const HELP: &str = r#"Winlex - offline Win32 metadata queries
+
+Usage: winlex --winmd PATH [options] COMMAND [QUERY]
+
+Commands:
+  summary                 Sources, assembly identities and row counts
+  search TEXT             Case-insensitive partial name search
+  value INTEGER           Decimal or 0x hexadecimal integer search
+  guid GUID               GUID lookup (optional braces)
+  show NAME|ID            Declaration, members and typed references
+  layout TYPE             Compute size/alignment/offsets (bits)
+  vtable INTERFACE        Compute inherited method slots
+  references TYPE         Reverse type uses across loaded sources
+
+Options:
+  --winmd PATH            Required input file (repeat to load multiple files)
+  --source SOURCE         Zero-based input index or unique assembly name
+  --arch x86|x64|arm64     Required for layout/vtable/references
+  --json                  Versioned machine-readable output
+  --exact | --prefix      Name search mode (default: contains)
+  --limit N               Page size, 0..1000 (default: 50)
+  --offset N              Matching rows to skip
+  --help, --version       No input required
+
+Declaration selectors accept SOURCE::NAME or SOURCE::0xTOKEN.
+Bare tokens require a single input source. Names can be namespace-qualified.
+Source indices follow input order and belong to this catalog only.
+Numeric queries compare mathematical integers: -1 differs from 0xffffffff.
+"#;
 
 struct Options {
     command: String,
@@ -107,15 +135,7 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
         );
     }
     if paths.is_empty() {
-        paths.push(
-            std::env::var_os("WINLEX_WINMD")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| {
-                    std::env::current_exe()
-                        .unwrap_or_default()
-                        .with_file_name("Windows.Win32.winmd")
-                }),
-        );
+        return Err("at least one --winmd PATH is required".into());
     }
     Ok(Options {
         command,
@@ -180,28 +200,41 @@ pub fn run(
         case_sensitive: false,
         mode: o.mode,
         architecture: o.arch,
-        offset: o.offset,
-        limit: o.limit,
+        types_only: false,
         cancel: None,
     };
-    let result: winlex_core::Result<Value> = (|| {
+    let result: winlex_core::Result<Query> = (|| {
         Ok(match o.command.as_str() {
-            "summary" => db.summary(),
+            "summary" => Query::Summary,
             "search" | "value" | "guid" => {
                 let mut opt = options();
-                opt.source = o.source.as_deref();
+                opt.source = o
+                    .source
+                    .as_deref()
+                    .map(|s| source_index(&db, s))
+                    .transpose()?;
                 if o.command == "value" {
                     opt.mode = SearchMode::Integer;
                 }
                 if o.command == "guid" {
                     opt.mode = SearchMode::Guid;
                 }
-                serde_json::to_value(db.search(q, opt)?)?
+                Query::Matches(page(db.search(q, opt)?, o.offset, o.limit)?)
             }
-            "show" => db.describe(&selector, o.arch)?,
-            "layout" => db.layout(&selector, o.arch.unwrap())?,
-            "vtable" => db.vtable(&selector, o.arch.unwrap())?,
-            "references" => db.references(&selector, o.arch.unwrap(), options())?,
+            "show" => Query::Show(select(&db, &selector, o.arch, false)?),
+            "layout" => {
+                Query::Layout(db.layout(select(&db, &selector, o.arch, true)?, o.arch.unwrap())?)
+            }
+            "vtable" => {
+                Query::Vtable(db.vtable(select(&db, &selector, o.arch, true)?, o.arch.unwrap())?)
+            }
+            "references" => {
+                let target = select(&db, &selector, o.arch, true)?;
+                let arch = o.arch.unwrap();
+                let mut results = db.references(target, arch, None)?;
+                let page = page(&mut results, o.offset, o.limit)?;
+                Query::References(target, page, results.unresolved_type_uses())
+            }
             _ => unreachable!(),
         })
     })();
@@ -210,9 +243,25 @@ pub fn run(
         Err(e) => return error(out, err, o.json, 3, "query_error", &e.to_string()),
     };
     let written = if o.json {
-        serde_json::to_writer_pretty(&mut *out,&json!({"schema":"winlex-cli-2","ok":true,"sources":db.sources(),"source_sha256":db.source_sha256(),"command":o.command,"result":result})).map_err(std::io::Error::other).and_then(|_|writeln!(out))
+        let result = match result.json(&db, o.arch) {
+            Ok(result) => result,
+            Err(e) => return error(out, err, true, 3, "query_error", &e.to_string()),
+        };
+        let response = Response {
+            schema: "winlex-cli-4",
+            ok: true,
+            sources: db.sources(),
+            command: &o.command,
+            result,
+        };
+        serde_json::to_writer_pretty(&mut *out, &response)
+            .map_err(std::io::Error::other)
+            .and_then(|_| writeln!(out))
     } else {
-        render(&result, out, 0)
+        match text::render(&result, &db, o.arch) {
+            Ok(text) => write!(out, "{text}"),
+            Err(e) => return error(out, err, false, 3, "query_error", &e.to_string()),
+        }
     };
     if let Err(e) = written {
         if e.kind() == std::io::ErrorKind::BrokenPipe {
@@ -222,6 +271,156 @@ pub fn run(
         return 4;
     }
     0
+}
+mod text;
+#[derive(serde::Serialize)]
+struct Response<'a, T> {
+    schema: &'static str,
+    ok: bool,
+    sources: &'a [winlex_core::Source],
+    command: &'a str,
+    result: T,
+}
+#[derive(serde::Serialize)]
+struct Page {
+    total: usize,
+    offset: usize,
+    limit: usize,
+    matches: Vec<winlex_core::EntitySummary>,
+}
+enum Query {
+    Summary,
+    Matches(Page),
+    Show(winlex_core::EntityId),
+    Layout(winlex_core::Layout),
+    Vtable(winlex_core::Vtable),
+    References(winlex_core::EntityId, Page, usize),
+}
+impl Query {
+    fn json(
+        &self,
+        db: &Catalog,
+        arch: Option<Architecture>,
+    ) -> winlex_core::Result<JsonResult<'_>> {
+        Ok(match self {
+            Self::Summary => JsonResult::Presentation(winlex_format::summary(db)),
+            Self::Matches(p) => JsonResult::Page(p),
+            Self::Show(id) => JsonResult::Presentation(winlex_format::describe(db, *id, arch)?),
+            Self::Layout(l) => JsonResult::Presentation(winlex_format::layout(l)),
+            Self::Vtable(v) => JsonResult::Presentation(winlex_format::vtable(v)),
+            Self::References(id, p, unresolved) => JsonResult::References {
+                target_id: *id,
+                architecture: arch.unwrap(),
+                page: p,
+                unresolved_type_uses: *unresolved,
+                scope: "field/method/property/event signatures and interface requirements",
+            },
+        })
+    }
+}
+#[derive(serde::Serialize)]
+#[serde(untagged)]
+enum JsonResult<'a> {
+    Presentation(Value),
+    Page(&'a Page),
+    References {
+        target_id: winlex_core::EntityId,
+        architecture: Architecture,
+        page: &'a Page,
+        unresolved_type_uses: usize,
+        scope: &'static str,
+    },
+}
+fn page(
+    items: impl IntoIterator<Item = winlex_core::Result<winlex_core::EntitySummary>>,
+    offset: usize,
+    limit: usize,
+) -> winlex_core::Result<Page> {
+    let mut total = 0;
+    let mut matches = Vec::new();
+    for item in items {
+        let item = item?;
+        if total >= offset && matches.len() < limit {
+            matches.push(item);
+        }
+        total += 1;
+    }
+    Ok(Page {
+        total,
+        offset,
+        limit,
+        matches,
+    })
+}
+fn source_index(db: &Catalog, s: &str) -> winlex_core::Result<usize> {
+    if let Ok(index) = s.parse::<usize>() {
+        return if index < db.sources().len() {
+            Ok(index)
+        } else {
+            Err(winlex_core::Error::msg("source index out of range"))
+        };
+    }
+    let found: Vec<_> = db
+        .sources()
+        .iter()
+        .filter(|source| source.assembly.as_ref().is_some_and(|a| a.name == s))
+        .collect();
+    if found.len() != 1 {
+        return Err(winlex_core::Error::msg(format!(
+            "source selector {s:?} matches {} files; use a source index",
+            found.len()
+        )));
+    }
+    Ok(found[0].id)
+}
+/// Resolve the CLI's source/name/token syntax to a catalog-local identity.
+pub fn select(
+    db: &Catalog,
+    s: &str,
+    arch: Option<Architecture>,
+    types_only: bool,
+) -> winlex_core::Result<winlex_core::EntityId> {
+    let (source, name) = if let Some((source, name)) = s.split_once("::") {
+        (Some(source_index(db, source)?), name)
+    } else {
+        (None, s)
+    };
+    if let Some(token) = name.strip_prefix("0x") {
+        if source.is_none() && db.sources().len() != 1 {
+            return Err(winlex_core::Error::msg(
+                "token requires SOURCE::TOKEN with multiple sources",
+            ));
+        }
+        let id = winlex_core::EntityId {
+            source_id: source.unwrap_or(0),
+            token: u32::from_str_radix(token, 16)?,
+        };
+        let row = db.declaration(id, arch)?;
+        if types_only && !matches!(row, winlex_core::Declaration::Type(_)) {
+            return Err(winlex_core::Error::msg("expected a type"));
+        }
+        return Ok(id);
+    }
+    let mut matches = db.search(
+        name,
+        SearchOptions {
+            source,
+            mode: SearchMode::Exact,
+            case_sensitive: true,
+            architecture: arch,
+            types_only,
+            ..Default::default()
+        },
+    )?;
+    let first = matches.next().transpose()?;
+    let second = matches.next().transpose()?;
+    match (first, second) {
+        (Some(item), None) => Ok(item.id),
+        (_, second) => Err(winlex_core::Error::msg(format!(
+            "expected one entity, found {}; specify --arch, a qualified name or token",
+            if second.is_some() { "2 or more" } else { "0" }
+        ))),
+    }
 }
 fn error(
     out: &mut dyn Write,
@@ -234,7 +433,7 @@ fn error(
     let result = if json_mode {
         serde_json::to_writer(
             &mut *out,
-            &json!({"schema":"winlex-cli-2","ok":false,"error":{"code":code,"message":message}}),
+            &serde_json::json!({"schema":"winlex-cli-4","ok":false,"error":{"code":code,"message":message}}),
         )
         .map_err(std::io::Error::other)
         .and_then(|_| writeln!(out))
@@ -242,217 +441,4 @@ fn error(
         writeln!(err, "{code}: {message}")
     };
     if result.is_err() { 4 } else { exit }
-}
-fn s(v: &Value) -> &str {
-    v.as_str().unwrap_or("")
-}
-fn ty(v: &Value) -> String {
-    match s(&v["kind"]) {
-        "primitive" => s(&v["name"]).into(),
-        "named" => {
-            let args = v["arguments"]
-                .as_array()
-                .filter(|a| !a.is_empty())
-                .map(|a| format!("<{}>", a.iter().map(ty).collect::<Vec<_>>().join(", ")))
-                .unwrap_or_default();
-            format!("{}{} -> {}", s(&v["name"]), args, s(&v["reference_id"]))
-        }
-        "generic" => format!(
-            "{} ({} parameter {})",
-            s(&v["name"]),
-            s(&v["scope"]),
-            v["index"]
-        ),
-        "pointer" => format!(
-            "{}{}{}",
-            if v["const"] == true { "const " } else { "" },
-            ty(&v["element"]),
-            "*".repeat(v["depth"].as_u64().unwrap_or(1).min(256) as usize)
-        ),
-        "array" => format!("{}[{}]", ty(&v["element"]), v["length"]),
-        "byref" => format!("{}&", ty(&v["element"])),
-        "const" => format!("const {}", ty(&v["element"])),
-        _ => v.to_string(),
-    }
-}
-fn render(v: &Value, out: &mut dyn Write, depth: usize) -> std::io::Result<()> {
-    let pad = "  ".repeat(depth);
-    if let Some(items) = v["matches"].as_array() {
-        writeln!(
-            out,
-            "{} match(es); offset {}, limit {}",
-            v["total"], v["offset"], v["limit"]
-        )?;
-        for item in items {
-            writeln!(
-                out,
-                "{}  {:10} arch={}  {}",
-                s(&item["id"]),
-                s(&item["kind"]),
-                item["architecture_mask"],
-                s(&item["full_name"])
-            )?;
-        }
-        return Ok(());
-    }
-    if !v["page"].is_null() {
-        writeln!(
-            out,
-            "References to {} (unresolved uses: {})",
-            s(&v["target_id"]),
-            v["unresolved_type_uses"]
-        )?;
-        return render(&v["page"], out, depth);
-    }
-    if let Some(slots) = v["slots"].as_array() {
-        writeln!(out, "{} [{}]", s(&v["name"]), s(&v["arch"]))?;
-        for slot in slots {
-            writeln!(
-                out,
-                "{:>3}  {}.{}  {}  byte-offset={}",
-                slot["index"],
-                s(&slot["declaring_type"]),
-                s(&slot["method"]),
-                if slot["implicit"] == true {
-                    "[implicit ABI]"
-                } else {
-                    s(&slot["id"])
-                },
-                slot["byte_offset"]
-            )?;
-        }
-        return Ok(());
-    }
-    if !v["size_bits"].is_null() && v["offset_bits"].is_null() {
-        writeln!(
-            out,
-            "{} [{}] size={} bits, alignment={} bits",
-            s(&v["name"]),
-            s(&v["arch"]),
-            v["size_bits"],
-            v["alignment_bits"]
-        )?;
-    }
-    if !v["offset_bits"].is_null() {
-        writeln!(
-            out,
-            "{pad}{} offset={} bits, size={} bits",
-            s(&v["name"]),
-            v["offset_bits"],
-            v["size_bits"]
-        )?;
-    }
-    if let Some(bits) = v["bitfields"].as_array() {
-        for b in bits {
-            writeln!(
-                out,
-                "{pad}  bitfield {}: offset={} bits, width={} bits",
-                s(&b["name"]),
-                b.get("offset_bits").unwrap_or(&b["relative_offset_bits"]),
-                b["width_bits"]
-            )?;
-        }
-    }
-    if let Some(e) = v.get("entity") {
-        writeln!(
-            out,
-            "{pad}{} {} {}",
-            s(&e["id"]),
-            s(&e["kind"]),
-            e["full_name"].as_str().unwrap_or(s(&e["name"]))
-        )?;
-        if !v["type"].is_null() {
-            writeln!(out, "{pad}  type: {}", ty(&v["type"]))?;
-        }
-        if !v["declared_offset_bytes"].is_null() {
-            writeln!(
-                out,
-                "{pad}  declared offset: {} bytes",
-                v["declared_offset_bytes"]
-            )?;
-        }
-        if !v["value"].is_null() {
-            writeln!(out, "{pad}  value: {}", v["value"])?;
-        }
-        if !v["guid"].is_null() {
-            writeln!(out, "{pad}  GUID: {}", s(&v["guid"]))?;
-        }
-        if !v["layout_kind"].is_null() {
-            writeln!(
-                out,
-                "{pad}  layout: {} {}",
-                s(&v["layout_kind"]),
-                v["layout_constraints"]
-            )?;
-        }
-        if !v["scope_token"].is_null() {
-            writeln!(
-                out,
-                "{pad}  scope: {}; resolution: {}",
-                s(&v["scope_token"]),
-                v["resolution"]
-            )?;
-        }
-        if !v["return_type"].is_null() {
-            writeln!(out, "{pad}  returns: {}", ty(&v["return_type"]))?;
-        }
-        if !v["base_type"].is_null() {
-            writeln!(out, "{pad}  extends: {}", ty(&v["base_type"]))?;
-        }
-        if let Some(accessors) = v["accessors"].as_array() {
-            for a in accessors {
-                writeln!(
-                    out,
-                    "{pad}  accessor {}: {}",
-                    s(&a["name"]),
-                    s(&a["method_id"])
-                )?;
-            }
-        }
-        if !v["import"].is_null() {
-            writeln!(out, "{pad}  import: {}", v["import"])?;
-        }
-        if let Some(ps) = v["parameters"].as_array() {
-            for p in ps {
-                writeln!(
-                    out,
-                    "{pad}  [{}] {}: {} ({})",
-                    p["sequence"],
-                    s(&p["name"]),
-                    ty(&p["type"]),
-                    s(&p["direction"])
-                )?;
-            }
-        }
-        if let Some(attrs) = v["attributes"].as_array() {
-            for a in attrs {
-                writeln!(out, "{pad}  @{} {}", s(&a["name"]), a["arguments"])?;
-            }
-        }
-        if let Some(interfaces) = v["interface_implementations"].as_array() {
-            for interface in interfaces {
-                writeln!(
-                    out,
-                    "{pad}  interface: {}{}",
-                    ty(&interface["type"]),
-                    if interface["default"] == true {
-                        " [default]"
-                    } else {
-                        ""
-                    }
-                )?;
-            }
-        }
-    }
-    for key in ["fields", "properties", "events", "methods"] {
-        if let Some(items) = v[key].as_array() {
-            for item in items {
-                render(item, out, depth + 1)?;
-            }
-        }
-    }
-    if v.get("entity").is_none() && v.get("fields").is_none() && v.get("offset_bits").is_none() {
-        writeln!(out, "{pad}{v}")?;
-    }
-    Ok(())
 }

@@ -10,7 +10,7 @@ name = "winlex-gui"
 path = "src/gui.rs"
 
 [workspace]
-members = ["crates/winlex-core", "crates/winlex-cli", "crates/winlex-gui"]
+members = ["crates/winlex-core", "crates/winlex-format", "crates/winlex-cli", "crates/winlex-gui"]
 default-members = ["."]
 exclude = ["vendor/windows-metadata"]
 resolver = "3"
@@ -22,9 +22,8 @@ winlex-gui = { path = "crates/winlex-gui" }
 [workspace.dependencies]
 windows-metadata = "=0.100.0"
 repc = "=0.1.1"
-serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sha2 = "0.10"
+serde = { version = "1", features = ["derive"] }
 sha1 = "0.10"
 anyhow = "1"
 

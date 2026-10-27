@@ -13,14 +13,14 @@
 
 ## 使用
 
-将 `Windows.Win32.winmd` 放在 `winlex.exe` 旁，或用 `--winmd PATH` 指定输入：
+用 `--winmd PATH` 显式指定输入：
 
 ```powershell
-winlex search OPENFILE --prefix
-winlex value 0x80000000
-winlex show CreateFileW --arch x64
-winlex layout OVERLAPPED --arch x64
-winlex vtable IStream --arch x64 --json
+winlex --winmd Windows.Win32.winmd search OPENFILE --prefix
+winlex --winmd Windows.Win32.winmd value 0x80000000
+winlex --winmd Windows.Win32.winmd show CreateFileW --arch x64
+winlex --winmd Windows.Win32.winmd layout OVERLAPPED --arch x64
+winlex --winmd Windows.Win32.winmd vtable IStream --arch x64 --json
 ```
 
 查询架构与程序自身架构无关。命令、输出及限制见 [CLI 文档](docs/cli.md)。
@@ -54,7 +54,8 @@ cargo test -p winlex-core -p winlex-cli --release --locked
 ## 目录
 
 - `src/`：程序入口。
-- `crates/winlex-core/`：同步查询库。
+- `crates/winlex-core/`：不可变元数据快照、类型化查询和搜索迭代器；普通结果支持 serde 序列化。
+- `crates/winlex-format/`：CLI 与 GUI 共用的声明展示和 JSON 输出适配。
 - `crates/winlex-cli/`：命令行适配与集成测试。
 - `crates/winlex-gui/`：原生 MDI 图形界面。
 - `vendor/`：元数据读取器及本地补丁说明。

@@ -34,7 +34,7 @@ def test_discovery_is_not_loading(launch, profile, settings):
     doc = app.open_row(source=True)
     for removed in (1201, 1202, 1204, 1047):
         assert not n.get_item(doc, removed)
-    n.wait(lambda: "SHA" in app.content(doc) or '"sources"' in app.content(doc), "inspection", 45)
+    n.wait(lambda: '"sources"' in app.content(doc), "inspection", 45)
     n.send(doc, 0x112, 0xF020)  # WM_SYSCOMMAND / SC_MINIMIZE
     is_iconic = n.api(n.user, "IsIconic", n.w.BOOL, n.w.HWND)
     assert is_iconic(doc)

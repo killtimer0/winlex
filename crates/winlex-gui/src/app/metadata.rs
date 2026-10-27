@@ -16,7 +16,7 @@ use winlex_core::Catalog;
 #[derive(Clone)]
 pub(super) enum Binding {
     Entity {
-        id: String,
+        id: winlex_core::EntityId,
         catalog: Arc<Catalog>,
         architecture: Architecture,
         architecture_mask: i32,
@@ -256,17 +256,12 @@ pub(super) fn refresh_content(hwnd: HWND) {
             architecture,
             ..
         } => {
-            let source = catalog
-                .sources()
-                .iter()
-                .find(|s| id.starts_with(&s.id))
-                .unwrap();
+            let source = &catalog.sources()[id.source_id];
             format!(
-                "{} — {}\r\n{}\r\n{}\r\n{}\r\n\r\n",
+                "{} — {}\r\n{}\r\n{}\r\n\r\n",
                 doc.name,
                 architecture.label(),
-                source.path,
-                source.id,
+                source.path.display(),
                 id
             )
         }

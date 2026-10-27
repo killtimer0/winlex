@@ -29,7 +29,7 @@ def main():
     source = json.loads((ROOT / "inputs/source.json").read_text())
     winmd = ROOT / "inputs" / source["file"]
     assert hashlib.sha256(winmd.read_bytes()).hexdigest() == source["sha256"]
-    run(["cargo", "build", "-p", "winlex-core", "--example", "reader-facts", "--release", "--locked"])
+    run(["cargo", "build", "-p", "winlex-format", "--example", "reader-facts", "--release", "--locked"])
     run(["cargo", "build", "-p", "winlex-cli", "--example", "host-cli", "--release", "--locked"])
     run(["cargo", "test", "-p", "winlex-cli", "-p", "winlex-core", "--release", "--locked"])
     if args.abi:
@@ -38,7 +38,7 @@ def main():
     run([sys.executable, "verify/fixture_gate.py"])
     run([sys.executable, "verify/multisource_gate.py"])
     if args.winrt_sdk:
-        run(["cargo", "build", "-p", "winlex-core", "--example", "query-audit", "--release", "--locked"])
+        run(["cargo", "build", "-p", "winlex-format", "--example", "query-audit", "--release", "--locked"])
         command = [sys.executable, "verify/winrt_gate.py", "--sdk", args.winrt_sdk, "--version", args.winrt_version]
         if args.winrt_apps:
             command.extend(["--apps", args.winrt_apps])

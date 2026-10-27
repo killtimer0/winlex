@@ -1,13 +1,17 @@
 //! Synchronous, UI-independent access to an immutable collection of WinMD sources.
-//! Public query results own their data; no borrowed metadata rows escape Catalog.
+//! Search results own their data; declaration views borrow their Catalog.
 mod api;
+mod model;
 mod source;
-pub use source::{AssemblyIdentity, Source, SourceData};
+pub use model::*;
+pub use source::{AssemblyIdentity, EntityId, Source, SourceData};
 // Low-level adapters for independent metadata verification.
 mod layout;
 #[doc(hidden)]
 pub mod metadata;
 
 pub use anyhow::{Error, Result};
-pub use api::{Architecture, Catalog, EntitySummary, SearchMode, SearchOptions, SearchPage};
-pub use serde_json::Value;
+pub use api::{
+    Architecture, Catalog, EntitySummary, Search, SearchMode, SearchOptions, guid, integer,
+};
+pub use windows_metadata;

@@ -1,11 +1,11 @@
 # CLI 与查询接口
 
 ```text
-winlex [选项] 命令 [查询]
+winlex --winmd PATH [选项] 命令 [查询]
 ```
 
-输入查找顺序：`--winmd PATH`、`WINLEX_WINMD` 环境变量、程序旁的 `Windows.Win32.winmd`。
-重复 `--winmd` 可加载多个文件；内容相同的文件按 SHA256 去重，来源按哈希排序。
+查询命令必须通过 `--winmd PATH` 显式指定输入；`--help`、`--version` 无需输入。
+重复 `--winmd` 可加载多个文件；来源按输入顺序编号，从 0 开始，重复输入保留独立条目。
 
 ```powershell
 winlex --winmd Windows.Win32.winmd --winmd Windows.Wdk.winmd summary
@@ -28,9 +28,9 @@ winlex --winmd Windows.Win32.winmd --winmd Windows.Wdk.winmd show Windows.Wdk.wi
 `ARCH` 可选 `x86`、`x64`、`arm64`。搜索分页使用 `--limit`（默认50，上限1000）和 `--offset`。
 `--help`、`--version` 单独调用。
 
-搜索不区分大小写。声明选择优先匹配精确大小写，再尝试忽略大小写。
+搜索不区分大小写，声明名称选择区分大小写。结果按来源编号、token 排序。
 存在多个候选时，使用架构、限定名或 token 消除歧义。限定名形如 `Namespace.Type.Field`，嵌套类型形如 `Namespace.Outer+Inner`。
-实体 ID 为 `SOURCE_SHA256::0xTOKEN`。选择声明时支持 `SOURCE::NAME` 和 `SOURCE::0xTOKEN`，SOURCE 可用 SHA256 或唯一程序集名称（包括名称中的 `.winmd` 后缀）。裸 token 仅允许单来源。
+选择声明时支持 `SOURCE::NAME` 和 `SOURCE::0xTOKEN`，SOURCE 可用来源编号或唯一程序集名称（包括名称中的 `.winmd` 后缀）。裸 token 仅允许单来源。编号和 token 仅在所属 Catalog 内有效。
 `--source SOURCE` 在搜索时过滤来源，在 show/layout/vtable/references 时限定目标来源；反向引用仍查找所有已加载来源。独立来源中的同名声明不会自动合并。
 非 WinRT 引用按程序集名称、版本、culture、公钥 token 和 content type 匹配；依赖须显式加载。
 
@@ -39,20 +39,21 @@ winlex --winmd Windows.Win32.winmd --winmd Windows.Wdk.winmd show Windows.Wdk.wi
 默认输出文本；`--json` 输出一份完整 JSON 至 stdout：
 
 ```json
-{"schema":"winlex-cli-2","ok":true,"sources":[],"source_sha256":null,"command":"show","result":{}}
+{"schema":"winlex-cli-4","ok":true,"sources":[],"command":"show","result":{}}
 ```
 
 失败时：
 
 ```json
-{"schema":"winlex-cli-2","ok":false,"error":{"code":"query_error","message":"..."}}
+{"schema":"winlex-cli-4","ok":false,"error":{"code":"query_error","message":"..."}}
 ```
 
 退出码：0成功、2参数错误、3输入或查询失败、4输出失败。文本模式错误写入 stderr。
 
 - 整数以十进制字符串和保留位宽的十六进制表示；数值搜索按数学整数比较，`-1` 不等于 `0xffffffff`。
-- `sources` 提供文件哈希、路径、程序集身份和依赖；`source_sha256` 仅在单来源时非 null。
-- 类型签名保留具名引用的 `reference_id`，可用 `show ID --arch ARCH` 继续导航；解析后的 TypeRef 提供 `target_id`。
+- 布局、vtable 和反向引用结果使用 `architecture` 字段，值为 `x86`、`x64` 或 `arm64`。
+- `sources` 提供来源编号、路径、程序集身份和依赖。实体 ID 为 `{"source_id":0,"token":33554433}`，token 使用数值表示。
+- 类型签名保留具名引用的 `reference_id`，解析后的 TypeRef 提供 `target_id`；可转换为 `SOURCE::0xTOKEN` 继续查询。
 - 布局单位为 bit，偏移相对直接包含它的聚合；位域另提供相对底层字段的偏移。
 - vtable 同时提供槽位和字节偏移。
 

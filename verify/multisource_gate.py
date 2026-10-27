@@ -1,5 +1,4 @@
 """Build independent C# assemblies and exercise source-qualified queries."""
-import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -49,24 +48,25 @@ def main():
     duplicate = build("duplicate", "Base", "1.2.300.400", code + ' public struct Extra { public int X; }')
     consumer = build("consumer", "Consumer", "1.0.0.0", 'namespace Client { public struct Holder { public Shared.Item A; public Shared.Outer.Child B; public Global C; } public interface IDerived : Shared.IBase { void Second(); } }', base)
     files = [consumer, base, other]
-    source = hashlib.sha256(base.read_bytes()).hexdigest()
+    source = 1
     layout = query(files, "layout", "Holder")["result"]
     assert layout["size_bits"] == 128
     assert [f["offset_bits"] for f in layout["fields"]] == [0, 64, 96]
-    assert all(f["fields"][0]["source_id"] == source for f in layout["fields"])
+    assert all(f["fields"][0]["id"]["source_id"] == source for f in layout["fields"])
     slots = query(files, "vtable", "IDerived")["result"]["slots"]
     assert [s["method"] for s in slots] == ["First", "Second"]
-    assert slots[0]["source_id"] == source != slots[1]["source_id"]
+    assert slots[0]["id"]["source_id"] == source != slots[1]["id"]["source_id"]
     matches = query(files, "search", "Item", "--exact")["result"]["matches"]
-    assert len(matches) == 2 and matches[0]["token"] == matches[1]["token"] and matches[0]["id"] != matches[1]["id"]
+    assert len(matches) == 2 and matches[0]["id"]["token"] == matches[1]["id"]["token"] and matches[0]["id"] != matches[1]["id"]
     query(files, "show", "Item", error="found 2")
-    query(files, "show", matches[0]["token"], error="requires SOURCE")
-    assert query(files, "show", "Base::Shared.Item")["result"]["entity"]["source_id"] == source
+    query(files, "show", f'0x{matches[0]["id"]["token"]:08x}', error="requires SOURCE")
+    assert query(files, "show", "Base::Shared.Item")["result"]["entity"]["id"]["source_id"] == source
     page = query(files, "search", "Item", "--exact", "--source", "Base")["result"]
     assert len(page["matches"]) == 1
-    assert query(files[::-1], "search", "Item", "--exact")["result"]["matches"] == matches
+    reversed_matches = query(files[::-1], "search", "Item", "--exact")["result"]["matches"]
+    assert [m["id"]["source_id"] for m in reversed_matches] == [0, 1]
     assert query(files, "search", "Item", "--exact", "--limit", "1", "--offset", "1")["result"]["matches"] == matches[1:]
-    assert len(query([base, base], "summary")["sources"]) == 1
+    assert len(query([base, base], "summary")["sources"]) == 2
     uses = query(files, "references", "Base::Shared.Item")["result"]["page"]["matches"]
     assert len(uses) == 1 and uses[0]["name"] == "A"
     for deps in ([consumer], [consumer, wrong], [consumer, other]):

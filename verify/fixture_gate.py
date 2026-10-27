@@ -42,7 +42,8 @@ def main():
     prop = box["properties"][0]
     assert prop["type"] == {"kind": "generic", "scope": "type", "name": "T", "index": 0}
     assert sorted(a["semantics"] for a in prop["accessors"]) == [1, 2]
-    assert query("show", prop["entity"]["id"])["entity"] == prop["entity"]
+    entity = prop["entity"]["id"]
+    assert query("show", f'{entity["source_id"]}::0x{entity["token"]:08x}')["entity"] == prop["entity"]
     event = box["events"][0]
     assert event["type"]["arguments"][0]["name"] == "T"
     assert sorted(a["semantics"] for a in event["accessors"]) == [8, 16]

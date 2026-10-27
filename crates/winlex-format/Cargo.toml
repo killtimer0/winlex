@@ -1,0 +1,8 @@
+[package]
+name = "winlex-format"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+winlex-core = { path = "../winlex-core" }
+serde_json.workspace = true

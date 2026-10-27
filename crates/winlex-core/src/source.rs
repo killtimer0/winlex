@@ -1,11 +1,9 @@
-use serde::Serialize;
 use sha1::{Digest, Sha1};
 use windows_metadata::reader::{Assembly, AssemblyRef};
 
 #[cfg(test)]
 mod snapshot_tests {
     use super::SourceData;
-    use sha2::Digest;
     use std::sync::Arc;
     use windows_metadata::{FieldAttributes, Type, TypeAttributes, reader, writer};
 
@@ -13,7 +11,6 @@ mod snapshot_tests {
         let bytes: Arc<[u8]> = file.into_stream().into();
         SourceData {
             path: format!("{name}.winmd").into(),
-            id: format!("{:x}", sha2::Sha256::digest(&bytes)),
             bytes,
         }
     }
@@ -31,6 +28,77 @@ mod snapshot_tests {
         );
         file.Field("Value", &ty, FieldAttributes::Public);
         data("Dependency", file)
+    }
+    fn find(db: &crate::Catalog, name: &str) -> crate::EntityId {
+        db.search(
+            name,
+            crate::SearchOptions {
+                mode: crate::SearchMode::Exact,
+                types_only: true,
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .id
+    }
+    #[test]
+    fn duplicate_inputs_keep_independent_catalog_local_ids() {
+        let original = dependency(Type::I32);
+        let db = crate::Catalog::from_inputs([original.clone(), original.clone()]).unwrap();
+        assert_eq!(db.sources().len(), 2);
+        let page = db
+            .search(
+                "Widget",
+                crate::SearchOptions {
+                    mode: crate::SearchMode::Exact,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .collect::<crate::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(page.len(), 2);
+        let [first, second] = [page[0].id, page[1].id];
+        assert_eq!(first.source_id, 0);
+        assert_eq!(second.source_id, 1);
+        assert_eq!(first.token, second.token);
+        for id in [first, second] {
+            assert_eq!(db.entity(id).unwrap().name, "Widget");
+        }
+        assert!(
+            db.declaration(
+                crate::EntityId {
+                    source_id: 2,
+                    ..first
+                },
+                None
+            )
+            .is_err()
+        );
+        let current = crate::Catalog::from_inputs([dependency(Type::I64), original]).unwrap();
+        assert_eq!(
+            db.layout(first, crate::Architecture::X64)
+                .unwrap()
+                .size_bits,
+            32
+        );
+        assert_eq!(
+            current
+                .layout(first, crate::Architecture::X64)
+                .unwrap()
+                .size_bits,
+            64
+        );
+        assert_eq!(
+            current
+                .layout(second, crate::Architecture::X64)
+                .unwrap()
+                .size_bits,
+            32
+        );
     }
     #[test]
     fn dependency_replacement_does_not_repair_or_rebind_old_snapshots() {
@@ -56,23 +124,47 @@ mod snapshot_tests {
             FieldAttributes::Public,
         );
         let consumer = data("Consumer", file);
+        let duplicate =
+            crate::Catalog::from_inputs([consumer.clone(), original.clone(), original.clone()])
+                .unwrap();
+        assert!(
+            duplicate
+                .layout(find(&duplicate, "Holder"), crate::Architecture::X64)
+                .is_err()
+        );
+        drop(duplicate);
         let missing = Arc::new(crate::Catalog::from_inputs([consumer.clone()]).unwrap());
-        assert!(missing.layout("Holder", crate::Architecture::X64).is_err());
+        assert!(
+            missing
+                .layout(find(&missing, "Holder"), crate::Architecture::X64)
+                .is_err()
+        );
         let old = Arc::new(crate::Catalog::from_inputs([consumer.clone(), original]).unwrap());
         assert_eq!(
-            old.layout("Holder", crate::Architecture::X64).unwrap()["size_bits"],
+            old.layout(find(&old, "Holder"), crate::Architecture::X64)
+                .unwrap()
+                .size_bits,
             32
         );
         let current =
             Arc::new(crate::Catalog::from_inputs([consumer, dependency(Type::I64)]).unwrap());
         assert_eq!(
-            current.layout("Holder", crate::Architecture::X64).unwrap()["size_bits"],
+            current
+                .layout(find(&current, "Holder"), crate::Architecture::X64)
+                .unwrap()
+                .size_bits,
             64
         );
-        assert!(missing.layout("Holder", crate::Architecture::X64).is_err());
+        assert!(
+            missing
+                .layout(find(&missing, "Holder"), crate::Architecture::X64)
+                .is_err()
+        );
         drop(current);
         assert_eq!(
-            old.layout("Holder", crate::Architecture::X86).unwrap()["size_bits"],
+            old.layout(find(&old, "Holder"), crate::Architecture::X86)
+                .unwrap()
+                .size_bits,
             32
         );
         assert!(retained.upgrade().is_some());
@@ -96,7 +188,7 @@ mod snapshot_tests {
         assert!(weak.upgrade().is_some());
         assert!(
             second
-                .describe("CreateFileW", Some(crate::Architecture::X64))
+                .search("CreateFileW", crate::SearchOptions::default())
                 .is_ok()
         );
         drop(second);
@@ -108,18 +200,13 @@ mod snapshot_tests {
 #[derive(Clone)]
 pub struct SourceData {
     pub(crate) path: std::path::PathBuf,
-    pub(crate) id: String,
     pub(crate) bytes: std::sync::Arc<[u8]>,
 }
 impl SourceData {
     pub fn read(path: impl AsRef<std::path::Path>) -> anyhow::Result<Self> {
         let path = path.as_ref().to_path_buf();
         let bytes: std::sync::Arc<[u8]> = std::fs::read(&path)?.into();
-        let id = format!("{:x}", sha2::Sha256::digest(&bytes));
-        Ok(Self { path, bytes, id })
-    }
-    pub fn id(&self) -> &str {
-        &self.id
+        Ok(Self { path, bytes })
     }
     pub fn path(&self) -> &std::path::Path {
         &self.path
@@ -130,16 +217,9 @@ impl SourceData {
     pub fn is_empty(&self) -> bool {
         self.bytes.is_empty()
     }
-    /// Associate already verified identical bytes with another native path.
-    pub fn with_path(&self, path: std::path::PathBuf) -> Self {
-        Self {
-            path,
-            ..self.clone()
-        }
-    }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct AssemblyIdentity {
     pub name: String,
     pub version: [u16; 4],
@@ -189,20 +269,32 @@ impl AssemblyIdentity {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct Source {
-    /// SHA256 of the original file; also the stable source selector.
-    pub id: String,
-    pub path: String,
+    /// Index in the owning Catalog.
+    pub id: usize,
     /// Original native path; display text must never be used as a file identity.
-    #[serde(skip)]
-    pub native_path: std::path::PathBuf,
+    #[serde(serialize_with = "display_path")]
+    pub path: std::path::PathBuf,
     pub assembly: Option<AssemblyIdentity>,
     pub references: Vec<AssemblyIdentity>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) struct Key {
-    pub file: usize,
+fn display_path<S: serde::Serializer>(
+    path: &std::path::Path,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(&path.to_string_lossy())
+}
+
+/// A metadata record in one particular Catalog. Not transferable between catalogs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+pub struct EntityId {
+    pub source_id: usize,
     pub token: u32,
+}
+impl std::fmt::Display for EntityId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}::0x{:08x}", self.source_id, self.token)
+    }
 }

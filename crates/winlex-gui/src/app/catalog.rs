@@ -23,13 +23,12 @@ enum Search {
     Idle,
     Waiting,
     Running(Ticket),
-    Done(usize),
+    Done,
     Failed(String),
 }
 pub(super) struct Session {
     serial: u64,
     pub catalog: Option<Arc<Catalog>>,
-    pub inputs: Vec<SourceData>,
     load: Option<Load>,
     load_error: Option<String>,
     search: Search,
@@ -38,11 +37,13 @@ pub(super) struct Session {
     notice: Option<String>,
 }
 impl Session {
+    pub fn inputs(&self) -> &[SourceData] {
+        self.catalog.as_ref().map_or(&[], |c| c.inputs())
+    }
     pub fn new() -> Self {
         Self {
             serial: 0,
             catalog: None,
-            inputs: vec![],
             load: None,
             load_error: None,
             search: Search::Idle,
@@ -69,7 +70,7 @@ impl Session {
         }
         match completion.result {
             Ok(Output::Matches(batch)) => self.results.extend(batch),
-            Ok(Output::SearchDone(total)) => self.search = Search::Done(total),
+            Ok(Output::SearchDone) => self.search = Search::Done,
             Err(e) => self.search = Search::Failed(e),
             _ => unreachable!(),
         }
@@ -96,9 +97,8 @@ impl Session {
             Search::Waiting => resources::text(IDS_SEARCHING),
             Search::Running(_) => resources::text(IDS_SEARCH_PROGRESS)
                 .replace("{count}", &self.results.len().to_string()),
-            Search::Done(total) => {
-                resources::text(IDS_SEARCH_STATUS).replace("{total}", &total.to_string())
-            }
+            Search::Done => resources::text(IDS_SEARCH_STATUS)
+                .replace("{total}", &self.results.len().to_string()),
             Search::Failed(e) => e.clone(),
         }
     }
@@ -116,7 +116,7 @@ pub(super) fn paths() -> Vec<PathBuf> {
         a.session.load.as_ref().map_or_else(
             || {
                 a.session
-                    .inputs
+                    .inputs()
                     .iter()
                     .map(|i| i.path().to_path_buf())
                     .collect()
@@ -137,7 +137,7 @@ pub(super) fn reload(paths: Vec<PathBuf>, reload: Vec<PathBuf>) {
         let ticket = s.ticket();
         let pending = paths
             .iter()
-            .filter(|p| reload.contains(p) || !s.inputs.iter().any(|i| i.path() == p.as_path()))
+            .filter(|p| reload.contains(p) || !s.inputs().iter().any(|i| i.path() == p.as_path()))
             .cloned()
             .collect();
         s.load = Some(Load {
@@ -150,7 +150,7 @@ pub(super) fn reload(paths: Vec<PathBuf>, reload: Vec<PathBuf>) {
             ticket,
             Job::Load {
                 paths,
-                previous: s.inputs.clone(),
+                previous: s.catalog.clone(),
                 reload,
             },
         );
@@ -258,19 +258,14 @@ pub(super) fn cell(row: usize, detail: bool) -> String {
             .session
             .catalog
             .as_ref()
-            .and_then(|c| c.sources().iter().find(|s| s.id == e.source_id));
+            .and_then(|c| c.sources().get(e.id.source_id));
         let label = source
             .map(|s| {
-                s.assembly
-                    .as_ref()
-                    .map(|a| a.name.clone())
-                    .unwrap_or_else(|| {
-                        s.native_path
-                            .file_name()
-                            .unwrap_or_default()
-                            .to_string_lossy()
-                            .into_owned()
-                    })
+                s.path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned()
             })
             .unwrap_or_default();
         let arches = [(1, "x86"), (2, "x64"), (4, "ARM64")]
@@ -285,18 +280,11 @@ pub(super) fn cell(row: usize, detail: bool) -> String {
                 e.kind,
                 label,
                 arches,
-                source.map(|s| s.path.as_str()).unwrap_or(""),
+                source.map(|s| s.path.to_string_lossy()).unwrap_or_default(),
                 e.id
             )
         } else {
-            format!(
-                "{}\n{} · {} · {} [{}]",
-                e.name,
-                e.kind,
-                arches,
-                label,
-                &e.source_id[..8]
-            )
+            format!("{}\n{} · {} · {}", e.name, e.kind, arches, label)
         }
     })
 }
@@ -307,7 +295,7 @@ pub(super) fn open_row(row: isize) {
     let item = read(|a| {
         a.session.results.get(row as usize).map(|e| {
             (
-                e.id.clone(),
+                e.id,
                 e.name.clone(),
                 e.architecture_mask,
                 a.session.catalog.clone(),
@@ -341,17 +329,12 @@ pub(super) fn old_version(binding: &Binding) -> bool {
     let Binding::Entity { id, catalog, .. } = binding else {
         return false;
     };
-    let Some(source) = catalog.sources().iter().find(|s| id.starts_with(&s.id)) else {
-        return false;
-    };
+    let source = &catalog.sources()[id.source_id];
     read(|a| {
-        a.session
-            .inputs
-            .iter()
-            .any(|s| s.path() == source.native_path && s.id() != source.id)
-            || a.session.sources.entries.iter().any(|e| {
-                e.path == source.native_path && e.id.as_ref().is_some_and(|id| id != &source.id)
-            })
+        a.session.catalog.as_ref().is_some_and(|current| {
+            !Arc::ptr_eq(current, catalog)
+                && current.sources().iter().any(|s| s.path == source.path)
+        })
     })
 }
 pub(super) fn open_current(hwnd: HWND) {
@@ -369,13 +352,17 @@ pub(super) fn open_current(hwnd: HWND) {
         return;
     };
     let current = read(|a| {
-        let old_source = old.sources().iter().find(|s| id.starts_with(&s.id))?;
-        let input = a
-            .session
-            .inputs
+        let old_source = &old.sources()[id.source_id];
+        let current = a.session.catalog.as_ref()?;
+        let mut sources = current
+            .sources()
             .iter()
-            .find(|s| s.path() == old_source.native_path)?;
-        Some((a.session.catalog.clone()?, input.id().to_owned()))
+            .filter(|s| s.path == old_source.path);
+        let source = sources.next()?.id;
+        if sources.next().is_some() {
+            return None;
+        }
+        Some((current.clone(), source))
     });
     let Some((current, source)) = current else {
         set_status(resources::text(IDS_CURRENT_UNAVAILABLE));
@@ -457,8 +444,7 @@ pub(super) fn apply(c: Completion) {
                 Ok(Output::Loaded(snapshot)) => {
                     write(|a| {
                         let s = &mut a.session;
-                        s.catalog = snapshot.catalog;
-                        s.inputs = snapshot.inputs;
+                        s.catalog = snapshot;
                     });
                     search();
                     super::sources::refresh();
@@ -501,12 +487,12 @@ mod tests {
             target: Target::Search,
             result,
         };
-        assert!(!session.accept_search(completion(1, Ok(Output::SearchDone(100)))));
+        assert!(!session.accept_search(completion(1, Ok(Output::SearchDone))));
         assert!(session.accept_search(completion(2, Ok(Output::Matches(vec![])))));
         assert_eq!(session.status(), "load transaction failed");
-        assert!(session.accept_search(completion(2, Ok(Output::SearchDone(0)))));
+        assert!(session.accept_search(completion(2, Ok(Output::SearchDone))));
         assert_eq!(session.status(), "load transaction failed");
         assert!(!session.accept_search(completion(2, Err("late failure".into()))));
-        assert!(matches!(session.search, Search::Done(0)));
+        assert!(matches!(session.search, Search::Done));
     }
 }
