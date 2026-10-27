@@ -6,7 +6,7 @@ from pathlib import Path
 import subprocess
 import sys
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "tmp/verify"
 
 
@@ -20,7 +20,7 @@ def run(command):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--abi", action="store_true", help="also run compiler_gate.py (see docs/build.md)")
+    parser.add_argument("--abi", action="store_true", help="also run tests/abi/run.py (see docs/build.md)")
     parser.add_argument("--winrt-sdk", help="Windows Kits/10 root for real WinRT metadata checks")
     parser.add_argument("--winrt-version", default="10.0.26100.0")
     parser.add_argument("--winrt-apps", help="directory containing extracted App SDK packages")
@@ -33,13 +33,13 @@ def main():
     run(["cargo", "build", "-p", "winlex-cli", "--example", "host-cli", "--release", "--locked"])
     run(["cargo", "test", "-p", "winlex-cli", "-p", "winlex-core", "--release", "--locked"])
     if args.abi:
-        run([sys.executable, "verify/compiler_gate.py"])
-    run([sys.executable, "verify/reader_gate.py"])
-    run([sys.executable, "verify/fixture_gate.py"])
-    run([sys.executable, "verify/multisource_gate.py"])
+        run([sys.executable, "tests/abi/run.py"])
+    run([sys.executable, "tests/metadata/reader_gate.py"])
+    run([sys.executable, "tests/metadata/fixture_gate.py"])
+    run([sys.executable, "tests/metadata/multisource_gate.py"])
     if args.winrt_sdk:
         run(["cargo", "build", "-p", "winlex-format", "--example", "query-audit", "--release", "--locked"])
-        command = [sys.executable, "verify/winrt_gate.py", "--sdk", args.winrt_sdk, "--version", args.winrt_version]
+        command = [sys.executable, "tests/metadata/winrt_gate.py", "--sdk", args.winrt_sdk, "--version", args.winrt_version]
         if args.winrt_apps:
             command.extend(["--apps", args.winrt_apps])
         run(command)

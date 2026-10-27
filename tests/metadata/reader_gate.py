@@ -3,13 +3,13 @@ import json
 from pathlib import Path
 import subprocess
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def main():
     out = ROOT / "tmp/verify"
     out.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["dotnet", "run", "--project", str(ROOT / "verify/MetadataOracle"), "-c", "Release", "--", str(ROOT / "inputs/Windows.Win32.winmd"), str(out / "oracle.json")], check=True)
+    subprocess.run(["dotnet", "run", "--project", str(ROOT / "tests/metadata/MetadataOracle"), "-c", "Release", "--", str(ROOT / "inputs/Windows.Win32.winmd"), str(out / "oracle.json")], check=True)
     p = subprocess.run([str(ROOT / "target/release/examples/reader-facts.exe"), str(ROOT / "inputs/Windows.Win32.winmd")], capture_output=True, check=True)
     (out / "reader-facts.json").write_bytes(p.stdout)
     actual = json.loads(p.stdout)

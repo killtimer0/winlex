@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 import subprocess
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "tmp/verify/multisource"
 EXE = ROOT / "target/release/examples/host-cli.exe"
 
@@ -79,7 +79,7 @@ def main():
     query([signed_user, base], "layout", "SignedHolder", error="0 matching sources")
     for file in (base, consumer, signed, signed_user):
         oracle = file.parent / "oracle.json"
-        subprocess.run(["dotnet", "run", "--project", ROOT / "verify/MetadataOracle", "-c", "Release", "--", file, oracle], check=True, capture_output=True)
+        subprocess.run(["dotnet", "run", "--project", ROOT / "tests/metadata/MetadataOracle", "-c", "Release", "--", file, oracle], check=True, capture_output=True)
         facts = json.loads(subprocess.run([ROOT / "target/release/examples/reader-facts.exe", file], check=True, capture_output=True).stdout)
         expected = json.loads(oracle.read_text())
         for key in ("assembly", "references", "layouts", "scopes", "signature_type_tokens"):

@@ -5,7 +5,7 @@ from pathlib import Path
 import re
 import subprocess
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "tmp/verify/winrt"
 EXE = ROOT / "target/release/examples/host-cli.exe"
 
@@ -36,7 +36,7 @@ def references(value):
 
 def oracle(file):
     dest = OUT / (file.stem + "-oracle.json")
-    subprocess.run(["dotnet", "run", "--project", ROOT / "verify/MetadataOracle", "-c", "Release", "--", file, dest], check=True, capture_output=True)
+    subprocess.run(["dotnet", "run", "--project", ROOT / "tests/metadata/MetadataOracle", "-c", "Release", "--", file, dest], check=True, capture_output=True)
     expected = json.loads(dest.read_text())
     actual = json.loads(subprocess.run([ROOT / "target/release/examples/reader-facts.exe", file], check=True, capture_output=True).stdout)
     for key in ("assembly", "references", "layouts", "scopes", "signature_type_tokens", "properties", "events"):

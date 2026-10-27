@@ -7,7 +7,7 @@ import importlib.metadata
 from pathlib import Path
 
 import pytest
-from config_support import ConfigProfile
+from support.config import ConfigProfile
 from support.session import Session
 from support import native as n
 from support.diagnostics import screenshot

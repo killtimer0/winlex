@@ -88,7 +88,7 @@ def worker(root, once=False):
             if (path / "cancel").exists():
                 atomic(path / "run.json", {"cancelled": True, "cleanup_complete": True, "state": "cancelled_before_start"})
                 continue
-            command = [sys.executable, str(Path(__file__).with_name("gui_run.py")), "--output", str(path),
+            command = [sys.executable, str(Path(__file__).with_name("run.py")), "--output", str(path),
                        "--timeout", str(data["timeout"]), "--desktop", data["desktop"], *data["tests"]]
             with (path / "output.log").open("w", encoding="utf-8") as log:
                 process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT,

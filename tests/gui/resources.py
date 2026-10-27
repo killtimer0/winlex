@@ -47,7 +47,7 @@ def main():
         return c.string_at(pointer, size(module, info))
 
     try:
-        root = Path(__file__).resolve().parents[1]
+        root = Path(__file__).resolve().parents[2]
         header = (root / "crates/winlex-gui/res/resource.h").read_text(encoding="utf-8")
         ids = {name: int(value) for name, value in re.findall(r"^#define (\w+) (\d+)$", header, re.M)}
         strings = {name: value for name, value in ids.items() if name.startswith("IDS_")}

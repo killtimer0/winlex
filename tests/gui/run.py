@@ -60,7 +60,7 @@ def main():
         command = subprocess.list2cmdline([sys.executable, "-X", "utf8", "-m", "pytest", str(Path(__file__).parent), "--artifacts", str(output), "--junitxml", str(output / "tests.xml"), *tests])
         environment = {**os.environ, "WINLEX_TEST_LEDGER": str(output / "profiles")}
         process, thread, _, _ = win32process.CreateProcess(None, command, None, None, False,
-            win32process.CREATE_SUSPENDED, environment, str(Path(__file__).resolve().parent.parent), startup)
+            win32process.CREATE_SUSPENDED, environment, str(Path(__file__).resolve().parents[2]), startup)
         win32job.AssignProcessToJobObject(job, process)
         assigned = True
         win32process.ResumeThread(thread)

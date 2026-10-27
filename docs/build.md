@@ -52,20 +52,20 @@ cargo test -p winlex-core -p winlex-cli --release --locked
 cargo build -p winlex-cli --example host-cli --release --locked
 cargo fmt --all --check
 cargo clippy -p winlex-core -p winlex-cli --all-targets --locked -- -D warnings
-python verify/run.py
+python tests/metadata/run.py
 ```
 
-`verify/run.py` 比较 Rust 读取结果与 .NET `System.Reflection.Metadata`，并验证布局、泛型及跨源引用样例。报告写入 `tmp/verify/`。
+`tests/metadata/run.py` 比较 Rust 读取结果与 .NET `System.Reflection.Metadata`，并验证布局、泛型及跨源引用样例。报告写入 `tmp/verify/`。
 
 GUI 使用独立 pytest 用例及公共 native/session 支持层，默认运行在隔离桌面：
 
 ```powershell
 cargo clippy -p winlex-gui --all-targets --locked -- -D warnings
 uv venv tmp/gui-tests/venv
-uv pip install --python tmp/gui-tests/venv/Scripts/python.exe -r verify/requirements.txt
-tmp/gui-tests/venv/Scripts/python.exe verify/gui_run.py --exe target/i686-pc-windows-msvc/release/winlex-gui.exe --dpi pmv2 -q
-tmp/gui-tests/venv/Scripts/python.exe verify/gui_run.py --exe target/i686-pc-windows-msvc/release/winlex-gui.exe --dpi pmv1 --language zh-CN -q
-python verify/gui_resources.py --exe target/i686-pc-windows-msvc/release/winlex-gui.exe
+uv pip install --python tmp/gui-tests/venv/Scripts/python.exe -r tests/gui/requirements.txt
+tmp/gui-tests/venv/Scripts/python.exe tests/gui/run.py --exe target/i686-pc-windows-msvc/release/winlex-gui.exe --dpi pmv2 -q
+tmp/gui-tests/venv/Scripts/python.exe tests/gui/run.py --exe target/i686-pc-windows-msvc/release/winlex-gui.exe --dpi pmv1 --language zh-CN -q
+python tests/gui/resources.py --exe target/i686-pc-windows-msvc/release/winlex-gui.exe
 ```
 
 `--dpi` 可改为 `pmv1`、`system`、`unaware` 或 `auto`。`--desktop current` 使用当前桌面。
@@ -73,20 +73,20 @@ python verify/gui_resources.py --exe target/i686-pc-windows-msvc/release/winlex-
 结果在 `tmp/gui-tests/<run-id>/`：JUnit、环境/输入哈希、窗口树、失败截图、退出码和清理记录。
 Runner 管理测试进程和隔离资源，退出及清理结果记录在 `run.json`。
 消息测试通过发送窗口消息验证控件行为。实际键鼠专项使用 `--desktop current --real-input -k real_search`，要求解锁的活动输入桌面并取得前台；无法满足条件时报告失败。
-Python 3.8+ 依赖锁定在 `verify/requirements.txt`；可选新 API 按能力探测。XP RTM 解释器/系统支持仍须实机验证。
+Python 3.8+ 依赖锁定在 `tests/gui/requirements.txt`；可选新 API 按能力探测。XP RTM 解释器/系统支持仍须实机验证。
 
 ### 本机/SSH 调度
 
-目标配置参考 `verify/target.example.json`，实际主机配置放 `tmp/`。
-`verify/remote.py` 支持 `deploy/submit/status/cancel/collect/capabilities`，`local` 与 `ssh` 使用相同文件队列。
+目标配置参考 `tests/gui/target.example.json`，实际主机配置放 `tmp/`。
+`tests/gui/remote.py` 支持 `deploy/submit/status/cancel/collect/capabilities`，`local` 与 `ssh` 使用相同文件队列。
 目标端先部署仓库、解释器和已记录哈希的输入，再从已登录交互会话启动：
 
 ```powershell
-python verify/remote.py worker --root C:/WinlexTests/runs
-python verify/remote.py --config tmp/target.json submit --exe C:/WinlexTests/winlex-gui.exe --winmd C:/WinlexTests/Windows.Win32.winmd -q
-python verify/remote.py --config tmp/target.json status --run-id RUN_ID
-python verify/remote.py --config tmp/target.json cancel --run-id RUN_ID
-python verify/remote.py --config tmp/target.json collect --run-id RUN_ID
+python tests/gui/remote.py worker --root C:/WinlexTests/runs
+python tests/gui/remote.py --config tmp/target.json submit --exe C:/WinlexTests/winlex-gui.exe --winmd C:/WinlexTests/Windows.Win32.winmd -q
+python tests/gui/remote.py --config tmp/target.json status --run-id RUN_ID
+python tests/gui/remote.py --config tmp/target.json cancel --run-id RUN_ID
+python tests/gui/remote.py --config tmp/target.json collect --run-id RUN_ID
 ```
 
 SSH 仅操作队列及传输，GUI 由交互 worker 启动。收集 ZIP 默认回收到 `tmp/remote-tests/`。
@@ -98,7 +98,7 @@ SSH 仅操作队列及传输，GUI 由交互 worker 启动。收集 ZIP 默认�
 $env:WINLEX_MSVC_ROOT = $env:VCToolsInstallDir
 $env:WINLEX_SDK_INCLUDE = Join-Path $env:WindowsSdkDir "Include/$($env:WindowsSDKVersion.TrimEnd('\'))"
 $env:WINLEX_CLANG = (Get-Command clang).Source
-python verify/run.py --abi
+python tests/metadata/run.py --abi
 ```
 
 Clang 验证 x86/x64/ARM64；MSVC 验证已安装的目标编译器。`WINLEX_GATE_CLI` 可指定另一个待测 exe。
@@ -106,7 +106,7 @@ Clang 验证 x86/x64/ARM64；MSVC 验证已安装的目标编译器。`WINLEX_GA
 验证真实 WinRT 元数据、SDK 头文件槽位和已解包的 App SDK 组件：
 
 ```powershell
-python verify/run.py --winrt-sdk "$env:WindowsSdkDir" --winrt-version 10.0.26100.0 --winrt-apps PATH_TO_EXTRACTED_PACKAGES
+python tests/metadata/run.py --winrt-sdk "$env:WindowsSdkDir" --winrt-version 10.0.26100.0 --winrt-apps PATH_TO_EXTRACTED_PACKAGES
 ```
 
 `--winrt-apps` 可省略；指定时目录应包含 Foundation、WinUI 包的 `metadata/*.winmd`。`--winrt-version` 使用本机 SDK 版本。

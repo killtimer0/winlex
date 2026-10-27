@@ -6,7 +6,7 @@ import subprocess
 import struct
 import shutil
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 EXE = Path(os.environ.get("WINLEX_GATE_CLI", ROOT / "target/release/examples/host-cli.exe"))
 WINMD = ROOT / "inputs/Windows.Win32.winmd"
 SDK = Path(os.environ["WINLEX_SDK_INCLUDE"])

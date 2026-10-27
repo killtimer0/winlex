@@ -18,4 +18,4 @@ MIT/Apache-2.0 许可证保留在源码目录中。Cargo 的 `[patch.crates-io]`
 `TypeName` 的构造及相等比较包含新增 identity 字段。升级上游时须保留这些语义或迁移调用方。
 TypeSpec、custom modifier、多维数组和任意函数指针仍受上游解析能力限制。
 
-使用 `python verify/run.py` 对照独立 .NET 读取器并验证显式偏移、声明大小、程序集身份及跨来源布局、COM 继承和反向引用。
+使用 `python tests/metadata/run.py` 对照独立 .NET 读取器并验证显式偏移、声明大小、程序集身份及跨来源布局、COM 继承和反向引用。

@@ -27,7 +27,7 @@ class InputState:
     def __init__(self):
         root = os.environ.get("WINLEX_TEST_LEDGER")
         if not root:
-            raise RuntimeError("Actual-input tests require verify/gui_run.py cleanup ownership")
+            raise RuntimeError("Actual-input tests require tests/gui/run.py cleanup ownership")
         self.path = Path(root) / "input.json"
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.state = {"held": [], "cursor": win32api.GetCursorPos(), "foreground": win32gui.GetForegroundWindow()}

@@ -60,4 +60,5 @@ cargo test -p winlex-core -p winlex-cli --release --locked
 - `crates/winlex-gui/`：原生 MDI 图形界面。
 - `vendor/`：元数据读取器及本地补丁说明。
 - `inputs/`：外部输入的版本、下载来源和校验值。
-- `scripts/`、`verify/`：依赖准备、构建和独立验证。
+- `scripts/`：依赖准备与构建。
+- `tests/`：按 GUI、元数据、ABI 组织的独立验证套件。
