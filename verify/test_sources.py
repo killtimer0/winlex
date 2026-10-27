@@ -3,6 +3,29 @@ import shutil
 from support import native as n
 
 
+def test_discovery_restores_selection_by_location(launch, profile, settings):
+    directory = settings[2] / "selection"
+    directory.mkdir()
+    for name in ("b.winmd", "c.winmd"):
+        (directory / name).write_bytes(name.encode())
+    profile.set("Directories", winreg.REG_MULTI_SZ, [str(directory)])
+    app = launch()
+    app.command(1021)
+    n.wait(lambda: app.count(app.sources) == 3, "initial locations")
+    selected = directory / "b.winmd"
+    row = next(i for i in range(3) if str(selected) in app.cell(i, app.sources))
+    app.select(row, app.sources)
+    (directory / "a.winmd").write_bytes(b"new earlier location")
+    app.command(1042)
+    n.wait(lambda: app.count(app.sources) == 4, "inserted location")
+    row = n.c.c_int(n.send(app.sources, 0x100C, -1, 2)).value  # LVM_GETNEXTITEM / LVNI_SELECTED
+    assert row >= 0 and str(selected) in app.cell(row, app.sources)
+    selected.unlink()
+    app.command(1042)
+    n.wait(lambda: app.count(app.sources) == 3, "removed selected location")
+    assert n.c.c_int(n.send(app.sources, 0x100C, -1, 2)).value == -1
+
+
 def test_discovery_is_not_loading(launch, profile, settings):
     profile.set("Files", winreg.REG_MULTI_SZ, [str(settings[1])])
     app = launch()

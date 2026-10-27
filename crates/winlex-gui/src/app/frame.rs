@@ -1,6 +1,6 @@
 //! Native frame orchestration; sidebar owns its controls and notifications.
 use super::workspace::{self, ARRANGE_DOCUMENTS, active, arrange_documents};
-use super::{catalog, dpi, read, sidebar, sources, write};
+use super::{dpi, read, sidebar, sources, write};
 use crate::{
     layout::{self, Arrangement},
     native::*,
@@ -8,59 +8,62 @@ use crate::{
 };
 use std::ptr;
 
-pub(super) fn composing() -> bool {
-    read(|a| a.composing)
-}
-fn prepare_frame() {
+fn update_environment(suggested: Option<RECT>) {
+    let old = write(|a| std::mem::take(&mut a.fonts));
     let (frame, tabs, status, docs) = read(|a| {
         (
             a.frame,
-            a.document_tabs,
+            a.workspace.tabs,
             a.status,
-            a.documents.iter().map(|d| d.hwnd).collect::<Vec<_>>(),
+            a.workspace
+                .documents
+                .iter()
+                .map(|d| (d.hwnd, d.content.clone()))
+                .collect::<Vec<_>>(),
         )
     });
     let (font, _) = super::font_for(dpi().window(frame));
     super::bind(tabs, font);
     super::bind(status, font);
     sidebar::prepare();
-    for h in docs {
-        if let Some(d) = super::document(h) {
-            super::document::prepare_document(&d);
+    if let Some(r) = suggested {
+        unsafe {
+            SetWindowPos(
+                frame,
+                ptr::null_mut(),
+                r.left,
+                r.top,
+                r.right - r.left,
+                r.bottom - r.top,
+                SWP_NOZORDER | SWP_NOACTIVATE,
+            );
         }
     }
+    layout_frame();
+    for (hwnd, content) in docs {
+        content.prepare(hwnd);
+    }
+    drop(old);
 }
 pub(super) fn layout_frame() {
-    let (frame, mdi, tabs, status) = read(|a| (a.frame, a.mdi, a.document_tabs, a.status));
+    let (frame, mdi, tabs, status) =
+        read(|a| (a.frame, a.workspace.mdi, a.workspace.tabs, a.status));
     if mdi.is_null() {
         return;
     }
     send(status, WM_SIZE, 0, 0);
-    let value = dpi().window(frame);
-    let area = client(frame);
-    let bottom = bounds(status, frame).top;
-    let x = sidebar::layout(bottom);
-    let (_, height) = super::font_for(value);
-    let tab = height + layout::scale(16, value);
-    place(tabs, layout::rect(x, 0, area.right - x, tab));
-    place(mdi, layout::rect(x, tab, area.right - x, bottom - tab));
+    let m = super::metrics(frame);
+    let mut area = client(frame);
+    area.bottom = bounds(status, frame).top;
+    let sidebar = sidebar::layout(area.bottom);
+    layout::take_left(&mut area, sidebar);
+    place(tabs, layout::take_top(&mut area, m.height + m.px(16)));
+    place(mdi, area);
     arrange_documents();
 }
-pub(super) fn command(id: u16) {
+pub(super) fn command(id: u16) -> bool {
     match id {
         LANGUAGE_AUTO | LANGUAGE_ENGLISH | LANGUAGE_CHINESE => super::settings::language(id),
-        FOCUS_SEARCH => {
-            sidebar::show(catalog::Panel::Results, false);
-            let h = read(|a| a.search);
-            focus(h);
-            send(h, EM_SETSEL, 0, -1);
-        }
-        PANEL_SEARCH => sidebar::show(catalog::Panel::Results, true),
-        MANAGE_SOURCES => sidebar::show(catalog::Panel::Sources, true),
-        LOAD_METADATA => sources::choose_add(),
-        ADD_DIRECTORY => sources::choose_directory(),
-        REFRESH_SOURCES => sources::refresh(),
-        FORGET_LOCATION => sources::forget_selected(),
         CLOSE => workspace::close_document(active()),
         EXIT => {
             send(read(|a| a.frame), WM_CLOSE, 0, 0);
@@ -71,51 +74,12 @@ pub(super) fn command(id: u16) {
         MAXIMIZE => {
             let h = active();
             if !h.is_null() {
-                send(read(|a| a.mdi), WM_MDIMAXIMIZE, h as usize, 0);
+                send(read(|a| a.workspace.mdi), WM_MDIMAXIMIZE, h as usize, 0);
             }
         }
-        _ => {}
+        _ => return false,
     }
-}
-pub(super) unsafe extern "system" fn splitter_proc(
-    hwnd: HWND,
-    msg: u32,
-    w: usize,
-    l: isize,
-) -> isize {
-    unsafe {
-        match msg {
-            WM_SETCURSOR => {
-                SetCursor(LoadCursorW(ptr::null_mut(), IDC_SIZEWE));
-                return 1;
-            }
-            WM_LBUTTONDOWN => {
-                SetCapture(hwnd);
-                return 0;
-            }
-            WM_MOUSEMOVE if GetCapture() == hwnd => {
-                let mut p = POINT {
-                    x: l as u16 as i16 as i32,
-                    y: (l >> 16) as u16 as i16 as i32,
-                };
-                let frame = read(|a| a.frame);
-                MapWindowPoints(hwnd, frame, &mut p, 1);
-                let width = (MulDiv(p.x, 96, dpi().window(frame) as i32) - sidebar::TOOLBAR_WIDTH)
-                    .clamp(120, 2000);
-                write(|a| a.sidebar = width);
-                layout_frame();
-                return 0;
-            }
-            WM_LBUTTONUP => {
-                if GetCapture() == hwnd {
-                    ReleaseCapture();
-                }
-                return 0;
-            }
-            _ => {}
-        }
-        DefWindowProcW(hwnd, msg, w, l)
-    }
+    true
 }
 pub(super) unsafe extern "system" fn frame_proc(hwnd: HWND, msg: u32, w: usize, l: isize) -> isize {
     unsafe {
@@ -165,15 +129,15 @@ pub(super) unsafe extern "system" fn frame_proc(hwnd: HWND, msg: u32, w: usize, 
                     return -1;
                 }
                 write(|a| {
-                    a.document_tabs = tabs;
+                    a.workspace.tabs = tabs;
                     a.status = status;
-                    a.mdi = mdi;
+                    a.workspace.mdi = mdi;
                 });
                 if !sidebar::create(hwnd) {
                     return -1;
                 }
                 windows_sys::Win32::UI::Shell::DragAcceptFiles(hwnd, 1);
-                prepare_frame();
+                update_environment(None);
                 return 0;
             }
             WM_SIZE => {
@@ -184,61 +148,16 @@ pub(super) unsafe extern "system" fn frame_proc(hwnd: HWND, msg: u32, w: usize, 
             }
             WM_DPICHANGED if dpi().per_monitor() => {
                 write(|a| a.dpi.root = (w & 0xffff) as u32);
-                prepare_frame();
-                let r = *(l as *const RECT);
-                SetWindowPos(
-                    hwnd,
-                    ptr::null_mut(),
-                    r.left,
-                    r.top,
-                    r.right - r.left,
-                    r.bottom - r.top,
-                    SWP_NOZORDER | SWP_NOACTIVATE,
-                );
-                layout_frame();
-                for h in read(|a| a.documents.iter().map(|d| d.hwnd).collect::<Vec<_>>()) {
-                    super::document::layout_document(h);
-                }
+                update_environment(Some(*(l as *const RECT)));
                 return 0;
             }
             WM_SETTINGCHANGE => {
-                let old = write(|a| std::mem::take(&mut a.fonts));
-                prepare_frame();
-                layout_frame();
-                drop(old);
+                update_environment(None);
             }
             WM_COMMAND => {
-                let id = w as u16;
-                if id == SEARCH && (w >> 16) as u32 == EN_CHANGE {
-                    catalog::input_changed();
+                if sidebar::command(w) || command(w as u16) {
                     return 0;
                 }
-                if matches!(
-                    id,
-                    LANGUAGE_AUTO
-                        | LANGUAGE_ENGLISH
-                        | LANGUAGE_CHINESE
-                        | FOCUS_SEARCH
-                        | PANEL_SEARCH
-                        | MANAGE_SOURCES
-                        | LOAD_METADATA
-                        | ADD_DIRECTORY
-                        | REFRESH_SOURCES
-                        | FORGET_LOCATION
-                        | CLOSE
-                        | EXIT
-                        | COLUMNS
-                        | ROWS
-                        | FREE
-                        | MAXIMIZE
-                ) {
-                    command(id);
-                    return 0;
-                }
-            }
-            WM_TIMER if w == catalog::SEARCH_TIMER => {
-                catalog::timer();
-                return 0;
             }
             WM_NOTIFY => {
                 let hdr = &*(l as *const NMHDR);
@@ -292,6 +211,6 @@ pub(super) unsafe extern "system" fn frame_proc(hwnd: HWND, msg: u32, w: usize, 
             }
             _ => {}
         }
-        DefFrameProcW(hwnd, read(|a| a.mdi), msg, w, l)
+        DefFrameProcW(hwnd, read(|a| a.workspace.mdi), msg, w, l)
     }
 }

@@ -2,6 +2,7 @@
 import ctypes as c
 from ctypes import wintypes as w
 import time
+from contextlib import contextmanager
 
 user = c.WinDLL("user32", use_last_error=True)
 kernel = c.WinDLL("kernel32", use_last_error=True)
@@ -78,6 +79,22 @@ def rectangle(hwnd, client=False):
     rect = w.RECT()
     assert (get_client if client else get_rect)(hwnd, c.byref(rect))
     return rect.left, rect.top, rect.right, rect.bottom
+
+
+@contextmanager
+def window_dpi_context(hwnd):
+    """Use the target's coordinate space for control geometry and mouse messages."""
+    previous = None
+    if hasattr(user, "GetWindowDpiAwarenessContext") and hasattr(user, "SetThreadDpiAwarenessContext"):
+        get_context = api(user, "GetWindowDpiAwarenessContext", c.c_void_p, w.HWND)
+        set_context = api(user, "SetThreadDpiAwarenessContext", c.c_void_p, c.c_void_p)
+        previous = set_context(get_context(hwnd))
+        assert previous, "Cannot match target DPI context"
+    try:
+        yield
+    finally:
+        if previous:
+            assert set_context(previous), "Cannot restore test DPI context"
 
 
 def wait(probe, description, timeout=15):

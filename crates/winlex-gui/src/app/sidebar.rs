@@ -1,90 +1,123 @@
-//! Independent virtual lists retain selection and scroll while panels are hidden.
+//! Registered panel host: visibility, toolbar, width and focus handoff.
 use super::{
-    bind,
-    catalog::{self, Panel},
-    dpi, font_for, read, sources, write,
+    bind, dpi,
+    panel::{PANELS, Panel, Registration},
+    read, write,
 };
 use crate::{
+    config::Config,
     layout,
     native::*,
     resources::{self, *},
 };
 use std::ptr;
-pub(super) const TOOLBAR_WIDTH: i32 = 72;
+
+#[derive(Clone)]
+pub(super) struct Sidebar {
+    toolbar: HWND,
+    splitter: HWND,
+    panels: Vec<(&'static Registration, Panel)>,
+    pub active: u32,
+    pub collapsed: bool,
+    pub width: i32,
+}
+impl Sidebar {
+    pub fn new(config: &Config) -> Self {
+        let active = PANELS
+            .iter()
+            .find(|r| r.id == config.panel)
+            .unwrap_or(&PANELS[0])
+            .id;
+        Self {
+            toolbar: ptr::null_mut(),
+            splitter: ptr::null_mut(),
+            panels: vec![],
+            active,
+            collapsed: config.collapsed,
+            width: config.sidebar,
+        }
+    }
+    pub fn panel(&self, id: u32) -> &Panel {
+        &self.panels.iter().find(|(r, _)| r.id == id).unwrap().1
+    }
+    pub fn panel_mut(&mut self, id: u32) -> &mut Panel {
+        &mut self.panels.iter_mut().find(|(r, _)| r.id == id).unwrap().1
+    }
+    pub fn owner(&self, hwnd: HWND) -> Option<Panel> {
+        self.panels
+            .iter()
+            .find(|(_, p)| p.controls().any(|h| h == hwnd))
+            .map(|(_, p)| p.clone())
+    }
+}
 pub(super) fn focus_target() -> HWND {
     read(|a| {
-        if a.config.collapsed {
-            a.toolbar[usize::from(a.session.panel == Panel::Sources)]
-        } else if a.session.panel == Panel::Sources {
-            a.source_list
+        if a.sidebar.collapsed {
+            a.sidebar.toolbar
         } else {
-            a.search
+            a.sidebar.panel(a.sidebar.active).focus()
         }
     })
 }
 pub(super) fn create(frame: HWND) -> bool {
-    let search = child(
+    let toolbar = child(
         frame,
-        "EDIT",
+        "ToolbarWindow32",
         "",
-        WS_TABSTOP | ES_AUTOHSCROLL as u32,
-        SEARCH,
+        WS_TABSTOP
+            | TBSTYLE_FLAT
+            | TBSTYLE_LIST
+            | TBSTYLE_TOOLTIPS
+            | TBSTYLE_WRAPABLE
+            | (CCS_NORESIZE | CCS_NOPARENTALIGN | CCS_NODIVIDER) as u32,
+        PANEL_TOOLBAR,
     );
-    let lists = [RESULTS, SOURCE_LIST].map(|id| {
-        let h = child(
-            frame,
-            "SysListView32",
-            "",
-            WS_TABSTOP | LVS_REPORT | LVS_OWNERDATA | LVS_SINGLESEL | LVS_NOCOLUMNHEADER,
-            id,
-        );
-        list_column(h, 0, "", 100);
-        send(
-            h,
-            LVM_SETEXTENDEDLISTVIEWSTYLE,
-            0,
-            (LVS_EX_FULLROWSELECT | LVS_EX_INFOTIP | LVS_EX_DOUBLEBUFFER) as isize,
-        );
-        h
-    });
-    let toolbar = [
-        (PANEL_SEARCH, IDS_PANEL_SEARCH),
-        (MANAGE_SOURCES, IDS_PANEL_SOURCES),
-    ]
-    .map(|(id, label)| child(frame, "BUTTON", &resources::text(label), WS_TABSTOP, id));
-    let tools = [
-        (LOAD_METADATA, IDS_ADD),
-        (REFRESH_SOURCES, IDS_REFRESH),
-        (ADD_DIRECTORY, IDS_DIRECTORY),
-        (FORGET_LOCATION, IDS_FORGET_LOCATION),
-    ]
-    .map(|(id, label)| child(frame, "BUTTON", &resources::text(label), WS_TABSTOP, id));
     let splitter = child(frame, "Winlex.Splitter", "", 0, 0);
-    write(|a| {
-        a.search = search;
-        a.results = lists[0];
-        a.source_list = lists[1];
-        a.toolbar = toolbar;
-        a.source_tools = tools;
-        a.splitter = splitter;
-    });
-    unsafe {
-        set_subclass(search, Some(edit_proc), 1, 0) != 0
-            && lists
-                .iter()
-                .all(|&h| set_subclass(h, Some(list_proc), 1, 0) != 0)
-            && [search, splitter]
-                .into_iter()
-                .chain(lists)
-                .chain(toolbar)
-                .chain(tools)
-                .all(|h| !h.is_null())
+    if toolbar.is_null() || splitter.is_null() {
+        return false;
     }
-}
-pub(super) fn show(panel: Panel, toggle: bool) {
     write(|a| {
-        a.config.collapsed = toggle && a.session.panel == panel && !a.config.collapsed;
-        a.session.panel = panel;
+        a.sidebar.toolbar = toolbar;
+        a.sidebar.splitter = splitter;
+    });
+    send(
+        toolbar,
+        TB_BUTTONSTRUCTSIZE,
+        std::mem::size_of::<TBBUTTON>(),
+        0,
+    );
+    send(toolbar, TB_SETMAXTEXTROWS, 1, 0);
+    send(toolbar, TB_SETBITMAPSIZE, 0, 0);
+    for registration in PANELS {
+        let mut text = wide(&resources::text(registration.label));
+        text.push(0);
+        let index = send(toolbar, TB_ADDSTRINGW, 0, text.as_ptr() as isize);
+        if index < 0 {
+            return false;
+        }
+        let button = TBBUTTON {
+            iBitmap: I_IMAGENONE,
+            idCommand: registration.command as i32,
+            fsState: TBSTATE_ENABLED as u8,
+            fsStyle: BTNS_CHECK as u8 | BTNS_SHOWTEXT as u8,
+            iString: index,
+            ..unsafe { std::mem::zeroed() }
+        };
+        if send(toolbar, TB_ADDBUTTONSW, 1, &button as *const _ as isize) == 0 {
+            return false;
+        }
+        let Some(panel) = (registration.create)(frame) else {
+            return false;
+        };
+        write(|a| a.sidebar.panels.push((registration, panel)));
+    }
+    true
+}
+pub(super) fn show(id: u32, toggle: bool) {
+    write(|a| {
+        let s = &mut a.sidebar;
+        s.collapsed = toggle && s.active == id && !s.collapsed;
+        s.active = id;
     });
     super::frame::layout_frame();
     unsafe {
@@ -95,302 +128,120 @@ pub(super) fn show(panel: Panel, toggle: bool) {
     }
 }
 pub(super) fn prepare() {
-    let (frame, search, lists, toolbar, tools) = read(|a| {
-        (
-            a.frame,
-            a.search,
-            [a.results, a.source_list],
-            a.toolbar,
-            a.source_tools,
-        )
-    });
-    let value = dpi().window(frame);
-    let (font, height) = font_for(value);
-    for h in [search]
-        .into_iter()
-        .chain(lists)
-        .chain(toolbar)
-        .chain(tools)
-    {
-        bind(h, font);
-    }
-    for h in lists {
-        // A transparent small image defines a fixed two-line native row height.
-        unsafe {
-            let image =
-                ImageList_Create(1, height * 2 + layout::scale(8, value), ILC_COLOR32, 1, 1);
-            let old = send(h, LVM_SETIMAGELIST, LVSIL_SMALL as usize, image as isize);
-            if old != 0 {
-                ImageList_Destroy(old as _);
-            }
-        }
-    }
-}
-pub(super) fn fit(h: HWND) {
-    let width = client(h).right.max(1);
-    send(h, LVM_SETCOLUMNWIDTH, 0, width as isize);
-    unsafe {
-        ShowScrollBar(h, SB_HORZ, 0);
+    let (frame, sidebar) = read(|a| (a.frame, a.sidebar.clone()));
+    let m = super::metrics(frame);
+    bind(sidebar.toolbar, m.font);
+    let width = m.label_width(PANELS.iter().map(|r| resources::text(r.label)), 66) as u32;
+    let row = m.row() as u32;
+    send(
+        sidebar.toolbar,
+        TB_SETBUTTONSIZE,
+        0,
+        (width | (row << 16)) as isize,
+    );
+    send(
+        sidebar.toolbar,
+        TB_SETBUTTONWIDTH,
+        0,
+        (width | (width << 16)) as isize,
+    );
+    for (_, panel) in sidebar.panels {
+        panel.prepare(&m);
     }
 }
 pub(super) fn layout(bottom: i32) -> i32 {
-    let (frame, search, results, sources, toolbar, tools, splitter, width, panel, collapsed) =
-        read(|a| {
-            (
-                a.frame,
-                a.search,
-                a.results,
-                a.source_list,
-                a.toolbar,
-                a.source_tools,
-                a.splitter,
-                a.sidebar,
-                a.session.panel,
-                a.config.collapsed,
-            )
-        });
-    let value = dpi().window(frame);
-    let s = |v| layout::scale(v, value);
-    let (_, height) = font_for(value);
-    let row = height + s(12);
-    let x = s(TOOLBAR_WIDTH);
-    for (i, h) in toolbar.into_iter().enumerate() {
-        place(
-            h,
-            layout::rect(s(3), s(4) + (row + s(4)) * i as i32, x - s(6), row),
+    let (frame, sidebar) = read(|a| (a.frame, a.sidebar.clone()));
+    let m = super::metrics(frame);
+    let s = |n| m.px(n);
+    let x = (send(sidebar.toolbar, TB_GETBUTTONSIZE, 0, 0) & 0xffff) as i32 + s(6);
+    let width = s(sidebar.width).min((client(frame).right - x - s(160)).max(0));
+    place(
+        sidebar.toolbar,
+        layout::rect(s(3), s(4), x - s(6), bottom - s(8)),
+    );
+    for (registration, panel) in sidebar.panels {
+        let visible = !sidebar.collapsed && sidebar.active == registration.id;
+        send(
+            sidebar.toolbar,
+            TB_CHECKBUTTON,
+            registration.command as usize,
+            isize::from(visible),
         );
-    }
-    let width = s(width).min((client(frame).right - x - s(160)).max(0));
-    let visible = !collapsed;
-    unsafe {
-        ShowWindow(
-            search,
-            if visible && panel == Panel::Results {
-                SW_SHOW
-            } else {
-                SW_HIDE
-            },
-        );
-        ShowWindow(
-            results,
-            if visible && panel == Panel::Results {
-                SW_SHOW
-            } else {
-                SW_HIDE
-            },
-        );
-        ShowWindow(
-            sources,
-            if visible && panel == Panel::Sources {
-                SW_SHOW
-            } else {
-                SW_HIDE
-            },
-        );
-        ShowWindow(splitter, if visible { SW_SHOW } else { SW_HIDE });
-        for h in tools {
-            ShowWindow(
-                h,
-                if visible && panel == Panel::Sources {
-                    SW_SHOW
-                } else {
-                    SW_HIDE
-                },
-            );
+        for control in panel.controls() {
+            crate::native::show(control, visible);
+        }
+        if visible {
+            panel.layout(layout::rect(x, 0, width, bottom), &m);
         }
     }
-    if collapsed {
+    crate::native::show(sidebar.splitter, !sidebar.collapsed);
+    if sidebar.collapsed {
         return x;
     }
-    place(search, layout::rect(x + s(4), s(4), width - s(8), row));
-    for (i, h) in tools.into_iter().enumerate() {
-        place(
-            h,
-            layout::rect(
-                x + width * (i as i32 % 2) / 2,
-                s(4) + row * (i as i32 / 2),
-                width / 2,
-                row,
-            ),
-        );
-    }
-    for (h, rows) in [(results, 1), (sources, 2)] {
-        let top = rows * row + s(8);
-        place(h, layout::rect(x, top, width, bottom - top));
-        fit(h);
-    }
-    place(splitter, layout::rect(x + width, 0, s(5), bottom));
+    place(sidebar.splitter, layout::rect(x + width, 0, s(5), bottom));
     x + width + s(5)
 }
-fn cell(source: bool, row: usize, detail: bool) -> String {
-    if source {
-        sources::cell(row, detail)
-    } else {
-        catalog::cell(row, detail)
+pub(super) fn command(w: usize) -> bool {
+    let id = w as u16;
+    if let Some(r) = PANELS.iter().find(|r| r.command == id) {
+        show(r.id, true);
+        return true;
     }
-}
-unsafe fn copy_text(value: &str, buffer: *mut u16, capacity: i32) {
-    if !buffer.is_null() && capacity > 0 {
-        let s = wide(value);
-        let n = (capacity as usize - 1).min(s.len() - 1);
-        unsafe {
-            ptr::copy_nonoverlapping(s.as_ptr(), buffer, n);
-            *buffer.add(n) = 0;
-        }
-    }
+    let panels = read(|a| a.sidebar.panels.clone());
+    panels.iter().any(|(_, p)| p.command(id, (w >> 16) as u32))
 }
 pub(super) unsafe fn notify(l: isize) -> Option<isize> {
-    unsafe {
-        let hdr = &*(l as *const NMHDR);
-        if hdr.idFrom != RESULTS as usize && hdr.idFrom != SOURCE_LIST as usize {
-            return None;
-        }
-        let source = hdr.idFrom == SOURCE_LIST as usize;
-        match hdr.code {
-            LVN_GETDISPINFOW => {
-                let i = &mut *(l as *mut NMLVDISPINFOW);
-                if i.item.mask & LVIF_TEXT != 0 {
-                    copy_text(
-                        &cell(source, i.item.iItem as usize, true),
-                        i.item.pszText,
-                        i.item.cchTextMax,
-                    );
-                }
-                Some(0)
-            }
-            LVN_GETINFOTIPW => {
-                let i = &mut *(l as *mut NMLVGETINFOTIPW);
-                copy_text(
-                    &cell(source, i.iItem as usize, true),
-                    i.pszText,
-                    i.cchTextMax,
-                );
-                Some(0)
-            }
-            NM_CLICK | NM_DBLCLK if source || hdr.code == NM_DBLCLK => {
-                let i = &*(l as *const NMITEMACTIVATE);
-                if i.iItem >= 0 {
-                    if source {
-                        sources::open_row(i.iItem as isize);
-                    } else {
-                        catalog::open_row(i.iItem as isize);
-                    }
-                }
-                Some(0)
-            }
-            NM_CUSTOMDRAW => {
-                let d = &mut *(l as *mut NMLVCUSTOMDRAW);
-                match d.nmcd.dwDrawStage {
-                    CDDS_PREPAINT => Some(CDRF_NOTIFYITEMDRAW as isize),
-                    CDDS_ITEMPREPAINT => {
-                        let selected = send(
-                            hdr.hwndFrom,
-                            LVM_GETITEMSTATE,
-                            d.nmcd.dwItemSpec,
-                            LVIS_SELECTED as isize,
-                        ) != 0;
-                        let bg = if selected {
-                            COLOR_HIGHLIGHT
-                        } else {
-                            COLOR_WINDOW
-                        };
-                        let fg = if selected {
-                            COLOR_HIGHLIGHTTEXT
-                        } else {
-                            COLOR_WINDOWTEXT
-                        };
-                        FillRect(d.nmcd.hdc, &d.nmcd.rc, GetSysColorBrush(bg));
-                        SetTextColor(d.nmcd.hdc, GetSysColor(fg));
-                        SetBkMode(d.nmcd.hdc, TRANSPARENT as i32);
-                        let content = cell(source, d.nmcd.dwItemSpec, false);
-                        let mut lines = content.splitn(2, '\n');
-                        let mut r = d.nmcd.rc;
-                        r.left += layout::scale(4, dpi().window(hdr.hwndFrom));
-                        let mid = (r.top + r.bottom) / 2;
-                        r.bottom = mid;
-                        let mut first = wide(lines.next().unwrap_or(""));
-                        DrawTextW(
-                            d.nmcd.hdc,
-                            first.as_mut_ptr(),
-                            -1,
-                            &mut r,
-                            DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX | DT_VCENTER,
-                        );
-                        r.top = mid;
-                        r.bottom = d.nmcd.rc.bottom;
-                        let mut second = wide(lines.next().unwrap_or(""));
-                        DrawTextW(
-                            d.nmcd.hdc,
-                            second.as_mut_ptr(),
-                            -1,
-                            &mut r,
-                            DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX | DT_VCENTER,
-                        );
-                        if d.nmcd.uItemState & CDIS_FOCUS != 0 {
-                            DrawFocusRect(d.nmcd.hdc, &d.nmcd.rc);
-                        }
-                        Some(CDRF_SKIPDEFAULT as isize)
-                    }
-                    _ => Some(CDRF_DODEFAULT as isize),
-                }
-            }
-            _ => None,
-        }
-    }
+    let hwnd = unsafe { (*(l as *const NMHDR)).hwndFrom };
+    let panel = read(|a| a.sidebar.owner(hwnd))?;
+    unsafe { panel.notify(l) }
 }
-unsafe extern "system" fn edit_proc(
-    h: HWND,
+pub(super) unsafe fn translate(frame: HWND, msg: &MSG) -> bool {
+    let (toolbar, panel) = read(|a| (a.sidebar.toolbar, a.sidebar.owner(msg.hwnd)));
+    if let Some(panel) = &panel
+        && msg.message == WM_KEYDOWN
+        && panel.key(msg.hwnd, msg.wParam)
+    {
+        return true;
+    }
+    (msg.hwnd == toolbar || panel.is_some()) && unsafe { IsDialogMessageW(frame, msg) != 0 }
+}
+pub(super) unsafe extern "system" fn splitter_proc(
+    hwnd: HWND,
     msg: u32,
     w: usize,
     l: isize,
-    _id: usize,
-    _data: usize,
 ) -> isize {
     unsafe {
-        if msg == WM_IME_STARTCOMPOSITION {
-            write(|a| a.composing = true);
-            catalog::input_changed();
-        }
-        let result = default_subclass(h, msg, w, l);
-        if msg == WM_IME_ENDCOMPOSITION {
-            write(|a| a.composing = false);
-            catalog::input_changed();
-        }
-        if msg == WM_NCDESTROY {
-            remove_subclass(h, Some(edit_proc), 1);
-        }
-        result
-    }
-}
-unsafe extern "system" fn list_proc(
-    h: HWND,
-    msg: u32,
-    w: usize,
-    l: isize,
-    _id: usize,
-    _data: usize,
-) -> isize {
-    unsafe {
-        if msg == WM_KEYDOWN && w == VK_F1 as usize {
-            let row = send(h, LVM_GETNEXTITEM, usize::MAX, LVNI_SELECTED as isize);
-            if row >= 0 {
-                let content = cell(h == read(|a| a.source_list), row as usize, true);
-                MessageBoxW(
-                    h,
-                    wide(&content).as_ptr(),
-                    wide(&resources::text(IDS_SOURCE)).as_ptr(),
-                    MB_OK | MB_ICONINFORMATION,
-                );
+        match msg {
+            WM_SETCURSOR => {
+                SetCursor(LoadCursorW(ptr::null_mut(), IDC_SIZEWE));
+                return 1;
             }
-            return 0;
-        }
-        if msg == WM_NCDESTROY {
-            let image = send(h, LVM_SETIMAGELIST, LVSIL_SMALL as usize, 0);
-            if image != 0 {
-                ImageList_Destroy(image as _);
+            WM_LBUTTONDOWN => {
+                SetCapture(hwnd);
+                return 0;
             }
-            remove_subclass(h, Some(list_proc), 1);
+            WM_MOUSEMOVE if GetCapture() == hwnd => {
+                let mut p = POINT {
+                    x: l as u16 as i16 as i32,
+                    y: (l >> 16) as u16 as i16 as i32,
+                };
+                let (frame, toolbar) = read(|a| (a.frame, a.sidebar.toolbar));
+                MapWindowPoints(hwnd, frame, &mut p, 1);
+                let x = bounds(toolbar, frame).right + layout::scale(3, dpi().window(frame));
+                let width = MulDiv(p.x - x, 96, dpi().window(frame) as i32).clamp(120, 2000);
+                write(|a| a.sidebar.width = width);
+                super::frame::layout_frame();
+                return 0;
+            }
+            WM_LBUTTONUP => {
+                if GetCapture() == hwnd {
+                    ReleaseCapture();
+                }
+                return 0;
+            }
+            _ => {}
         }
-        default_subclass(h, msg, w, l)
+        DefWindowProcW(hwnd, msg, w, l)
     }
 }

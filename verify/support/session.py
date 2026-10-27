@@ -57,6 +57,13 @@ class Session:
         n.send(self.status, 0x40D, 0, self.memory)
         return self.remote_text(self.memory, size)
 
+    def toolbar_text(self, command):
+        toolbar = n.get_item(self.frame, 1113)
+        count = n.send(toolbar, 0x44B, command, 0)  # TB_GETBUTTONTEXTW
+        assert 0 <= count < 4096
+        assert n.send(toolbar, 0x44B, command, self.memory) == count
+        return self.remote_text(self.memory, (count + 1) * 2)
+
     def count(self, control=None):
         return n.send(control or self.results, 0x1004)
 

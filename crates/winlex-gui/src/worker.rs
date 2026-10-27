@@ -1,10 +1,11 @@
 //! A single background worker. Results own their data and never contain HWNDs.
 use std::{
+    collections::VecDeque,
     path::PathBuf,
     sync::{
-        Arc,
+        Arc, Condvar, Mutex,
         atomic::{AtomicBool, Ordering},
-        mpsc::{self, Receiver, Sender, SyncSender, TrySendError},
+        mpsc::{self, Receiver, SyncSender, TrySendError},
     },
     thread,
 };
@@ -33,9 +34,11 @@ impl Drop for ReadyEvent {
 struct Results {
     tx: Option<SyncSender<Completion>>,
     ready: Arc<ReadyEvent>,
+    requests: Arc<Requests>,
 }
 impl Drop for Results {
     fn drop(&mut self) {
+        self.requests.close();
         self.tx.take();
         self.ready.signal();
     }
@@ -62,6 +65,7 @@ impl Ticket {
 }
 pub enum Job {
     Reopen {
+        document: u64,
         previous: Arc<Catalog>,
         current: Arc<Catalog>,
         source: String,
@@ -92,6 +96,105 @@ pub enum Job {
         path: PathBuf,
     },
 }
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Target {
+    Load,
+    Search,
+    Discover,
+    Document(u64),
+    Reopen(u64),
+}
+impl Target {
+    fn replaces(self, other: Self) -> bool {
+        match (self, other) {
+            (Self::Document(a) | Self::Reopen(a), Self::Document(b) | Self::Reopen(b)) => a == b,
+            _ => self == other,
+        }
+    }
+}
+impl Job {
+    fn target(&self) -> Target {
+        match self {
+            Self::Load { .. } => Target::Load,
+            Self::Search { .. } => Target::Search,
+            Self::Discover { .. } => Target::Discover,
+            Self::Describe { document, .. } | Self::Inspect { document, .. } => {
+                Target::Document(*document)
+            }
+            Self::Reopen { document, .. } => Target::Reopen(*document),
+        }
+    }
+}
+#[derive(Default)]
+struct Pending {
+    jobs: VecDeque<(Ticket, Job)>,
+    active: Option<(Target, Ticket)>,
+}
+#[derive(Default)]
+struct Requests {
+    pending: Mutex<Pending>,
+    wake: Condvar,
+    stop: AtomicBool,
+}
+impl Requests {
+    fn submit(&self, ticket: Ticket, job: Job) -> Result<(), String> {
+        let mut pending = self.pending.lock().unwrap();
+        if self.stop.load(Ordering::Relaxed) {
+            return Err("Catalog worker stopped".into());
+        }
+        let target = job.target();
+        if let Some((key, old)) = &pending.active
+            && target.replaces(*key)
+        {
+            old.cancel();
+        }
+        pending.jobs.retain(|(old, queued)| {
+            if target.replaces(queued.target()) {
+                old.cancel();
+            }
+            !old.cancelled()
+        });
+        pending.jobs.push_back((ticket, job));
+        self.wake.notify_one();
+        Ok(())
+    }
+    fn next(&self) -> Option<(Ticket, Job)> {
+        let mut pending = self.pending.lock().unwrap();
+        pending.active = None;
+        loop {
+            if self.stop.load(Ordering::Relaxed) {
+                return None;
+            }
+            if let Some((ticket, job)) = pending.jobs.pop_front() {
+                if ticket.cancelled() {
+                    continue;
+                }
+                pending.active = Some((job.target(), ticket.clone()));
+                return Some((ticket, job));
+            }
+            pending = self.wake.wait(pending).unwrap();
+        }
+    }
+    fn cancel(&self, ticket: &Ticket) {
+        ticket.cancel();
+        self.pending
+            .lock()
+            .unwrap()
+            .jobs
+            .retain(|(t, _)| !t.cancelled());
+    }
+    fn close(&self) {
+        self.stop.store(true, Ordering::Relaxed);
+        let mut pending = self.pending.lock().unwrap();
+        if let Some((_, ticket)) = &pending.active {
+            ticket.cancel();
+        }
+        for (ticket, _) in pending.jobs.drain(..) {
+            ticket.cancel();
+        }
+        self.wake.notify_one();
+    }
+}
 #[derive(Clone)]
 pub struct Discovered {
     pub missing: bool,
@@ -113,28 +216,22 @@ pub enum Output {
     Matches(Vec<EntitySummary>),
     SearchDone(usize),
     Discovered(Vec<Discovered>),
-    Inspected {
-        document: u64,
-        catalog: Arc<Catalog>,
-    },
-    Description {
-        document: u64,
-        text: String,
-    },
+    Inspected(Arc<Catalog>),
+    Description(String),
 }
 pub struct Completion {
     pub id: u64,
+    pub target: Target,
     pub result: Result<Output, String>,
 }
 pub struct Worker {
-    tx: Option<Sender<(Ticket, Job)>>,
+    requests: Arc<Requests>,
     pub rx: Receiver<Completion>,
-    stop: Arc<AtomicBool>,
     ready: Arc<ReadyEvent>,
 }
 impl Worker {
     pub fn new() -> Result<Self, String> {
-        let (tx, requests) = mpsc::channel::<(Ticket, Job)>();
+        let requests = Arc::new(Requests::default());
         let (results, rx) = mpsc::sync_channel(8);
         let handle = unsafe { CreateEventW(std::ptr::null(), 0, 0, std::ptr::null()) };
         if handle.is_null() {
@@ -144,44 +241,39 @@ impl Worker {
         let results = Results {
             tx: Some(results),
             ready: ready.clone(),
+            requests: requests.clone(),
         };
-        let stop = Arc::new(AtomicBool::new(false));
-        let stopped = stop.clone();
+        let queue = requests.clone();
         thread::Builder::new()
             .name("winlex-catalog".into())
             .spawn(move || {
-                while let Ok((ticket, job)) = requests.recv() {
-                    if stopped.load(Ordering::Relaxed) {
-                        break;
-                    }
-                    if ticket.cancelled() {
-                        continue;
-                    }
-                    let publish = |result| publish(&results, &ticket, &stopped, result);
+                while let Some((ticket, job)) = queue.next() {
+                    let target = job.target();
+                    let publish = |result| publish(&results, &ticket, target, &queue.stop, result);
                     let result = execute(job, &ticket, &publish);
-                    if !ticket.cancelled() && !stopped.load(Ordering::Relaxed) {
+                    if !ticket.cancelled() && !queue.stop.load(Ordering::Relaxed) {
                         let failed = publish(result).is_err();
                         if failed && !ticket.cancelled() {
                             break;
                         }
                     }
-                    results.ready.signal();
                 }
             })
             .map_err(|e| e.to_string())?;
         Ok(Self {
-            tx: Some(tx),
+            requests,
             rx,
-            stop,
             ready,
         })
     }
     pub fn submit(&self, ticket: Ticket, job: Job) -> Result<(), String> {
-        self.tx
-            .as_ref()
-            .ok_or_else(|| "Catalog worker stopped".to_owned())?
-            .send((ticket, job))
-            .map_err(|_| "Catalog worker stopped".into())
+        self.requests.submit(ticket, job)
+    }
+    pub fn cancel(&self, ticket: &Ticket) {
+        self.requests.cancel(ticket);
+    }
+    pub fn resignal(&self) {
+        self.ready.signal();
     }
     pub fn event(&self) -> HANDLE {
         self.ready.0 as HANDLE
@@ -189,19 +281,20 @@ impl Worker {
 }
 impl Drop for Worker {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-        self.tx.take();
+        self.requests.close();
         // A running file read may finish, but shutdown never waits on disk I/O.
     }
 }
 fn publish(
     results: &Results,
     ticket: &Ticket,
+    target: Target,
     stopped: &AtomicBool,
     result: Result<Output, String>,
 ) -> Result<(), String> {
     let mut value = Completion {
         id: ticket.id,
+        target,
         result,
     };
     loop {
@@ -233,6 +326,7 @@ fn execute(
             source,
             entity,
             arch,
+            ..
         } => {
             let result = (|| -> Result<Option<EntitySummary>, String> {
                 let old = previous
@@ -262,15 +356,15 @@ fn execute(
                         Ok(())
                     })
                     .map_err(|e| e.to_string())?;
-                Ok(if matches.len() == 1 {
-                    matches.pop()
-                } else {
-                    None
-                })
+                match matches.len() {
+                    0 => Ok(None),
+                    1 => Ok(matches.pop()),
+                    _ => Err("Current entity is ambiguous".into()),
+                }
             })();
             Ok(Output::Reopened {
                 catalog: current,
-                entity: result.ok().flatten(),
+                entity: result?,
             })
         }
         Job::Load {
@@ -388,23 +482,17 @@ fn execute(
             entries.sort_by(|a, b| a.path.cmp(&b.path));
             Ok(Output::Discovered(entries))
         }
-        Job::Inspect { document, path } => Catalog::open(path)
-            .map(|c| Output::Inspected {
-                document,
-                catalog: Arc::new(c),
-            })
+        Job::Inspect { path, .. } => Catalog::open(path)
+            .map(|c| Output::Inspected(Arc::new(c)))
             .map_err(|e| format!("{e:#}")),
         Job::Describe {
-            document,
             catalog,
             entity,
             arch,
+            ..
         } => catalog
             .describe(&entity, Some(arch))
-            .map(|value| Output::Description {
-                document,
-                text: format!("{value:#}").replace('\n', "\r\n"),
-            })
+            .map(|value| Output::Description(format!("{value:#}").replace('\n', "\r\n")))
             .map_err(|e| format!("{e:#}")),
     }
 }
@@ -413,6 +501,114 @@ fn execute(
 mod tests {
     use super::*;
     use windows_sys::Win32::{Foundation::WAIT_OBJECT_0, System::Threading::WaitForSingleObject};
+
+    #[test]
+    fn replacing_and_closing_documents_releases_queued_snapshots() {
+        let requests = Requests::default();
+        let catalog = Arc::new(
+            Catalog::open(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../inputs/Windows.Win32.winmd"
+            ))
+            .unwrap(),
+        );
+        let weak = Arc::downgrade(&catalog);
+        let old = Ticket::new(1);
+        requests
+            .submit(
+                old.clone(),
+                Job::Describe {
+                    document: 10,
+                    catalog: catalog.clone(),
+                    entity: String::new(),
+                    arch: Architecture::X64,
+                },
+            )
+            .unwrap();
+        let closed = Ticket::new(2);
+        requests
+            .submit(
+                closed.clone(),
+                Job::Describe {
+                    document: 20,
+                    catalog,
+                    entity: String::new(),
+                    arch: Architecture::X64,
+                },
+            )
+            .unwrap();
+        requests
+            .submit(
+                Ticket::new(3),
+                Job::Inspect {
+                    document: 30,
+                    path: PathBuf::new(),
+                },
+            )
+            .unwrap();
+        requests
+            .submit(
+                Ticket::new(4),
+                Job::Inspect {
+                    document: 10,
+                    path: PathBuf::new(),
+                },
+            )
+            .unwrap();
+        assert!(old.cancelled());
+        requests.cancel(&closed);
+        assert!(
+            weak.upgrade().is_none(),
+            "queued snapshots must be released before dequeue"
+        );
+        let (active, _) = requests.next().unwrap();
+        assert_eq!(active.id, 3);
+        requests
+            .submit(
+                Ticket::new(5),
+                Job::Inspect {
+                    document: 30,
+                    path: PathBuf::new(),
+                },
+            )
+            .unwrap();
+        assert!(active.cancelled());
+        assert_eq!(requests.next().unwrap().0.id, 4);
+        assert_eq!(requests.next().unwrap().0.id, 5);
+        requests.close();
+        assert!(requests.next().is_none());
+    }
+    #[test]
+    fn load_burst_keeps_latest_request_without_reordering_other_work() {
+        let requests = Requests::default();
+        for id in 1..100 {
+            requests
+                .submit(
+                    Ticket::new(id),
+                    Job::Load {
+                        paths: vec![],
+                        previous: vec![],
+                        reload: vec![],
+                    },
+                )
+                .unwrap();
+            if id == 50 {
+                requests
+                    .submit(
+                        Ticket::new(100),
+                        Job::Discover {
+                            files: vec![],
+                            directories: vec![],
+                        },
+                    )
+                    .unwrap();
+            }
+        }
+        assert_eq!(requests.pending.lock().unwrap().jobs.len(), 2);
+        assert_eq!(requests.next().unwrap().0.id, 100);
+        assert_eq!(requests.next().unwrap().0.id, 99);
+        requests.close();
+    }
 
     #[test]
     fn completion_event_wakes_without_ui_polling() {
@@ -438,8 +634,8 @@ mod tests {
 
     #[test]
     fn worker_exit_signals_disconnection_and_rejects_new_jobs() {
-        let mut worker = Worker::new().unwrap();
-        worker.tx.take();
+        let worker = Worker::new().unwrap();
+        worker.requests.close();
         assert_eq!(
             unsafe { WaitForSingleObject(worker.event(), 5000) },
             WAIT_OBJECT_0
@@ -471,10 +667,9 @@ mod tests {
             worker
                 .submit(
                     ticket,
-                    Job::Load {
-                        paths: vec![],
-                        previous: vec![],
-                        reload: vec![],
+                    Job::Inspect {
+                        document: id,
+                        path: PathBuf::new(),
                     },
                 )
                 .unwrap();

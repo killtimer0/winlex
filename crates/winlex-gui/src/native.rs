@@ -27,9 +27,12 @@ pub unsafe fn procedure<T: Copy>(module: HMODULE, name: &[u8]) -> Option<T> {
 }
 
 pub fn child(parent: HWND, class: &str, text: &str, style: u32, id: u16) -> HWND {
+    child_ex(parent, class, text, style, 0, id)
+}
+pub fn child_ex(parent: HWND, class: &str, text: &str, style: u32, ex_style: u32, id: u16) -> HWND {
     unsafe {
         CreateWindowExW(
-            0,
+            ex_style,
             wide(class).as_ptr(),
             wide(text).as_ptr(),
             WS_CHILD | WS_VISIBLE | style,

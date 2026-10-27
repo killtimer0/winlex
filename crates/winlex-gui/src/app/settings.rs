@@ -83,8 +83,9 @@ pub(super) fn save_window(hwnd: HWND) -> Result<(), String> {
         read(|a| {
             a.config.save_layout(
                 window,
-                a.sidebar,
-                u32::from(a.session.panel == catalog::Panel::Sources),
+                a.sidebar.width,
+                a.sidebar.active,
+                a.sidebar.collapsed,
             )
         })
     }

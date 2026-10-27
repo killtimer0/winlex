@@ -6,7 +6,7 @@
 //! that can synchronously reenter a window procedure.
 use crate::{
     dpi::{Dpi, Font},
-    layout::{self, Arrangement, Placement},
+    layout,
     native::*,
 };
 use std::{cell::RefCell, ptr};
@@ -14,6 +14,8 @@ use std::{cell::RefCell, ptr};
 mod catalog;
 mod document;
 mod frame;
+mod metadata;
+mod panel;
 mod settings;
 mod sidebar;
 mod sources;
@@ -21,8 +23,8 @@ mod workspace;
 
 use crate::resources::{self, *};
 use document::{document_proc, restore_focus};
-use frame::{frame_proc, splitter_proc};
-use workspace::active;
+use frame::frame_proc;
+use workspace::{active, document, edit_document};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Architecture {
@@ -59,42 +61,14 @@ impl Architecture {
     }
 }
 
-#[derive(Clone)]
-struct Document {
-    id: u64,
-    hwnd: HWND,
-    declaration: HWND,
-    actions: Vec<(u16, HWND)>,
-    old_version: bool,
-    last_focus: HWND,
-    placement: Placement,
-    title: String,
-    architecture: Architecture,
-    query: catalog::DocumentQuery,
-}
-impl Document {
-    fn architecture_name(&self) -> String {
-        self.architecture.label()
-    }
-}
 struct App {
     config: crate::config::Config,
     dpi: Dpi,
     frame: HWND,
-    mdi: HWND,
-    search: HWND,
-    source_list: HWND,
-    toolbar: [HWND; 2],
-    source_tools: [HWND; 4],
-    composing: bool,
-    results: HWND,
-    splitter: HWND,
-    document_tabs: HWND,
     status: HWND,
     session: catalog::Session,
-    sidebar: i32,
-    arrangement: Arrangement,
-    documents: Vec<Document>,
+    sidebar: sidebar::Sidebar,
+    workspace: workspace::Workspace,
     fonts: Vec<Font>,
 }
 thread_local! {static APP:RefCell<Option<App>>=const {RefCell::new(None)};}
@@ -107,16 +81,6 @@ fn write<T>(f: impl FnOnce(&mut App) -> T) -> T {
 }
 fn dpi() -> Dpi {
     read(|a| a.dpi)
-}
-fn document(hwnd: HWND) -> Option<Document> {
-    read(|a| a.documents.iter().find(|d| d.hwnd == hwnd).cloned())
-}
-fn edit_document(hwnd: HWND, edit: impl FnOnce(&mut Document)) {
-    write(|a| {
-        if let Some(doc) = a.documents.iter_mut().find(|d| d.hwnd == hwnd) {
-            edit(doc);
-        }
-    });
 }
 fn font_for(value: u32) -> (HFONT, i32) {
     if let Some(font) = read(|a| {
@@ -137,36 +101,28 @@ fn bind(hwnd: HWND, font: HFONT) {
         send(hwnd, WM_SETFONT, font as usize, 1);
     }
 }
+fn metrics(hwnd: HWND) -> layout::Metrics {
+    let dpi = dpi().window(hwnd);
+    let (font, height) = font_for(dpi);
+    layout::Metrics { dpi, font, height }
+}
 
 pub fn run(
     dpi: Dpi,
     config: crate::config::Config,
     paths: Vec<std::path::PathBuf>,
 ) -> Result<(), String> {
-    let mut session = catalog::Session::new()?;
-    if config.panel == 1 {
-        session.panel = catalog::Panel::Sources;
-    }
-    let sidebar = config.sidebar;
+    let session = catalog::Session::new()?;
+    let sidebar = sidebar::Sidebar::new(&config);
     APP.with(|a| {
         *a.borrow_mut() = Some(App {
             config,
             dpi,
             frame: ptr::null_mut(),
-            mdi: ptr::null_mut(),
-            search: ptr::null_mut(),
-            source_list: ptr::null_mut(),
-            toolbar: [ptr::null_mut(); 2],
-            source_tools: [ptr::null_mut(); 4],
-            composing: false,
-            results: ptr::null_mut(),
-            splitter: ptr::null_mut(),
-            document_tabs: ptr::null_mut(),
             status: ptr::null_mut(),
             session,
             sidebar,
-            arrangement: Arrangement::Free,
-            documents: Vec::new(),
+            workspace: workspace::Workspace::default(),
             fonts: Vec::new(),
         })
     });
@@ -187,7 +143,7 @@ unsafe fn run_windows(paths: Vec<std::path::PathBuf>) -> Result<(), String> {
         let classes: [(&str, WNDPROC); 3] = [
             ("Winlex.Frame", Some(frame_proc)),
             ("Winlex.Document", Some(document_proc)),
-            ("Winlex.Splitter", Some(splitter_proc)),
+            ("Winlex.Splitter", Some(sidebar::splitter_proc)),
         ];
         for (name, proc) in classes {
             let name = wide(name);
@@ -271,8 +227,7 @@ unsafe fn run_windows(paths: Vec<std::path::PathBuf>) -> Result<(), String> {
             if msg.message == WM_QUIT {
                 break;
             }
-            let (mdi, search, results, document_tabs, source_list) =
-                read(|a| (a.mdi, a.search, a.results, a.document_tabs, a.source_list));
+            let (mdi, document_tabs) = read(|a| (a.workspace.mdi, a.workspace.tabs));
             if TranslateMDISysAccel(mdi, &msg) != 0 {
                 continue;
             }
@@ -291,23 +246,6 @@ unsafe fn run_windows(paths: Vec<std::path::PathBuf>) -> Result<(), String> {
                         }
                         continue;
                     }
-                    VK_RETURN if msg.hwnd == search && !frame::composing() => {
-                        catalog::search();
-                        continue;
-                    }
-                    VK_RETURN if msg.hwnd == results => {
-                        catalog::open_selected();
-                        continue;
-                    }
-                    VK_RETURN if msg.hwnd == source_list => {
-                        sources::open_row(send(
-                            source_list,
-                            LVM_GETNEXTITEM,
-                            usize::MAX,
-                            LVNI_SELECTED as isize,
-                        ));
-                        continue;
-                    }
                     VK_RETURN if msg.hwnd == document_tabs => {
                         restore_focus(active());
                         continue;
@@ -315,9 +253,8 @@ unsafe fn run_windows(paths: Vec<std::path::PathBuf>) -> Result<(), String> {
                     _ => {}
                 }
             }
-            if ([search, results, document_tabs, source_list].contains(&msg.hwnd)
-                || read(|a| a.toolbar.contains(&msg.hwnd) || a.source_tools.contains(&msg.hwnd)))
-                && IsDialogMessageW(frame, &msg) != 0
+            if sidebar::translate(frame, &msg)
+                || msg.hwnd == document_tabs && IsDialogMessageW(frame, &msg) != 0
             {
                 continue;
             }

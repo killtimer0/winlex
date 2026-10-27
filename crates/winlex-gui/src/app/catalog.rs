@@ -1,76 +1,41 @@
 //! UI transactions and immutable document bindings. HWNDs never cross the worker boundary.
-use super::{Architecture, document, edit_document, read, workspace, write};
+use super::{
+    Architecture,
+    metadata::{self, Binding},
+    read, write,
+};
 use crate::native::text;
 use crate::{
     native::*,
     resources::{self, *},
-    worker::{Completion, Job, Output, Ticket, Worker},
+    worker::{Completion, Job, Output, Target, Ticket, Worker},
 };
 use std::{path::PathBuf, sync::Arc};
 use winlex_core::{Catalog, EntitySummary, SourceData};
 
-pub(super) const SEARCH_TIMER: usize = 1;
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum Panel {
-    Results,
-    Sources,
+struct Load {
+    ticket: Ticket,
+    paths: Vec<PathBuf>,
+    pending: Vec<PathBuf>,
+}
+enum Search {
+    Idle,
+    Waiting,
+    Running(Ticket),
+    Done(usize),
+    Failed(String),
 }
 pub(super) struct Session {
     pub worker: Worker,
     serial: u64,
     pub catalog: Option<Arc<Catalog>>,
     pub inputs: Vec<SourceData>,
-    desired_paths: Vec<PathBuf>,
-    load: Option<Ticket>,
-    search: Option<Ticket>,
-    debounce: Option<std::time::Instant>,
+    load: Option<Load>,
+    load_error: Option<String>,
+    search: Search,
     pub results: Vec<EntitySummary>,
-    pub panel: Panel,
     pub sources: super::sources::Sources,
-    pub status: String,
-}
-#[derive(Clone)]
-pub(super) enum Binding {
-    Entity {
-        id: String,
-        catalog: Arc<Catalog>,
-        architecture_mask: i32,
-    },
-    Source {
-        path: PathBuf,
-        catalog: Option<Arc<Catalog>>,
-    },
-}
-#[derive(Clone)]
-pub(super) struct DocumentQuery {
-    pub binding: Binding,
-    pub ticket: Option<Ticket>,
-    pub content: Arc<str>,
-    pub source: String,
-}
-impl DocumentQuery {
-    pub fn new(binding: Binding) -> Self {
-        Self {
-            binding,
-            ticket: None,
-            content: "".into(),
-            source: String::new(),
-        }
-    }
-    pub fn cancel(&self) {
-        if let Some(t) = &self.ticket {
-            t.cancel();
-        }
-    }
-    pub fn is_source(&self) -> bool {
-        matches!(self.binding, Binding::Source { .. })
-    }
-    pub fn entity(&self) -> Option<&str> {
-        match &self.binding {
-            Binding::Entity { id, .. } => Some(id),
-            _ => None,
-        }
-    }
+    notice: Option<String>,
 }
 impl Session {
     pub fn new() -> Result<Self, String> {
@@ -79,44 +44,85 @@ impl Session {
             serial: 0,
             catalog: None,
             inputs: vec![],
-            desired_paths: vec![],
             load: None,
-            search: None,
-            debounce: None,
+            load_error: None,
+            search: Search::Idle,
             results: vec![],
-            panel: Panel::Results,
             sources: Default::default(),
-            status: resources::text(IDS_EMPTY_CATALOG),
+            notice: None,
         })
     }
-    pub fn next_id(&mut self) -> u64 {
-        self.serial += 1;
-        self.serial
-    }
     pub fn ticket(&mut self) -> Ticket {
-        Ticket::new(self.next_id())
+        self.serial += 1;
+        Ticket::new(self.serial)
     }
-}
-impl Drop for Session {
-    fn drop(&mut self) {
-        if let Some(t) = &self.load {
-            t.cancel();
+    fn cancel_search(&mut self) {
+        if let Search::Running(t) = &self.search {
+            self.worker.cancel(t);
         }
-        if let Some(t) = &self.search {
-            t.cancel();
+        self.search = Search::Idle;
+    }
+    fn accept_search(&mut self, completion: Completion) -> bool {
+        if !matches!(&self.search, Search::Running(t) if t.id == completion.id) {
+            return false;
         }
-        self.sources.cancel();
+        match completion.result {
+            Ok(Output::Matches(batch)) => self.results.extend(batch),
+            Ok(Output::SearchDone(total)) => self.search = Search::Done(total),
+            Err(e) => self.search = Search::Failed(e),
+            _ => unreachable!(),
+        }
+        true
+    }
+    pub fn pending(&self, path: &std::path::Path) -> bool {
+        self.load
+            .as_ref()
+            .is_some_and(|load| load.pending.iter().any(|p| p == path))
+    }
+    fn status(&self) -> String {
+        if let Some(message) = self.notice.as_ref().or(self.load_error.as_ref()) {
+            return message.clone();
+        }
+        if self.load.is_some() {
+            return resources::text(IDS_LOADING);
+        }
+        match &self.search {
+            Search::Idle => resources::text(if self.catalog.is_some() {
+                IDS_ENTER_QUERY
+            } else {
+                IDS_EMPTY_CATALOG
+            }),
+            Search::Waiting => resources::text(IDS_SEARCHING),
+            Search::Running(_) => resources::text(IDS_SEARCH_PROGRESS)
+                .replace("{count}", &self.results.len().to_string()),
+            Search::Done(total) => {
+                resources::text(IDS_SEARCH_STATUS).replace("{total}", &total.to_string())
+            }
+            Search::Failed(e) => e.clone(),
+        }
     }
 }
 pub(super) fn set_status(message: String) {
-    let hwnd = write(|a| {
-        a.session.status = message.clone();
-        a.status
-    });
+    write(|a| a.session.notice = Some(message));
+    refresh_status();
+}
+fn refresh_status() {
+    let (hwnd, message) = read(|a| (a.status, a.session.status()));
     set_status_text(hwnd, &message);
 }
 pub(super) fn paths() -> Vec<PathBuf> {
-    read(|a| a.session.desired_paths.clone())
+    read(|a| {
+        a.session.load.as_ref().map_or_else(
+            || {
+                a.session
+                    .inputs
+                    .iter()
+                    .map(|i| i.path().to_path_buf())
+                    .collect()
+            },
+            |load| load.paths.clone(),
+        )
+    })
 }
 pub(super) fn load(paths: Vec<PathBuf>) {
     reload(paths, vec![]);
@@ -124,20 +130,22 @@ pub(super) fn load(paths: Vec<PathBuf>) {
 pub(super) fn reload(paths: Vec<PathBuf>, reload: Vec<PathBuf>) {
     let result = write(|a| {
         let s = &mut a.session;
-        if let Some(t) = s.load.take() {
-            t.cancel();
+        if let Some(load) = s.load.take() {
+            s.worker.cancel(&load.ticket);
         }
+        s.notice = None;
+        s.load_error = None;
         let ticket = s.ticket();
-        s.load = Some(ticket.clone());
-        s.desired_paths = paths.clone();
-        s.sources.pending = paths
+        let pending = paths
             .iter()
             .filter(|p| reload.contains(p) || !s.inputs.iter().any(|i| i.path() == p.as_path()))
             .cloned()
             .collect();
-        for path in &s.sources.pending {
-            s.sources.errors.remove(path);
-        }
+        s.load = Some(Load {
+            ticket: ticket.clone(),
+            paths: paths.clone(),
+            pending,
+        });
         let result = s.worker.submit(
             ticket,
             Job::Load {
@@ -148,56 +156,43 @@ pub(super) fn reload(paths: Vec<PathBuf>, reload: Vec<PathBuf>) {
         );
         if result.is_err() {
             s.load = None;
-            s.sources.pending.clear();
-            s.desired_paths = s.inputs.iter().map(|s| s.path().to_path_buf()).collect();
         }
         result
     });
-    set_status(result.map_or_else(|e| e, |_| resources::text(IDS_LOADING)));
+    if let Err(e) = result {
+        write(|a| a.session.load_error = Some(e));
+    }
+    refresh_status();
     super::sources::refresh_views();
 }
 
 pub(super) fn input_changed() {
-    let frame = read(|a| a.frame);
-    unsafe {
-        KillTimer(frame, SEARCH_TIMER);
-    }
+    let (input, composing) = super::panel::cancel_debounce();
     write(|a| {
-        if let Some(t) = a.session.search.take() {
-            t.cancel();
-        }
+        a.session.cancel_search();
+        a.session.notice = None;
+        a.session.load_error = None;
         a.session.results.clear();
-        a.session.debounce = None;
     });
     update_results(false);
-    if !super::frame::composing() && !text(read(|a| a.search)).trim().is_empty() {
-        set_status(resources::text(IDS_SEARCHING));
-        write(|a| {
-            a.session.debounce =
-                Some(std::time::Instant::now() + std::time::Duration::from_millis(200))
-        });
-        if unsafe { SetTimer(frame, SEARCH_TIMER, 200, None) } == 0 {
-            set_status(error("Search debounce"));
-        }
-    } else {
-        set_status(resources::text(IDS_ENTER_QUERY));
+    if !composing && !text(input).trim().is_empty() {
+        let state = match super::panel::debounce(input) {
+            Ok(()) => Search::Waiting,
+            Err(e) => Search::Failed(e),
+        };
+        write(|a| a.session.search = state);
     }
+    refresh_status();
 }
 pub(super) fn search() {
-    write(|a| a.session.debounce = None);
-    let frame = read(|a| a.frame);
-    unsafe {
-        KillTimer(frame, SEARCH_TIMER);
-    }
-    if super::frame::composing() {
+    let (input, composing) = super::panel::cancel_debounce();
+    if composing {
         return;
     }
-    let query = text(read(|a| a.search)).trim().to_owned();
+    let query = text(input).trim().to_owned();
     let sent = write(|a| {
         let s = &mut a.session;
-        if let Some(t) = s.search.take() {
-            t.cancel();
-        }
+        s.cancel_search();
         s.results.clear();
         let Some(catalog) = s.catalog.clone() else {
             return Ok(false);
@@ -206,34 +201,24 @@ pub(super) fn search() {
             return Ok(false);
         }
         let ticket = s.ticket();
-        s.search = Some(ticket.clone());
-        let result = s
-            .worker
+        s.search = Search::Running(ticket.clone());
+        s.worker
             .submit(ticket, Job::Search { catalog, query })
-            .map(|_| true);
-        if result.is_err() {
-            s.search = None;
-        }
-        result
+            .map(|_| true)
     });
     update_results(false);
-    set_status(match sent {
-        Ok(true) => resources::text(IDS_SEARCHING),
-        Ok(false) => resources::text(IDS_ENTER_QUERY),
-        Err(e) => e,
-    });
-}
-pub(super) fn timer() {
-    if read(|a| {
-        a.session
-            .debounce
-            .is_some_and(|deadline| std::time::Instant::now() >= deadline)
-    }) {
-        search();
+    if let Err(e) = sent {
+        write(|a| a.session.search = Search::Failed(e));
     }
+    refresh_status();
 }
 fn update_results(append: bool) {
-    let (hwnd, count) = read(|a| (a.results, a.session.results.len()));
+    let (hwnd, count) = read(|a| {
+        (
+            a.sidebar.panel(super::panel::SEARCH_PANEL).list(),
+            a.session.results.len(),
+        )
+    });
     send(
         hwnd,
         LVM_SETITEMCOUNT,
@@ -244,7 +229,7 @@ fn update_results(append: bool) {
             0
         },
     );
-    super::sidebar::fit(hwnd);
+    super::panel::fit(hwnd);
     unsafe {
         InvalidateRect(hwnd, std::ptr::null(), 0);
     }
@@ -300,15 +285,6 @@ pub(super) fn cell(row: usize, detail: bool) -> String {
         }
     })
 }
-pub(super) fn open_selected() {
-    let list = read(|a| a.results);
-    open_row(send(
-        list,
-        LVM_GETNEXTITEM,
-        usize::MAX,
-        LVNI_SELECTED as isize,
-    ));
-}
 pub(super) fn open_row(row: isize) {
     if row < 0 {
         return;
@@ -334,10 +310,10 @@ pub(super) fn open_row(row: isize) {
         set_status(resources::text(IDS_UNSUPPORTED_ARCH));
         return;
     };
-    if let Err(e) = workspace::create_document(
+    if let Err(e) = metadata::open(
         &title,
-        arch,
         Binding::Entity {
+            architecture: arch,
             id,
             catalog,
             architecture_mask: mask,
@@ -364,10 +340,16 @@ pub(super) fn old_version(binding: &Binding) -> bool {
     })
 }
 pub(super) fn open_current(hwnd: HWND) {
-    let Some(doc) = document(hwnd) else { return };
-    let Binding::Entity {
-        id, catalog: old, ..
-    } = &doc.query.binding
+    let Some((
+        document,
+        Binding::Entity {
+            id,
+            catalog: old,
+            architecture,
+            ..
+        },
+        pending,
+    )) = metadata::get(hwnd, |id, d| (id, d.binding.clone(), d.ticket.is_some()))
     else {
         return;
     };
@@ -384,215 +366,198 @@ pub(super) fn open_current(hwnd: HWND) {
         set_status(resources::text(IDS_CURRENT_UNAVAILABLE));
         return;
     };
-    if doc.query.ticket.is_some() {
+    if pending {
         return;
     }
     let ticket = write(|a| a.session.ticket());
     let job = Job::Reopen {
-        previous: old.clone(),
+        document,
+        previous: old,
         current,
         source,
-        entity: id.clone(),
-        arch: doc.architecture.core(),
+        entity: id,
+        arch: architecture.core(),
     };
     if let Err(e) = read(|a| a.session.worker.submit(ticket.clone(), job)) {
         set_status(e);
     } else {
-        edit_document(hwnd, |d| d.query.ticket = Some(ticket));
+        metadata::edit(hwnd, |d| d.ticket = Some(ticket));
     }
 }
 pub(super) fn request_document(hwnd: HWND) {
-    let Some(doc) = document(hwnd) else { return };
-    doc.query.cancel();
-    let ticket = write(|a| a.session.ticket());
-    let job = match &doc.query.binding {
-        Binding::Source { path, .. } => Job::Inspect {
-            document: doc.id,
-            path: path.clone(),
-        },
-        Binding::Entity { id, catalog, .. } => {
-            let source_id = id.split_once("::").unwrap().0;
-            let source = catalog
-                .sources()
-                .iter()
-                .find(|s| s.id == source_id)
-                .unwrap();
-            edit_document(hwnd, |d| {
-                d.query.source = format!("{}\r\n{}", source.path, source.id)
-            });
-            Job::Describe {
-                document: doc.id,
-                catalog: catalog.clone(),
-                entity: id.clone(),
-                arch: doc.architecture.core(),
-            }
-        }
+    let Some((document, binding, previous)) =
+        metadata::get(hwnd, |id, d| (id, d.binding.clone(), d.ticket.clone()))
+    else {
+        return;
     };
-    edit_document(hwnd, |d| {
-        d.query.ticket = Some(ticket.clone());
-        d.query.content = resources::text(IDS_QUERYING).into();
+    if let Some(previous) = previous {
+        read(|a| a.session.worker.cancel(&previous));
+    }
+    let ticket = write(|a| a.session.ticket());
+    let job = match binding {
+        Binding::Source { path, .. } => Job::Inspect { document, path },
+        Binding::Entity {
+            id,
+            catalog,
+            architecture,
+            ..
+        } => Job::Describe {
+            document,
+            catalog,
+            entity: id,
+            arch: architecture.core(),
+        },
+    };
+    metadata::edit(hwnd, |d| {
+        d.ticket = Some(ticket.clone());
+        d.content = resources::text(IDS_QUERYING).into();
     });
     if let Err(e) = read(|a| a.session.worker.submit(ticket, job)) {
-        edit_document(hwnd, |d| {
-            d.query.ticket = None;
-            d.query.content = e.into();
+        metadata::edit(hwnd, |d| {
+            d.ticket = None;
+            d.content = e.into();
         });
     }
-    super::document::refresh_content(hwnd);
+    metadata::refresh_content(hwnd);
 }
 pub(super) fn event() -> HANDLE {
     read(|a| a.session.worker.event())
 }
 pub(super) fn poll() {
-    loop {
+    for _ in 0..8 {
         match read(|a| a.session.worker.rx.try_recv()) {
             Ok(c) => apply(c),
-            Err(std::sync::mpsc::TryRecvError::Empty) => break,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                let docs = write(|a| {
+                write(|a| {
                     a.session.load = None;
-                    a.session.search = None;
+                    a.session.cancel_search();
                     a.session.sources.cancel();
-                    a.session.sources.pending.clear();
-                    a.session.desired_paths = a
-                        .session
-                        .inputs
-                        .iter()
-                        .map(|s| s.path().to_path_buf())
-                        .collect();
-                    a.documents
-                        .iter_mut()
-                        .filter_map(|d| {
-                            d.query.ticket.take().map(|_| {
-                                d.query.content = "Catalog worker stopped".into();
-                                d.hwnd
-                            })
-                        })
-                        .collect::<Vec<_>>()
                 });
-                for h in docs {
-                    super::document::refresh_content(h);
-                }
+                metadata::worker_stopped();
+                super::panel::cancel_debounce();
                 set_status("Catalog worker stopped".into());
-                break;
+                super::sources::refresh_views();
+                return;
             }
+        }
+    }
+    read(|a| a.session.worker.resignal());
+}
+fn apply(c: Completion) {
+    match c.target {
+        Target::Load => {
+            if !read(|a| {
+                a.session
+                    .load
+                    .as_ref()
+                    .is_some_and(|load| load.ticket.id == c.id)
+            }) {
+                return;
+            }
+            write(|a| a.session.load = None);
+            match c.result {
+                Ok(Output::Loaded(snapshot)) => {
+                    write(|a| {
+                        let s = &mut a.session;
+                        s.catalog = snapshot.catalog;
+                        s.inputs = snapshot.inputs;
+                    });
+                    search();
+                    super::sources::refresh();
+                }
+                Err(e) => {
+                    write(|a| {
+                        a.session.load_error =
+                            Some(resources::text(IDS_LOAD_FAILED).replace("{error}", &e))
+                    });
+                }
+                _ => unreachable!(),
+            }
+            super::sources::refresh_views();
+            refresh_status();
+        }
+        Target::Search => {
+            if write(|a| a.session.accept_search(c)) {
+                update_results(true);
+                refresh_status();
+            }
+        }
+        Target::Discover => super::sources::apply_discovery(c),
+        Target::Document(id) | Target::Reopen(id) => {
+            let Some(hwnd) = metadata::find(|document, d| {
+                document == id && d.ticket.as_ref().is_some_and(|t| t.id == c.id)
+            }) else {
+                return;
+            };
+            metadata::edit(hwnd, |d| d.ticket = None);
+            match c.result {
+                Ok(Output::Reopened { catalog, entity }) => {
+                    if let Some(entity) = entity
+                        && let Some(Binding::Entity { architecture, .. }) =
+                            metadata::get(hwnd, |_, d| d.binding.clone())
+                    {
+                        if let Err(e) = metadata::open(
+                            &entity.name,
+                            Binding::Entity {
+                                architecture,
+                                id: entity.id,
+                                catalog,
+                                architecture_mask: entity.architecture_mask,
+                            },
+                        ) {
+                            set_status(e);
+                        }
+                    } else {
+                        set_status(resources::text(IDS_CURRENT_UNAVAILABLE));
+                    }
+                }
+                Ok(Output::Description(text)) => {
+                    metadata::edit(hwnd, |d| d.content = text.into());
+                }
+                Ok(Output::Inspected(catalog)) => super::sources::inspected(hwnd, catalog),
+                Err(e) => {
+                    if matches!(c.target, Target::Reopen(_)) {
+                        set_status(e);
+                        return;
+                    }
+                    if let Some(Binding::Source { path, .. }) =
+                        metadata::get(hwnd, |_, d| d.binding.clone())
+                    {
+                        super::sources::inspection_failed(&path, &e);
+                    }
+                    metadata::edit(hwnd, |d| d.content = e.into());
+                }
+                _ => unreachable!(),
+            }
+            metadata::refresh_content(hwnd);
         }
     }
 }
-fn apply(c: Completion) {
-    if read(|a| a.session.load.as_ref().is_some_and(|t| t.id == c.id)) {
-        write(|a| {
-            a.session.load = None;
-            let pending = std::mem::take(&mut a.session.sources.pending);
-            if let Err(error) = &c.result {
-                for path in pending {
-                    a.session.sources.errors.insert(path, error.clone());
-                }
-            }
-        });
-        match c.result {
-            Ok(Output::Loaded(snapshot)) => {
-                write(|a| {
-                    let s = &mut a.session;
-                    s.catalog = snapshot.catalog;
-                    s.inputs = snapshot.inputs;
-                    s.desired_paths = s.inputs.iter().map(|i| i.path().to_path_buf()).collect();
-                });
-                search();
-                super::sources::refresh();
-            }
-            Err(e) => {
-                write(|a| {
-                    a.session.desired_paths = a
-                        .session
-                        .inputs
-                        .iter()
-                        .map(|s| s.path().to_path_buf())
-                        .collect()
-                });
-                set_status(resources::text(IDS_LOAD_FAILED).replace("{error}", &e));
-            }
-            _ => unreachable!(),
-        }
-        super::sources::refresh_views();
-        return;
-    }
-    if read(|a| a.session.search.as_ref().is_some_and(|t| t.id == c.id)) {
-        match c.result {
-            Ok(Output::Matches(batch)) => {
-                let count = write(|a| {
-                    a.session.results.extend(batch);
-                    a.session.results.len()
-                });
-                update_results(true);
-                set_status(
-                    resources::text(IDS_SEARCH_PROGRESS).replace("{count}", &count.to_string()),
-                );
-            }
-            Ok(Output::SearchDone(total)) => {
-                write(|a| a.session.search = None);
-                set_status(
-                    resources::text(IDS_SEARCH_STATUS).replace("{total}", &total.to_string()),
-                );
-            }
-            Err(e) => {
-                write(|a| a.session.search = None);
-                set_status(e);
-            }
-            _ => unreachable!(),
-        }
-        return;
-    }
-    if super::sources::apply_discovery(&c) {
-        return;
-    }
-    let target = read(|a| {
-        a.documents
-            .iter()
-            .find(|d| d.query.ticket.as_ref().is_some_and(|t| t.id == c.id))
-            .map(|d| d.hwnd)
-    });
-    if let Some(hwnd) = target {
-        edit_document(hwnd, |d| d.query.ticket = None);
-        match c.result {
-            Ok(Output::Reopened { catalog, entity }) => {
-                if let Some(entity) = entity
-                    && let Some(doc) = document(hwnd)
-                {
-                    if let Err(e) = workspace::create_document(
-                        &entity.name,
-                        doc.architecture,
-                        Binding::Entity {
-                            id: entity.id,
-                            catalog,
-                            architecture_mask: entity.architecture_mask,
-                        },
-                    ) {
-                        set_status(e);
-                    }
-                } else {
-                    set_status(resources::text(IDS_CURRENT_UNAVAILABLE));
-                }
-            }
-            Ok(Output::Description { document: id, text }) => {
-                if document(hwnd).is_some_and(|d| d.id == id) {
-                    edit_document(hwnd, |d| d.query.content = text.into());
-                }
-            }
-            Ok(Output::Inspected {
-                document: id,
-                catalog,
-            }) => super::sources::inspected(hwnd, id, catalog),
-            Err(e) => {
-                if let Some(doc) = document(hwnd)
-                    && let Binding::Source { path, .. } = doc.query.binding
-                {
-                    super::sources::inspection_failed(&path, &e);
-                }
-                edit_document(hwnd, |d| d.query.content = e.into());
-            }
-            _ => unreachable!(),
-        }
-        super::document::refresh_content(hwnd);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn late_search_results_cannot_overwrite_new_search_or_load_failure() {
+        let mut session = Session::new().unwrap();
+        let old = Ticket::new(1);
+        session.search = Search::Running(old.clone());
+        session.cancel_search();
+        assert!(old.cancel.load(std::sync::atomic::Ordering::Relaxed));
+        session.search = Search::Running(Ticket::new(2));
+        session.load_error = Some("load transaction failed".into());
+        let completion = |id, result| Completion {
+            id,
+            target: Target::Search,
+            result,
+        };
+        assert!(!session.accept_search(completion(1, Ok(Output::SearchDone(100)))));
+        assert!(session.accept_search(completion(2, Ok(Output::Matches(vec![])))));
+        assert_eq!(session.status(), "load transaction failed");
+        assert!(session.accept_search(completion(2, Ok(Output::SearchDone(0)))));
+        assert_eq!(session.status(), "load transaction failed");
+        assert!(!session.accept_search(completion(2, Err("late failure".into()))));
+        assert!(matches!(session.search, Search::Done(0)));
     }
 }

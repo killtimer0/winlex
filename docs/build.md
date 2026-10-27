@@ -30,7 +30,7 @@ $link = Join-Path $env:VCToolsInstallDir 'bin/Hostx64/x86/link.exe'
 x64 构建将架构、链接器和 OBJ 路径改为 x64。
 脚本自动查找 Windows SDK 的 Microsoft `rc.exe`，也可用 `-RcExe PATH` 固定版本。
 GUI 菜单、字符串、版本信息和清单从 `crates/winlex-gui/res/gui.rc` 编译并嵌入。
-产物位于 `target/<Rust target>/release/`：`winlex.exe` 为 CLI，`winlex-gui.exe` 为 GUI 骨架。
+产物位于 `target/<Rust target>/release/`：`winlex.exe` 为命令行程序，`winlex-gui.exe` 为图形界面程序。
 各自的 `.build.json` 记录构建版本和哈希。CLI 查询另需所需 WinMD。
 
 ## 系统兼容性
@@ -72,8 +72,8 @@ python verify/gui_resources.py --exe target/i686-pc-windows-msvc/release/winlex-
 `--language/--dpi` 属于测试参数，通过独立配置根及 `WINLEX_DPI` 启动 EXE。
 结果在 `tmp/gui-tests/<run-id>/`：JUnit、环境/输入哈希、窗口树、失败截图、退出码和清理记录。
 Runner 将暂停创建的测试进程先加入 Job，再恢复执行；超时/取消清理进程树、配置根和已记录的输入状态。
-`run.json` 分开报告退出、超时/取消与 `cleanup_complete`，清理失败不能算完成。
-消息测试不代表实际输入。实际键鼠专项使用 `--desktop current --real-input -k real_search`，要求解锁的活动输入桌面并取得前台；失败不降级为消息模拟。
+`run.json` 分别记录退出、超时/取消与 `cleanup_complete`；完整运行要求测试和资源清理均成功。
+消息测试通过发送窗口消息验证控件行为。实际键鼠专项使用 `--desktop current --real-input -k real_search`，要求解锁的活动输入桌面并取得前台；无法满足条件时报告失败。
 Python 3.8+ 依赖锁定在 `verify/requirements.txt`；可选新 API 按能力探测。XP RTM 解释器/系统支持仍须实机验证。
 
 ### 本机/SSH 调度
@@ -91,7 +91,7 @@ python verify/remote.py --config tmp/target.json collect --run-id RUN_ID
 ```
 
 SSH 仅操作队列及传输，GUI 由交互 worker 启动。收集 ZIP 默认回收到 `tmp/remote-tests/`。
-本机消息与 DPI 通过不等于远程、实际输入或 XP RTM 验收通过。
+验证范围分别记录：本机消息与 DPI、远程交互会话、实际键鼠输入，以及目标系统兼容性。XP RTM 兼容性需要在对应系统上进行实机验证。
 
 可选的 SDK ABI 检查使用真实 SDK 声明验证布局、COM 槽位及位域初始化字节：
 

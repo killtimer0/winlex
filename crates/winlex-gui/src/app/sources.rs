@@ -1,8 +1,8 @@
 //! Discovered locations are distinct from active content identities and pinned document versions.
 use super::{
-    Architecture,
-    catalog::{self, Binding},
-    document, edit_document, read, workspace, write,
+    catalog,
+    metadata::{self, Binding},
+    read, workspace, write,
 };
 use crate::{
     input,
@@ -21,8 +21,6 @@ pub(super) struct Sources {
     pub entries: Vec<Discovered>,
     pub extra: Vec<PathBuf>,
     ticket: Option<Ticket>,
-    pub pending: Vec<PathBuf>,
-    pub errors: std::collections::HashMap<PathBuf, String>,
 }
 impl Sources {
     pub fn cancel(&mut self) {
@@ -59,7 +57,7 @@ pub(super) fn refresh() {
         catalog::set_status(e);
     }
 }
-pub(super) fn apply_discovery(c: &Completion) -> bool {
+pub(super) fn apply_discovery(c: Completion) {
     if !read(|a| {
         a.session
             .sources
@@ -67,30 +65,68 @@ pub(super) fn apply_discovery(c: &Completion) -> bool {
             .as_ref()
             .is_some_and(|t| t.id == c.id)
     }) {
-        return false;
+        return;
     }
+    write(|a| a.session.sources.ticket = None);
+    let files = match c.result {
+        Ok(Output::Discovered(files)) => files,
+        Err(e) => {
+            catalog::set_status(e);
+            return;
+        }
+        _ => unreachable!(),
+    };
+    let list = read(|a| a.sidebar.panel(super::panel::SOURCES_PANEL).list());
+    let selected = [LVNI_SELECTED, LVNI_FOCUSED].map(|flag| {
+        let row = send(list, LVM_GETNEXTITEM, usize::MAX, flag as isize);
+        read(|a| {
+            a.session
+                .sources
+                .entries
+                .get(row as usize)
+                .map(|e| e.path.clone())
+        })
+    });
     write(|a| {
-        a.session.sources.ticket = None;
-        if let Ok(Output::Discovered(files)) = &c.result {
-            a.session.sources.entries = files.clone();
-            for path in &a.config.directories {
-                if !a.session.sources.entries.iter().any(|e| &e.path == path) {
-                    a.session.sources.entries.push(Discovered {
-                        missing: false,
-                        path: path.clone(),
-                        size: None,
-                        error: None,
-                        id: None,
-                    });
-                }
+        a.session.sources.entries = files;
+        for path in &a.config.directories {
+            if !a.session.sources.entries.iter().any(|e| &e.path == path) {
+                a.session.sources.entries.push(Discovered {
+                    missing: false,
+                    path: path.clone(),
+                    size: None,
+                    error: None,
+                    id: None,
+                });
             }
         }
     });
-    if let Err(e) = &c.result {
-        catalog::set_status(e.clone());
-    }
     refresh_views();
-    true
+    let mut item = LVITEMW {
+        stateMask: LVIS_SELECTED | LVIS_FOCUSED,
+        ..unsafe { std::mem::zeroed() }
+    };
+    send(
+        list,
+        LVM_SETITEMSTATE,
+        usize::MAX,
+        &item as *const _ as isize,
+    );
+    for (path, flag) in selected.into_iter().zip([LVIS_SELECTED, LVIS_FOCUSED]) {
+        if let Some(path) = path
+            && let Some(row) = read(|a| {
+                a.session
+                    .sources
+                    .entries
+                    .iter()
+                    .position(|e| e.path == path)
+            })
+        {
+            item.stateMask = flag;
+            item.state = flag;
+            send(list, LVM_SETITEMSTATE, row, &item as *const _ as isize);
+        }
+    }
 }
 pub(super) fn cell(row: usize, detail: bool) -> String {
     read(|a| {
@@ -102,8 +138,8 @@ pub(super) fn cell(row: usize, detail: bool) -> String {
             .inputs
             .iter()
             .any(|s| s.path() == e.path || e.id.as_deref() == Some(s.id()));
-        let failure = a.session.sources.errors.get(&e.path).or(e.error.as_ref());
-        let state = resources::text(if a.session.sources.pending.contains(&e.path) {
+        let failure = e.error.as_ref();
+        let state = resources::text(if a.session.pending(&e.path) {
             IDS_LOADING
         } else if e.missing {
             IDS_MISSING
@@ -157,7 +193,7 @@ pub(super) fn choose_directory() {
     }
 }
 pub(super) fn forget_selected() {
-    let list = read(|a| a.source_list);
+    let list = read(|a| a.sidebar.panel(super::panel::SOURCES_PANEL).list());
     let row = send(list, LVM_GETNEXTITEM, usize::MAX, LVNI_SELECTED as isize);
     let path = read(|a| {
         a.session
@@ -194,12 +230,8 @@ pub(super) fn open(path: PathBuf) {
         ));
         return;
     }
-    let existing = read(|a| {
-        a.documents
-            .iter()
-            .find(|d| matches!(&d.query.binding, Binding::Source { path: p, .. } if p == &path))
-            .map(|d| d.hwnd)
-    });
+    let existing =
+        metadata::find(|_, d| matches!(&d.binding, Binding::Source { path: p, .. } if p == &path));
     if let Some(h) = existing {
         workspace::activate_document(h);
         return;
@@ -209,9 +241,8 @@ pub(super) fn open(path: PathBuf) {
         .unwrap_or_default()
         .to_string_lossy()
         .into_owned();
-    if let Err(e) = workspace::create_document(
+    if let Err(e) = metadata::open(
         &title,
-        Architecture::X64,
         Binding::Source {
             path,
             catalog: None,
@@ -220,10 +251,7 @@ pub(super) fn open(path: PathBuf) {
         catalog::set_status(e);
     }
 }
-pub(super) fn inspected(hwnd: HWND, id: u64, snapshot: Arc<Catalog>) {
-    if !document(hwnd).is_some_and(|d| d.id == id) {
-        return;
-    }
+pub(super) fn inspected(hwnd: HWND, snapshot: Arc<Catalog>) {
     let source = &snapshot.sources()[0];
     write(|a| {
         if let Some(e) = a
@@ -239,8 +267,8 @@ pub(super) fn inspected(hwnd: HWND, id: u64, snapshot: Arc<Catalog>) {
             e.size = Some(snapshot.inputs()[0].len() as u64);
         }
     });
-    edit_document(hwnd, |d| {
-        if let Binding::Source { catalog, .. } = &mut d.query.binding {
+    metadata::edit(hwnd, |d| {
+        if let Binding::Source { catalog, .. } = &mut d.binding {
             *catalog = Some(snapshot);
         }
     });
@@ -266,11 +294,8 @@ pub(super) fn details(path: &Path, snapshot: &Catalog) -> String {
         let entry = a.session.sources.entries.iter().find(|e| e.path == path);
         (
             entry.and_then(|e| e.id.clone()),
-            a.session
-                .sources
-                .errors
-                .get(path)
-                .or_else(|| entry.and_then(|e| e.error.as_ref()))
+            entry
+                .and_then(|e| e.error.as_ref())
                 .cloned()
                 .unwrap_or_default(),
         )
@@ -297,42 +322,24 @@ pub(super) fn details(path: &Path, snapshot: &Catalog) -> String {
     )
 }
 pub(super) fn refresh_views() {
-    let (list, count, docs) = read(|a| {
+    let (list, count) = read(|a| {
         (
-            a.source_list,
+            a.sidebar.panel(super::panel::SOURCES_PANEL).list(),
             a.session.sources.entries.len(),
-            a.documents.iter().map(|d| d.hwnd).collect::<Vec<_>>(),
         )
     });
     send(list, LVM_SETITEMCOUNT, count, LVSICF_NOSCROLL as isize);
-    super::sidebar::fit(list);
+    super::panel::fit(list);
     unsafe {
         InvalidateRect(list, std::ptr::null(), 0);
     }
-    for h in docs {
-        let Some(doc) = document(h) else { continue };
-        if let Binding::Source {
-            path,
-            catalog: Some(snapshot),
-        } = &doc.query.binding
-        {
-            let content = details(path, snapshot);
-            if doc.query.content.as_ref() == content {
-                continue;
-            }
-            edit_document(h, |d| d.query.content = content.into());
-        } else if doc.old_version == catalog::old_version(&doc.query.binding) {
-            continue;
-        }
-        super::document::refresh_content(h);
-    }
+    metadata::refresh_all();
 }
 pub(super) fn action(hwnd: HWND, command: u16) {
-    let Some(doc) = document(hwnd) else { return };
-    let Binding::Source {
+    let Some(Binding::Source {
         path,
         catalog: inspected,
-    } = doc.query.binding
+    }) = metadata::get(hwnd, |_, d| d.binding.clone())
     else {
         return;
     };

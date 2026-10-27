@@ -1,101 +1,55 @@
-//! Bound document controls and focus. Every document has content and relevant actions only.
-use super::catalog::{Binding, DocumentQuery};
-use super::workspace::{
-    arrange_documents, capture_placements, refresh_document_tabs, sync_document_selection,
-    tiled_bounds,
-};
-use super::{Document, bind, document, dpi, edit_document, font_for, read, workspace};
-use crate::{
-    layout::{self, Placement},
-    native::*,
-    resources::{self, *},
-};
-use std::sync::Arc;
+//! MDI document host. Content owns its controls, commands and asynchronous work.
+use super::{document, dpi, edit_document, metadata, read, workspace};
+use crate::{layout::Placement, native::*};
 
-pub(super) fn prepare_document(doc: &Document) {
-    let (font, _) = font_for(dpi().window(doc.hwnd));
-    bind(doc.declaration, font);
-    for &(_, h) in &doc.actions {
-        bind(h, font);
-    }
+#[derive(Clone)]
+pub(super) enum Content {
+    Metadata(metadata::Document),
 }
-pub(super) fn create_actions(hwnd: HWND) -> Result<(), String> {
-    let doc = document(hwnd).ok_or("Document no longer exists")?;
-    let commands: &[(u16, u16)] = if doc.query.is_source() {
-        &[
-            (LOAD_METADATA, IDS_LOAD_METADATA),
-            (REMOVE_SOURCE, IDS_UNLOAD),
-            (RELOAD_SOURCE, IDS_RELOAD),
-            (REPLACE_SOURCE, IDS_REPLACE),
-            (REFRESH_SOURCE, IDS_REFRESH),
-        ]
-    } else {
-        &[
-            (OPEN_OTHER_ARCH, IDS_OPEN_OTHER_ARCH),
-            (OPEN_CURRENT, IDS_OPEN_CURRENT),
-        ]
-    };
-    let mut actions = Vec::new();
-    for &(id, label) in commands {
-        let caption = resources::text(label).replace("{arch}", &doc.architecture.other().label());
-        let h = child(hwnd, "BUTTON", &caption, WS_TABSTOP, id);
-        if h.is_null() || unsafe { set_subclass(h, Some(focus_proc), 1, hwnd as usize) } == 0 {
-            return Err(error("Create document action"));
+pub(super) struct Init {
+    pub content: Option<Content>,
+    pub error: Option<String>,
+}
+impl Content {
+    fn create(&mut self, hwnd: HWND) -> Result<(), String> {
+        match self {
+            Self::Metadata(d) => d.create(hwnd),
         }
-        if id == OPEN_OTHER_ARCH
-            && let Binding::Entity {
-                architecture_mask, ..
-            } = &doc.query.binding
-        {
-            unsafe {
-                EnableWindow(
-                    h,
-                    i32::from(doc.architecture.other().supported_by(*architecture_mask)),
-                );
-            }
-        }
-        actions.push((id, h));
     }
-    edit_document(hwnd, |d| d.actions = actions);
-    Ok(())
+    pub fn cancel(&self) {
+        match self {
+            Self::Metadata(d) => d.cancel(),
+        }
+    }
+    pub fn prepare(&self, hwnd: HWND) {
+        match self {
+            Self::Metadata(d) => d.prepare(hwnd),
+        }
+        self.layout(hwnd);
+    }
+    fn layout(&self, hwnd: HWND) {
+        match self {
+            Self::Metadata(d) => d.layout(hwnd),
+        }
+    }
+    fn focus(&self) -> HWND {
+        match self {
+            Self::Metadata(d) => d.editor,
+        }
+    }
+    fn command(&self, hwnd: HWND, id: u16) -> bool {
+        match self {
+            Self::Metadata(d) => d.command(hwnd, id),
+        }
+    }
 }
 pub(super) fn layout_document(hwnd: HWND) {
-    let Some(doc) = document(hwnd) else { return };
-    let value = dpi().window(hwnd);
-    let (_, font_height) = font_for(value);
-    let px = |n| layout::scale(n, value);
-    let r = client(hwnd);
-    let margin = px(8);
-    let row = font_height + px(12);
-    let available = (r.right - margin * 2).max(1);
-    let width = px(if doc.query.is_source() { 100 } else { 180 }).min(available);
-    let columns = (available / width).max(1);
-    let mut count = 0;
-    for &(_, h) in doc
-        .actions
-        .iter()
-        .filter(|&&(id, _)| id != OPEN_CURRENT || doc.old_version)
-    {
-        place(
-            h,
-            layout::rect(
-                margin + count % columns * width,
-                margin + count / columns * row,
-                width,
-                row,
-            ),
-        );
-        count += 1;
+    if let Some(content) = document(hwnd, |d| d.content.clone()) {
+        content.layout(hwnd);
     }
-    let top = margin + (count + columns - 1) / columns * row + px(6);
-    place(
-        doc.declaration,
-        layout::rect(margin, top, available, r.bottom - top - margin),
-    );
 }
 pub(super) fn restore_focus(hwnd: HWND) {
-    if let Some(doc) = document(hwnd) {
-        let h = doc.last_focus;
+    if let Some((h, default)) = document(hwnd, |d| (d.last_focus, d.content.focus())) {
         let valid = !h.is_null()
             && unsafe {
                 IsWindow(h) != 0
@@ -103,75 +57,16 @@ pub(super) fn restore_focus(hwnd: HWND) {
                     && IsWindowVisible(h) != 0
                     && IsWindowEnabled(h) != 0
             };
-        focus(if valid { h } else { doc.declaration });
+        focus(if valid { h } else { default });
     }
 }
-pub(super) fn refresh_title(hwnd: HWND) {
-    let Some(doc) = document(hwnd) else { return };
-    set_text(
-        hwnd,
-        &if doc.query.is_source() {
-            doc.title.clone()
-        } else {
-            format!("{} — {}", doc.title, doc.architecture_name())
-        },
-    );
-    refresh_document_tabs();
-}
-pub(super) fn refresh_content(hwnd: HWND) {
-    let Some(doc) = document(hwnd) else { return };
-    let header = if doc.query.is_source() {
-        format!("{}\r\n\r\n", doc.title)
+pub(super) fn track_focus(owner: HWND, control: HWND) -> Result<(), String> {
+    if control.is_null()
+        || unsafe { set_subclass(control, Some(focus_proc), 1, owner as usize) } == 0
+    {
+        Err(error("Create document control"))
     } else {
-        format!(
-            "{} — {}\r\n{}\r\n{}\r\n\r\n",
-            doc.title,
-            doc.architecture_name(),
-            doc.query.source,
-            doc.query.entity().unwrap_or("")
-        )
-    };
-    let old = super::catalog::old_version(&doc.query.binding);
-    edit_document(hwnd, |d| d.old_version = old);
-    let content = if old {
-        format!(
-            "{}\r\n{header}{}",
-            resources::text(IDS_OLD_VERSION),
-            doc.query.content
-        )
-    } else {
-        header + &doc.query.content
-    };
-    set_text(doc.declaration, &content);
-    for (id, h) in doc.actions {
-        if id == OPEN_CURRENT {
-            show(h, old);
-        }
-    }
-    layout_document(hwnd);
-}
-fn open_other_arch(hwnd: HWND) {
-    let Some(doc) = document(hwnd) else { return };
-    let Binding::Entity {
-        id,
-        catalog,
-        architecture_mask,
-    } = &doc.query.binding
-    else {
-        return;
-    };
-    let arch = doc.architecture.other();
-    if !arch.supported_by(*architecture_mask) {
-        return;
-    }
-    let existing = read(|a| {
-        a.documents.iter().find(|d| d.architecture == arch && matches!(&d.query.binding,
-        Binding::Entity { id: other, catalog: snapshot, .. } if other == id && Arc::ptr_eq(snapshot, catalog))).map(|d| d.hwnd)
-    });
-    if let Some(h) = existing {
-        workspace::activate_document(h);
-    } else if let Err(error) = workspace::create_document(&doc.title, arch, doc.query.binding) {
-        super::catalog::set_status(error);
+        Ok(())
     }
 }
 pub(super) unsafe extern "system" fn document_proc(
@@ -189,39 +84,22 @@ pub(super) unsafe extern "system" fn document_proc(
             WM_CREATE => {
                 let create = &*(l as *const CREATESTRUCTW);
                 let mdi_create = &*(create.lpCreateParams as *const MDICREATESTRUCTW);
-                let init = &*(mdi_create.lParam as *const workspace::DocumentInit<'_>);
-                let declaration = child(
-                    hwnd,
-                    "EDIT",
-                    "",
-                    WS_TABSTOP
-                        | WS_VSCROLL
-                        | ES_MULTILINE as u32
-                        | ES_READONLY as u32
-                        | ES_AUTOVSCROLL as u32,
-                    DECLARATION,
-                );
-                if declaration.is_null()
-                    || set_subclass(declaration, Some(focus_proc), 1, hwnd as usize) == 0
-                {
+                let init = &mut *(mdi_create.lParam as *mut Init);
+                let mut content = init.content.take().unwrap();
+                if let Err(error) = content.create(hwnd) {
+                    init.error = Some(error);
                     return -1;
                 }
-                send(declaration, EM_SETLIMITTEXT, 0x7ffffffe, 0);
-                let placement = Placement {
-                    bounds: bounds(hwnd, read(|a| a.mdi)),
-                    dpi: dpi().window(hwnd),
-                };
-                workspace::register_document(Document {
-                    actions: Vec::new(),
-                    old_version: false,
-                    id: super::write(|a| a.session.next_id()),
+                workspace::register_document(workspace::Document {
+                    id: workspace::next_id(),
                     hwnd,
-                    declaration,
-                    last_focus: declaration,
-                    placement,
-                    title: init.title.to_owned(),
-                    architecture: init.architecture,
-                    query: DocumentQuery::new(init.binding.clone()),
+                    title: text(hwnd),
+                    last_focus: content.focus(),
+                    content,
+                    placement: Placement {
+                        bounds: bounds(hwnd, read(|a| a.workspace.mdi)),
+                        dpi: dpi().window(hwnd),
+                    },
                 });
                 return 0;
             }
@@ -235,9 +113,9 @@ pub(super) unsafe extern "system" fn document_proc(
             WM_WINDOWPOSCHANGING => {
                 let result = DefMDIChildProcW(hwnd, msg, w, l);
                 let r = if IsZoomed(hwnd) != 0 {
-                    Some(dpi().child_outer(hwnd, client(read(|a| a.mdi))))
+                    Some(dpi().child_outer(hwnd, client(read(|a| a.workspace.mdi))))
                 } else if IsIconic(hwnd) == 0 {
-                    tiled_bounds(hwnd)
+                    workspace::tiled_bounds(hwnd)
                 } else {
                     None
                 };
@@ -256,11 +134,11 @@ pub(super) unsafe extern "system" fn document_proc(
             }
             WM_SYSCOMMAND if matches!((w & 0xfff0) as u32, SC_RESTORE | SC_MINIMIZE) => {
                 let result = DefMDIChildProcW(hwnd, msg, w, l);
-                arrange_documents();
+                workspace::arrange_documents();
                 return result;
             }
             WM_ENTERSIZEMOVE => workspace::begin_free_placement(),
-            WM_EXITSIZEMOVE => capture_placements(),
+            WM_EXITSIZEMOVE => workspace::capture_placements(),
             WM_SETFOCUS => {
                 let result = DefMDIChildProcW(hwnd, msg, w, l);
                 restore_focus(hwnd);
@@ -268,25 +146,15 @@ pub(super) unsafe extern "system" fn document_proc(
             }
             WM_MDIACTIVATE => {
                 let result = DefMDIChildProcW(hwnd, msg, w, l);
-                sync_document_selection();
+                workspace::sync_document_selection();
                 return result;
             }
-            WM_COMMAND if w as u16 == OPEN_OTHER_ARCH => {
-                open_other_arch(hwnd);
-                return 0;
-            }
-            WM_COMMAND if w as u16 == OPEN_CURRENT => {
-                super::catalog::open_current(hwnd);
-                return 0;
-            }
-            WM_COMMAND
-                if matches!(
-                    w as u16,
-                    LOAD_METADATA | REMOVE_SOURCE | REPLACE_SOURCE | RELOAD_SOURCE | REFRESH_SOURCE
-                ) =>
-            {
-                super::sources::action(hwnd, w as u16);
-                return 0;
+            WM_COMMAND => {
+                if let Some(content) = document(hwnd, |d| d.content.clone())
+                    && content.command(hwnd, w as u16)
+                {
+                    return 0;
+                }
             }
             WM_NCDESTROY => {
                 workspace::unregister_document(hwnd);

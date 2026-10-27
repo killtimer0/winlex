@@ -254,7 +254,7 @@ impl Config {
             .number("SidebarWidth")
             .filter(|v| (120..=2000).contains(v))
             .unwrap_or(240) as i32;
-        config.panel = key.number("ActivePanel").filter(|v| *v <= 1).unwrap_or(0);
+        config.panel = key.number("ActivePanel").unwrap_or(0);
         config.collapsed = key.number("PanelCollapsed") == Some(1);
         config.files = key.paths("Files");
         config.directories = key.paths("Directories");
@@ -350,7 +350,13 @@ impl Config {
         self.auto_load = auto_load;
         Ok(())
     }
-    pub fn save_layout(&self, window: Window, sidebar: i32, panel: u32) -> Result<(), String> {
+    pub fn save_layout(
+        &self,
+        window: Window,
+        sidebar: i32,
+        panel: u32,
+        collapsed: bool,
+    ) -> Result<(), String> {
         // Unsupported versions/read failures were reported at startup. Never overwrite them.
         if !self.writable {
             return Ok(());
@@ -370,7 +376,7 @@ impl Config {
         key.set("Window", REG_BINARY, &bytes)?;
         key.set_number("SidebarWidth", sidebar as u32)?;
         key.set_number("ActivePanel", panel)?;
-        key.set_number("PanelCollapsed", u32::from(self.collapsed))
+        key.set_number("PanelCollapsed", u32::from(collapsed))
     }
     pub fn remember_locations(&mut self, paths: &[PathBuf]) -> Result<(), String> {
         let mut files = self.files.clone();
@@ -494,11 +500,16 @@ mod tests {
             dpi: 144,
             maximized: true,
         };
-        config.save_layout(window, 320, 1).unwrap();
+        config.save_layout(window, 320, 1, true).unwrap();
         let loaded = profile.load();
         assert_eq!(loaded.auto_load, vec![path]);
         assert_eq!(loaded.window, Some(window));
         assert_eq!((loaded.sidebar, loaded.panel), (320, 1));
+        assert!(loaded.collapsed);
+        config.save_layout(window, 320, 0, false).unwrap();
+        let loaded = profile.load();
+        assert_eq!(loaded.panel, 0);
+        assert!(!loaded.collapsed);
     }
 
     #[test]
