@@ -1,0 +1,7 @@
+{
+  "transport": "ssh",
+  "host": "winlex-test-host",
+  "python": "C:\\WinlexTests\\venv\\Scripts\\python.exe",
+  "script": "C:\\WinlexTests\\verify\\remote.py",
+  "root": "C:\\WinlexTests\\runs"
+}
