@@ -23,9 +23,11 @@ pub(super) struct Sidebar {
 }
 impl Sidebar {
     pub fn new(config: &Config) -> Self {
+        let key = config.key.as_ref();
+        let selected = key.and_then(|k| k.number("ActivePanel")).unwrap_or(0);
         let active = PANELS
             .iter()
-            .find(|r| r.id == config.panel)
+            .find(|r| r.id == selected)
             .unwrap_or(&PANELS[0])
             .id;
         Self {
@@ -33,9 +35,17 @@ impl Sidebar {
             splitter: ptr::null_mut(),
             panels: vec![],
             active,
-            collapsed: config.collapsed,
-            width: config.sidebar,
+            collapsed: key.and_then(|k| k.number("PanelCollapsed")) == Some(1),
+            width: key
+                .and_then(|k| k.number("SidebarWidth"))
+                .filter(|v| (120..=2000).contains(v))
+                .unwrap_or(240) as i32,
         }
+    }
+    pub fn save(&self, key: &crate::config::Key) -> Result<(), String> {
+        key.set_number("SidebarWidth", self.width as u32)?;
+        key.set_number("ActivePanel", self.active)?;
+        key.set_number("PanelCollapsed", u32::from(self.collapsed))
     }
     pub fn panel(&self, id: u32) -> &Panel {
         &self.panels.iter().find(|(r, _)| r.id == id).unwrap().1
@@ -50,20 +60,24 @@ impl Sidebar {
             .map(|(_, p)| p.clone())
     }
 }
-pub(super) fn focus_target() -> HWND {
-    read(|a| {
-        if a.sidebar.collapsed {
-            a.sidebar.toolbar
-        } else {
-            a.sidebar.panel(a.sidebar.active).focus()
-        }
-    })
+pub(super) fn focus() {
+    let (toolbar, panel) = read(|a| {
+        (
+            a.sidebar.toolbar,
+            (!a.sidebar.collapsed).then(|| a.sidebar.panel(a.sidebar.active).clone()),
+        )
+    });
+    if let Some(panel) = panel {
+        panel.focus();
+    } else {
+        crate::native::focus(toolbar);
+    }
 }
 pub(super) fn create(frame: HWND) -> bool {
     let toolbar = child(
         frame,
-        "ToolbarWindow32",
-        "",
+        w!("ToolbarWindow32"),
+        &[0],
         WS_TABSTOP
             | TBSTYLE_FLAT
             | TBSTYLE_LIST
@@ -72,7 +86,7 @@ pub(super) fn create(frame: HWND) -> bool {
             | (CCS_NORESIZE | CCS_NOPARENTALIGN | CCS_NODIVIDER) as u32,
         PANEL_TOOLBAR,
     );
-    let splitter = child(frame, "Winlex.Splitter", "", 0, 0);
+    let splitter = child(frame, w!("Winlex.Splitter"), &[0], 0, 0);
     if toolbar.is_null() || splitter.is_null() {
         return false;
     }
@@ -89,7 +103,7 @@ pub(super) fn create(frame: HWND) -> bool {
     send(toolbar, TB_SETMAXTEXTROWS, 1, 0);
     send(toolbar, TB_SETBITMAPSIZE, 0, 0);
     for registration in PANELS {
-        let mut text = wide(&resources::text(registration.label));
+        let mut text = resources::wide_text(registration.label).to_vec();
         text.push(0);
         let index = send(toolbar, TB_ADDSTRINGW, 0, text.as_ptr() as isize);
         if index < 0 {
@@ -120,18 +134,13 @@ pub(super) fn show(id: u32, toggle: bool) {
         s.active = id;
     });
     super::frame::layout_frame();
-    unsafe {
-        let focused = GetFocus();
-        if !focused.is_null() && IsWindowVisible(focused) == 0 {
-            focus(focus_target());
-        }
-    }
+    focus();
 }
 pub(super) fn prepare() {
     let (frame, sidebar) = read(|a| (a.frame, a.sidebar.clone()));
     let m = super::metrics(frame);
     bind(sidebar.toolbar, m.font);
-    let width = m.label_width(PANELS.iter().map(|r| resources::text(r.label)), 66) as u32;
+    let width = m.label_width(PANELS.iter().map(|r| resources::wide_text(r.label)), 66) as u32;
     let row = m.row() as u32;
     send(
         sidebar.toolbar,
@@ -229,7 +238,12 @@ pub(super) unsafe extern "system" fn splitter_proc(
                 let (frame, toolbar) = read(|a| (a.frame, a.sidebar.toolbar));
                 MapWindowPoints(hwnd, frame, &mut p, 1);
                 let x = bounds(toolbar, frame).right + layout::scale(3, dpi().window(frame));
-                let width = MulDiv(p.x - x, 96, dpi().window(frame) as i32).clamp(120, 2000);
+                let width = MulDiv(
+                    p.x - x,
+                    USER_DEFAULT_SCREEN_DPI as i32,
+                    dpi().window(frame) as i32,
+                )
+                .clamp(120, 2000);
                 write(|a| a.sidebar.width = width);
                 super::frame::layout_frame();
                 return 0;

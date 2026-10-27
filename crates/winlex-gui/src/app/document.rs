@@ -1,6 +1,6 @@
 //! MDI document host. Content owns its controls, commands and asynchronous work.
 use super::{document, dpi, edit_document, metadata, read, workspace};
-use crate::{layout::Placement, native::*};
+use crate::native::*;
 
 #[derive(Clone)]
 pub(super) enum Content {
@@ -96,10 +96,7 @@ pub(super) unsafe extern "system" fn document_proc(
                     title: text(hwnd),
                     last_focus: content.focus(),
                     content,
-                    placement: Placement {
-                        bounds: bounds(hwnd, read(|a| a.workspace.mdi)),
-                        dpi: dpi().window(hwnd),
-                    },
+                    placement: None,
                 });
                 return 0;
             }
@@ -114,8 +111,6 @@ pub(super) unsafe extern "system" fn document_proc(
                 let result = DefMDIChildProcW(hwnd, msg, w, l);
                 let r = if IsZoomed(hwnd) != 0 {
                     Some(dpi().child_outer(hwnd, client(read(|a| a.workspace.mdi))))
-                } else if IsIconic(hwnd) == 0 {
-                    workspace::tiled_bounds(hwnd)
                 } else {
                     None
                 };
@@ -132,12 +127,12 @@ pub(super) unsafe extern "system" fn document_proc(
                 }
                 return result;
             }
-            WM_SYSCOMMAND if matches!((w & 0xfff0) as u32, SC_RESTORE | SC_MINIMIZE) => {
+            WM_SYSCOMMAND if matches!((w & 0xfff0) as u32, SC_MAXIMIZE | SC_RESTORE) => {
                 let result = DefMDIChildProcW(hwnd, msg, w, l);
-                workspace::arrange_documents();
+                workspace::set_maximized(IsZoomed(hwnd) != 0);
+                workspace::capture_placements();
                 return result;
             }
-            WM_ENTERSIZEMOVE => workspace::begin_free_placement(),
             WM_EXITSIZEMOVE => workspace::capture_placements(),
             WM_SETFOCUS => {
                 let result = DefMDIChildProcW(hwnd, msg, w, l);

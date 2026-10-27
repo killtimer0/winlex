@@ -71,8 +71,7 @@ python verify/gui_resources.py --exe target/i686-pc-windows-msvc/release/winlex-
 `--dpi` 可改为 `pmv1`、`system`、`unaware` 或 `auto`。`--desktop current` 使用当前桌面。
 `--language/--dpi` 属于测试参数，通过独立配置根及 `WINLEX_DPI` 启动 EXE。
 结果在 `tmp/gui-tests/<run-id>/`：JUnit、环境/输入哈希、窗口树、失败截图、退出码和清理记录。
-Runner 将暂停创建的测试进程先加入 Job，再恢复执行；超时/取消清理进程树、配置根和已记录的输入状态。
-`run.json` 分别记录退出、超时/取消与 `cleanup_complete`；完整运行要求测试和资源清理均成功。
+Runner 管理测试进程和隔离资源，退出及清理结果记录在 `run.json`。
 消息测试通过发送窗口消息验证控件行为。实际键鼠专项使用 `--desktop current --real-input -k real_search`，要求解锁的活动输入桌面并取得前台；无法满足条件时报告失败。
 Python 3.8+ 依赖锁定在 `verify/requirements.txt`；可选新 API 按能力探测。XP RTM 解释器/系统支持仍须实机验证。
 

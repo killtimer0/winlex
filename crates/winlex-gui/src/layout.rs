@@ -1,7 +1,7 @@
 use crate::native::*;
 
 pub fn scale(value: i32, dpi: u32) -> i32 {
-    unsafe { MulDiv(value, dpi as i32, 96) }
+    unsafe { MulDiv(value, dpi as i32, USER_DEFAULT_SCREEN_DPI as i32) }
 }
 pub fn rect(x: i32, y: i32, w: i32, h: i32) -> RECT {
     RECT {
@@ -46,7 +46,11 @@ impl Metrics {
     pub fn row(&self) -> i32 {
         self.height + self.px(12)
     }
-    pub fn label_width(&self, labels: impl Iterator<Item = String>, minimum: i32) -> i32 {
+    pub fn label_width<T: AsRef<[u16]>>(
+        &self,
+        labels: impl Iterator<Item = T>,
+        minimum: i32,
+    ) -> i32 {
         let mut width = self.px(minimum);
         unsafe {
             let dc = GetDC(std::ptr::null_mut());
@@ -55,7 +59,8 @@ impl Metrics {
                 let mut bounds = rect(0, 0, 0, 0);
                 DrawTextW(
                     dc,
-                    wide(&label).as_mut_ptr(),
+                    // DT_MODIFYSTRING is not set; DrawTextW only reads the label.
+                    label.as_ref().as_ptr().cast_mut(),
                     -1,
                     &mut bounds,
                     DT_CALCRECT | DT_SINGLELINE,
@@ -73,7 +78,7 @@ impl Metrics {
             return;
         }
         let gap = self.px(4);
-        let width = self.label_width(controls.iter().map(|&h| text(h)), 75);
+        let width = self.label_width(controls.iter().map(|&h| text_wide(h)), 75);
         let available = (area.right - area.left).max(0);
         let columns = ((available + gap) / (width + gap)).max(1);
         let width = width.min(available);
@@ -120,16 +125,4 @@ pub enum Arrangement {
     Free,
     Columns,
     Rows,
-}
-
-pub fn tile(area: RECT, arrangement: Arrangement, index: usize, count: usize) -> RECT {
-    let index = index as i32;
-    let count = count as i32;
-    if arrangement == Arrangement::Columns {
-        let x = area.right * index / count;
-        rect(x, 0, area.right * (index + 1) / count - x, area.bottom)
-    } else {
-        let y = area.bottom * index / count;
-        rect(0, y, area.right, area.bottom * (index + 1) / count - y)
-    }
 }

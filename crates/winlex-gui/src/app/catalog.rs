@@ -8,7 +8,8 @@ use crate::native::text;
 use crate::{
     native::*,
     resources::{self, *},
-    worker::{Completion, Job, Output, Target, Ticket, Worker},
+    tasks::{Completion, Job, Output, Target},
+    worker::Ticket,
 };
 use std::{path::PathBuf, sync::Arc};
 use winlex_core::{Catalog, EntitySummary, SourceData};
@@ -26,7 +27,6 @@ enum Search {
     Failed(String),
 }
 pub(super) struct Session {
-    pub worker: Worker,
     serial: u64,
     pub catalog: Option<Arc<Catalog>>,
     pub inputs: Vec<SourceData>,
@@ -38,9 +38,8 @@ pub(super) struct Session {
     notice: Option<String>,
 }
 impl Session {
-    pub fn new() -> Result<Self, String> {
-        Ok(Self {
-            worker: Worker::new()?,
+    pub fn new() -> Self {
+        Self {
             serial: 0,
             catalog: None,
             inputs: vec![],
@@ -50,17 +49,19 @@ impl Session {
             results: vec![],
             sources: Default::default(),
             notice: None,
-        })
+        }
     }
     pub fn ticket(&mut self) -> Ticket {
         self.serial += 1;
         Ticket::new(self.serial)
     }
-    fn cancel_search(&mut self) {
-        if let Search::Running(t) = &self.search {
-            self.worker.cancel(t);
+    fn cancel_search(&mut self) -> Option<Ticket> {
+        if let Search::Running(t) = std::mem::replace(&mut self.search, Search::Idle) {
+            t.cancel();
+            Some(t)
+        } else {
+            None
         }
-        self.search = Search::Idle;
     }
     fn accept_search(&mut self, completion: Completion) -> bool {
         if !matches!(&self.search, Search::Running(t) if t.id == completion.id) {
@@ -130,9 +131,7 @@ pub(super) fn load(paths: Vec<PathBuf>) {
 pub(super) fn reload(paths: Vec<PathBuf>, reload: Vec<PathBuf>) {
     let result = write(|a| {
         let s = &mut a.session;
-        if let Some(load) = s.load.take() {
-            s.worker.cancel(&load.ticket);
-        }
+        let previous = s.load.take().map(|load| load.ticket.id);
         s.notice = None;
         s.load_error = None;
         let ticket = s.ticket();
@@ -146,7 +145,8 @@ pub(super) fn reload(paths: Vec<PathBuf>, reload: Vec<PathBuf>) {
             paths: paths.clone(),
             pending,
         });
-        let result = s.worker.submit(
+        let result = a.worker.replace(
+            previous,
             ticket,
             Job::Load {
                 paths,
@@ -169,7 +169,9 @@ pub(super) fn reload(paths: Vec<PathBuf>, reload: Vec<PathBuf>) {
 pub(super) fn input_changed() {
     let (input, composing) = super::panel::cancel_debounce();
     write(|a| {
-        a.session.cancel_search();
+        if let Some(ticket) = a.session.cancel_search() {
+            a.worker.cancel(ticket.id);
+        }
         a.session.notice = None;
         a.session.load_error = None;
         a.session.results.clear();
@@ -192,18 +194,31 @@ pub(super) fn search() {
     let query = text(input).trim().to_owned();
     let sent = write(|a| {
         let s = &mut a.session;
-        s.cancel_search();
+        let previous = match std::mem::replace(&mut s.search, Search::Idle) {
+            Search::Running(ticket) => Some(ticket),
+            _ => None,
+        };
         s.results.clear();
         let Some(catalog) = s.catalog.clone() else {
+            if let Some(ticket) = previous {
+                a.worker.cancel(ticket.id);
+            }
             return Ok(false);
         };
         if query.is_empty() {
+            if let Some(ticket) = previous {
+                a.worker.cancel(ticket.id);
+            }
             return Ok(false);
         }
         let ticket = s.ticket();
         s.search = Search::Running(ticket.clone());
-        s.worker
-            .submit(ticket, Job::Search { catalog, query })
+        a.worker
+            .replace(
+                previous.map(|t| t.id),
+                ticket,
+                Job::Search { catalog, query },
+            )
             .map(|_| true)
     });
     update_results(false);
@@ -378,7 +393,7 @@ pub(super) fn open_current(hwnd: HWND) {
         entity: id,
         arch: architecture.core(),
     };
-    if let Err(e) = read(|a| a.session.worker.submit(ticket.clone(), job)) {
+    if let Err(e) = read(|a| a.worker.replace(None, ticket.clone(), job)) {
         set_status(e);
     } else {
         metadata::edit(hwnd, |d| d.ticket = Some(ticket));
@@ -390,9 +405,6 @@ pub(super) fn request_document(hwnd: HWND) {
     else {
         return;
     };
-    if let Some(previous) = previous {
-        read(|a| a.session.worker.cancel(&previous));
-    }
     let ticket = write(|a| a.session.ticket());
     let job = match binding {
         Binding::Source { path, .. } => Job::Inspect { document, path },
@@ -412,7 +424,7 @@ pub(super) fn request_document(hwnd: HWND) {
         d.ticket = Some(ticket.clone());
         d.content = resources::text(IDS_QUERYING).into();
     });
-    if let Err(e) = read(|a| a.session.worker.submit(ticket, job)) {
+    if let Err(e) = read(|a| a.worker.replace(previous.map(|t| t.id), ticket, job)) {
         metadata::edit(hwnd, |d| {
             d.ticket = None;
             d.content = e.into();
@@ -420,31 +432,16 @@ pub(super) fn request_document(hwnd: HWND) {
     }
     metadata::refresh_content(hwnd);
 }
-pub(super) fn event() -> HANDLE {
-    read(|a| a.session.worker.event())
+pub(super) fn worker_stopped() {
+    write(|a| {
+        a.session.load = None;
+        a.session.cancel_search();
+        a.session.sources.cancel();
+    });
+    set_status("Background worker stopped".into());
+    super::sources::refresh_views();
 }
-pub(super) fn poll() {
-    for _ in 0..8 {
-        match read(|a| a.session.worker.rx.try_recv()) {
-            Ok(c) => apply(c),
-            Err(std::sync::mpsc::TryRecvError::Empty) => return,
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                write(|a| {
-                    a.session.load = None;
-                    a.session.cancel_search();
-                    a.session.sources.cancel();
-                });
-                metadata::worker_stopped();
-                super::panel::cancel_debounce();
-                set_status("Catalog worker stopped".into());
-                super::sources::refresh_views();
-                return;
-            }
-        }
-    }
-    read(|a| a.session.worker.resignal());
-}
-fn apply(c: Completion) {
+pub(super) fn apply(c: Completion) {
     match c.target {
         Target::Load => {
             if !read(|a| {
@@ -483,55 +480,7 @@ fn apply(c: Completion) {
                 refresh_status();
             }
         }
-        Target::Discover => super::sources::apply_discovery(c),
-        Target::Document(id) | Target::Reopen(id) => {
-            let Some(hwnd) = metadata::find(|document, d| {
-                document == id && d.ticket.as_ref().is_some_and(|t| t.id == c.id)
-            }) else {
-                return;
-            };
-            metadata::edit(hwnd, |d| d.ticket = None);
-            match c.result {
-                Ok(Output::Reopened { catalog, entity }) => {
-                    if let Some(entity) = entity
-                        && let Some(Binding::Entity { architecture, .. }) =
-                            metadata::get(hwnd, |_, d| d.binding.clone())
-                    {
-                        if let Err(e) = metadata::open(
-                            &entity.name,
-                            Binding::Entity {
-                                architecture,
-                                id: entity.id,
-                                catalog,
-                                architecture_mask: entity.architecture_mask,
-                            },
-                        ) {
-                            set_status(e);
-                        }
-                    } else {
-                        set_status(resources::text(IDS_CURRENT_UNAVAILABLE));
-                    }
-                }
-                Ok(Output::Description(text)) => {
-                    metadata::edit(hwnd, |d| d.content = text.into());
-                }
-                Ok(Output::Inspected(catalog)) => super::sources::inspected(hwnd, catalog),
-                Err(e) => {
-                    if matches!(c.target, Target::Reopen(_)) {
-                        set_status(e);
-                        return;
-                    }
-                    if let Some(Binding::Source { path, .. }) =
-                        metadata::get(hwnd, |_, d| d.binding.clone())
-                    {
-                        super::sources::inspection_failed(&path, &e);
-                    }
-                    metadata::edit(hwnd, |d| d.content = e.into());
-                }
-                _ => unreachable!(),
-            }
-            metadata::refresh_content(hwnd);
-        }
+        _ => unreachable!(),
     }
 }
 
@@ -540,7 +489,7 @@ mod tests {
     use super::*;
     #[test]
     fn late_search_results_cannot_overwrite_new_search_or_load_failure() {
-        let mut session = Session::new().unwrap();
+        let mut session = Session::new();
         let old = Ticket::new(1);
         session.search = Search::Running(old.clone());
         session.cancel_search();

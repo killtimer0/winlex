@@ -1,11 +1,16 @@
 //! Small UI helpers. All HWND operations stay on the UI thread.
-use std::{mem, ptr};
+use std::ptr;
+pub use windows_sys::Win32::UI::Shell::{
+    DefSubclassProc as default_subclass, RemoveWindowSubclass as remove_subclass,
+    SetWindowSubclass as set_subclass,
+};
 pub use windows_sys::Win32::{
     Foundation::*,
     Graphics::Gdi::*,
     System::{LibraryLoader::*, WindowsProgramming::MulDiv},
     UI::{Controls::*, Input::KeyboardAndMouse::*, WindowsAndMessaging::*},
 };
+pub use windows_sys::w;
 
 pub fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
@@ -17,24 +22,22 @@ pub fn error(action: &str) -> String {
     format!("{action}: {}", std::io::Error::last_os_error())
 }
 
-pub unsafe fn procedure<T: Copy>(module: HMODULE, name: &[u8]) -> Option<T> {
-    unsafe {
-        GetProcAddress(module, name.as_ptr()).map(|p| {
-            assert_eq!(mem::size_of::<T>(), mem::size_of_val(&p));
-            mem::transmute_copy(&p)
-        })
-    }
-}
-
-pub fn child(parent: HWND, class: &str, text: &str, style: u32, id: u16) -> HWND {
+pub fn child(parent: HWND, class: *const u16, text: &[u16], style: u32, id: u16) -> HWND {
     child_ex(parent, class, text, style, 0, id)
 }
-pub fn child_ex(parent: HWND, class: &str, text: &str, style: u32, ex_style: u32, id: u16) -> HWND {
+pub fn child_ex(
+    parent: HWND,
+    class: *const u16,
+    text: &[u16],
+    style: u32,
+    ex_style: u32,
+    id: u16,
+) -> HWND {
     unsafe {
         CreateWindowExW(
             ex_style,
-            wide(class).as_ptr(),
-            wide(text).as_ptr(),
+            class,
+            text.as_ptr(),
             WS_CHILD | WS_VISIBLE | style,
             0,
             0,
@@ -83,10 +86,15 @@ pub fn place(hwnd: HWND, r: RECT) {
     }
 }
 pub fn text(hwnd: HWND) -> String {
+    let value = text_wide(hwnd);
+    String::from_utf16_lossy(&value[..value.len() - 1])
+}
+pub fn text_wide(hwnd: HWND) -> Vec<u16> {
     unsafe {
         let mut buf = vec![0; GetWindowTextLengthW(hwnd).max(0) as usize + 1];
         let n = GetWindowTextW(hwnd, buf.as_mut_ptr(), buf.len() as i32);
-        String::from_utf16_lossy(&buf[..n.max(0) as usize])
+        buf.truncate(n.max(0) as usize + 1);
+        buf
     }
 }
 pub fn set_text(hwnd: HWND, text: &str) {
@@ -124,54 +132,4 @@ pub fn list_column(hwnd: HWND, index: usize, title: &str, width: i32) {
         ..unsafe { std::mem::zeroed() }
     };
     send(hwnd, LVM_INSERTCOLUMNW, index, &col as *const _ as isize);
-}
-type SubclassProc =
-    Option<unsafe extern "system" fn(HWND, u32, usize, isize, usize, usize) -> isize>;
-type SetSubclass = unsafe extern "system" fn(HWND, SubclassProc, usize, usize) -> BOOL;
-type RemoveSubclass = unsafe extern "system" fn(HWND, SubclassProc, usize) -> BOOL;
-type DefaultSubclass = unsafe extern "system" fn(HWND, u32, usize, isize) -> isize;
-struct SubclassApi {
-    set: SetSubclass,
-    remove: RemoveSubclass,
-    default: DefaultSubclass,
-}
-static SUBCLASS: std::sync::OnceLock<SubclassApi> = std::sync::OnceLock::new();
-
-pub fn initialize_subclass() -> Result<(), String> {
-    if SUBCLASS.get().is_some() {
-        return Ok(());
-    }
-    unsafe {
-        // XP RTM exports these helpers only by ordinal. Keep the DLL loaded for the callbacks.
-        let module = LoadLibraryW(wide("comctl32.dll").as_ptr());
-        if module.is_null() {
-            return Err(error("Load common controls"));
-        }
-        let resolve = |ordinal: usize| {
-            GetProcAddress(module, ordinal as *const u8)
-                .ok_or_else(|| error("Resolve common-control subclass API"))
-        };
-        let api = SubclassApi {
-            set: mem::transmute::<unsafe extern "system" fn() -> isize, SetSubclass>(resolve(410)?),
-            remove: mem::transmute::<unsafe extern "system" fn() -> isize, RemoveSubclass>(
-                resolve(412)?,
-            ),
-            default: mem::transmute::<unsafe extern "system" fn() -> isize, DefaultSubclass>(
-                resolve(413)?,
-            ),
-        };
-        let _ = SUBCLASS.set(api);
-    }
-    Ok(())
-}
-pub unsafe fn set_subclass(hwnd: HWND, callback: SubclassProc, id: usize, data: usize) -> BOOL {
-    unsafe { (SUBCLASS.get().unwrap().set)(hwnd, callback, id, data) }
-}
-pub unsafe fn remove_subclass(hwnd: HWND, callback: SubclassProc, id: usize) {
-    unsafe {
-        (SUBCLASS.get().unwrap().remove)(hwnd, callback, id);
-    }
-}
-pub unsafe fn default_subclass(hwnd: HWND, msg: u32, w: usize, l: isize) -> isize {
-    unsafe { (SUBCLASS.get().unwrap().default)(hwnd, msg, w, l) }
 }

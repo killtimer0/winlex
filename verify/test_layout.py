@@ -48,6 +48,10 @@ def check_toolbar_and_search(app):
     n.wait(lambda: not n.is_visible(app.results), "toolbar Space collapses panel")
     n.key_message(toolbar, 32)
     n.wait(lambda: n.is_visible(app.results), "toolbar Space expands panel")
+    # Activation now hands focus to the panel; collapse to navigate the toolbar again.
+    click(first)
+    n.wait(lambda: not n.is_visible(app.results), "collapse returns toolbar focus")
+    n.send(toolbar, 0x448, 0)
     n.key_message(toolbar, 40)
     n.wait(lambda: n.send(toolbar, 0x447) == 1, "toolbar Down selects next item")
     n.key_message(toolbar, 32)
@@ -102,6 +106,7 @@ def test_environment_remeasures_open_document(launch, settings):
     app.command(1021)
     doc = app.open_row(source=True)
     n.wait(lambda: '"sources"' in app.content(doc), "source details", 45)
+    app.command(1012)  # restore before testing ordinary-window wrapping
     editor = n.get_item(doc, 1203)
     button = n.get_item(doc, 1020)
     content = app.content(doc)
@@ -126,3 +131,119 @@ def test_environment_remeasures_open_document(launch, settings):
             assert r[3] <= bounds[1]
             for other in rectangles[i + 1:]:
                 assert r[2] <= other[0] or other[2] <= r[0] or r[3] <= other[1] or other[3] <= r[1]
+
+
+def test_mdi_maximize_inheritance_and_one_shot_arrangement(launch, settings):
+    app = launch(["--winmd", settings[1]])
+    zoomed = n.api(n.user, "IsZoomed", n.w.BOOL, n.w.HWND)
+    app.query("CreateFileW")
+    original = app.open_row()
+    n.send(app.mdi, 0x225, original)  # WM_MDIMAXIMIZE
+    assert zoomed(original)
+    app.command(1047, original)
+    n.wait(lambda: len(app.documents()) == 2, "maximized new document")
+    other = next(h for h in app.documents() if h != original)
+    assert zoomed(other), "new document must inherit MDI maximization"
+    app.command(1010)  # one-shot vertical tile
+    assert not any(zoomed(h) for h in app.documents())
+    before = {h: n.rectangle(h) for h in app.documents()}
+    app.query("CloseHandle")
+    third = app.open_row()
+    assert third not in before
+    assert {h: n.rectangle(h) for h in before} == before, "creation must not retile existing documents"
+    n.send(app.mdi, 0x221, third)  # WM_MDIDESTROY
+    assert {h: n.rectangle(h) for h in before} == before, "closing must not retile remaining documents"
+    frame = n.rectangle(app.frame)
+    n.set_pos(app.frame, None, 0, 0, frame[2] - frame[0] + 80, frame[3] - frame[1] + 60, 0x16)
+    assert {h: n.rectangle(h) for h in before} == before, "frame resize must not retile documents"
+
+
+def test_accelerator_region_navigation_and_tab_enter(launch, settings):
+    class ThreadInfo(n.c.Structure):
+        _fields_ = [("size", n.w.DWORD), ("flags", n.w.DWORD),
+                    ("active", n.w.HWND), ("focus", n.w.HWND),
+                    ("capture", n.w.HWND), ("menu", n.w.HWND),
+                    ("move", n.w.HWND), ("caret", n.w.HWND), ("rect", n.w.RECT)]
+
+    info_api = n.api(n.user, "GetGUIThreadInfo", n.w.BOOL, n.w.DWORD, n.c.POINTER(ThreadInfo))
+    app = launch(["--winmd", settings[1]])
+    app.query("CreateFileW")
+    doc = app.open_row()
+    editor = n.get_item(doc, 1203)
+    thread = n.get_pid(app.frame, None)
+
+    def focused():
+        info = ThreadInfo()
+        info.size = n.c.sizeof(info)
+        assert info_api(thread, n.c.byref(info))
+        return info.focus
+
+    n.send(doc, 7)  # WM_SETFOCUS: document restores its editor on the owning thread
+    n.wait(lambda: focused() == editor, "document focus")
+    n.key_message(editor, 0x75)  # F6 through TranslateAccelerator
+    n.wait(lambda: focused() == app.search, "F6 to sidebar")
+    n.key_message(app.search, 0x75)
+    n.wait(lambda: focused() == editor, "F6 to document")
+    n.key_message(editor, 0x75)
+    n.wait(lambda: focused() == app.search, "sidebar before tab Enter")
+    n.key_message(n.get_item(app.frame, 1104), 13)
+    n.wait(lambda: focused() == editor, "tab Enter to document")
+
+    toolbar = n.get_item(app.frame, 1113)
+
+    def click_panel(index):
+        assert n.send(toolbar, 0x41D, index, app.memory)
+        buffer = n.c.create_string_buffer(16)
+        assert n.read_memory(app.handle, app.memory, buffer, 16, None)
+        left, top, right, bottom = struct.unpack("<4i", buffer.raw)
+        point = ((left + right) // 2) | (((top + bottom) // 2) << 16)
+        n.send(toolbar, 0x201, 1, point)
+        n.send(toolbar, 0x202, 0, point)
+
+    click_panel(1)
+    n.wait(lambda: focused() == app.sources, "mouse activation delegates focus to sources")
+    n.send(app.frame, 5)  # ordinary WM_SIZE layout
+    n.send(app.frame, 0x1A)  # environment/font refresh
+    assert focused() == app.sources, "layout and environment updates must not move focus"
+    click_panel(1)
+    n.wait(lambda: focused() == toolbar, "collapse focuses toolbar")
+    click_panel(0)
+    n.wait(lambda: focused() == app.search, "mouse activation delegates focus to search")
+    n.send(toolbar, 0x448, 1)  # TB_SETHOTITEM
+    n.key_message(toolbar, 32)
+    n.wait(lambda: focused() == app.sources, "keyboard activation delegates focus to sources")
+    n.key_message(toolbar, 32)
+    n.wait(lambda: focused() == toolbar, "keyboard collapse focuses toolbar")
+
+
+def test_mdi_remembers_last_user_state_after_all_documents_close(launch, settings):
+    app = launch(["--winmd", settings[1]])
+    app.query("CreateFileW")
+    doc = app.open_row()
+    assert n.is_zoomed(doc), "first document defaults to maximized"
+
+    def reopen(previous):
+        n.send(previous, 0x10)  # WM_CLOSE through the document host
+        n.wait(lambda: not app.documents(), "all documents closed")
+        return app.open_row()
+
+    doc = reopen(doc)
+    assert n.is_zoomed(doc), "closing all must retain maximized preference"
+    n.send(doc, 0x112, 0xF120)  # SC_RESTORE, as sent by the native system menu
+    assert not n.is_zoomed(doc)
+    doc = reopen(doc)
+    assert not n.is_zoomed(doc), "closing all must retain restored preference"
+    with n.window_dpi_context(app.frame):
+        left, top, right, bottom = n.rectangle(doc)
+        assert right > left and bottom > top
+    n.send(doc, 0x112, 0xF030)  # SC_MAXIMIZE
+    assert n.is_zoomed(doc)
+    doc = reopen(doc)
+    assert n.is_zoomed(doc)
+    app.command(1010)  # explicit tiling changes the preference to normal
+    assert not n.is_zoomed(doc)
+    doc = reopen(doc)
+    assert not n.is_zoomed(doc)
+    app.command(1013)  # application Window > Maximize command
+    doc = reopen(doc)
+    assert n.is_zoomed(doc)

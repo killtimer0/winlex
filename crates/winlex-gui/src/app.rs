@@ -22,7 +22,7 @@ mod sources;
 mod workspace;
 
 use crate::resources::{self, *};
-use document::{document_proc, restore_focus};
+use document::document_proc;
 use frame::frame_proc;
 use workspace::{active, document, edit_document};
 
@@ -63,13 +63,17 @@ impl Architecture {
 
 struct App {
     config: crate::config::Config,
+    settings: settings::Settings,
     dpi: Dpi,
+    system_version: crate::platform::WindowsVersion,
     frame: HWND,
     status: HWND,
     session: catalog::Session,
+    worker: crate::worker::Worker<crate::tasks::Job, crate::tasks::Completion>,
     sidebar: sidebar::Sidebar,
     workspace: workspace::Workspace,
     fonts: Vec<Font>,
+    failure: Option<String>,
 }
 thread_local! {static APP:RefCell<Option<App>>=const {RefCell::new(None)};}
 // These closures only inspect/update owned data; never send messages inside them.
@@ -91,7 +95,15 @@ fn font_for(value: u32) -> (HFONT, i32) {
     }) {
         return font;
     }
-    let font = Font::new(value);
+    let font = match Font::new(value) {
+        Ok(font) => font,
+        Err(error) => {
+            write(|a| a.failure = Some(error));
+            // Window callbacks cannot return a Rust error through the native ABI.
+            // The application boundary reports it and destroys the window tree.
+            return (ptr::null_mut(), 0);
+        }
+    };
     let result = (font.handle, font.height);
     write(|a| a.fonts.push(font));
     result
@@ -112,18 +124,33 @@ pub fn run(
     config: crate::config::Config,
     paths: Vec<std::path::PathBuf>,
 ) -> Result<(), String> {
-    let session = catalog::Session::new()?;
+    let system_version = crate::platform::WindowsVersion::query()?;
+    let _apartment = crate::input::Apartment::initialize()?;
+    let settings = settings::Settings::load(&config);
+    resources::initialize(settings.language.name())?;
+    let mut session = catalog::Session::new();
+    let worker = crate::worker::Worker::new(crate::tasks::run)?;
+    session.sources.settings = sources::Settings::load(&config);
+    let paths = if paths.is_empty() {
+        session.sources.settings.auto_load.clone()
+    } else {
+        paths
+    };
     let sidebar = sidebar::Sidebar::new(&config);
     APP.with(|a| {
         *a.borrow_mut() = Some(App {
             config,
+            settings,
             dpi,
+            system_version,
             frame: ptr::null_mut(),
             status: ptr::null_mut(),
             session,
+            worker,
             sidebar,
             workspace: workspace::Workspace::default(),
             fonts: Vec::new(),
+            failure: None,
         })
     });
     let result = unsafe { run_windows(paths) };
@@ -139,21 +166,19 @@ unsafe fn run_windows(paths: Vec<std::path::PathBuf>) -> Result<(), String> {
         if InitCommonControlsEx(&controls) == 0 {
             return Err(error("Initialize common controls"));
         }
-        initialize_subclass()?;
-        let classes: [(&str, WNDPROC); 3] = [
-            ("Winlex.Frame", Some(frame_proc)),
-            ("Winlex.Document", Some(document_proc)),
-            ("Winlex.Splitter", Some(sidebar::splitter_proc)),
+        let classes: [(*const u16, WNDPROC); 3] = [
+            (w!("Winlex.Frame"), Some(frame_proc)),
+            (w!("Winlex.Document"), Some(document_proc)),
+            (w!("Winlex.Splitter"), Some(sidebar::splitter_proc)),
         ];
         for (name, proc) in classes {
-            let name = wide(name);
             let class = WNDCLASSW {
                 lpfnWndProc: proc,
                 hInstance: instance(),
                 hCursor: LoadCursorW(ptr::null_mut(), IDC_ARROW),
                 hIcon: LoadIconW(ptr::null_mut(), IDI_APPLICATION),
                 hbrBackground: (COLOR_BTNFACE + 1) as usize as HBRUSH,
-                lpszClassName: name.as_ptr(),
+                lpszClassName: name,
                 ..std::mem::zeroed()
             };
             if RegisterClassW(&class) == 0 {
@@ -161,12 +186,12 @@ unsafe fn run_windows(paths: Vec<std::path::PathBuf>) -> Result<(), String> {
             }
         }
         let menu = resources::menu()?;
-        let value = dpi().root;
-        let saved = read(|a| a.config.window);
+        let value = dpi().system();
+        let saved = read(|a| a.settings.window);
         let frame = CreateWindowExW(
             WS_EX_CONTROLPARENT,
-            wide("Winlex.Frame").as_ptr(),
-            wide(&resources::text(IDS_APP_TITLE)).as_ptr(),
+            w!("Winlex.Frame"),
+            resources::wide_text(IDS_APP_TITLE).as_ptr(),
             WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
             saved.map_or(CW_USEDEFAULT, |w| w.x),
             saved.map_or(CW_USEDEFAULT, |w| w.y),
@@ -181,6 +206,10 @@ unsafe fn run_windows(paths: Vec<std::path::PathBuf>) -> Result<(), String> {
             let failure = error("Create main window");
             DestroyMenu(menu);
             return Err(failure);
+        }
+        if let Some(error) = write(|a| a.failure.take()) {
+            DestroyWindow(frame);
+            return Err(error);
         }
         settings::restore_window(frame);
         settings::update_language_menu();
@@ -207,10 +236,14 @@ unsafe fn run_windows(paths: Vec<std::path::PathBuf>) -> Result<(), String> {
             },
         );
         UpdateWindow(frame);
-        focus(sidebar::focus_target());
+        sidebar::focus();
         let mut msg: MSG = std::mem::zeroed();
         loop {
-            let event = catalog::event();
+            if let Some(error) = write(|a| a.failure.take()) {
+                DestroyWindow(frame);
+                return Err(error);
+            }
+            let event = read(|a| a.worker.event());
             let wake =
                 MsgWaitForMultipleObjectsEx(1, &event, u32::MAX, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
             if wake == WAIT_FAILED {
@@ -219,7 +252,7 @@ unsafe fn run_windows(paths: Vec<std::path::PathBuf>) -> Result<(), String> {
                 return Err(failure);
             }
             if wake == WAIT_OBJECT_0 {
-                catalog::poll();
+                poll_completions();
             }
             if PeekMessageW(&mut msg, ptr::null_mut(), 0, 0, PM_REMOVE) == 0 {
                 continue;
@@ -233,25 +266,6 @@ unsafe fn run_windows(paths: Vec<std::path::PathBuf>) -> Result<(), String> {
             }
             if TranslateAcceleratorW(frame, accelerators, &msg) != 0 {
                 continue;
-            }
-            if msg.message == WM_KEYDOWN {
-                match msg.wParam as u16 {
-                    VK_F6 => {
-                        let h = GetFocus();
-                        let d = active();
-                        if !d.is_null() && (h == d || IsChild(d, h) != 0) {
-                            focus(sidebar::focus_target());
-                        } else {
-                            restore_focus(d);
-                        }
-                        continue;
-                    }
-                    VK_RETURN if msg.hwnd == document_tabs => {
-                        restore_focus(active());
-                        continue;
-                    }
-                    _ => {}
-                }
             }
             if sidebar::translate(frame, &msg)
                 || msg.hwnd == document_tabs && IsDialogMessageW(frame, &msg) != 0
@@ -270,4 +284,26 @@ unsafe fn run_windows(paths: Vec<std::path::PathBuf>) -> Result<(), String> {
         }
         Ok(())
     }
+}
+fn poll_completions() {
+    for _ in 0..8 {
+        match read(|a| a.worker.rx.try_recv()) {
+            Ok(c) => {
+                use crate::tasks::Target;
+                match c.target {
+                    Target::Load | Target::Search => catalog::apply(c),
+                    Target::Discover => sources::apply_discovery(c),
+                    Target::Document(id) | Target::Reopen(id) => metadata::apply(id, c),
+                }
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                catalog::worker_stopped();
+                metadata::worker_stopped();
+                panel::cancel_debounce();
+                return;
+            }
+        }
+    }
+    read(|a| a.worker.resignal());
 }

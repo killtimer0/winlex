@@ -1,20 +1,18 @@
-//! MDI lifecycle, activation projection and persistent arrangement.
+//! MDI lifecycle, activation projection and one-shot arrangement commands.
 use super::{
     document::{self, Content},
     dpi, read, write,
 };
 use crate::{
-    layout::{self, Arrangement, Placement},
+    layout::{Arrangement, Placement},
     native::*,
 };
-
-pub(super) const ARRANGE_DOCUMENTS: u32 = WM_APP + 1;
 
 pub(super) struct Workspace {
     pub mdi: HWND,
     pub tabs: HWND,
     pub documents: Vec<Document>,
-    arrangement: Arrangement,
+    maximized: bool,
     serial: u64,
 }
 impl Default for Workspace {
@@ -23,7 +21,7 @@ impl Default for Workspace {
             mdi: std::ptr::null_mut(),
             tabs: std::ptr::null_mut(),
             documents: vec![],
-            arrangement: Arrangement::Free,
+            maximized: true,
             serial: 0,
         }
     }
@@ -34,7 +32,7 @@ pub(super) struct Document {
     pub title: String,
     pub content: Content,
     pub last_focus: HWND,
-    pub placement: Placement,
+    pub placement: Option<Placement>,
 }
 pub(super) fn document<T>(hwnd: HWND, inspect: impl FnOnce(&Document) -> T) -> Option<T> {
     read(|a| {
@@ -81,11 +79,6 @@ pub(super) fn unregister_document(hwnd: HWND) {
 }
 pub(super) fn document_destroyed() {
     refresh_document_tabs();
-    let frame = read(|a| a.frame);
-    // Arrange after the native destruction sequence has completed.
-    unsafe {
-        PostMessageW(frame, ARRANGE_DOCUMENTS, 0, 0);
-    }
 }
 pub(super) fn close_document(hwnd: HWND) {
     let mdi = read(|a| a.workspace.mdi);
@@ -112,6 +105,13 @@ pub(super) unsafe extern "system" fn document_tabs_proc(
     _data: usize,
 ) -> isize {
     unsafe {
+        if msg == WM_GETDLGCODE && w == VK_RETURN as usize {
+            return DLGC_WANTMESSAGE as isize;
+        }
+        if msg == WM_KEYDOWN && w == VK_RETURN as usize {
+            document::restore_focus(active());
+            return 0;
+        }
         if msg == WM_MBUTTONUP {
             let mut hit = TCHITTESTINFO {
                 pt: POINT {
@@ -200,55 +200,19 @@ pub(super) fn activate_document_tab() {
     }
     sync_document_selection();
 }
-pub(super) fn arrange_documents() {
-    let (mdi, arrangement, docs) = read(|a| {
-        (
-            a.workspace.mdi,
-            a.workspace.arrangement,
-            a.workspace
-                .documents
-                .iter()
-                .map(|d| (d.hwnd, d.placement))
-                .collect::<Vec<_>>(),
-        )
-    });
-    if mdi.is_null() {
-        return;
-    }
-    let current = active();
-    if !current.is_null() && unsafe { IsZoomed(current) } != 0 {
-        return;
-    }
-    let visible: Vec<_> = docs
-        .iter()
-        .filter(|d| unsafe { IsIconic(d.0) } == 0)
-        .collect();
-    let area = client(mdi);
-    for (index, doc) in visible.iter().enumerate() {
-        let r = match arrangement {
-            Arrangement::Free => doc.1.at(dpi().window(doc.0)),
-            _ => layout::tile(area, arrangement, index, visible.len()),
-        };
-        place(doc.0, r);
-    }
-}
-pub(super) fn tiled_bounds(hwnd: HWND) -> Option<RECT> {
-    let (mdi, arrangement) = read(|a| (a.workspace.mdi, a.workspace.arrangement));
-    if arrangement == Arrangement::Free {
-        return None;
-    }
-    let docs: Vec<_> = read(|a| {
+pub(super) fn scale_documents() {
+    let docs = read(|a| {
         a.workspace
             .documents
             .iter()
-            .map(|d| d.hwnd)
+            .filter_map(|d| d.placement.map(|p| (d.hwnd, p)))
             .collect::<Vec<_>>()
-    })
-    .into_iter()
-    .filter(|&h| unsafe { IsIconic(h) } == 0)
-    .collect();
-    let index = docs.iter().position(|&h| h == hwnd)?;
-    Some(layout::tile(client(mdi), arrangement, index, docs.len()))
+    });
+    for (hwnd, placement) in docs {
+        if unsafe { IsZoomed(hwnd) == 0 && IsIconic(hwnd) == 0 } {
+            place(hwnd, placement.at(dpi().window(hwnd)));
+        }
+    }
 }
 pub(super) fn capture_placements() {
     let (mdi, docs) = read(|a| {
@@ -269,27 +233,43 @@ pub(super) fn capture_placements() {
             bounds: bounds(hwnd, mdi),
             dpi: dpi().window(hwnd),
         };
-        edit_document(hwnd, |d| d.placement = p);
+        edit_document(hwnd, |d| d.placement = Some(p));
     }
 }
-pub(super) fn begin_free_placement() {
-    capture_placements();
-    write(|a| a.workspace.arrangement = Arrangement::Free);
-}
 pub(super) fn set_arrangement(arrangement: Arrangement) {
+    set_maximized(false);
     let mdi = read(|a| a.workspace.mdi);
     let current = active();
     if !current.is_null() && unsafe { IsZoomed(current) } != 0 {
         send(mdi, WM_MDIRESTORE, current as usize, 0);
     }
-    if arrangement == Arrangement::Free {
-        capture_placements();
-    }
-    write(|a| a.workspace.arrangement = arrangement);
-    arrange_documents();
     if arrangement != Arrangement::Free {
-        capture_placements();
+        send(
+            mdi,
+            WM_MDITILE,
+            if arrangement == Arrangement::Columns {
+                MDITILE_VERTICAL as usize
+            } else {
+                MDITILE_HORIZONTAL as usize
+            },
+            0,
+        );
     }
+    capture_placements();
+}
+pub(super) fn set_maximized(maximized: bool) {
+    write(|a| a.workspace.maximized = maximized);
+}
+fn normal_placement(hwnd: HWND) -> Result<Placement, String> {
+    let mut placement: WINDOWPLACEMENT = unsafe { std::mem::zeroed() };
+    placement.length = std::mem::size_of::<WINDOWPLACEMENT>() as u32;
+    if unsafe { GetWindowPlacement(hwnd, &mut placement) } == 0 {
+        return Err(error("Read document placement"));
+    }
+    Ok(Placement {
+        bounds: placement.rcNormalPosition,
+        dpi: dpi().window(hwnd),
+    })
 }
 pub(super) fn next_id() -> u64 {
     write(|a| {
@@ -298,8 +278,7 @@ pub(super) fn next_id() -> u64 {
     })
 }
 pub(super) fn create_document(title: &str, content: Content) -> Result<HWND, String> {
-    let (mdi, count) = read(|a| (a.workspace.mdi, a.workspace.documents.len()));
-    let value = dpi().window(mdi);
+    let (mdi, maximized) = read(|a| (a.workspace.mdi, a.workspace.maximized));
     let mut init = document::Init {
         content: Some(content),
         error: None,
@@ -307,13 +286,13 @@ pub(super) fn create_document(title: &str, content: Content) -> Result<HWND, Str
     // CreateMDIWindowW consumes this pointer synchronously in WM_CREATE.
     let hwnd = unsafe {
         CreateMDIWindowW(
-            wide("Winlex.Document").as_ptr(),
+            w!("Winlex.Document"),
             wide(title).as_ptr(),
-            WS_VISIBLE | WS_OVERLAPPEDWINDOW,
-            layout::scale(16 + (count as i32 % 6) * 24, value),
-            layout::scale(16 + (count as i32 % 6) * 24, value),
-            layout::scale(600, value),
-            layout::scale(400, value),
+            WS_VISIBLE | WS_OVERLAPPEDWINDOW | if maximized { WS_MAXIMIZE } else { 0 },
+            CW_USEDEFAULT,
+            CW_USEDEFAULT,
+            CW_USEDEFAULT,
+            CW_USEDEFAULT,
             mdi,
             instance(),
             &mut init as *mut document::Init as isize,
@@ -322,12 +301,17 @@ pub(super) fn create_document(title: &str, content: Content) -> Result<HWND, Str
     if hwnd.is_null() {
         return Err(init.error.unwrap_or_else(|| error("Create MDI document")));
     }
+    let placement = match normal_placement(hwnd) {
+        Ok(placement) => placement,
+        Err(error) => {
+            close_document(hwnd);
+            return Err(error);
+        }
+    };
+    edit_document(hwnd, |d| d.placement = Some(placement));
     refresh_document_tabs();
     if let Some(content) = document(hwnd, |d| d.content.clone()) {
         content.prepare(hwnd);
-    }
-    if read(|a| a.workspace.arrangement) != Arrangement::Free {
-        arrange_documents();
     }
     Ok(hwnd)
 }

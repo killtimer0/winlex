@@ -56,6 +56,54 @@ pub(super) fn open(name: &str, binding: Binding) -> Result<HWND, String> {
     catalog::request_document(hwnd);
     Ok(hwnd)
 }
+pub(super) fn apply(id: u64, c: crate::tasks::Completion) {
+    use crate::tasks::{Output, Target};
+    let Some(hwnd) =
+        find(|document, d| document == id && d.ticket.as_ref().is_some_and(|t| t.id == c.id))
+    else {
+        return;
+    };
+    edit(hwnd, |d| d.ticket = None);
+    match c.result {
+        Ok(Output::Reopened {
+            catalog: snapshot,
+            entity,
+        }) => {
+            if let Some(entity) = entity
+                && let Some(Binding::Entity { architecture, .. }) =
+                    get(hwnd, |_, d| d.binding.clone())
+            {
+                if let Err(e) = open(
+                    &entity.name,
+                    Binding::Entity {
+                        architecture,
+                        id: entity.id,
+                        catalog: snapshot,
+                        architecture_mask: entity.architecture_mask,
+                    },
+                ) {
+                    catalog::set_status(e);
+                }
+            } else {
+                catalog::set_status(resources::text(IDS_CURRENT_UNAVAILABLE));
+            }
+        }
+        Ok(Output::Description(body)) => edit(hwnd, |d| d.content = body.into()),
+        Ok(Output::Inspected(snapshot)) => super::sources::inspected(hwnd, snapshot),
+        Err(e) => {
+            if matches!(c.target, Target::Reopen(_)) {
+                catalog::set_status(e);
+                return;
+            }
+            if let Some(Binding::Source { path, .. }) = get(hwnd, |_, d| d.binding.clone()) {
+                super::sources::inspection_failed(&path, &e);
+            }
+            edit(hwnd, |d| d.content = e.into());
+        }
+        _ => unreachable!(),
+    }
+    refresh_content(hwnd);
+}
 pub(super) fn get<T>(hwnd: HWND, inspect: impl FnOnce(u64, &Document) -> T) -> Option<T> {
     workspace::document(hwnd, |d| match &d.content {
         Content::Metadata(m) => inspect(d.id, m),
@@ -76,14 +124,14 @@ pub(super) fn find(predicate: impl Fn(u64, &Document) -> bool) -> Option<HWND> {
 impl Document {
     pub fn cancel(&self) {
         if let Some(ticket) = &self.ticket {
-            read(|a| a.session.worker.cancel(ticket));
+            read(|a| a.worker.cancel(ticket.id));
         }
     }
     pub fn create(&mut self, hwnd: HWND) -> Result<(), String> {
         self.editor = child(
             hwnd,
-            "EDIT",
-            "",
+            w!("EDIT"),
+            &[0],
             WS_TABSTOP
                 | WS_VSCROLL
                 | ES_MULTILINE as u32
@@ -107,11 +155,14 @@ impl Document {
             ],
         };
         for &(id, label) in commands {
-            let mut caption = resources::text(label);
-            if let Binding::Entity { architecture, .. } = self.binding {
-                caption = caption.replace("{arch}", &architecture.other().label());
-            }
-            let h = child(hwnd, "BUTTON", &caption, WS_TABSTOP, id);
+            let caption: std::borrow::Cow<'_, [u16]> =
+                if let Binding::Entity { architecture, .. } = self.binding {
+                    wide(&resources::text(label).replace("{arch}", &architecture.other().label()))
+                        .into()
+                } else {
+                    resources::wide_text(label).into()
+                };
+            let h = child(hwnd, w!("BUTTON"), &caption, WS_TABSTOP, id);
             document::track_focus(hwnd, h)?;
             if id == OPEN_OTHER_ARCH
                 && let Binding::Entity {

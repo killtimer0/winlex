@@ -1,5 +1,5 @@
 //! Native frame orchestration; sidebar owns its controls and notifications.
-use super::workspace::{self, ARRANGE_DOCUMENTS, active, arrange_documents};
+use super::workspace::{self, active};
 use super::{dpi, read, sidebar, sources, write};
 use crate::{
     layout::{self, Arrangement},
@@ -8,8 +8,12 @@ use crate::{
 };
 use std::ptr;
 
-fn update_environment(suggested: Option<RECT>) {
-    let old = write(|a| std::mem::take(&mut a.fonts));
+fn update_environment(suggested: Option<(RECT, u32)>, invalidate_fonts: bool) {
+    let old = if invalidate_fonts {
+        write(|a| std::mem::take(&mut a.fonts))
+    } else {
+        Vec::new()
+    };
     let (frame, tabs, status, docs) = read(|a| {
         (
             a.frame,
@@ -22,11 +26,11 @@ fn update_environment(suggested: Option<RECT>) {
                 .collect::<Vec<_>>(),
         )
     });
-    let (font, _) = super::font_for(dpi().window(frame));
+    let (font, _) = super::font_for(suggested.map_or_else(|| dpi().window(frame), |(_, dpi)| dpi));
     super::bind(tabs, font);
     super::bind(status, font);
     sidebar::prepare();
-    if let Some(r) = suggested {
+    if let Some((r, _)) = suggested {
         unsafe {
             SetWindowPos(
                 frame,
@@ -40,6 +44,9 @@ fn update_environment(suggested: Option<RECT>) {
         }
     }
     layout_frame();
+    if suggested.is_some() {
+        workspace::scale_documents();
+    }
     for (hwnd, content) in docs {
         content.prepare(hwnd);
     }
@@ -59,10 +66,18 @@ pub(super) fn layout_frame() {
     layout::take_left(&mut area, sidebar);
     place(tabs, layout::take_top(&mut area, m.height + m.px(16)));
     place(mdi, area);
-    arrange_documents();
 }
 pub(super) fn command(id: u16) -> bool {
     match id {
+        FOCUS_NEXT_REGION => {
+            let h = unsafe { GetFocus() };
+            let d = active();
+            if !d.is_null() && (h == d || unsafe { IsChild(d, h) != 0 }) {
+                sidebar::focus();
+            } else {
+                super::document::restore_focus(d);
+            }
+        }
         LANGUAGE_AUTO | LANGUAGE_ENGLISH | LANGUAGE_CHINESE => super::settings::language(id),
         CLOSE => workspace::close_document(active()),
         EXIT => {
@@ -74,6 +89,7 @@ pub(super) fn command(id: u16) -> bool {
         MAXIMIZE => {
             let h = active();
             if !h.is_null() {
+                workspace::set_maximized(true);
                 send(read(|a| a.workspace.mdi), WM_MDIMAXIMIZE, h as usize, 0);
             }
         }
@@ -89,19 +105,17 @@ pub(super) unsafe extern "system" fn frame_proc(hwnd: HWND, msg: u32, w: usize, 
                 dpi().enable_nonclient(hwnd);
             }
             WM_CREATE => {
-                let value = dpi().initial(hwnd);
-                write(|a| a.dpi.root = value);
                 let tabs = child(
                     hwnd,
-                    "SysTabControl32",
-                    "",
+                    w!("SysTabControl32"),
+                    &[0],
                     WS_TABSTOP | TCS_TOOLTIPS,
                     DOCUMENT_TABS,
                 );
                 let status = child(
                     hwnd,
-                    "msctls_statusbar32",
-                    "",
+                    w!("msctls_statusbar32"),
+                    &[0],
                     SBARS_SIZEGRIP | SBARS_TOOLTIPS,
                     STATUS,
                 );
@@ -111,7 +125,7 @@ pub(super) unsafe extern "system" fn frame_proc(hwnd: HWND, msg: u32, w: usize, 
                 };
                 let mdi = CreateWindowExW(
                     0,
-                    wide("MDICLIENT").as_ptr(),
+                    w!("MDICLIENT"),
                     ptr::null(),
                     WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_HSCROLL | WS_VSCROLL,
                     0,
@@ -137,7 +151,7 @@ pub(super) unsafe extern "system" fn frame_proc(hwnd: HWND, msg: u32, w: usize, 
                     return -1;
                 }
                 windows_sys::Win32::UI::Shell::DragAcceptFiles(hwnd, 1);
-                update_environment(None);
+                update_environment(None, false);
                 return 0;
             }
             WM_SIZE => {
@@ -147,12 +161,11 @@ pub(super) unsafe extern "system" fn frame_proc(hwnd: HWND, msg: u32, w: usize, 
                 return 0;
             }
             WM_DPICHANGED if dpi().per_monitor() => {
-                write(|a| a.dpi.root = (w & 0xffff) as u32);
-                update_environment(Some(*(l as *const RECT)));
+                update_environment(Some((*(l as *const RECT), (w & 0xffff) as u32)), false);
                 return 0;
             }
             WM_SETTINGCHANGE => {
-                update_environment(None);
+                update_environment(None, w == 0 || w as u32 == SPI_SETNONCLIENTMETRICS);
             }
             WM_COMMAND => {
                 if sidebar::command(w) || command(w as u16) {
@@ -191,18 +204,12 @@ pub(super) unsafe extern "system" fn frame_proc(hwnd: HWND, msg: u32, w: usize, 
                 return 1;
             }
             WM_CLOSE => {
-                if let Err(e) = super::settings::save_window(hwnd) {
-                    crate::show_error(&e);
-                }
+                let _ = super::settings::save_window(hwnd);
                 DestroyWindow(hwnd);
                 return 0;
             }
             WM_DESTROY => {
                 PostQuitMessage(0);
-                return 0;
-            }
-            ARRANGE_DOCUMENTS => {
-                arrange_documents();
                 return 0;
             }
             WM_DROPFILES => {

@@ -4,7 +4,8 @@ import pytest
 from support import native as n
 
 
-def test_cross_monitor_layout(launch, settings):
+@pytest.mark.parametrize("maximized", [True, False])
+def test_cross_monitor_layout(launch, settings, maximized):
     if not hasattr(n.user, "GetDpiForWindow"):
         pytest.skip("GetDpiForWindow unavailable; no actual-DPI assertion")
     get_dpi = n.api(n.user, "GetDpiForWindow", w.UINT, w.HWND)
@@ -12,6 +13,9 @@ def test_cross_monitor_layout(launch, settings):
     app.query("CreateFileW")
     doc = app.open_row()
     n.wait(lambda: '"parameters"' in app.content(doc), "document before DPI change", 45)
+    if not maximized:
+        n.send(doc, 0x112, 0xF120)  # native SC_RESTORE
+    assert bool(n.is_zoomed(doc)) == maximized
     displays = n.monitors()
     values = []
     for left, top, right, bottom in displays:

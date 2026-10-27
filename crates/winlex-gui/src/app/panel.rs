@@ -76,8 +76,8 @@ impl Panel {
     fn search(frame: HWND) -> Option<Self> {
         let input = child_ex(
             frame,
-            "EDIT",
-            "",
+            w!("EDIT"),
+            &[0],
             WS_TABSTOP | ES_AUTOHSCROLL as u32,
             WS_EX_CLIENTEDGE,
             SEARCH,
@@ -100,7 +100,15 @@ impl Panel {
             (ADD_DIRECTORY, IDS_DIRECTORY),
             (FORGET_LOCATION, IDS_FORGET_LOCATION),
         ]
-        .map(|(id, label)| child(frame, "BUTTON", &resources::text(label), WS_TABSTOP, id));
+        .map(|(id, label)| {
+            child(
+                frame,
+                w!("BUTTON"),
+                resources::wide_text(label),
+                WS_TABSTOP,
+                id,
+            )
+        });
         tools
             .iter()
             .all(|h| !h.is_null())
@@ -112,11 +120,11 @@ impl Panel {
             Self::Sources { list, .. } => *list,
         }
     }
-    pub fn focus(&self) -> HWND {
-        match self {
+    pub fn focus(&self) {
+        focus(match self {
             Self::Search { input, .. } => *input,
             Self::Sources { list, .. } => *list,
-        }
+        });
     }
     pub fn controls(&self) -> impl Iterator<Item = HWND> + '_ {
         let (first, rest) = match self {
@@ -165,7 +173,6 @@ impl Panel {
                 SEARCH if code == EN_CHANGE => catalog::input_changed(),
                 FOCUS_SEARCH => {
                     sidebar::show(SEARCH_PANEL, false);
-                    focus(*input);
                     send(*input, EM_SETSEL, 0, -1);
                 }
                 _ => return false,
@@ -312,8 +319,8 @@ impl Panel {
 fn create_list(frame: HWND, id: u16) -> Option<HWND> {
     let h = child(
         frame,
-        "SysListView32",
-        "",
+        w!("SysListView32"),
+        &[0],
         WS_TABSTOP | LVS_REPORT | LVS_OWNERDATA | LVS_SINGLESEL | LVS_NOCOLUMNHEADER,
         id,
     );
@@ -402,7 +409,7 @@ unsafe extern "system" fn list_proc(
                 MessageBoxW(
                     h,
                     wide(&panel.cell(row as usize, true)).as_ptr(),
-                    wide(&resources::text(IDS_SOURCE)).as_ptr(),
+                    resources::wide_text(IDS_SOURCE).as_ptr(),
                     MB_OK | MB_ICONINFORMATION,
                 );
             }

@@ -1,0 +1,22 @@
+import pytest
+from support import native as n
+
+
+@pytest.mark.parametrize("command", [1020, 1041])
+def test_native_picker_cancel_keeps_application_state(launch, command):
+    app = launch()
+    app.command(1021)  # sources panel owns both picker commands
+    owner = n.api(n.user, "GetWindow", n.w.HWND, n.w.HWND, n.w.UINT)
+    enabled = n.api(n.user, "IsWindowEnabled", n.w.BOOL, n.w.HWND)
+
+    def dialogs():
+        return [h for h in n.windows() if n.class_name(h) == "#32770"
+                and owner(h, 4) == app.frame and n.is_visible(h)]
+
+    assert n.post(app.frame, 0x111, command, 0)
+    dialog = n.wait(lambda: next(iter(dialogs()), None), "owned system picker")
+    assert not enabled(app.frame)
+    assert n.post(dialog, 0x111, 2, 0)  # IDCANCEL
+    n.wait(lambda: not dialogs() and enabled(app.frame), "picker cancellation")
+    assert not app.documents()
+    n.send(app.frame, 0)  # the owner remains responsive; no error or fallback dialog

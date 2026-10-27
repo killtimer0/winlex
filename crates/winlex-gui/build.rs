@@ -1,6 +1,8 @@
 use std::{env, fs, path::PathBuf};
 
 fn main() {
+    // Use the SDK import library for the common-control subclass helpers.
+    println!("cargo:rustc-link-lib=comctl32");
     println!("cargo:rerun-if-changed=res/resource.h");
     let header = fs::read_to_string("res/resource.h").expect("resource IDs");
     let mut rust = String::new();

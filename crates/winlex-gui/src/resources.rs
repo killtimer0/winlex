@@ -9,7 +9,7 @@ const CHINESE: u16 = 0x0804;
 // RT_STRING is misplaced under KernelStreaming in windows-sys 0.59.
 const RT_STRING: *const u16 = 6usize as *const u16;
 static LANGUAGE: OnceLock<u16> = OnceLock::new();
-static STRINGS: OnceLock<std::collections::HashMap<u16, String>> = OnceLock::new();
+static STRINGS: OnceLock<std::collections::HashMap<u16, Vec<u16>>> = OnceLock::new();
 
 pub fn initialize(language: &str) -> Result<(), String> {
     let selected = match language {
@@ -53,7 +53,7 @@ fn data(kind: *const u16, id: u16) -> Result<&'static [u8], String> {
         Ok(std::slice::from_raw_parts(pointer.cast(), size))
     }
 }
-fn load_text(id: u16) -> Result<String, String> {
+fn load_text(id: u16) -> Result<Vec<u16>, String> {
     let bytes = data(RT_STRING, id / 16 + 1)?;
     let mut words = bytes
         .as_chunks::<2>()
@@ -64,7 +64,7 @@ fn load_text(id: u16) -> Result<String, String> {
         let count = words
             .next()
             .ok_or_else(|| format!("Invalid string resource {id}"))? as usize;
-        let value: Vec<_> = words.by_ref().take(count).collect();
+        let mut value: Vec<_> = words.by_ref().take(count).collect();
         if value.len() != count {
             return Err(format!("Truncated string resource {id}"));
         }
@@ -72,13 +72,21 @@ fn load_text(id: u16) -> Result<String, String> {
             if value.is_empty() {
                 return Err(format!("Missing string resource {id}"));
             }
-            return String::from_utf16(&value).map_err(|_| format!("Invalid UTF-16 resource {id}"));
+            if char::decode_utf16(value.iter().copied()).any(|c| c.is_err()) {
+                return Err(format!("Invalid UTF-16 resource {id}"));
+            }
+            value.push(0);
+            return Ok(value);
         }
     }
     unreachable!()
 }
 pub fn text(id: u16) -> String {
-    STRINGS.get().expect("initialized resources")[&id].clone()
+    let value = wide_text(id);
+    String::from_utf16(&value[..value.len() - 1]).expect("validated resource")
+}
+pub fn wide_text(id: u16) -> &'static [u16] {
+    &STRINGS.get().expect("initialized resources")[&id]
 }
 pub fn menu() -> Result<HMENU, String> {
     let bytes = data(RT_MENU, IDR_MAIN_MENU)?;

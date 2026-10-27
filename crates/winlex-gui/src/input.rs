@@ -1,15 +1,40 @@
 //! Native file selection; paths stay UTF-16/OsString end to end.
 use crate::{
     native::*,
+    platform::WindowsVersion,
     resources::{self, *},
 };
 use std::{ffi::OsString, os::windows::ffi::OsStringExt, path::PathBuf, ptr};
 use windows_sys::Win32::UI::Controls::Dialogs::*;
-pub fn choose_directory(owner: HWND) -> Result<Option<PathBuf>, String> {
+pub struct Apartment;
+impl Apartment {
+    pub fn initialize() -> Result<Self, String> {
+        unsafe {
+            windows::Win32::System::Com::CoInitializeEx(
+                None,
+                windows::Win32::System::Com::COINIT_APARTMENTTHREADED,
+            )
+            .ok()
+        }
+        .map_err(|e| format!("Initialize COM: {e}"))?;
+        Ok(Self)
+    }
+}
+impl Drop for Apartment {
+    fn drop(&mut self) {
+        unsafe {
+            windows::Win32::System::Com::CoUninitialize();
+        }
+    }
+}
+pub fn choose_directory(owner: HWND, version: WindowsVersion) -> Result<Option<PathBuf>, String> {
+    if version.at_least(WindowsVersion::VISTA) {
+        return modern_choose(owner, false, true).map(|mut paths| paths.pop());
+    }
     use windows_sys::Win32::{System::Com::CoTaskMemFree, UI::Shell::*};
     unsafe {
-        let mut display = [0u16; 260];
-        let title = wide(&resources::text(IDS_DIRECTORY));
+        let mut display = [0u16; MAX_PATH as usize];
+        let title = resources::wide_text(IDS_DIRECTORY);
         let info = BROWSEINFOW {
             hwndOwner: owner,
             pszDisplayName: display.as_mut_ptr(),
@@ -21,7 +46,7 @@ pub fn choose_directory(owner: HWND) -> Result<Option<PathBuf>, String> {
         if item.is_null() {
             return Ok(None);
         }
-        let mut path = [0u16; 260];
+        let mut path = [0u16; MAX_PATH as usize];
         let ok = SHGetPathFromIDListW(item, path.as_mut_ptr());
         CoTaskMemFree(item.cast());
         if ok == 0 {
@@ -34,7 +59,14 @@ pub fn choose_directory(owner: HWND) -> Result<Option<PathBuf>, String> {
     }
 }
 
-pub fn choose_files(owner: HWND, multiple: bool) -> Result<Vec<PathBuf>, String> {
+pub fn choose_files(
+    owner: HWND,
+    version: WindowsVersion,
+    multiple: bool,
+) -> Result<Vec<PathBuf>, String> {
+    if version.at_least(WindowsVersion::VISTA) {
+        return modern_choose(owner, multiple, false);
+    }
     let mut filter = Vec::new();
     for s in [
         resources::text(IDS_WINMD_FILES),
@@ -45,7 +77,7 @@ pub fn choose_files(owner: HWND, multiple: bool) -> Result<Vec<PathBuf>, String>
         filter.extend(s.encode_utf16().chain(Some(0)));
     }
     filter.push(0);
-    let title = wide(&resources::text(IDS_LOAD_METADATA));
+    let title = resources::wide_text(IDS_LOAD_METADATA);
     let mut buffer = vec![0u16; 65536];
     loop {
         let mut ofn: OPENFILENAMEW = unsafe { std::mem::zeroed() };
@@ -91,6 +123,82 @@ pub fn choose_files(owner: HWND, multiple: bool) -> Result<Vec<PathBuf>, String>
         );
         buffer = vec![0; size];
     }
+}
+
+fn modern_choose(owner: HWND, multiple: bool, directory: bool) -> Result<Vec<PathBuf>, String> {
+    use windows::{
+        Win32::{
+            Foundation::{ERROR_CANCELLED, HWND as ComHwnd},
+            System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, CoTaskMemFree},
+            UI::Shell::{
+                Common::COMDLG_FILTERSPEC, FOS_ALLOWMULTISELECT, FOS_DONTADDTORECENT,
+                FOS_FILEMUSTEXIST, FOS_FORCEFILESYSTEM, FOS_NOCHANGEDIR, FOS_PATHMUSTEXIST,
+                FOS_PICKFOLDERS, FileOpenDialog, IFileOpenDialog, SIGDN_FILESYSPATH,
+            },
+        },
+        core::{PCWSTR, w},
+    };
+    let result = unsafe {
+        (|| -> windows::core::Result<Vec<PathBuf>> {
+            let dialog: IFileOpenDialog =
+                CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER)?;
+            let mut options = dialog.GetOptions()?
+                | FOS_FORCEFILESYSTEM
+                | FOS_PATHMUSTEXIST
+                | FOS_NOCHANGEDIR
+                | FOS_DONTADDTORECENT;
+            if directory {
+                options |= FOS_PICKFOLDERS;
+            } else {
+                options |= FOS_FILEMUSTEXIST;
+            }
+            if multiple {
+                options |= FOS_ALLOWMULTISELECT;
+            }
+            dialog.SetOptions(options)?;
+            let title = resources::wide_text(if directory {
+                IDS_DIRECTORY
+            } else {
+                IDS_LOAD_METADATA
+            });
+            dialog.SetTitle(PCWSTR(title.as_ptr()))?;
+            if !directory {
+                let winmd = resources::wide_text(IDS_WINMD_FILES);
+                let all = resources::wide_text(IDS_ALL_FILES);
+                dialog.SetFileTypes(&[
+                    COMDLG_FILTERSPEC {
+                        pszName: PCWSTR(winmd.as_ptr()),
+                        pszSpec: w!("*.winmd"),
+                    },
+                    COMDLG_FILTERSPEC {
+                        pszName: PCWSTR(all.as_ptr()),
+                        pszSpec: w!("*.*"),
+                    },
+                ])?;
+            }
+            if let Err(error) = dialog.Show(ComHwnd(owner)) {
+                if error.code() == windows::core::HRESULT::from_win32(ERROR_CANCELLED.0) {
+                    return Ok(Vec::new());
+                }
+                return Err(error);
+            }
+            let items = dialog.GetResults()?;
+            let mut paths = Vec::new();
+            for index in 0..items.GetCount()? {
+                let path = items.GetItemAt(index)?.GetDisplayName(SIGDN_FILESYSPATH)?;
+                let value = OsString::from_wide(path.as_wide());
+                CoTaskMemFree(Some(path.0.cast()));
+                paths.push(value.into());
+            }
+            Ok(paths)
+        })()
+    };
+    result.map_err(|e| {
+        format!(
+            "Select {}: {e}",
+            if directory { "directory" } else { "files" }
+        )
+    })
 }
 
 // Explorer drops use the same append operation as the file picker.
