@@ -7,6 +7,7 @@ use crate::{
     resources::{self, *},
 };
 use std::ptr;
+use winlex_core::Architecture;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) enum Language {
@@ -36,6 +37,7 @@ pub(super) struct Window {
 pub(super) struct Settings {
     pub language: Language,
     pub window: Option<Window>,
+    pub preferred_architecture: Option<Architecture>,
 }
 impl Settings {
     pub fn load(config: &Config) -> Self {
@@ -45,6 +47,9 @@ impl Settings {
             Some("zh-CN") => Language::Chinese,
             _ => Language::Auto,
         };
+        let preferred_architecture = key
+            .and_then(|k| k.text("PreferredArchitecture"))
+            .and_then(|value| value.parse::<Architecture>().ok());
         let window = key.and_then(|k| k.bytes("Window")).and_then(|bytes| {
             let bytes: [u8; 24] = bytes.try_into().ok()?;
             let v: Vec<_> = bytes
@@ -72,7 +77,21 @@ impl Settings {
                 maximized: v[5] == 1,
             })
         });
-        Self { language, window }
+        Self {
+            language,
+            window,
+            preferred_architecture,
+        }
+    }
+    pub fn set_preferred_architecture(
+        &mut self,
+        config: &Config,
+        architecture: Architecture,
+    ) -> Result<(), String> {
+        self.preferred_architecture = Some(architecture);
+        config
+            .write_key()?
+            .set_text("PreferredArchitecture", architecture.name())
     }
     fn set_language(&mut self, config: &Config, language: Language) -> Result<(), String> {
         config.write_key()?.set_text("Language", language.name())?;

@@ -1,6 +1,6 @@
 //! Metadata document content: entity snapshots and source inspection share a text view.
 use super::{
-    Architecture, bind, catalog,
+    bind, catalog,
     document::{self, Content},
     dpi, font_for, read, sources, workspace, write,
 };
@@ -11,7 +11,7 @@ use crate::{
     worker::Ticket,
 };
 use std::{path::PathBuf, sync::Arc};
-use winlex_core::Catalog;
+use winlex_core::{Architecture, Catalog};
 
 #[derive(Clone)]
 pub(super) enum Binding {
@@ -197,10 +197,7 @@ impl Document {
                 SELECT_ARCH,
             );
             document::track_focus(hwnd, self.architecture_select)?;
-            for arch in super::ARCHITECTURES
-                .into_iter()
-                .filter(|arch| arch.bit() & architecture_mask != 0)
-            {
+            for arch in super::architecture::supported(architecture_mask) {
                 let index = send(
                     self.architecture_select,
                     CB_ADDSTRING,
@@ -300,9 +297,9 @@ impl Document {
         }
         place(self.editor, area);
     }
-    pub fn command(&self, hwnd: HWND, id: u16) -> bool {
+    pub fn command(&self, hwnd: HWND, id: u16, code: u32) -> bool {
         match (&self.binding, id) {
-            (Binding::Entity { .. }, SELECT_ARCH) => self.select_architecture(hwnd),
+            (Binding::Entity { .. }, SELECT_ARCH) => self.select_architecture(hwnd, code),
             (Binding::Entity { .. }, TOGGLE_DETAILS) => {
                 edit(hwnd, |d| d.details_visible = !d.details_visible);
                 show(self.details, !self.details_visible);
@@ -317,7 +314,7 @@ impl Document {
         }
         true
     }
-    fn select_architecture(&self, hwnd: HWND) {
+    fn select_architecture(&self, hwnd: HWND, code: u32) {
         let Binding::Entity {
             architecture,
             architecture_mask,
@@ -326,14 +323,31 @@ impl Document {
         else {
             return;
         };
+        let supported: Vec<_> = super::architecture::supported(*architecture_mask).collect();
+        if code == CBN_SELENDCANCEL {
+            if let Some(index) = supported
+                .iter()
+                .position(|candidate| candidate == architecture)
+            {
+                send(self.architecture_select, CB_SETCURSEL, index, 0);
+            }
+            return;
+        }
+        if code != CBN_SELENDOK {
+            return;
+        }
         let index = send(self.architecture_select, CB_GETCURSEL, 0, 0);
-        let Some(arch) = super::ARCHITECTURES
-            .into_iter()
-            .filter(|arch| arch.bit() & architecture_mask != 0)
-            .nth(index as usize)
-        else {
+        if index < 0 {
+            return;
+        }
+        let Some(&arch) = supported.get(index as usize) else {
             return;
         };
+        if supported.len() > 1
+            && let Err(error) = write(|a| a.settings.set_preferred_architecture(&a.config, arch))
+        {
+            catalog::set_status(error);
+        }
         if arch == *architecture {
             return;
         }

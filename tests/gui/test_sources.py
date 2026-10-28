@@ -59,8 +59,7 @@ def test_discovery_is_not_loading(launch, profile, settings):
     n.wait(lambda: profile.get("AutoLoad") == [], "unload persisted")
     assert app.content(entity) == old
     assert n.send(declaration, win32con.EM_GETSEL) == (8 << 16) | 2  # EM_GETSEL
-    n.send(n.get_item(entity, 1047), win32con.CB_SETCURSEL, 2)  # ARM64 from unloaded snapshot
-    app.command(1047, entity)
+    app.choose(entity, "arm64")  # from unloaded snapshot
     n.wait(lambda: 'CreateFileW(' in app.content(entity), "unloaded snapshot architecture query", 45)
     assert "arm64" in n.window_text(entity)
     assert len(app.documents()) == 2

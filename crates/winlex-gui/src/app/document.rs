@@ -37,9 +37,9 @@ impl Content {
             Self::Metadata(d) => d.editor,
         }
     }
-    fn command(&self, hwnd: HWND, id: u16) -> bool {
+    fn command(&self, hwnd: HWND, id: u16, code: u32) -> bool {
         match self {
-            Self::Metadata(d) => d.command(hwnd, id),
+            Self::Metadata(d) => d.command(hwnd, id, code),
         }
     }
 }
@@ -174,8 +174,10 @@ pub(super) unsafe extern "system" fn document_proc(
                 return result;
             }
             WM_COMMAND => {
+                let id = (w & 0xffff) as u16;
+                let code = (w >> 16) as u32;
                 if let Some(content) = document(hwnd, |d| d.content.clone())
-                    && content.command(hwnd, w as u16)
+                    && content.command(hwnd, id, code)
                 {
                     return 0;
                 }

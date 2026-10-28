@@ -81,15 +81,13 @@ def test_native_mdi_and_sidebar(launch, profile, settings):
     old = app.content(original)
     other = app.open_row()
     # A document host can be enumerated before WM_CREATE has created its controls.
-    selector = n.wait(lambda: n.get_item(other, 1047), "architecture selector")
-    assert n.send(selector, win32con.CB_GETCOUNT) == 3
-    n.send(selector, win32con.CB_SETCURSEL, 0)  # x86
-    app.command(1047, other)
+    assert app.choices(app.architecture(other)) == ["x86", "x64", "arm64"]
+    app.choose(other, "x64")
     n.wait(lambda: 'CreateFileW(' in app.content(other), "other declaration", 45)
-    assert ("x86" in n.window_text(original)) != ("x86" in n.window_text(other))
+    assert "x86" in n.window_text(original) and "x64" in n.window_text(other)
     assert app.content(original) == old
-    app.command(1047, other)
-    app.command(1047, original)
+    app.command(1047, other, win32con.CBN_SELENDOK)
+    app.command(1047, original, win32con.CBN_SELENDOK)
     assert len(app.documents()) == 2
     for doc in app.documents():
         assert n.get_item(doc, 1204)

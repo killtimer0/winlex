@@ -1,6 +1,5 @@
 //! UI transactions and immutable document bindings. HWNDs never cross the worker boundary.
 use super::{
-    Architecture,
     metadata::{self, Binding},
     read, write,
 };
@@ -268,9 +267,8 @@ pub(super) fn cell(row: usize, detail: bool) -> String {
                     .into_owned()
             })
             .unwrap_or_default();
-        let arches = [(1, "x86"), (2, "x64"), (4, "ARM64")]
-            .into_iter()
-            .filter_map(|(mask, name)| (e.architecture_mask & mask != 0).then_some(name))
+        let arches = super::architecture::supported(e.architecture_mask)
+            .map(|architecture| architecture.name())
             .collect::<Vec<_>>()
             .join("/");
         if detail {
@@ -299,16 +297,14 @@ pub(super) fn open_row(row: isize) {
                 e.name.clone(),
                 e.architecture_mask,
                 a.session.catalog.clone(),
+                a.settings.preferred_architecture,
             )
         })
     });
-    let Some((id, title, mask, Some(catalog))) = item else {
+    let Some((id, title, mask, Some(catalog), preferred)) = item else {
         return;
     };
-    let Some(arch) = [Architecture::X64, Architecture::X86, Architecture::Arm64]
-        .into_iter()
-        .find(|arch| arch.bit() & mask != 0)
-    else {
+    let Some(arch) = super::architecture::preferred(mask, preferred) else {
         set_status(resources::text(IDS_UNSUPPORTED_ARCH));
         return;
     };

@@ -9,18 +9,17 @@ def test_architecture_selection_reloads_in_place(launch, settings):
     app.query("CreateFileW")
     doc = app.open_row()
     n.wait(lambda: "CreateFileW(" in app.content(doc), "initial declaration", 45)
-    combo = n.get_item(doc, 1047)
-    assert n.send(combo, win32con.CB_GETCOUNT) == 3
-    assert n.send(combo, win32con.CB_GETCURSEL) == 1  # CB_GETCURSEL: x64
-    for index in (0, 2, 1, 2):
-        n.send(combo, win32con.CB_SETCURSEL, index)
-        app.command(1047, doc)
+    combo = app.architecture(doc)
+    assert app.choices(combo) == ["x86", "x64", "arm64"]
+    assert app.choice(doc) == "x86"
+    for architecture in ("x64", "arm64", "x86", "arm64"):
+        app.choose(doc, architecture)
     n.wait(lambda: "CreateFileW(" in app.content(doc), "final architecture", 45)
     assert "arm64" in n.window_text(doc)
     assert app.documents() == [doc]
     editor = n.get_item(doc, 1203)
     n.send(editor, win32con.EM_SETSEL, 2, 8)
-    app.command(1047, doc)  # Reselecting the same architecture preserves selection.
+    app.choose(doc, "arm64")  # Reselecting the same architecture preserves selection.
     assert n.send(editor, win32con.EM_GETSEL) == (8 << 16) | 2
     body = app.content(doc)
     n.send(editor, win32con.WM_CHAR, ord("X"))  # WM_CHAR: declaration stays read-only.
@@ -36,12 +35,12 @@ def test_architecture_selection_reloads_in_place(launch, settings):
     app.command(1048, doc)
     assert not n.is_visible(details)
 
-    n.send(combo, win32con.CB_SETCURSEL, 0)
-    app.command(1047, doc)
+    app.choose(doc, "x86")
     n.send(doc, win32con.WM_CLOSE)  # Close while a replacement may still be running.
     n.wait(lambda: not app.documents(), "document closed")
     reopened = app.open_row()
     n.wait(lambda: "CreateFileW(" in app.content(reopened), "worker after cancellation", 45)
+    assert app.choice(reopened) == "x86"
 
 
 def test_arm64_only_document(launch, settings):
@@ -50,29 +49,83 @@ def test_arm64_only_document(launch, settings):
     doc = app.open_row()
     n.wait(lambda: "enum WHV_ARM64_PENDING_EVENT_TYPE" in app.content(doc), "ARM64-only declaration", 45)
     assert "arm64" in n.window_text(doc)
-    combo = n.get_item(doc, 1047)
-    assert n.send(combo, win32con.CB_GETCOUNT) == 1
-    assert n.send(combo, win32con.CB_GETCURSEL) == 0
+    combo = app.architecture(doc)
+    assert app.choices(combo) == ["arm64"]
+    assert app.choice(doc) == "arm64"
 
 
 def test_abi_annotations_follow_document_architecture(launch, settings):
     app = launch(["--winmd", settings[1]])
     app.query("Windows.Win32.Security.SECURITY_ATTRIBUTES")
     doc = app.open_row()
+    app.choose(doc, "x64")
     n.wait(lambda: "// [x64] size: 24(0x18) bytes" in app.content(doc), "x64 struct layout", 45)
     assert "UINT32 nLength;" in app.content(doc)
-    combo = n.get_item(doc, 1047)
-    n.send(combo, win32con.CB_SETCURSEL, 0)
-    app.command(1047, doc)
+    app.choose(doc, "x86")
     n.wait(lambda: "// [x86] size: 12(0xC) bytes" in app.content(doc), "x86 struct layout", 45)
     assert "offset: 4(0x4) bytes, size: 4(0x4) bytes\r\n    void *lpSecurityDescriptor;" in app.content(doc)
     app.query("Windows.Win32.System.Com.IUnknown")
     interface = app.open_row()
+    app.choose(interface, "x64")
     n.wait(lambda: "slot 2(0x2), vtable +16(0x10) bytes" in app.content(interface), "x64 vtable", 45)
-    n.send(n.get_item(interface, 1047), win32con.CB_SETCURSEL, 0)
-    app.command(1047, interface)
+    app.choose(interface, "x86")
     n.wait(lambda: "slot 2(0x2), vtable +8(0x8) bytes" in app.content(interface), "x86 vtable", 45)
     assert "slot 2(0x2), vtable +16(0x10) bytes" not in app.content(interface)
+
+
+def test_architecture_preference_applies_to_new_documents(launch, profile, settings):
+    app = launch(["--winmd", settings[1]])
+    app.query("CreateFileW")
+    first = app.open_row()
+    assert app.choices(app.architecture(first)) == ["x86", "x64", "arm64"]
+    assert app.choice(first) == "x86"
+
+    app.choose(first, "x64")
+    n.wait(lambda: "x64" in n.window_text(first), "x64 selection")
+
+    second = app.open_row()
+    n.wait(lambda: app.choice(second) == "x64", "new document uses preference")
+    assert app.choices(app.architecture(second)) == ["x86", "x64", "arm64"]
+
+    app.choose(second, "arm64")
+    n.wait(lambda: "arm64" in n.window_text(second), "arm64 selection")
+
+    third = app.open_row()
+    n.wait(lambda: app.choice(third) == "arm64", "new document uses latest preference")
+
+    app.query("ARM64_NT_CONTEXT")
+    fallback = app.open_row()
+    n.wait(lambda: "ARM64_NT_CONTEXT" in app.content(fallback), "fallback declaration", 45)
+    assert app.choice(fallback) == "x86"
+    assert profile.get("PreferredArchitecture") == "arm64"
+
+
+def test_architecture_preference_survives_restart(launch, profile, settings):
+    app = launch(["--winmd", settings[1]])
+    app.query("CreateFileW")
+    doc = app.open_row()
+    app.choose(doc, "x64")
+    n.wait(lambda: "x64" in n.window_text(doc), "x64 selection")
+    assert profile.get("PreferredArchitecture") == "x64"
+    app.close()
+
+    restarted = launch(["--winmd", settings[1]])
+    restarted.query("CreateFileW")
+    reopened = restarted.open_row()
+    n.wait(lambda: restarted.choice(reopened) == "x64", "preference persisted")
+
+
+def test_architecture_cancel_keeps_current_document(launch, profile, settings):
+    app = launch(["--winmd", settings[1]])
+    app.query("CreateFileW")
+    doc = app.open_row()
+    combo = app.architecture(doc)
+    assert app.choice(doc) == "x86"
+    n.send(combo, win32con.CB_SETCURSEL, 1)
+    app.command(1047, doc, win32con.CBN_SELENDCANCEL)
+    assert app.choice(doc) == "x86"
+    assert "x86" in n.window_text(doc)
+    assert profile.get("PreferredArchitecture") is None
 
 
 def test_document_minimum_only_limits_interactive_sizing(launch, settings):

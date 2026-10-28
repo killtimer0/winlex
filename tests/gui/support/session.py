@@ -48,8 +48,37 @@ class Session:
                 n.send(hwnd, win32con.WM_NULL)
                 return hwnd
 
-    def command(self, command, target=None):
-        n.send(target or self.frame, win32con.WM_COMMAND, command)
+    def command(self, command, target=None, code=0):
+        n.send(target or self.frame, win32con.WM_COMMAND, (code << 16) | command)
+
+    def choices(self, control):
+        count = n.send(control, win32con.CB_GETCOUNT)
+        assert 0 <= count < 32
+        values = []
+        for index in range(count):
+            size = n.send(control, win32con.CB_GETLBTEXTLEN, index, 0)
+            assert 0 <= size < 4096
+            # Combo box messages marshal their text buffer across processes.
+            buffer = c.create_unicode_buffer(size + 1)
+            assert n.send(control, win32con.CB_GETLBTEXT, index, c.addressof(buffer)) == size
+            values.append(buffer.value)
+        return values
+
+    def architecture(self, doc):
+        return n.wait(lambda: n.get_item(doc, 1047), "architecture selector")
+
+    def choice(self, doc):
+        control = self.architecture(doc)
+        index = n.send(control, win32con.CB_GETCURSEL)
+        assert index >= 0
+        return self.choices(control)[index]
+
+    def choose(self, doc, architecture):
+        control = self.architecture(doc)
+        index = self.choices(control).index(architecture)
+        n.send(control, win32con.CB_SETCURSEL, index)
+        self.command(1047, doc, win32con.CBN_SELENDOK)
+        return index
 
     def remote_text(self, address, size):
         buffer = c.create_string_buffer(size)

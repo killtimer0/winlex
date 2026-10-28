@@ -11,6 +11,7 @@ use crate::{
 };
 use std::{cell::RefCell, ptr};
 
+mod architecture;
 mod catalog;
 mod document;
 mod frame;
@@ -25,10 +26,6 @@ use crate::resources::{self, *};
 use document::document_proc;
 use frame::frame_proc;
 use workspace::{active, document, edit_document};
-
-use winlex_core::Architecture;
-const ARCHITECTURES: [Architecture; 3] =
-    [Architecture::X86, Architecture::X64, Architecture::Arm64];
 
 struct App {
     config: crate::config::Config,

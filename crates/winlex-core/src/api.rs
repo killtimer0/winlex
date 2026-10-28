@@ -19,12 +19,17 @@ pub enum Architecture {
     Arm64,
 }
 impl Architecture {
-    pub fn bit(self) -> i32 {
+    pub const ALL_MASK: i32 = Self::X86.bit() | Self::X64.bit() | Self::Arm64.bit();
+
+    pub const fn bit(self) -> i32 {
         match self {
             Self::X86 => 1,
             Self::X64 => 2,
             Self::Arm64 => 4,
         }
+    }
+    pub fn supports(self, mask: i32) -> bool {
+        mask & self.bit() != 0
     }
     pub fn name(self) -> &'static str {
         match self {
@@ -78,7 +83,7 @@ pub struct Catalog {
 }
 fn raw_mask<'a>(r: impl HasAttributes<'a>) -> i32 {
     let a = r.arches();
-    if a == 0 { 7 } else { a }
+    if a == 0 { Architecture::ALL_MASK } else { a }
 }
 pub fn integer(v: &Value) -> Option<i128> {
     Some(match v {
@@ -134,9 +139,9 @@ impl<'a> Declaration<'a> {
             Self::Method(r) => raw_mask(*r),
             Self::Property(r) => raw_mask(*r),
             Self::Event(r) => raw_mask(*r),
-            Self::Reference(_) => 7,
+            Self::Reference(_) => Architecture::ALL_MASK,
         };
-        member & self.owner().map(raw_mask).unwrap_or(7)
+        member & self.owner().map(raw_mask).unwrap_or(Architecture::ALL_MASK)
     }
 }
 impl Catalog {
@@ -547,5 +552,30 @@ fn uses(
         | Type::RefMut(t)
         | Type::RefConst(t) => uses(db, t, owner, arch, target, unresolved),
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Architecture;
+
+    #[test]
+    fn architecture_masks_are_domain_values() {
+        assert_eq!(Architecture::ALL_MASK, 7);
+        assert!(Architecture::X86.supports(1));
+        assert!(Architecture::X64.supports(2));
+        assert!(Architecture::Arm64.supports(4));
+        assert!(!Architecture::X86.supports(2));
+    }
+
+    #[test]
+    fn architecture_names_parse_back() {
+        for architecture in [Architecture::X86, Architecture::X64, Architecture::Arm64] {
+            assert_eq!(
+                architecture.name().parse::<Architecture>().unwrap(),
+                architecture
+            );
+        }
+        assert!("ARM64".parse::<Architecture>().is_err());
     }
 }
