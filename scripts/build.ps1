@@ -4,6 +4,8 @@ param(
     [Parameter(Mandatory=$true)][string]$LinkExe,
     [Parameter(Mandatory=$true)][string]$VcLtlRoot,
     [ValidateSet('x86','x64')][string]$Architecture = 'x86',
+    [ValidateSet('Debug','Release')][string]$Configuration = 'Release',
+    [string]$TargetDir,
     [string]$RcExe
 )
 $ErrorActionPreference = 'Stop'
@@ -12,11 +14,22 @@ $object = (Resolve-Path $YyThunksObject).Path
 $linker = (Resolve-Path $LinkExe).Path
 $ltlRoot = (Resolve-Path $VcLtlRoot).Path
 if (-not $RcExe) {
+    $sdkBins = @(
+        $env:WindowsSdkVerBinPath
+        if ($env:WindowsSdkDir -and $env:WindowsSDKVersion) {
+            Join-Path $env:WindowsSdkDir "bin/$($env:WindowsSDKVersion.TrimEnd('\'))"
+        }
+    )
+    $RcExe = $sdkBins | Where-Object { $_ } | ForEach-Object {
+        Join-Path $_ 'x64/rc.exe'
+    } | Where-Object { Test-Path $_ -PathType Leaf } | Select-Object -First 1
+}
+if (-not $RcExe) {
     $rcCommand = Get-Command rc.exe -ErrorAction SilentlyContinue
     if ($rcCommand) { $RcExe = $rcCommand.Source }
     else {
         $kits = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits/10/bin'
-        $RcExe = Get-ChildItem "$kits/*/x64/rc.exe" | Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
+        $RcExe = Get-ChildItem "$kits/*/x64/rc.exe" -ErrorAction SilentlyContinue | Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
     }
 }
 if (-not $RcExe) { throw 'Microsoft rc.exe was not found. Specify -RcExe from a Windows SDK.' }
@@ -50,12 +63,24 @@ try {
     $env:WINLEX_YY_THUNKS_OBJ = $object
     $env:WINLEX_VC_LTL_ROOT = $ltlRoot
     $env:WINLEX_RC_EXE = $rc
-    & cargo build --manifest-path "$root/Cargo.toml" --package winlex --target-dir "$root/target" --target $target --release --locked
+    $arguments = @('build', '--manifest-path', "$root/Cargo.toml", '--package', 'winlex', '--target', $target, '--locked', '--message-format=json-render-diagnostics')
+    if ($Configuration -eq 'Release') { $arguments += '--release' }
+    if ($TargetDir) { $arguments += @('--target-dir', $TargetDir) }
+    $executables = @{}
+    & cargo @arguments | ForEach-Object {
+        $message = $_ | ConvertFrom-Json
+        if ($message.reason -eq 'compiler-artifact' -and $message.executable -and
+            $message.target.kind -contains 'bin' -and $message.target.name -in @('winlex', 'winlex-gui')) {
+            $executables[$message.target.name] = $message.executable
+        }
+    }
     if ($LASTEXITCODE -ne 0) { throw "Build failed ($LASTEXITCODE)" }
     foreach ($binary in @('winlex', 'winlex-gui')) {
-        $exe = "$root/target/$target/release/$binary.exe"
+        $exe = $executables[$binary]
+        if (-not $exe) { throw "Cargo did not report an executable for $binary" }
         $report = @{
             target = $target
+            configuration = $Configuration
             rustc = (& rustc -Vv) -join "`n"
             linker = $linker
             linker_version = (Get-Item $linker).VersionInfo.FileVersion
