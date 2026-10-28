@@ -116,6 +116,20 @@ pub fn context_menu(hwnd: HWND, location: isize, numbers: &[NumberRegion]) -> Re
     Ok(())
 }
 
+fn open_clipboard(hwnd: HWND) -> bool {
+    // The clipboard is shared; brief contention must not drop the copy.
+    use windows_sys::Win32::System::DataExchange::OpenClipboard;
+    for attempt in 0..5 {
+        if unsafe { OpenClipboard(hwnd) } != 0 {
+            return true;
+        }
+        if attempt < 4 {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+    false
+}
+
 fn copy_text(hwnd: HWND, value: &str) -> Result<(), String> {
     use windows_sys::Win32::System::{DataExchange::*, Memory::*};
     let text = wide(
@@ -125,7 +139,7 @@ fn copy_text(hwnd: HWND, value: &str) -> Result<(), String> {
             .replace('\n', "\r\n"),
     );
     unsafe {
-        if OpenClipboard(hwnd) == 0 {
+        if !open_clipboard(hwnd) {
             return Err(error("Open clipboard"));
         }
         let result = (|| {

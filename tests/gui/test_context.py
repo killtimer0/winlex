@@ -110,6 +110,18 @@ def test_numeric_context_and_selection_survive_architecture_changes(launch, sett
     dismiss(editor)
 
 
+def wait_clipboard_available():
+    """Let any other clipboard owner finish before the app starts its copy."""
+    def available():
+        try:
+            clipboard.OpenClipboard()
+        except Exception:
+            return False
+        clipboard.CloseClipboard()
+        return True
+    n.wait(available, "clipboard available")
+
+
 def clipboard_text():
     """Read the copied text; another process may hold the clipboard briefly."""
     for _ in range(50):
@@ -134,6 +146,7 @@ def test_numeric_copy_formats(launch, settings):
     editor = n.get_item(doc, 1203)
     index = app.content(doc).replace("\r\n", "\r").index("24(0x18)")
     for down, expected in ((0, "24"), (1, "0x18"), (2, "24(0x18) bytes"), (3, "24")):
+        wait_clipboard_available()
         n.send(editor, win32con.EM_SETSEL, index, index + 2)
         popup(app, editor)
         # A fresh popup has no highlight; Down selects the first item.
