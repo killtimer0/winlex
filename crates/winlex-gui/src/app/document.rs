@@ -2,47 +2,10 @@
 use super::{document, dpi, metadata, read, workspace};
 use crate::native::*;
 
-#[derive(Clone)]
-pub(super) enum Content {
-    Metadata(metadata::Document),
-}
 pub(super) struct Init {
-    pub content: Option<Content>,
+    pub content: Option<metadata::Document>,
     pub preview: bool,
     pub error: Option<String>,
-}
-impl Content {
-    fn create(&mut self, hwnd: HWND) -> Result<(), String> {
-        match self {
-            Self::Metadata(d) => d.create(hwnd),
-        }
-    }
-    pub fn cancel(&self) {
-        match self {
-            Self::Metadata(d) => d.cancel(),
-        }
-    }
-    pub fn prepare(&self, hwnd: HWND) {
-        match self {
-            Self::Metadata(d) => d.prepare(hwnd),
-        }
-        self.layout(hwnd);
-    }
-    fn layout(&self, hwnd: HWND) {
-        match self {
-            Self::Metadata(d) => d.layout(hwnd),
-        }
-    }
-    fn focus(&self) -> HWND {
-        match self {
-            Self::Metadata(d) => d.editor,
-        }
-    }
-    fn command(&self, hwnd: HWND, id: u16, code: u32) -> bool {
-        match self {
-            Self::Metadata(d) => d.command(hwnd, id, code),
-        }
-    }
 }
 pub(super) fn layout_document(hwnd: HWND) {
     if let Some(content) = document(hwnd, |d| d.content.clone()) {
@@ -50,7 +13,7 @@ pub(super) fn layout_document(hwnd: HWND) {
     }
 }
 pub(super) fn focus_document(hwnd: HWND) {
-    if let Some(body) = document(hwnd, |d| d.content.focus()) {
+    if let Some(body) = document(hwnd, |d| d.content.editor) {
         focus(body);
     }
 }
@@ -140,12 +103,10 @@ pub(super) unsafe extern "system" fn document_proc(
             }
             WM_WINDOWPOSCHANGING => {
                 let result = DefMDIChildProcW(hwnd, msg, w, l);
-                let r = if IsZoomed(hwnd) != 0 {
-                    Some(dpi().child_outer(hwnd, client(read(|a| a.workspace.mdi))))
-                } else {
-                    None
-                };
-                if let Some(r) = r {
+                // Native MDI can retain system-DPI nonclient extents after a monitor
+                // change. Keep the maximized child's client aligned with the MDI client.
+                if IsZoomed(hwnd) != 0 {
+                    let r = dpi().child_outer(hwnd, client(read(|a| a.workspace.mdi)));
                     let p = &mut *(l as *mut WINDOWPOS);
                     if p.flags & SWP_NOMOVE == 0 {
                         p.x = r.left;
@@ -188,17 +149,14 @@ pub(super) unsafe extern "system" fn document_proc(
                 if let Some(doc) = metadata::get(hwnd, |_, d| d.clone())
                     && w == doc.editor as usize
                 {
-                    if let Err(error) = crate::rich_text::context_menu(doc.editor, l, &doc.numbers)
-                    {
-                        super::catalog::set_status(error);
-                    }
+                    doc.context_menu(l);
                     return 0;
                 }
             }
             WM_NCDESTROY => {
                 workspace::unregister_document(hwnd);
                 let result = DefMDIChildProcW(hwnd, msg, w, l);
-                workspace::document_destroyed();
+                workspace::refresh_document_tabs();
                 return result;
             }
             _ => {}

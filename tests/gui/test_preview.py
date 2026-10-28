@@ -60,6 +60,28 @@ def test_explicit_open_pins_the_preview(launch, settings):
     assert "CreateFileW(" in app.content(doc)
 
 
+def test_preview_rebinds_architecture_choices_and_body(launch, settings):
+    app = launch(["--winmd", settings[1]])
+    app.query("CreateFileW")
+    doc = app.preview_row()
+    app.choose(doc, "x64")
+
+    app.query("WHV_ARM64_PENDING_EVENT_TYPE")
+    assert app.preview_row() == doc
+    assert app.choices(app.architecture(doc)) == ["arm64"]
+    assert app.choice(doc) == "arm64"
+    assert n.window_text(doc).endswith(" — arm64")
+    n.wait(lambda: "enum WHV_ARM64_PENDING_EVENT_TYPE" in app.content(doc), "ARM64 preview", 45)
+
+    app.query("Windows.Win32.Security.SECURITY_ATTRIBUTES")
+    assert app.preview_row() == doc
+    assert app.choices(app.architecture(doc)) == ["x86", "x64", "arm64"]
+    assert app.choice(doc) == "arm64"
+    n.wait(lambda: "// [arm64] size: 24(0x18) bytes" in app.content(doc), "inherited ARM64 preview", 45)
+    app.choose(doc, "x86")
+    n.wait(lambda: "// [x86] size: 12(0xC) bytes" in app.content(doc), "rebound selector", 45)
+
+
 def test_reopening_an_open_document_activates_it(launch, settings):
     app = launch(["--winmd", settings[1]])
     app.query("CreateFileW")
@@ -162,4 +184,3 @@ def test_preview_keeps_the_list_focus_and_opening_enters_the_body(launch, settin
     n.wait(lambda: len(app.documents()) == 3, "new document")
     n.wait(lambda: app.focused() == body(app, app.active_document()),
            "forced open focuses the new body")
-

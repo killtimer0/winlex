@@ -1,8 +1,5 @@
 //! MDI lifecycle, activation projection and one-shot arrangement commands.
-use super::{
-    document::{self, Content},
-    dpi, read, write,
-};
+use super::{document as host, dpi, metadata, read, write};
 use crate::{
     layout::{Arrangement, Placement},
     native::*,
@@ -31,7 +28,7 @@ pub(super) struct Document {
     pub id: u64,
     pub hwnd: HWND,
     pub title: String,
-    pub content: Content,
+    pub content: metadata::Document,
     pub placement: Option<Placement>,
     /// A transient document that the next preview request may replace in place.
     pub preview: bool,
@@ -64,10 +61,10 @@ pub(super) fn show_document(hwnd: HWND) {
     }
     send(mdi, WM_MDIACTIVATE, hwnd as usize, 0);
 }
-/// Showing a document leaves the keyboard where it is; entering moves it to the body.
+/// Enter a document explicitly, focusing its body after native MDI activation.
 pub(super) fn activate_document(hwnd: HWND) {
     show_document(hwnd);
-    document::focus_document(hwnd);
+    host::focus_document(hwnd);
 }
 /// Opening from the sidebar shows the document without taking keyboard focus from it.
 pub(super) fn keep_focus(open: impl FnOnce()) {
@@ -95,9 +92,6 @@ pub(super) fn unregister_document(hwnd: HWND) {
     if let Some(doc) = removed {
         doc.content.cancel();
     }
-}
-pub(super) fn document_destroyed() {
-    refresh_document_tabs();
 }
 pub(super) fn close_document(hwnd: HWND) {
     let mdi = read(|a| a.workspace.mdi);
@@ -336,11 +330,11 @@ pub(super) fn next_id() -> u64 {
 }
 pub(super) fn create_document(
     title: &str,
-    content: Content,
+    content: metadata::Document,
     preview: bool,
 ) -> Result<HWND, String> {
     let (mdi, maximized) = read(|a| (a.workspace.mdi, a.workspace.maximized));
-    let mut init = document::Init {
+    let mut init = host::Init {
         content: Some(content),
         preview,
         error: None,
@@ -357,7 +351,7 @@ pub(super) fn create_document(
             CW_USEDEFAULT,
             mdi,
             instance(),
-            &mut init as *mut document::Init as isize,
+            &mut init as *mut host::Init as isize,
         )
     };
     if hwnd.is_null() {

@@ -30,6 +30,7 @@ BEGIN
     IDS_ARCHITECTURE "Architecture"
     IDS_DETAILS "Details"
     IDS_PREVIEW "Preview"
+    IDS_WORKER_STOPPED "Background worker stopped"
     IDS_COPY_DECIMAL "Copy decimal"
     IDS_COPY_HEX "Copy hexadecimal"
     IDS_COPY_VALUE "Copy value with unit"

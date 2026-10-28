@@ -11,7 +11,6 @@ pub(super) enum Region {
     Results,
     Sources,
     Tabs,
-    Document,
     Other,
 }
 
@@ -58,10 +57,6 @@ fn region(hwnd: HWND) -> Region {
     if hwnd == tabs {
         return Region::Tabs;
     }
-    let doc = workspace::active();
-    if !doc.is_null() && unsafe { hwnd == doc || IsChild(doc, hwnd) != 0 } {
-        return Region::Document;
-    }
     Region::Other
 }
 
@@ -82,38 +77,36 @@ mod tests {
     const ENTER: usize = VK_RETURN as usize;
     const SPACE: usize = VK_SPACE as usize;
 
-    fn route(region: Region, key: usize) -> Option<Action> {
-        action(region, key)
-    }
-
     #[test]
     fn enter_follows_the_focused_region() {
         assert_eq!(
-            route(Region::SearchEntry { composing: false }, ENTER),
+            action(Region::SearchEntry { composing: false }, ENTER),
             Some(Action::Search)
         );
-        assert_eq!(route(Region::Results, ENTER), Some(Action::Pin));
-        assert_eq!(route(Region::Sources, ENTER), Some(Action::OpenSource));
-        assert_eq!(route(Region::Tabs, ENTER), Some(Action::FocusDocument));
+        assert_eq!(action(Region::Results, ENTER), Some(Action::Pin));
+        assert_eq!(action(Region::Sources, ENTER), Some(Action::OpenSource));
+        assert_eq!(action(Region::Tabs, ENTER), Some(Action::FocusDocument));
     }
 
     #[test]
     fn composing_text_keeps_enter() {
-        assert_eq!(route(Region::SearchEntry { composing: true }, ENTER), None);
+        assert_eq!(action(Region::SearchEntry { composing: true }, ENTER), None);
     }
 
     #[test]
     fn space_previews_only_in_the_result_list() {
-        assert_eq!(route(Region::Results, SPACE), Some(Action::Preview));
-        assert_eq!(route(Region::SearchEntry { composing: false }, SPACE), None);
-        assert_eq!(route(Region::Sources, SPACE), None);
-        assert_eq!(route(Region::Document, SPACE), None);
-        assert_eq!(route(Region::Other, SPACE), None);
+        assert_eq!(action(Region::Results, SPACE), Some(Action::Preview));
+        assert_eq!(
+            action(Region::SearchEntry { composing: false }, SPACE),
+            None
+        );
+        assert_eq!(action(Region::Sources, SPACE), None);
+        assert_eq!(action(Region::Other, SPACE), None);
     }
 
     #[test]
     fn unclaimed_keys_keep_their_native_meaning() {
-        assert_eq!(route(Region::Document, ENTER), None);
-        assert_eq!(route(Region::Results, VK_F1 as usize), None);
+        assert_eq!(action(Region::Other, ENTER), None);
+        assert_eq!(action(Region::Results, VK_F1 as usize), None);
     }
 }

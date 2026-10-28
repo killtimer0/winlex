@@ -35,7 +35,7 @@ pub fn initialize(language: &str) -> Result<(), String> {
 fn data(kind: *const u16, id: u16) -> Result<&'static [u8], String> {
     unsafe {
         let module = instance();
-        let language = *LANGUAGE.get().unwrap_or(&ENGLISH);
+        let language = *LANGUAGE.get().expect("initialized resource language");
         let mut resource = FindResourceExW(module, kind, id as usize as *const u16, language);
         if resource.is_null() && language != ENGLISH {
             resource = FindResourceExW(module, kind, id as usize as *const u16, ENGLISH);

@@ -330,7 +330,7 @@ fn open_now(path: PathBuf) {
     let existing =
         metadata::find(|_, d| matches!(&d.binding, Binding::Source { path: p, .. } if p == &path));
     if let Some(h) = existing {
-        workspace::activate_document(h);
+        workspace::show_document(h);
         return;
     }
     let title = path

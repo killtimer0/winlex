@@ -101,6 +101,15 @@ def test_architecture_preference_applies_to_new_documents(launch, profile, setti
     assert app.choice(fallback) == "x86"
     assert profile.get("PreferredArchitecture") == "arm64"
 
+    # Reselecting an older document's current architecture updates the preference
+    # without replacing its text or selection.
+    editor = n.get_item(first, 1203)
+    n.wait(lambda: "CreateFileW(" in app.content(first), "first declaration", 45)
+    n.send(editor, win32con.EM_SETSEL, 2, 8)
+    app.choose(first, "x64")
+    assert profile.get("PreferredArchitecture") == "x64"
+    assert n.send(editor, win32con.EM_GETSEL) == (8 << 16) | 2
+
 
 def test_architecture_preference_survives_restart(launch, profile, settings):
     app = launch(["--winmd", settings[1]])

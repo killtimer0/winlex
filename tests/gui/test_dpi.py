@@ -32,6 +32,14 @@ def test_cross_monitor_layout(launch, settings, maximized):
         assert get_dpi(app.results) == value
         assert get_dpi(doc) == value
         with n.window_dpi_context(app.frame):
+            if maximized:
+                # A maximized child's client must fill the MDI client even after
+                # changing DPI; compare both origins in the same coordinate space.
+                origin = w.POINT()
+                n.api(n.user, "MapWindowPoints", c.c_int, w.HWND, w.HWND,
+                      c.POINTER(w.POINT), w.UINT)(doc, app.mdi, c.byref(origin), 1)
+                assert (origin.x, origin.y) == (0, 0)
+                assert n.rectangle(doc, client=True) == n.rectangle(app.mdi, client=True)
             button = n.get_item(doc, 1047)
             editor = n.get_item(doc, 1203)
             b, e = n.rectangle(button), n.rectangle(editor)

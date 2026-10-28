@@ -1,9 +1,5 @@
 //! Metadata document content: entity snapshots and source inspection share a text view.
-use super::{
-    bind, catalog,
-    document::{self, Content},
-    dpi, font_for, read, sources, workspace, write,
-};
+use super::{bind, catalog, document, dpi, font_for, read, sources, workspace, write};
 use crate::{
     layout,
     native::*,
@@ -50,7 +46,7 @@ pub(super) fn open(name: &str, binding: Binding, preview: bool) -> Result<HWND, 
     };
     let hwnd = workspace::create_document(
         &title,
-        Content::Metadata(Document {
+        Document {
             binding,
             name: name.to_owned(),
             ticket: None,
@@ -65,10 +61,9 @@ pub(super) fn open(name: &str, binding: Binding, preview: bool) -> Result<HWND, 
             details_visible: false,
             actions: vec![],
             old_version: false,
-        }),
+        },
         preview,
     )?;
-    refresh_content(hwnd);
     catalog::request_document(hwnd);
     Ok(hwnd)
 }
@@ -77,54 +72,20 @@ pub(super) fn rebind(hwnd: HWND, name: &str, binding: Binding) -> bool {
     let Some(current) = get(hwnd, |_, d| d.clone()) else {
         return false;
     };
-    let (
-        Binding::Entity {
-            architecture,
-            architecture_mask,
-            ..
-        },
-        Binding::Entity { .. },
-    ) = (&current.binding, &binding)
+    let (Binding::Entity { .. }, Binding::Entity { architecture, .. }) =
+        (&current.binding, &binding)
     else {
         return false;
     };
-    let (architecture, architecture_mask) = (*architecture, *architecture_mask);
-    current.cancel();
-    edit(hwnd, |d| {
-        d.ticket = None;
-        d.content = resources::text(IDS_QUERYING).into();
-        d.detail_content = "".into();
-        d.numbers = Arc::from([]);
-        d.old_version = false;
-        d.name = name.to_owned();
-        d.binding = binding;
-    });
-    send(current.architecture_select, CB_RESETCONTENT, 0, 0);
-    let mut selected = CB_ERR as isize;
-    for arch in super::architecture::supported(architecture_mask) {
-        let index = send(
-            current.architecture_select,
-            CB_ADDSTRING,
-            0,
-            wide(arch.name()).as_ptr() as isize,
-        );
-        if arch == architecture {
-            selected = index;
-        }
-    }
-    if selected >= 0 {
-        send(
-            current.architecture_select,
-            CB_SETCURSEL,
-            selected as usize,
-            0,
-        );
-    }
     let title = format!("{name} — {}", architecture.name());
+    edit(hwnd, |d| {
+        d.name = name.to_owned();
+        d.binding = binding.clone();
+    });
+    fill_architectures(current.architecture_select, &binding);
     workspace::edit_document(hwnd, |d| d.title = title.clone());
     set_text(hwnd, &title);
     workspace::refresh_document_tabs();
-    refresh_content(hwnd);
     catalog::request_document(hwnd);
     true
 }
@@ -166,7 +127,10 @@ pub(super) fn apply(id: u64, c: crate::tasks::Completion) {
             d.numbers = body.numbers.into();
             d.detail_content = details.into();
         }),
-        Ok(Output::Inspected(snapshot)) => super::sources::inspected(hwnd, snapshot),
+        Ok(Output::Inspected(snapshot)) => {
+            sources::inspected(hwnd, snapshot);
+            return;
+        }
         Err(e) => {
             if matches!(c.target, Target::Reopen(_)) {
                 catalog::set_status(e);
@@ -185,23 +149,47 @@ pub(super) fn apply(id: u64, c: crate::tasks::Completion) {
     refresh_content(hwnd);
 }
 pub(super) fn get<T>(hwnd: HWND, inspect: impl FnOnce(u64, &Document) -> T) -> Option<T> {
-    workspace::document(hwnd, |d| match &d.content {
-        Content::Metadata(m) => inspect(d.id, m),
-    })
+    workspace::document(hwnd, |d| inspect(d.id, &d.content))
 }
 pub(super) fn edit(hwnd: HWND, f: impl FnOnce(&mut Document)) {
-    workspace::edit_document(hwnd, |d| match &mut d.content {
-        Content::Metadata(m) => f(m),
-    });
+    workspace::edit_document(hwnd, |d| f(&mut d.content));
 }
 pub(super) fn find(predicate: impl Fn(u64, &Document) -> bool) -> Option<HWND> {
     read(|a| {
-        a.workspace.documents.iter().find_map(|d| match &d.content {
-            Content::Metadata(m) => predicate(d.id, m).then_some(d.hwnd),
-        })
+        a.workspace
+            .documents
+            .iter()
+            .find_map(|d| predicate(d.id, &d.content).then_some(d.hwnd))
     })
 }
+fn fill_architectures(control: HWND, binding: &Binding) {
+    let Binding::Entity {
+        architecture,
+        architecture_mask,
+        ..
+    } = binding
+    else {
+        return;
+    };
+    send(control, CB_RESETCONTENT, 0, 0);
+    for arch in super::architecture::supported(*architecture_mask) {
+        let index = send(
+            control,
+            CB_ADDSTRING,
+            0,
+            wide(arch.name()).as_ptr() as isize,
+        );
+        if arch == *architecture {
+            send(control, CB_SETCURSEL, index as usize, 0);
+        }
+    }
+}
 impl Document {
+    pub fn context_menu(&self, location: isize) {
+        if let Err(error) = crate::rich_text::context_menu(self.editor, location, &self.numbers) {
+            catalog::set_status(error);
+        }
+    }
     pub fn architecture(&self) -> Option<Architecture> {
         match &self.binding {
             Binding::Entity { architecture, .. } => Some(*architecture),
@@ -240,12 +228,7 @@ impl Document {
         document::track_text(self.details)?;
         send(self.details, EM_SETLIMITTEXT, 0x7ffffffe, 0);
         show(self.details, false);
-        if let Binding::Entity {
-            architecture,
-            architecture_mask,
-            ..
-        } = self.binding
-        {
+        if matches!(self.binding, Binding::Entity { .. }) {
             self.architecture_label = child(
                 hwnd,
                 w!("STATIC"),
@@ -260,20 +243,10 @@ impl Document {
                 WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST as u32,
                 SELECT_ARCH,
             );
-            if self.architecture_select.is_null() {
+            if self.architecture_label.is_null() || self.architecture_select.is_null() {
                 return Err(error("Create document control"));
             }
-            for arch in super::architecture::supported(architecture_mask) {
-                let index = send(
-                    self.architecture_select,
-                    CB_ADDSTRING,
-                    0,
-                    wide(arch.name()).as_ptr() as isize,
-                );
-                if arch == architecture {
-                    send(self.architecture_select, CB_SETCURSEL, index as usize, 0);
-                }
-            }
+            fill_architectures(self.architecture_select, &self.binding);
         }
         let commands: &[(u16, u16)] = match self.binding {
             Binding::Source { .. } => &[
@@ -316,6 +289,7 @@ impl Document {
         for &(_, h) in &self.actions {
             bind(h, font);
         }
+        self.layout(hwnd);
     }
     pub fn layout(&self, hwnd: HWND) {
         let m = super::metrics(hwnd);
@@ -419,12 +393,7 @@ impl Document {
         if arch == *architecture {
             return;
         }
-        self.cancel();
         edit(hwnd, |d| {
-            d.ticket = None;
-            d.content = resources::text(IDS_QUERYING).into();
-            d.detail_content = "".into();
-            d.numbers = Arc::from([]);
             if let Binding::Entity { architecture, .. } = &mut d.binding {
                 *architecture = arch;
             }
@@ -433,7 +402,6 @@ impl Document {
         workspace::edit_document(hwnd, |d| d.title = title.clone());
         set_text(hwnd, &title);
         workspace::refresh_document_tabs();
-        refresh_content(hwnd);
         catalog::request_document(hwnd);
     }
 }
@@ -457,13 +425,18 @@ pub(super) fn refresh_content(hwnd: HWND) {
             if crate::native::text(doc.details) != details {
                 set_text(doc.details, &details);
             }
-            let entity = catalog.entity(*id).ok();
+            let entity = match catalog.entity(*id) {
+                Ok(entity) => entity,
+                Err(error) => {
+                    catalog::set_status(error.to_string());
+                    return;
+                }
+            };
             format!(
-                "{}\r\n{}\r\n{}",
+                "{}\r\n{} · {}\r\n{}",
                 doc.name,
-                entity
-                    .map(|e| format!("{} · {}", e.kind, e.full_name))
-                    .unwrap_or_default(),
+                entity.kind,
+                entity.full_name,
                 source
                     .path
                     .file_name()
@@ -523,12 +496,12 @@ pub(super) fn worker_stopped() {
         a.workspace
             .documents
             .iter_mut()
-            .filter_map(|d| match &mut d.content {
-                Content::Metadata(m) => m.ticket.take().map(|_| {
-                    m.content = "Catalog worker stopped".into();
-                    m.numbers = Arc::from([]);
+            .filter_map(|d| {
+                d.content.ticket.take().map(|_| {
+                    d.content.content = resources::text(IDS_WORKER_STOPPED).into();
+                    d.content.numbers = Arc::from([]);
                     d.hwnd
-                }),
+                })
             })
             .collect::<Vec<_>>()
     });

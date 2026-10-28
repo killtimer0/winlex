@@ -253,20 +253,14 @@ pub(super) fn cell(row: usize, detail: bool) -> String {
         let Some(e) = a.session.results.get(row) else {
             return String::new();
         };
-        let source = a
-            .session
-            .catalog
-            .as_ref()
-            .and_then(|c| c.sources().get(e.id.source_id));
+        // Results are cleared when the catalog changes; each ID belongs to this snapshot.
+        let catalog = a.session.catalog.as_ref().expect("search result snapshot");
+        let source = &catalog.sources()[e.id.source_id];
         let label = source
-            .map(|s| {
-                s.path
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .into_owned()
-            })
-            .unwrap_or_default();
+            .path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy();
         let arches = super::architecture::supported(e.architecture_mask)
             .map(|architecture| architecture.name())
             .collect::<Vec<_>>()
@@ -278,7 +272,7 @@ pub(super) fn cell(row: usize, detail: bool) -> String {
                 e.kind,
                 label,
                 arches,
-                source.map(|s| s.path.to_string_lossy()).unwrap_or_default(),
+                source.path.display(),
                 e.id
             )
         } else {
@@ -489,7 +483,7 @@ pub(super) fn worker_stopped() {
         a.session.cancel_search();
         a.session.sources.cancel();
     });
-    set_status("Background worker stopped".into());
+    set_status(resources::text(IDS_WORKER_STOPPED));
     super::sources::refresh_views();
 }
 pub(super) fn apply(c: Completion) {

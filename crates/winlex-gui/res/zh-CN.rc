@@ -30,6 +30,7 @@ BEGIN
     IDS_ARCHITECTURE "架构"
     IDS_DETAILS "详细信息"
     IDS_PREVIEW "预览"
+    IDS_WORKER_STOPPED "后台工作线程已停止"
     IDS_COPY_DECIMAL "复制十进制"
     IDS_COPY_HEX "复制十六进制"
     IDS_COPY_VALUE "复制带单位的值"
