@@ -3,6 +3,8 @@ IDR_MAIN_MENU MENU
 BEGIN
     POPUP "文件(&F)"
     BEGIN
+        MENUITEM "打开选定结果(&O)\tEnter", OPEN_RESULT
+        MENUITEM "在新文档中打开(&N)\tCtrl+Enter", OPEN_NEW
         MENUITEM "关闭文档(&C)\tCtrl+F4", CLOSE
         MENUITEM "退出(&E)", EXIT
     END
@@ -27,6 +29,7 @@ STRINGTABLE
 BEGIN
     IDS_ARCHITECTURE "架构"
     IDS_DETAILS "详细信息"
+    IDS_PREVIEW "预览"
     IDS_COPY_DECIMAL "复制十进制"
     IDS_COPY_HEX "复制十六进制"
     IDS_COPY_VALUE "复制带单位的值"
@@ -57,7 +60,7 @@ BEGIN
     IDS_LOAD_FAILED "加载失败，已保留原目录：{error}"
     IDS_ENTER_QUERY "已就绪。输入名称自动搜索，回车立即执行。"
     IDS_SEARCHING "正在搜索…"
-    IDS_SEARCH_STATUS "共 {total} 条。双击或按回车打开。"
+    IDS_SEARCH_STATUS "共 {total} 条。单击或空格预览，双击或回车打开。"
     IDS_QUERYING "正在加载声明…"
     IDS_SOURCE "来源"
     IDS_WINMD_FILES "Windows 元数据 (*.winmd)"

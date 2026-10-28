@@ -79,7 +79,7 @@ def test_native_mdi_and_sidebar(launch, profile, settings):
     original = app.open_row()
     n.wait(lambda: 'CreateFileW(' in app.content(original), "declaration", 45)
     old = app.content(original)
-    other = app.open_row()
+    other = app.open_new()
     # A document host can be enumerated before WM_CREATE has created its controls.
     assert app.choices(app.architecture(other)) == ["x86", "x64", "arm64"]
     app.choose(other, "x64")
@@ -150,7 +150,7 @@ def test_mdi_maximize_inheritance_and_one_shot_arrangement(launch, settings):
     original = app.open_row()
     n.send(app.mdi, win32con.WM_MDIMAXIMIZE, original)
     assert zoomed(original)
-    app.open_row()
+    app.open_new()
     n.wait(lambda: len(app.documents()) == 2, "maximized new document")
     other = next(h for h in app.documents() if h != original)
     assert zoomed(other), "new document must inherit MDI maximization"
@@ -170,35 +170,21 @@ def test_mdi_maximize_inheritance_and_one_shot_arrangement(launch, settings):
 
 
 def test_accelerator_region_navigation_and_tab_enter(launch, settings):
-    class ThreadInfo(n.c.Structure):
-        _fields_ = [("size", n.w.DWORD), ("flags", n.w.DWORD),
-                    ("active", n.w.HWND), ("focus", n.w.HWND),
-                    ("capture", n.w.HWND), ("menu", n.w.HWND),
-                    ("move", n.w.HWND), ("caret", n.w.HWND), ("rect", n.w.RECT)]
-
-    info_api = n.api(n.user, "GetGUIThreadInfo", n.w.BOOL, n.w.DWORD, n.c.POINTER(ThreadInfo))
     app = launch(["--winmd", settings[1]])
     app.query("CreateFileW")
     doc = app.open_row()
     editor = n.get_item(doc, 1203)
-    thread = n.get_pid(app.frame, None)
-
-    def focused():
-        info = ThreadInfo()
-        info.size = n.c.sizeof(info)
-        assert info_api(thread, n.c.byref(info))
-        return info.focus
 
     n.send(doc, win32con.WM_SETFOCUS)  # document restores its editor on the owning thread
-    n.wait(lambda: focused() == editor, "document focus")
+    n.wait(lambda: app.focused() == editor, "document focus")
     n.key_message(editor, win32con.VK_F6)  # F6 through TranslateAccelerator
-    n.wait(lambda: focused() == app.search, "F6 to sidebar")
+    n.wait(lambda: app.focused() == app.search, "F6 to sidebar")
     n.key_message(app.search, win32con.VK_F6)
-    n.wait(lambda: focused() == editor, "F6 to document")
+    n.wait(lambda: app.focused() == editor, "F6 to document")
     n.key_message(editor, win32con.VK_F6)
-    n.wait(lambda: focused() == app.search, "sidebar before tab Enter")
+    n.wait(lambda: app.focused() == app.search, "sidebar before tab Enter")
     n.key_message(n.get_item(app.frame, 1104), win32con.VK_RETURN)
-    n.wait(lambda: focused() == editor, "tab Enter to document")
+    n.wait(lambda: app.focused() == editor, "tab Enter to document")
 
     toolbar = n.get_item(app.frame, 1113)
 
@@ -212,19 +198,19 @@ def test_accelerator_region_navigation_and_tab_enter(launch, settings):
         n.send(toolbar, win32con.WM_LBUTTONUP, 0, point)
 
     click_panel(1)
-    n.wait(lambda: focused() == app.sources, "mouse activation delegates focus to sources")
+    n.wait(lambda: app.focused() == app.sources, "mouse activation delegates focus to sources")
     n.send(app.frame, win32con.WM_SIZE)  # ordinary layout
     n.send(app.frame, win32con.WM_SETTINGCHANGE)  # environment/font refresh
-    assert focused() == app.sources, "layout and environment updates must not move focus"
+    assert app.focused() == app.sources, "layout and environment updates must not move focus"
     click_panel(1)
-    n.wait(lambda: focused() == toolbar, "collapse focuses toolbar")
+    n.wait(lambda: app.focused() == toolbar, "collapse focuses toolbar")
     click_panel(0)
-    n.wait(lambda: focused() == app.search, "mouse activation delegates focus to search")
+    n.wait(lambda: app.focused() == app.search, "mouse activation delegates focus to search")
     n.send(toolbar, messages.TB_SETHOTITEM, 1)
     n.key_message(toolbar, win32con.VK_SPACE)
-    n.wait(lambda: focused() == app.sources, "keyboard activation delegates focus to sources")
+    n.wait(lambda: app.focused() == app.sources, "keyboard activation delegates focus to sources")
     n.key_message(toolbar, win32con.VK_SPACE)
-    n.wait(lambda: focused() == toolbar, "keyboard collapse focuses toolbar")
+    n.wait(lambda: app.focused() == toolbar, "keyboard collapse focuses toolbar")
 
 
 def test_mdi_remembers_last_user_state_after_all_documents_close(launch, settings):

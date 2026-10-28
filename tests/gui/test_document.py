@@ -83,14 +83,16 @@ def test_architecture_preference_applies_to_new_documents(launch, profile, setti
     app.choose(first, "x64")
     n.wait(lambda: "x64" in n.window_text(first), "x64 selection")
 
-    second = app.open_row()
+    app.command(1049)  # Open the same result in a new document.
+    second = n.wait(lambda: len(app.documents()) == 2 and app.active_document(), "new document")
     n.wait(lambda: app.choice(second) == "x64", "new document uses preference")
     assert app.choices(app.architecture(second)) == ["x86", "x64", "arm64"]
 
     app.choose(second, "arm64")
     n.wait(lambda: "arm64" in n.window_text(second), "arm64 selection")
 
-    third = app.open_row()
+    app.command(1049)
+    third = n.wait(lambda: len(app.documents()) == 3 and app.active_document(), "third document")
     n.wait(lambda: app.choice(third) == "arm64", "new document uses latest preference")
 
     app.query("ARM64_NT_CONTEXT")
@@ -154,6 +156,30 @@ def test_document_minimum_only_limits_interactive_sizing(launch, settings):
             assert n.set_pos(doc, None, 0, 0, w, h, RESIZE_NO_MOVE)
             left, top, right, bottom = n.rectangle(doc)
             assert (right - left, bottom - top) == (w, h)
+
+
+def test_tab_traverses_document_controls(launch, settings):
+    app = launch(["--winmd", settings[1]])
+    app.query("CreateFileW")
+    doc = app.open_row()
+    n.wait(lambda: "CreateFileW(" in app.content(doc), "declaration", 45)
+    app.command(1048, doc)  # Show details so they join the tab order.
+    details = n.get_item(doc, 1205)
+    assert n.is_visible(details)
+
+    editor = n.get_item(doc, 1203)
+    order = [n.get_item(doc, 1204), details, app.architecture(doc),
+             n.get_item(doc, 1048), editor]
+    app.focus(editor)
+    for target in order:
+        current = app.focused() or editor
+        n.key_message(current, win32con.VK_TAB)
+        n.wait(lambda: app.focused() == target, "tab to %d" % n.get_id(target))
+
+    body = app.content(doc)
+    n.key_message(editor, win32con.VK_RETURN)  # Read-only body keeps Enter.
+    assert app.content(doc) == body
+    assert len(app.documents()) == 1
 
 
 def test_narrow_document_keeps_details_and_declaration_usable(launch, settings):

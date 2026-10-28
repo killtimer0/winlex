@@ -206,12 +206,6 @@ pub(super) unsafe fn notify(l: isize) -> Option<isize> {
 }
 pub(super) unsafe fn translate(frame: HWND, msg: &MSG) -> bool {
     let (toolbar, panel) = read(|a| (a.sidebar.toolbar, a.sidebar.owner(msg.hwnd)));
-    if let Some(panel) = &panel
-        && msg.message == WM_KEYDOWN
-        && panel.key(msg.hwnd, msg.wParam)
-    {
-        return true;
-    }
     (msg.hwnd == toolbar || panel.is_some()) && unsafe { IsDialogMessageW(frame, msg) != 0 }
 }
 pub(super) unsafe extern "system" fn splitter_proc(

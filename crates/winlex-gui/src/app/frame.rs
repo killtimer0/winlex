@@ -1,6 +1,6 @@
 //! Native frame orchestration; sidebar owns its controls and notifications.
 use super::workspace::{self, active};
-use super::{dpi, read, sidebar, sources, write};
+use super::{catalog, dpi, read, sidebar, sources, write};
 use crate::{
     layout::{self, Arrangement},
     native::*,
@@ -75,11 +75,13 @@ pub(super) fn command(id: u16) -> bool {
             if !d.is_null() && (h == d || unsafe { IsChild(d, h) != 0 }) {
                 sidebar::focus();
             } else {
-                super::document::restore_focus(d);
+                super::document::focus_document(d);
             }
         }
         LANGUAGE_AUTO | LANGUAGE_ENGLISH | LANGUAGE_CHINESE => super::settings::language(id),
         CLOSE => workspace::close_document(active()),
+        OPEN_RESULT => catalog::open_selected(catalog::Open::Pin),
+        OPEN_NEW => catalog::open_selected(catalog::Open::New),
         EXIT => {
             send(read(|a| a.frame), WM_CLOSE, 0, 0);
         }
@@ -175,9 +177,18 @@ pub(super) unsafe extern "system" fn frame_proc(hwnd: HWND, msg: u32, w: usize, 
             }
             WM_NOTIFY => {
                 let hdr = &*(l as *const NMHDR);
-                if hdr.idFrom == DOCUMENT_TABS as usize && hdr.code == TCN_SELCHANGE {
-                    workspace::activate_document_tab();
-                    return 0;
+                if hdr.hwndFrom == read(|a| a.workspace.tabs) {
+                    match hdr.code {
+                        TCN_SELCHANGE => {
+                            workspace::activate_document_tab();
+                            return 0;
+                        }
+                        NM_DBLCLK => {
+                            workspace::pin_tab_at_cursor();
+                            return 0;
+                        }
+                        _ => {}
+                    }
                 }
                 if let Some(result) = sidebar::notify(l) {
                     return result;

@@ -1,7 +1,7 @@
 //! UI transactions and immutable document bindings. HWNDs never cross the worker boundary.
 use super::{
     metadata::{self, Binding},
-    read, write,
+    read, workspace, write,
 };
 use crate::native::text;
 use crate::{
@@ -286,9 +286,36 @@ pub(super) fn cell(row: usize, detail: bool) -> String {
         }
     })
 }
-pub(super) fn open_row(row: isize) {
+/// How a result reaches a document: transient preview, pinned open, or forced duplicate.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Open {
+    Preview,
+    Pin,
+    New,
+}
+pub(super) fn open_selected(mode: Open) {
+    let frame = read(|a| a.frame);
+    let list = unsafe { GetDlgItem(frame, RESULTS as i32) };
+    let row = send(list, LVM_GETNEXTITEM, usize::MAX, LVNI_SELECTED as isize);
+    open(row, mode);
+}
+pub(super) fn open(row: isize, mode: Open) {
+    match mode {
+        // A preview shows the document but leaves the keyboard in the sidebar.
+        Open::Preview => workspace::keep_focus(|| {
+            open_now(row, mode);
+        }),
+        // An explicit open enters the document: show it, then focus its body.
+        Open::Pin | Open::New => {
+            if let Some(hwnd) = open_now(row, mode) {
+                super::document::focus_document(hwnd);
+            }
+        }
+    }
+}
+fn open_now(row: isize, mode: Open) -> Option<HWND> {
     if row < 0 {
-        return;
+        return None;
     }
     let item = read(|a| {
         a.session.results.get(row as usize).map(|e| {
@@ -301,23 +328,62 @@ pub(super) fn open_row(row: isize) {
             )
         })
     });
-    let Some((id, title, mask, Some(catalog), preferred)) = item else {
-        return;
+    let (id, title, mask, Some(catalog), preferred) = item? else {
+        return None;
     };
-    let Some(arch) = super::architecture::preferred(mask, preferred) else {
+    let Some(fallback) = super::architecture::preferred(mask, preferred) else {
         set_status(resources::text(IDS_UNSUPPORTED_ARCH));
-        return;
+        return None;
     };
-    if let Err(e) = metadata::open(
-        &title,
-        Binding::Entity {
-            architecture: arch,
-            id,
-            catalog,
-            architecture_mask: mask,
-        },
-    ) {
-        set_status(e);
+    let preview = workspace::preview_document();
+    // A new result keeps the architecture of the declaration being read.
+    let architecture = if mode == Open::New {
+        fallback
+    } else {
+        metadata::get(workspace::active(), |_, d| d.architecture())
+            .flatten()
+            .filter(|arch| arch.supports(mask))
+            .unwrap_or(fallback)
+    };
+    let binding = Binding::Entity {
+        architecture,
+        id,
+        catalog: catalog.clone(),
+        architecture_mask: mask,
+    };
+    if mode != Open::New
+        && let Some(hwnd) = metadata::find(|_, d| {
+            matches!(
+                &d.binding,
+                Binding::Entity { architecture: found_arch, id: found_id, catalog: found_catalog, .. }
+                    if *found_arch == architecture
+                        && *found_id == id
+                        && Arc::ptr_eq(found_catalog, &catalog)
+            )
+        })
+    {
+        if mode == Open::Pin {
+            workspace::pin_document(hwnd);
+        }
+        workspace::show_document(hwnd);
+        return Some(hwnd);
+    }
+    if mode != Open::New
+        && let Some(hwnd) = preview
+        && metadata::rebind(hwnd, &title, binding.clone())
+    {
+        if mode == Open::Pin {
+            workspace::pin_document(hwnd);
+        }
+        workspace::show_document(hwnd);
+        return Some(hwnd);
+    }
+    match metadata::open(&title, binding, mode == Open::Preview) {
+        Ok(hwnd) => Some(hwnd),
+        Err(e) => {
+            set_status(e);
+            None
+        }
     }
 }
 pub(super) fn old_version(binding: &Binding) -> bool {
@@ -366,6 +432,7 @@ pub(super) fn open_current(hwnd: HWND) {
     if pending {
         return;
     }
+    workspace::pin_document(hwnd);
     let ticket = write(|a| a.session.ticket());
     let job = Job::Reopen {
         document,

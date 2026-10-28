@@ -43,7 +43,7 @@ pub(super) struct Document {
     actions: Vec<(u16, HWND)>,
     old_version: bool,
 }
-pub(super) fn open(name: &str, binding: Binding) -> Result<HWND, String> {
+pub(super) fn open(name: &str, binding: Binding, preview: bool) -> Result<HWND, String> {
     let title = match &binding {
         Binding::Entity { architecture, .. } => format!("{name} — {}", architecture.name()),
         Binding::Source { .. } => name.to_owned(),
@@ -66,10 +66,67 @@ pub(super) fn open(name: &str, binding: Binding) -> Result<HWND, String> {
             actions: vec![],
             old_version: false,
         }),
+        preview,
     )?;
     refresh_content(hwnd);
     catalog::request_document(hwnd);
     Ok(hwnd)
+}
+/// Repoint an entity document at another declaration without replacing its window.
+pub(super) fn rebind(hwnd: HWND, name: &str, binding: Binding) -> bool {
+    let Some(current) = get(hwnd, |_, d| d.clone()) else {
+        return false;
+    };
+    let (
+        Binding::Entity {
+            architecture,
+            architecture_mask,
+            ..
+        },
+        Binding::Entity { .. },
+    ) = (&current.binding, &binding)
+    else {
+        return false;
+    };
+    let (architecture, architecture_mask) = (*architecture, *architecture_mask);
+    current.cancel();
+    edit(hwnd, |d| {
+        d.ticket = None;
+        d.content = resources::text(IDS_QUERYING).into();
+        d.detail_content = "".into();
+        d.numbers = Arc::from([]);
+        d.old_version = false;
+        d.name = name.to_owned();
+        d.binding = binding;
+    });
+    send(current.architecture_select, CB_RESETCONTENT, 0, 0);
+    let mut selected = CB_ERR as isize;
+    for arch in super::architecture::supported(architecture_mask) {
+        let index = send(
+            current.architecture_select,
+            CB_ADDSTRING,
+            0,
+            wide(arch.name()).as_ptr() as isize,
+        );
+        if arch == architecture {
+            selected = index;
+        }
+    }
+    if selected >= 0 {
+        send(
+            current.architecture_select,
+            CB_SETCURSEL,
+            selected as usize,
+            0,
+        );
+    }
+    let title = format!("{name} — {}", architecture.name());
+    workspace::edit_document(hwnd, |d| d.title = title.clone());
+    set_text(hwnd, &title);
+    workspace::refresh_document_tabs();
+    refresh_content(hwnd);
+    catalog::request_document(hwnd);
+    true
 }
 pub(super) fn apply(id: u64, c: crate::tasks::Completion) {
     use crate::tasks::{Output, Target};
@@ -96,6 +153,7 @@ pub(super) fn apply(id: u64, c: crate::tasks::Completion) {
                         catalog: snapshot,
                         architecture_mask: entity.architecture_mask,
                     },
+                    false,
                 ) {
                     catalog::set_status(e);
                 }
@@ -144,6 +202,12 @@ pub(super) fn find(predicate: impl Fn(u64, &Document) -> bool) -> Option<HWND> {
     })
 }
 impl Document {
+    pub fn architecture(&self) -> Option<Architecture> {
+        match &self.binding {
+            Binding::Entity { architecture, .. } => Some(*architecture),
+            Binding::Source { .. } => None,
+        }
+    }
     pub fn cancel(&self) {
         if let Some(ticket) = &self.ticket {
             read(|a| a.worker.cancel(ticket.id));
@@ -171,9 +235,9 @@ impl Document {
                 | ES_AUTOVSCROLL as u32,
             DOCUMENT_DETAILS,
         );
-        document::track_focus(hwnd, self.editor)?;
-        document::track_focus(hwnd, self.header)?;
-        document::track_focus(hwnd, self.details)?;
+        document::track_editor(hwnd, self.editor)?;
+        document::track_text(self.header)?;
+        document::track_text(self.details)?;
         send(self.details, EM_SETLIMITTEXT, 0x7ffffffe, 0);
         show(self.details, false);
         if let Binding::Entity {
@@ -196,7 +260,9 @@ impl Document {
                 WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST as u32,
                 SELECT_ARCH,
             );
-            document::track_focus(hwnd, self.architecture_select)?;
+            if self.architecture_select.is_null() {
+                return Err(error("Create document control"));
+            }
             for arch in super::architecture::supported(architecture_mask) {
                 let index = send(
                     self.architecture_select,
@@ -225,7 +291,9 @@ impl Document {
         for &(id, label) in commands {
             let caption = resources::wide_text(label);
             let h = child(hwnd, w!("BUTTON"), caption, WS_TABSTOP, id);
-            document::track_focus(hwnd, h)?;
+            if h.is_null() {
+                return Err(error("Create document control"));
+            }
             self.actions.push((id, h));
         }
         Ok(())

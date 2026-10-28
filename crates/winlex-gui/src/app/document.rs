@@ -1,5 +1,5 @@
 //! MDI document host. Content owns its controls, commands and asynchronous work.
-use super::{document, dpi, edit_document, metadata, read, workspace};
+use super::{document, dpi, metadata, read, workspace};
 use crate::native::*;
 
 #[derive(Clone)]
@@ -8,6 +8,7 @@ pub(super) enum Content {
 }
 pub(super) struct Init {
     pub content: Option<Content>,
+    pub preview: bool,
     pub error: Option<String>,
 }
 impl Content {
@@ -48,22 +49,23 @@ pub(super) fn layout_document(hwnd: HWND) {
         content.layout(hwnd);
     }
 }
-pub(super) fn restore_focus(hwnd: HWND) {
-    if let Some((h, default)) = document(hwnd, |d| (d.last_focus, d.content.focus())) {
-        let valid = !h.is_null()
-            && unsafe {
-                IsWindow(h) != 0
-                    && IsChild(hwnd, h) != 0
-                    && IsWindowVisible(h) != 0
-                    && IsWindowEnabled(h) != 0
-            };
-        focus(if valid { h } else { default });
+pub(super) fn focus_document(hwnd: HWND) {
+    if let Some(body) = document(hwnd, |d| d.content.focus()) {
+        focus(body);
     }
 }
-pub(super) fn track_focus(owner: HWND, control: HWND) -> Result<(), String> {
-    if control.is_null()
-        || unsafe { set_subclass(control, Some(focus_proc), 1, owner as usize) } == 0
+pub(super) fn track_editor(owner: HWND, editor: HWND) -> Result<(), String> {
+    if editor.is_null()
+        || unsafe { set_subclass(editor, Some(editor_proc), 1, owner as usize) } == 0
     {
+        Err(error("Create document control"))
+    } else {
+        Ok(())
+    }
+}
+/// Read-only text keeps arrows and characters but lets Tab reach the dialog manager.
+pub(super) fn track_text(control: HWND) -> Result<(), String> {
+    if control.is_null() || unsafe { set_subclass(control, Some(text_tab_proc), 1, 0) } == 0 {
         Err(error("Create document control"))
     } else {
         Ok(())
@@ -94,9 +96,9 @@ pub(super) unsafe extern "system" fn document_proc(
                     id: workspace::next_id(),
                     hwnd,
                     title: text(hwnd),
-                    last_focus: content.focus(),
                     content,
                     placement: None,
+                    preview: init.preview,
                 });
                 return 0;
             }
@@ -165,7 +167,7 @@ pub(super) unsafe extern "system" fn document_proc(
             WM_EXITSIZEMOVE => workspace::capture_placements(),
             WM_SETFOCUS => {
                 let result = DefMDIChildProcW(hwnd, msg, w, l);
-                restore_focus(hwnd);
+                focus_document(hwnd);
                 return result;
             }
             WM_MDIACTIVATE => {
@@ -204,7 +206,7 @@ pub(super) unsafe extern "system" fn document_proc(
         DefMDIChildProcW(hwnd, msg, w, l)
     }
 }
-unsafe extern "system" fn focus_proc(
+unsafe extern "system" fn editor_proc(
     hwnd: HWND,
     msg: u32,
     w: usize,
@@ -213,45 +215,61 @@ unsafe extern "system" fn focus_proc(
     owner: usize,
 ) -> isize {
     unsafe {
-        if GetDlgCtrlID(hwnd) == crate::resources::DECLARATION as i32 {
-            match msg {
-                // RichEdit must not collapse an existing selection on a contextual click.
-                WM_RBUTTONDOWN => return 0,
-                WM_RBUTTONUP => {
-                    let mut point = POINT {
-                        x: l as i16 as i32,
-                        y: (l >> 16) as i16 as i32,
-                    };
-                    ClientToScreen(hwnd, &mut point);
-                    send(
-                        owner as HWND,
-                        WM_CONTEXTMENU,
-                        hwnd as usize,
-                        ((point.x as u16 as u32) | ((point.y as u16 as u32) << 16)) as isize,
-                    );
-                    return 0;
-                }
-                WM_CONTEXTMENU => return send(owner as HWND, msg, hwnd as usize, l),
-                WM_KEYDOWN
-                    if w == VK_APPS as usize
-                        || w == VK_F10 as usize && GetKeyState(VK_SHIFT as i32) < 0 =>
-                {
-                    return send(owner as HWND, WM_CONTEXTMENU, hwnd as usize, -1);
-                }
-                WM_KEYUP
-                    if w == VK_APPS as usize
-                        || w == VK_F10 as usize && GetKeyState(VK_SHIFT as i32) < 0 =>
-                {
-                    return 0;
-                }
-                _ => {}
+        match msg {
+            WM_GETDLGCODE if w == VK_TAB as usize => {
+                return (DLGC_WANTARROWS | DLGC_WANTCHARS) as isize;
             }
+            // RichEdit must not collapse an existing selection on a contextual click.
+            WM_RBUTTONDOWN => return 0,
+            WM_RBUTTONUP => {
+                let mut point = POINT {
+                    x: l as i16 as i32,
+                    y: (l >> 16) as i16 as i32,
+                };
+                ClientToScreen(hwnd, &mut point);
+                send(
+                    owner as HWND,
+                    WM_CONTEXTMENU,
+                    hwnd as usize,
+                    ((point.x as u16 as u32) | ((point.y as u16 as u32) << 16)) as isize,
+                );
+                return 0;
+            }
+            WM_CONTEXTMENU => return send(owner as HWND, msg, hwnd as usize, l),
+            WM_KEYDOWN
+                if w == VK_APPS as usize
+                    || w == VK_F10 as usize && GetKeyState(VK_SHIFT as i32) < 0 =>
+            {
+                return send(owner as HWND, WM_CONTEXTMENU, hwnd as usize, -1);
+            }
+            WM_KEYUP
+                if w == VK_APPS as usize
+                    || w == VK_F10 as usize && GetKeyState(VK_SHIFT as i32) < 0 =>
+            {
+                return 0;
+            }
+            WM_NCDESTROY => {
+                remove_subclass(hwnd, Some(editor_proc), 1);
+            }
+            _ => {}
         }
-        if msg == WM_SETFOCUS {
-            edit_document(owner as HWND, |d| d.last_focus = hwnd);
+        default_subclass(hwnd, msg, w, l)
+    }
+}
+unsafe extern "system" fn text_tab_proc(
+    hwnd: HWND,
+    msg: u32,
+    w: usize,
+    l: isize,
+    _id: usize,
+    _data: usize,
+) -> isize {
+    unsafe {
+        if msg == WM_GETDLGCODE && w == VK_TAB as usize {
+            return (DLGC_WANTARROWS | DLGC_WANTCHARS) as isize;
         }
         if msg == WM_NCDESTROY {
-            remove_subclass(hwnd, Some(focus_proc), 1);
+            remove_subclass(hwnd, Some(text_tab_proc), 1);
         }
         default_subclass(hwnd, msg, w, l)
     }

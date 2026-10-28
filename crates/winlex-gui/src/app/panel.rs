@@ -1,5 +1,5 @@
 //! Sidebar content. Each variant owns its controls and input state.
-use super::{bind, catalog, dpi, read, sidebar, sources, write};
+use super::{bind, catalog, dpi, keys, read, sidebar, sources, write};
 use crate::{
     layout,
     native::*,
@@ -187,34 +187,28 @@ impl Panel {
         }
         true
     }
-    pub fn key(&self, hwnd: HWND, key: usize) -> bool {
-        if key != VK_RETURN as usize {
-            return false;
-        }
-        if let Self::Search {
-            input, composing, ..
-        } = self
-            && hwnd == *input
-        {
-            if *composing {
-                return false;
-            }
-            catalog::search();
-        } else if hwnd == self.list() {
-            self.open(send(
-                hwnd,
-                LVM_GETNEXTITEM,
-                usize::MAX,
-                LVNI_SELECTED as isize,
-            ));
-        } else {
-            return false;
-        }
-        true
-    }
-    fn open(&self, row: isize) {
+    pub fn region(&self, hwnd: HWND) -> Option<keys::Region> {
         match self {
-            Self::Search { .. } => catalog::open_row(row),
+            Self::Search {
+                input,
+                results,
+                composing,
+                ..
+            } => {
+                if *input == hwnd {
+                    Some(keys::Region::SearchEntry {
+                        composing: *composing,
+                    })
+                } else {
+                    (*results == hwnd).then_some(keys::Region::Results)
+                }
+            }
+            Self::Sources { list, .. } => (*list == hwnd).then_some(keys::Region::Sources),
+        }
+    }
+    fn open(&self, row: isize, mode: catalog::Open) {
+        match self {
+            Self::Search { .. } => catalog::open(row, mode),
             Self::Sources { .. } => sources::open_row(row),
         }
     }
@@ -247,12 +241,17 @@ impl Panel {
                     copy_text(&self.cell(i.iItem as usize, true), i.pszText, i.cchTextMax);
                     Some(0)
                 }
-                NM_CLICK | NM_DBLCLK
-                    if matches!(self, Self::Sources { .. }) || hdr.code == NM_DBLCLK =>
-                {
+                NM_CLICK | NM_DBLCLK => {
                     let i = &*(l as *const NMITEMACTIVATE);
                     if i.iItem >= 0 {
-                        self.open(i.iItem as isize);
+                        // A single search click previews; sources and explicit opens are permanent.
+                        let mode = if matches!(self, Self::Sources { .. }) || hdr.code == NM_DBLCLK
+                        {
+                            catalog::Open::Pin
+                        } else {
+                            catalog::Open::Preview
+                        };
+                        self.open(i.iItem as isize, mode);
                     }
                     Some(0)
                 }

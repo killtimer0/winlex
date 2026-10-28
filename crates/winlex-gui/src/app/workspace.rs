@@ -6,6 +6,7 @@ use super::{
 use crate::{
     layout::{Arrangement, Placement},
     native::*,
+    resources::{self, IDS_PREVIEW},
 };
 
 pub(super) struct Workspace {
@@ -31,8 +32,9 @@ pub(super) struct Document {
     pub hwnd: HWND,
     pub title: String,
     pub content: Content,
-    pub last_focus: HWND,
     pub placement: Option<Placement>,
+    /// A transient document that the next preview request may replace in place.
+    pub preview: bool,
 }
 pub(super) fn document<T>(hwnd: HWND, inspect: impl FnOnce(&Document) -> T) -> Option<T> {
     read(|a| {
@@ -55,13 +57,30 @@ pub(super) fn active() -> HWND {
     let mdi = read(|a| a.workspace.mdi);
     send(mdi, WM_MDIGETACTIVE, 0, 0) as HWND
 }
-pub(super) fn activate_document(hwnd: HWND) {
+pub(super) fn show_document(hwnd: HWND) {
     let mdi = read(|a| a.workspace.mdi);
     if unsafe { IsIconic(hwnd) } != 0 {
         send(mdi, WM_MDIRESTORE, hwnd as usize, 0);
     }
     send(mdi, WM_MDIACTIVATE, hwnd as usize, 0);
-    document::restore_focus(hwnd);
+}
+/// Showing a document leaves the keyboard where it is; entering moves it to the body.
+pub(super) fn activate_document(hwnd: HWND) {
+    show_document(hwnd);
+    document::focus_document(hwnd);
+}
+/// Opening from the sidebar shows the document without taking keyboard focus from it.
+pub(super) fn keep_focus(open: impl FnOnce()) {
+    let (frame, mdi) = read(|a| (a.frame, a.workspace.mdi));
+    let previous = unsafe { GetFocus() };
+    let sidebar = !previous.is_null()
+        && unsafe { IsChild(frame, previous) != 0 && IsChild(mdi, previous) == 0 };
+    open();
+    // Win32 gives a newly active MDI child the focus even when the request came
+    // from beside the MDI client; hand it back.
+    if sidebar && unsafe { IsWindow(previous) != 0 } {
+        focus(previous);
+    }
 }
 pub(super) fn register_document(doc: Document) {
     write(|a| a.workspace.documents.push(doc));
@@ -86,6 +105,44 @@ pub(super) fn close_document(hwnd: HWND) {
         send(mdi, WM_MDIDESTROY, hwnd as usize, 0);
     }
 }
+pub(super) fn preview_document() -> Option<HWND> {
+    read(|a| {
+        a.workspace
+            .documents
+            .iter()
+            .find(|d| d.preview)
+            .map(|d| d.hwnd)
+    })
+}
+pub(super) fn pin_document(hwnd: HWND) {
+    let changed = write(|a| {
+        let Some(doc) = a.workspace.documents.iter_mut().find(|d| d.hwnd == hwnd) else {
+            return false;
+        };
+        let was_preview = doc.preview;
+        doc.preview = false;
+        was_preview
+    });
+    if changed {
+        refresh_document_tabs();
+    }
+}
+pub(super) fn pin_tab_at_cursor() {
+    let tabs = read(|a| a.workspace.tabs);
+    let mut point = POINT { x: 0, y: 0 };
+    unsafe {
+        GetCursorPos(&mut point);
+        ScreenToClient(tabs, &mut point);
+    }
+    let mut hit = TCHITTESTINFO {
+        pt: point,
+        flags: 0,
+    };
+    let index = send(tabs, TCM_HITTEST, 0, &mut hit as *mut _ as isize);
+    if let Some(hwnd) = read(|a| a.workspace.documents.get(index as usize).map(|d| d.hwnd)) {
+        pin_document(hwnd);
+    }
+}
 pub(super) fn sync_document_selection() {
     let current = active();
     let (tabs, selected) = read(|a| {
@@ -105,13 +162,6 @@ pub(super) unsafe extern "system" fn document_tabs_proc(
     _data: usize,
 ) -> isize {
     unsafe {
-        if msg == WM_GETDLGCODE && w == VK_RETURN as usize {
-            return DLGC_WANTMESSAGE as isize;
-        }
-        if msg == WM_KEYDOWN && w == VK_RETURN as usize {
-            document::restore_focus(active());
-            return 0;
-        }
         if msg == WM_MBUTTONUP {
             let mut hit = TCHITTESTINFO {
                 pt: POINT {
@@ -134,13 +184,15 @@ pub(super) unsafe extern "system" fn document_tabs_proc(
     }
 }
 pub(super) fn refresh_document_tabs() {
+    // A tab control cannot give individual tabs a font, so transient documents
+    // are marked in the label itself.
     let (tabs, docs) = read(|a| {
         (
             a.workspace.tabs,
             a.workspace
                 .documents
                 .iter()
-                .map(|d| d.title.clone())
+                .map(|d| (d.title.clone(), d.preview))
                 .collect::<Vec<_>>(),
         )
     });
@@ -149,15 +201,20 @@ pub(super) fn refresh_document_tabs() {
         send(tabs, TCM_DELETEITEM, index, 0);
     }
     let mut ordinals = std::collections::HashMap::new();
-    for (index, title) in docs.iter().enumerate() {
+    for (index, (title, preview)) in docs.iter().enumerate() {
         let ordinal = ordinals.entry(title).or_insert(0);
         *ordinal += 1;
+        let marker = if *preview {
+            format!(" · {}", resources::text(IDS_PREVIEW))
+        } else {
+            String::new()
+        };
         let suffix = if *ordinal > 1 {
             format!(" ({ordinal})")
         } else {
             String::new()
         };
-        let mut label = wide(&format!("{title}{suffix}"));
+        let mut label = wide(&format!("{title}{marker}{suffix}"));
         if index < count {
             let mut old = vec![0u16; label.len() + 1];
             let mut item = TCITEMW {
@@ -277,10 +334,15 @@ pub(super) fn next_id() -> u64 {
         a.workspace.serial
     })
 }
-pub(super) fn create_document(title: &str, content: Content) -> Result<HWND, String> {
+pub(super) fn create_document(
+    title: &str,
+    content: Content,
+    preview: bool,
+) -> Result<HWND, String> {
     let (mdi, maximized) = read(|a| (a.workspace.mdi, a.workspace.maximized));
     let mut init = document::Init {
         content: Some(content),
+        preview,
         error: None,
     };
     // CreateMDIWindowW consumes this pointer synchronously in WM_CREATE.

@@ -15,6 +15,7 @@ mod architecture;
 mod catalog;
 mod document;
 mod frame;
+mod keys;
 mod metadata;
 mod panel;
 mod settings;
@@ -25,7 +26,7 @@ mod workspace;
 use crate::resources::{self, *};
 use document::document_proc;
 use frame::frame_proc;
-use workspace::{active, document, edit_document};
+use workspace::{active, document};
 
 struct App {
     config: crate::config::Config,
@@ -231,6 +232,9 @@ unsafe fn run_windows(paths: Vec<std::path::PathBuf>) -> Result<(), String> {
                 continue;
             }
             if TranslateAcceleratorW(frame, accelerators, &msg) != 0 {
+                continue;
+            }
+            if keys::translate(&msg) {
                 continue;
             }
             if sidebar::translate(frame, &msg)

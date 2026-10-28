@@ -12,6 +12,15 @@ from . import native as n
 from .pe import is_64_bit
 
 
+class ThreadInfo(c.Structure):
+    """GUI thread focus state; identical to GUITHREADINFO."""
+
+    _fields_ = [("size", w.DWORD), ("flags", w.DWORD),
+                ("active", w.HWND), ("focus", w.HWND),
+                ("capture", w.HWND), ("menu", w.HWND),
+                ("move", w.HWND), ("caret", w.HWND), ("rect", w.RECT)]
+
+
 class Session:
     def __init__(self, exe, profile, arguments=(), dpi="auto"):
         self.process = self.handle = self.memory = self.frame = None
@@ -118,6 +127,10 @@ class Session:
             assert n.write_memory(self.handle, self.memory, item, len(item), None)
             n.send(control, messages.LVM_SETITEMSTATE, c.c_size_t(index).value, self.memory)
 
+    def selected_row(self, control=None):
+        return n.send(control or self.results, messages.LVM_GETNEXTITEM,
+                      c.c_size_t(-1).value, messages.LVNI_SELECTED)
+
     def item_rect(self, row):
         raw = bytes(16)
         assert n.write_memory(self.handle, self.memory, raw, len(raw), None)
@@ -135,11 +148,97 @@ class Session:
         return [h for h in n.windows(self.mdi) if n.class_name(h) == "Winlex.Document" and n.get_item(h, 1203)]
 
     def open_row(self, row=0, source=False):
-        control = self.sources if source else self.results
-        before = set(self.documents())
-        self.select(row, control)
-        n.key_message(control, win32con.VK_RETURN)
-        return n.wait(lambda: next(iter(set(self.documents()) - before), None), "document opened")
+        if source:
+            before = set(self.documents())
+            self.select(row, self.sources)
+            n.key_message(self.sources, win32con.VK_RETURN)
+            return n.wait(
+                lambda: next(iter(set(self.documents()) - before), None),
+                "document opened",
+            )
+        self.select(row)
+        self.command(1050)  # File > Open selected result
+        return n.wait(
+            lambda: (lambda doc: doc if doc in self.documents() else None)(self.active_document()),
+            "document opened",
+        )
+
+    def active_document(self):
+        return n.send(self.mdi, win32con.WM_MDIGETACTIVE)
+
+    def open_new(self, row=0):
+        self.select(row)
+        self.command(1049)  # File > Open in new document
+        return n.wait(
+            lambda: (lambda doc: doc if doc in self.documents() else None)(self.active_document()),
+            "new document",
+        )
+
+    def preview_row(self, row=0):
+        name = self.cell(row).splitlines()[0].rsplit(".", 1)[-1]
+        self.select(row)
+        left, top, right, bottom = self.item_rect(row)
+        point = ((left + right) // 2, (top + bottom) // 2)
+        lparam = (point[1] << 16) | (point[0] & 0xffff)
+        # A list view starts an internal drag loop on button-down, so post clicks.
+        n.post(self.results, win32con.WM_LBUTTONDOWN, win32con.MK_LBUTTON, lparam)
+        n.post(self.results, win32con.WM_LBUTTONUP, 0, lparam)
+        return n.wait(
+            lambda: (lambda doc: doc if doc in self.documents()
+                     and n.window_text(doc).startswith(name + " —") else None)(self.active_document()),
+            "preview document",
+        )
+
+    def double_click_row(self, row=0):
+        name = self.cell(row).splitlines()[0].rsplit(".", 1)[-1]
+        self.select(row)
+        left, top, right, bottom = self.item_rect(row)
+        point = ((left + right) // 2, (top + bottom) // 2)
+        lparam = (point[1] << 16) | (point[0] & 0xffff)
+        n.post(self.results, win32con.WM_LBUTTONDOWN, win32con.MK_LBUTTON, lparam)
+        n.post(self.results, win32con.WM_LBUTTONUP, 0, lparam)
+        n.post(self.results, win32con.WM_LBUTTONDBLCLK, win32con.MK_LBUTTON, lparam)
+        n.post(self.results, win32con.WM_LBUTTONUP, 0, lparam)
+        return n.wait(
+            lambda: (lambda doc: doc if doc in self.documents()
+                     and n.window_text(doc).startswith(name + " —") else None)(self.active_document()),
+            "opened document",
+        )
+
+    def focus(self, control):
+        attach = n.api(n.user, "AttachThreadInput", w.BOOL, w.DWORD, w.DWORD, w.BOOL)
+        set_focus = n.api(n.user, "SetFocus", w.HWND, w.HWND)
+        own = n.api(n.kernel, "GetCurrentThreadId", w.DWORD)()
+        target = n.get_pid(self.frame, None)
+        assert attach(own, target, True)
+        try:
+            set_focus(control)
+        finally:
+            attach(own, target, False)
+
+    def focused(self):
+        info = ThreadInfo()
+        info.size = c.sizeof(info)
+        get = n.api(n.user, "GetGUIThreadInfo", w.BOOL, w.DWORD, c.POINTER(ThreadInfo))
+        assert get(n.get_pid(self.frame, None), c.byref(info))
+        return info.focus
+
+    def tab_labels(self):
+        tabs = n.get_item(self.frame, 1104)
+        count = n.send(tabs, messages.TCM_GETITEMCOUNT)
+        return [self.tab_label(index) for index in range(count)]
+
+    def tab_label(self, index):
+        tabs = n.get_item(self.frame, 1104)
+        # TCITEMW: mask, dwState, dwStateMask, pszText, cchTextMax, iImage, lParam.
+        item = bytearray(128)
+        struct.pack_into("<III", item, 0, messages.TCIF_TEXT, 0, 0)
+        pointer = 16 if self.is64 else 12
+        struct.pack_into("<Q" if self.is64 else "<I", item, pointer, self.memory + 4096)
+        struct.pack_into("<i", item, pointer + (8 if self.is64 else 4), 512)
+        assert n.write_memory(self.handle, self.memory, bytes(item), len(item), None)
+        assert n.send(tabs, messages.TCM_GETITEMW, index, self.memory) == 1
+        return self.remote_text(self.memory + 4096, 512)
 
     def content(self, doc):
         control = n.get_item(doc, 1203)

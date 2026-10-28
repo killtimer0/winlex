@@ -298,6 +298,11 @@ pub(super) fn forget_selected() {
         }
     }
 }
+pub(super) fn open_selected() {
+    let list = read(|a| a.sidebar.panel(super::panel::SOURCES_PANEL).list());
+    let row = send(list, LVM_GETNEXTITEM, usize::MAX, LVNI_SELECTED as isize);
+    open_row(row);
+}
 pub(super) fn open_row(row: isize) {
     let path = read(|a| {
         a.session
@@ -311,6 +316,9 @@ pub(super) fn open_row(row: isize) {
     }
 }
 pub(super) fn open(path: PathBuf) {
+    workspace::keep_focus(|| open_now(path));
+}
+fn open_now(path: PathBuf) {
     if read(|a| a.session.sources.settings.directories.contains(&path)) {
         catalog::set_status(format!(
             "{}: {}",
@@ -336,6 +344,7 @@ pub(super) fn open(path: PathBuf) {
             path,
             catalog: None,
         },
+        false,
     ) {
         catalog::set_status(e);
     }
