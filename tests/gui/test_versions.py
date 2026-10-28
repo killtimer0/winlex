@@ -13,18 +13,18 @@ def test_reload_keeps_old_document_snapshot(launch, settings):
     n.wait(lambda: 'CreateFileW(' in app.content(entity), "old declaration", 45)
     old = app.content(entity)
     app.command(1021)
-    n.wait(lambda: app.count(app.sources) == 1, "discovery")
-    source = app.open_row(source=True)
-    n.wait(lambda: '"sources"' in app.content(source), "inspect", 45)
+    assert app.count(app.sources) == 1
+    app.select(0, app.sources)
     editor = n.get_item(entity, 1203)
     n.send(editor, win32con.EM_SETSEL, 2, 8)
-    app.command(1044, source)
+    app.command(1044)
     n.wait(lambda: app.status_text().startswith(("Results ", "共 ")), "reload", 45)
     n.wait(lambda: "Earlier catalog snapshot" in n.window_text(n.get_item(entity, 1204)) or "先前的目录快照" in n.window_text(n.get_item(entity, 1204)), "earlier snapshot", 45)
     assert n.send(editor, win32con.EM_GETSEL) == (8 << 16) | 2
-    before = set(app.documents())
-    app.command(1045, entity)
-    current = n.wait(lambda: next(iter(set(app.documents()) - before), None), "open current")
+    app.command(1040)
+    app.query("CreateFileW")
+    current = app.open_row()
+    assert current != entity
     n.wait(lambda: 'CreateFileW(' in app.content(current), "current declaration", 45)
     header = n.window_text(n.get_item(current, 1204))
     assert "Earlier catalog snapshot" not in header

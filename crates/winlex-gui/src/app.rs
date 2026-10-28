@@ -97,9 +97,12 @@ pub fn run(
     resources::initialize(settings.language.name())?;
     let mut session = catalog::Session::new();
     let worker = crate::worker::Worker::new(crate::tasks::run)?;
-    session.sources.settings = sources::Settings::load(&config);
+    session.remember_sources = paths.is_empty();
     let paths = if paths.is_empty() {
-        session.sources.settings.auto_load.clone()
+        config
+            .key
+            .as_ref()
+            .map_or_else(Vec::new, |key| key.paths("AutoLoad"))
     } else {
         paths
     };
@@ -186,10 +189,8 @@ unsafe fn run_windows(paths: Vec<std::path::PathBuf>) -> Result<(), String> {
             DestroyWindow(frame);
             return Err(failure);
         }
-        write(|a| a.session.sources.extra = paths.clone());
-        sources::refresh();
         if !paths.is_empty() {
-            catalog::load(paths);
+            catalog::reload(paths, vec![]);
         }
         if let Some(warning) = read(|a| a.config.warning.clone()) {
             catalog::set_status(warning);
@@ -262,8 +263,7 @@ fn poll_completions() {
                 use crate::tasks::Target;
                 match c.target {
                     Target::Load | Target::Search => catalog::apply(c),
-                    Target::Discover => sources::apply_discovery(c),
-                    Target::Document(id) | Target::Reopen(id) => workspace::complete(id, c),
+                    Target::Document(id) => workspace::complete(id, c),
                 }
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => return,

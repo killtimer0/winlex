@@ -72,6 +72,7 @@ def main():
         assert languages(9, ids["IDR_ACCELERATORS"]) == [0]
         accelerators = list(struct.iter_unpack("<4H", resource(9, ids["IDR_ACCELERATORS"], 0)))
         assert {(flags & 0x7f, key, command) for flags, key, command, _ in accelerators} == {
+            (9, ord('O'), ids['LOAD_METADATA']),
             (9, ord('L'), ids['FOCUS_SEARCH']),
             (9, 0x0D, ids['OPEN_NEW']),
             (1, 0x75, ids['FOCUS_NEXT_REGION'])}

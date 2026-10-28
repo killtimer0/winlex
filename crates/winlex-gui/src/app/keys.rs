@@ -2,14 +2,13 @@
 //!
 //! Semantic keys are resolved before the dialog manager sees them. Controls
 //! keep their default behavior for every key the table does not claim.
-use super::{catalog, document, read, sources, workspace};
+use super::{catalog, document, read, workspace};
 use crate::native::*;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum Region {
     SearchEntry { composing: bool },
     Results,
-    Sources,
     Tabs,
     Other,
 }
@@ -19,7 +18,6 @@ pub(super) enum Action {
     Search,
     Preview,
     Pin,
-    OpenSource,
     FocusDocument,
 }
 
@@ -31,7 +29,6 @@ pub(super) fn action(region: Region, key: usize) -> Option<Action> {
         }
         (Region::Results, k) if k == VK_RETURN as usize => Some(Action::Pin),
         (Region::Results, k) if k == VK_SPACE as usize => Some(Action::Preview),
-        (Region::Sources, k) if k == VK_RETURN as usize => Some(Action::OpenSource),
         (Region::Tabs, k) if k == VK_RETURN as usize => Some(Action::FocusDocument),
         _ => None,
     }
@@ -65,7 +62,6 @@ fn dispatch(action: Action) {
         Action::Search => catalog::search(),
         Action::Preview => catalog::open_selected(catalog::Open::Preview),
         Action::Pin => catalog::open_selected(catalog::Open::Pin),
-        Action::OpenSource => sources::open_selected(),
         Action::FocusDocument => document::focus_document(workspace::active()),
     }
 }
@@ -87,7 +83,6 @@ mod tests {
             ),
             (Region::SearchEntry { composing: true }, None, None),
             (Region::Results, Some(Action::Pin), Some(Action::Preview)),
-            (Region::Sources, Some(Action::OpenSource), None),
             (Region::Tabs, Some(Action::FocusDocument), None),
             (Region::Other, None, None),
         ] {

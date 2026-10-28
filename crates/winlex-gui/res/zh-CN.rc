@@ -3,7 +3,8 @@ IDR_MAIN_MENU MENU
 BEGIN
     POPUP "文件(&F)"
     BEGIN
-        MENUITEM "打开选定结果(&O)\tEnter", OPEN_RESULT
+        MENUITEM "打开文件(&O)...\tCtrl+O", LOAD_METADATA
+        MENUITEM "打开选定结果(&R)\tEnter", OPEN_RESULT
         MENUITEM "在新文档中打开(&N)\tCtrl+Enter", OPEN_NEW
         MENUITEM "关闭文档(&C)\tCtrl+F4", CLOSE
         MENUITEM "退出(&E)", EXIT
@@ -36,27 +37,16 @@ BEGIN
     IDS_COPY_VALUE "复制带单位的值"
     IDS_COPY_SELECTION "复制选中文本"
     IDS_LOADED "已加载"
-    IDS_FORGET_LOCATION "移除位置"
-    IDS_FAILED "失败"
-    IDS_MISSING "缺失"
-    IDS_LOAD_STATE "活动版本"
-    IDS_CURRENT_UNAVAILABLE "当前版本不可用或名称有歧义。"
     IDS_SEARCH_PROGRESS "搜索中：{count} 个结果"
     IDS_PANEL_SEARCH "搜索"
     IDS_PANEL_SOURCES "元数据"
-    IDS_ADD "添加"
-    IDS_REFRESH "刷新"
-    IDS_DIRECTORY "目录"
     IDS_OLD_VERSION "先前的目录快照"
-    IDS_OPEN_CURRENT "打开当前版本"
     IDS_RELOAD "重新加载"
-    IDS_UNLOAD "卸载"
-    IDS_REPLACE "替换"
+    IDS_UNLOAD "关闭来源"
     IDS_LANGUAGE_RESTART "语言已保存，重新启动 Winlex 后生效。"
     IDS_UNSUPPORTED_ARCH "此声明不支持 x86 或 x64。"
     IDS_APP_TITLE "Winlex"
-    IDS_NOT_LOADED "尚未加载"
-    IDS_EMPTY_CATALOG "尚未加载元数据。打开来源详情后加载。"
+    IDS_EMPTY_CATALOG "尚未加载元数据。打开文件即可开始。"
     IDS_LOADING "正在加载元数据…"
     IDS_LOAD_FAILED "加载失败，已保留原目录：{error}"
     IDS_ENTER_QUERY "已就绪。输入名称自动搜索，回车立即执行。"
@@ -66,5 +56,5 @@ BEGIN
     IDS_SOURCE "来源"
     IDS_WINMD_FILES "Windows 元数据 (*.winmd)"
     IDS_ALL_FILES "所有文件 (*.*)"
-    IDS_LOAD_METADATA "加载元数据"
+    IDS_LOAD_METADATA "打开文件"
 END

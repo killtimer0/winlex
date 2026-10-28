@@ -147,15 +147,7 @@ class Session:
         # EnumChildWindows can observe an HWND during its WM_CREATE callback.
         return [h for h in n.windows(self.mdi) if n.class_name(h) == "Winlex.Document" and n.get_item(h, 1203)]
 
-    def open_row(self, row=0, source=False):
-        if source:
-            before = set(self.documents())
-            self.select(row, self.sources)
-            n.key_message(self.sources, win32con.VK_RETURN)
-            return n.wait(
-                lambda: next(iter(set(self.documents()) - before), None),
-                "document opened",
-            )
+    def open_row(self, row=0):
         self.select(row)
         self.command(1050)  # File > Open selected result
         return n.wait(

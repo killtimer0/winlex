@@ -3,7 +3,8 @@ IDR_MAIN_MENU MENU
 BEGIN
     POPUP "&File"
     BEGIN
-        MENUITEM "&Open selected result\tEnter", OPEN_RESULT
+        MENUITEM "&Open files...\tCtrl+O", LOAD_METADATA
+        MENUITEM "Open selected &result\tEnter", OPEN_RESULT
         MENUITEM "Open in &new document\tCtrl+Enter", OPEN_NEW
         MENUITEM "&Close document\tCtrl+F4", CLOSE
         MENUITEM "E&xit", EXIT
@@ -36,27 +37,16 @@ BEGIN
     IDS_COPY_VALUE "Copy value with unit"
     IDS_COPY_SELECTION "Copy selected text"
     IDS_LOADED "Loaded"
-    IDS_FORGET_LOCATION "Forget location"
-    IDS_FAILED "Failed"
-    IDS_MISSING "Missing"
-    IDS_LOAD_STATE "Active version"
-    IDS_CURRENT_UNAVAILABLE "Current version unavailable or ambiguous."
     IDS_SEARCH_PROGRESS "Searching: {count} results"
     IDS_PANEL_SEARCH "Search"
     IDS_PANEL_SOURCES "Metadata"
-    IDS_ADD "Add"
-    IDS_REFRESH "Refresh"
-    IDS_DIRECTORY "Directory"
     IDS_OLD_VERSION "Earlier catalog snapshot"
-    IDS_OPEN_CURRENT "Open current version"
     IDS_RELOAD "Reload"
-    IDS_UNLOAD "Unload"
-    IDS_REPLACE "Replace"
+    IDS_UNLOAD "Close source"
     IDS_LANGUAGE_RESTART "Language saved. The change takes effect after restarting Winlex."
     IDS_UNSUPPORTED_ARCH "This declaration does not support x86 or x64."
     IDS_APP_TITLE "Winlex"
-    IDS_NOT_LOADED "Not loaded"
-    IDS_EMPTY_CATALOG "No metadata loaded. Open a metadata source to load it."
+    IDS_EMPTY_CATALOG "No metadata loaded. Open files to begin."
     IDS_LOADING "Loading metadata..."
     IDS_LOAD_FAILED "Load failed; previous catalog retained: {error}"
     IDS_ENTER_QUERY "Ready. Type a name to search; Enter searches immediately."
@@ -66,5 +56,5 @@ BEGIN
     IDS_SOURCE "Source"
     IDS_WINMD_FILES "Windows metadata (*.winmd)"
     IDS_ALL_FILES "All files (*.*)"
-    IDS_LOAD_METADATA "Load metadata"
+    IDS_LOAD_METADATA "Open files"
 END

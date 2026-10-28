@@ -117,33 +117,31 @@ def check_toolbar_and_search(app):
 
 def test_environment_remeasures_open_document(launch, settings):
     app = launch(["--winmd", settings[1]])
-    n.wait(lambda: app.count(app.sources) > 0, "discovered source")
-    app.command(1021)
-    doc = app.open_row(source=True)
-    n.wait(lambda: '"sources"' in app.content(doc), "source details", 45)
+    app.query("CreateFileW")
+    doc = app.open_row()
+    n.wait(lambda: 'CreateFileW(' in app.content(doc), "declaration", 45)
     app.command(1012)  # restore before testing ordinary-window wrapping
+    app.command(1021)
     editor = n.get_item(doc, 1203)
-    button = n.get_item(doc, 1020)
+    button = n.get_item(app.frame, 1020)
     content = app.content(doc)
     n.send(editor, win32con.EM_SETSEL, 2, 8)
     with n.window_dpi_context(app.frame):
-        before = n.rectangle(editor)
+        before = n.rectangle(app.sources)
         outer = n.rectangle(doc)
-        n.set_text(button, "Load metadata with a substantially longer action label")
+        n.set_text(button, "Open metadata with a substantially longer action label")
         n.send(app.frame, win32con.WM_SETTINGCHANGE)  # without changing global settings
         assert n.rectangle(doc) == outer, "free-placement document moved"
-        assert n.rectangle(editor)[1] > before[1], "long label did not trigger wrapping"
+        assert n.rectangle(app.sources)[1] > before[1], "long label did not trigger wrapping"
         assert n.send(button, win32con.WM_GETFONT) != 0
         height, face = app.declaration_font(doc)
         assert height > 0 and face == "Courier New"
         assert app.content(doc) == content
         assert n.send(editor, win32con.EM_GETSEL) == (8 << 16) | 2
-        assert n.set_pos(doc, None, 0, 0, 280, 340,
-                         win32con.SWP_NOMOVE | win32con.SWP_NOZORDER | win32con.SWP_NOACTIVATE)
-        controls = [n.get_item(doc, id) for id in (1020, 1022, 1023, 1043, 1044)]
+        controls = [n.get_item(app.frame, id) for id in (1020, 1022, 1044)]
         assert all(h and n.is_visible(h) for h in controls)
         rectangles = [n.rectangle(h) for h in controls]
-        bounds = n.rectangle(editor)
+        bounds = n.rectangle(app.sources)
         for i, r in enumerate(rectangles):
             assert bounds[0] <= r[0] <= r[2] <= bounds[2]
             assert r[3] <= bounds[1]

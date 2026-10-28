@@ -35,5 +35,6 @@ def test_real_search_keyboard(request, launch, settings):
                                   win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_NOACTIVATE)
         for character in "CREATEFILEW":
             input_state.key(ord(character))
-        n.wait(lambda: app.count() > 0, "real-input search", 45)
+        n.wait(lambda: n.window_text(app.search).casefold() == "createfilew", "real input delivered")
+        n.wait(lambda: app.status_text().startswith(("Results ", "共 ")), "real-input search completed", 45)
         assert "CreateFileW" in app.cell(0)

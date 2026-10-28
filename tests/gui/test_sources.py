@@ -1,85 +1,72 @@
-import winreg
 import shutil
+import winreg
 import win32con
-from support import messages
 from support import native as n
 
 
-def test_discovery_restores_selection_by_location(launch, profile, settings):
-    directory = settings[2] / "selection"
-    directory.mkdir()
-    for name in ("b.winmd", "c.winmd"):
-        (directory / name).write_bytes(name.encode())
-    profile.set("Directories", winreg.REG_MULTI_SZ, [str(directory)])
+def test_open_loads_and_close_keeps_document_snapshot(launch, profile, settings):
     app = launch()
-    app.command(1021)
-    n.wait(lambda: app.count(app.sources) == 3, "initial locations")
-    selected = directory / "b.winmd"
-    row = next(i for i in range(3) if str(selected) in app.cell(i, app.sources))
-    app.select(row, app.sources)
-    (directory / "a.winmd").write_bytes(b"new earlier location")
-    app.command(1042)
-    n.wait(lambda: app.count(app.sources) == 4, "inserted location")
-    row = n.c.c_int(n.send(app.sources, messages.LVM_GETNEXTITEM, -1, messages.LVNI_SELECTED)).value  # LVM_GETNEXTITEM / LVNI_SELECTED
-    assert row >= 0 and str(selected) in app.cell(row, app.sources)
-    selected.unlink()
-    app.command(1042)
-    n.wait(lambda: app.count(app.sources) == 3, "removed selected location")
-    assert n.c.c_int(n.send(app.sources, messages.LVM_GETNEXTITEM, -1, messages.LVNI_SELECTED)).value == -1
-
-
-def test_discovery_is_not_loading(launch, profile, settings):
-    profile.set("Files", winreg.REG_MULTI_SZ, [str(settings[1])])
-    app = launch()
-    n.wait(lambda: app.count(app.sources) == 1, "source discovery")
-    app.command(1021)
-    doc = app.open_row(source=True)
-    assert not n.get_item(doc, 1047)  # Source inspection has no architecture selector.
-    n.wait(lambda: '"sources"' in app.content(doc), "inspection", 45)
-    n.send(doc, win32con.WM_SYSCOMMAND, win32con.SC_MINIMIZE)
-    is_iconic = n.api(n.user, "IsIconic", n.w.BOOL, n.w.HWND)
-    assert is_iconic(doc)
-    app.select(0, app.sources)
-    n.key_message(app.sources, win32con.VK_RETURN)
-    n.wait(lambda: not is_iconic(doc), "restore existing source document")
-    assert app.documents() == [doc]
-    assert profile.get("AutoLoad") is None
-    app.command(1020, doc)
-    n.wait(lambda: app.status_text().startswith(("Ready.", "已就绪")), "source loaded", 45)
-    assert profile.get("AutoLoad") == [str(settings[1])]
-    app.command(1040)
+    app.pick([settings[1]])
+    n.wait(lambda: app.count(app.sources) == 1, "file loaded", 45)
+    n.wait(lambda: profile.get("AutoLoad") == [str(settings[1])], "successful files saved")
     app.query("CreateFileW")
     entity = app.open_row()
     n.wait(lambda: 'CreateFileW(' in app.content(entity), "declaration", 45)
     old = app.content(entity)
-    declaration = n.get_item(entity, 1203)
-    n.send(declaration, win32con.EM_SETSEL, 2, 8)
-    app.command(1022, doc)
-    n.wait(lambda: profile.get("AutoLoad") == [], "unload persisted")
+    editor = n.get_item(entity, 1203)
+    n.send(editor, win32con.EM_SETSEL, 2, 8)
+    app.command(1021)
+    app.select(0, app.sources)
+    app.command(1022)
+    n.wait(lambda: app.count(app.sources) == 0 and profile.get("AutoLoad") == [], "source closed")
+    assert app.count() == 0
     assert app.content(entity) == old
-    assert n.send(declaration, win32con.EM_GETSEL) == (8 << 16) | 2  # EM_GETSEL
-    app.choose(entity, "arm64")  # from unloaded snapshot
-    n.wait(lambda: 'CreateFileW(' in app.content(entity), "unloaded snapshot architecture query", 45)
+    assert n.send(editor, win32con.EM_GETSEL) == (8 << 16) | 2
+    app.choose(entity, "arm64")
+    n.wait(lambda: 'CreateFileW(' in app.content(entity), "query from closed snapshot", 45)
     assert "arm64" in n.window_text(entity)
-    assert len(app.documents()) == 2
+    assert app.documents() == [entity]
+    app.close()
+    restored = launch()
+    assert restored.count(restored.sources) == 0
 
 
-def test_native_add_is_discovery_only(launch, profile, settings):
+def test_restore_successful_files_ignores_legacy_discovery_locations(launch, profile, settings):
+    profile.set("AutoLoad", winreg.REG_MULTI_SZ, [str(settings[1])])
+    profile.set("Files", winreg.REG_MULTI_SZ, [str(settings[2] / "not-opened.winmd")])
+    profile.set("Directories", winreg.REG_MULTI_SZ, [str(settings[1].parent)])
     app = launch()
-    app.pick([settings[1]])
-    n.wait(lambda: app.count(app.sources) == 1, "native add discovery", 45)
-    assert profile.get("AutoLoad") is None
-    assert profile.get("Files") == [str(settings[1])]
+    n.wait(lambda: app.count(app.sources) == 1, "saved source loaded", 45)
+    assert str(settings[1]) in app.cell(0, app.sources)
+    app.query("CreateFileW")
+    assert app.count() > 0
+    app.close()
+    restored = launch()
+    n.wait(lambda: restored.count(restored.sources) == 1, "source restored again", 45)
 
 
-def test_temporary_inputs_preserve_intent(launch, profile, settings):
+def test_temporary_inputs_preserve_saved_files(launch, profile, settings):
     profile.set("AutoLoad", winreg.REG_MULTI_SZ, [str(settings[1])])
     app = launch(["--winmd", str(settings[2] / "missing.winmd")])
     n.wait(lambda: "failed" in app.status_text() or "失败" in app.status_text(), "load error")
+    assert app.count(app.sources) == 0
     assert profile.get("AutoLoad") == [str(settings[1])]
-    entries = [app.cell(i, app.sources) for i in range(app.count(app.sources))]
-    missing = next(value for value in entries if "missing.winmd" in value)
-    assert "Missing" in missing or "缺失" in missing
+    app.close()
+    temporary = launch(["--winmd", settings[1]])
+    n.wait(lambda: temporary.count(temporary.sources) == 1, "temporary input loaded", 45)
+    temporary.select(0, temporary.sources)
+    temporary.command(1022)
+    n.wait(lambda: temporary.count(temporary.sources) == 0, "temporary source closed")
+    assert profile.get("AutoLoad") == [str(settings[1])]
+
+
+def test_failed_restore_preserves_saved_files(launch, profile, settings):
+    missing = str(settings[2] / "missing-restored.winmd")
+    profile.set("AutoLoad", winreg.REG_MULTI_SZ, [missing])
+    app = launch()
+    n.wait(lambda: "failed" in app.status_text() or "失败" in app.status_text(), "restore error")
+    assert profile.get("AutoLoad") == [missing]
+    assert app.count(app.sources) == 0
 
 
 def test_long_unicode_input(launch, settings):
@@ -95,23 +82,3 @@ def test_long_unicode_input(launch, settings):
     n.wait(lambda: 'CreateFileW(' in app.content(doc), "declaration", 45)
     app.command(1048, doc)
     assert str(path) in n.window_text(n.get_item(doc, 1205))
-
-
-def test_directory_discovery_is_nonrecursive_and_removable(launch, profile, settings):
-    directory = settings[2] / "directory"
-    nested = directory / "nested"
-    nested.mkdir(parents=True, exist_ok=True)
-    (directory / "visible.winmd").write_bytes(b"discovery only")
-    (nested / "hidden.winmd").write_bytes(b"nested discovery only")
-    profile.set("Directories", winreg.REG_MULTI_SZ, [str(directory)])
-    app = launch()
-    n.wait(lambda: app.count(app.sources) == 2, "directory and immediate file", 45)
-    rows = [app.cell(i, app.sources) for i in range(2)]
-    assert any("visible.winmd" in row for row in rows)
-    assert not any("hidden.winmd" in row for row in rows)
-    assert profile.get("AutoLoad") is None
-    index = next(i for i, row in enumerate(rows) if row.splitlines()[0] == str(directory))
-    app.select(index, app.sources)
-    app.command(1046)
-    n.wait(lambda: app.count(app.sources) == 0, "location forgotten", 45)
-    assert profile.get("Directories") == []

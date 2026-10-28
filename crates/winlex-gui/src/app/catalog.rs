@@ -32,7 +32,7 @@ pub(super) struct Session {
     load_error: Option<String>,
     search: Search,
     pub results: Vec<EntitySummary>,
-    pub sources: super::sources::Sources,
+    pub remember_sources: bool,
     notice: Option<String>,
 }
 impl Session {
@@ -47,7 +47,7 @@ impl Session {
             load_error: None,
             search: Search::Idle,
             results: vec![],
-            sources: Default::default(),
+            remember_sources: true,
             notice: None,
         }
     }
@@ -124,13 +124,17 @@ pub(super) fn paths() -> Vec<PathBuf> {
         )
     })
 }
-pub(super) fn load(paths: Vec<PathBuf>) {
-    reload(paths, vec![]);
-}
-pub(super) fn reload(paths: Vec<PathBuf>, reload: Vec<PathBuf>) {
+pub(super) fn reload(paths: Vec<PathBuf>, mut reload: Vec<PathBuf>) {
     let result = write(|a| {
         let s = &mut a.session;
-        let previous = s.load.take().map(|load| load.ticket.id);
+        let previous = s.load.take().map(|load| {
+            for path in load.pending {
+                if !reload.contains(&path) {
+                    reload.push(path);
+                }
+            }
+            load.ticket.id
+        });
         s.notice = None;
         s.load_error = None;
         let ticket = s.ticket();
@@ -162,7 +166,7 @@ pub(super) fn reload(paths: Vec<PathBuf>, reload: Vec<PathBuf>) {
         write(|a| a.session.load_error = Some(e));
     }
     refresh_status();
-    super::sources::refresh_views();
+    super::sources::refresh(false);
 }
 
 pub(super) fn input_changed() {
@@ -334,60 +338,46 @@ fn open_now(row: isize, mode: Open) -> Option<HWND> {
     let architecture = if mode == Open::New {
         fallback
     } else {
-        metadata::get(workspace::active(), |_, d| d.architecture())
-            .flatten()
+        metadata::binding(workspace::active())
+            .map(|binding| binding.architecture)
             .filter(|arch| arch.supports(mask))
             .unwrap_or(fallback)
     };
-    let binding = Binding::Entity {
+    let binding = Binding {
         architecture,
         id,
         catalog: catalog.clone(),
         architecture_mask: mask,
     };
-    if mode != Open::New
-        && let Some(hwnd) = metadata::find(|_, d| {
-            matches!(
-                &d.binding,
-                Binding::Entity { architecture: found_arch, id: found_id, catalog: found_catalog, .. }
-                    if *found_arch == architecture
-                        && *found_id == id
-                        && Arc::ptr_eq(found_catalog, &catalog)
-            )
+    let existing = (mode != Open::New)
+        .then(|| {
+            metadata::find(&binding)
+                .or_else(|| preview.filter(|&hwnd| metadata::rebind(hwnd, &title, binding.clone())))
         })
-    {
-        if mode == Open::Pin {
-            workspace::pin_document(hwnd);
-        }
-        workspace::show_document(hwnd);
-        return Some(hwnd);
+        .flatten();
+    let hwnd = match existing {
+        Some(hwnd) => hwnd,
+        None => match metadata::open(&title, binding, mode == Open::Preview) {
+            Ok(hwnd) => hwnd,
+            Err(error) => {
+                set_status(error);
+                return None;
+            }
+        },
+    };
+    if mode == Open::Pin {
+        workspace::pin_document(hwnd);
     }
-    if mode != Open::New
-        && let Some(hwnd) = preview
-        && metadata::rebind(hwnd, &title, binding.clone())
-    {
-        if mode == Open::Pin {
-            workspace::pin_document(hwnd);
-        }
-        workspace::show_document(hwnd);
-        return Some(hwnd);
-    }
-    match metadata::open(&title, binding, mode == Open::Preview) {
-        Ok(hwnd) => Some(hwnd),
-        Err(e) => {
-            set_status(e);
-            None
-        }
-    }
+    workspace::show_document(hwnd);
+    Some(hwnd)
 }
 pub(super) fn worker_stopped() {
     write(|a| {
         a.session.load = None;
         a.session.cancel_search();
-        a.session.sources.cancel();
     });
     set_status(resources::text(IDS_WORKER_STOPPED));
-    super::sources::refresh_views();
+    super::sources::refresh(false);
 }
 pub(super) fn apply(c: Completion) {
     match c.target {
@@ -408,7 +398,24 @@ pub(super) fn apply(c: Completion) {
                         s.catalog = snapshot;
                     });
                     search();
-                    super::sources::refresh();
+                    if let Err(error) = read(|a| {
+                        if a.session.remember_sources {
+                            let paths: Vec<_> = a
+                                .session
+                                .inputs()
+                                .iter()
+                                .map(|s| s.path().to_path_buf())
+                                .collect();
+                            a.config.write_key()?.set_paths("AutoLoad", &paths)?;
+                        }
+                        Ok::<_, String>(())
+                    }) {
+                        set_status(error);
+                    }
+                    super::sources::refresh(true);
+                    for (hwnd, view) in workspace::views() {
+                        view.catalog_changed(hwnd);
+                    }
                 }
                 Err(e) => {
                     write(|a| {
@@ -418,7 +425,7 @@ pub(super) fn apply(c: Completion) {
                 }
                 _ => unreachable!(),
             }
-            super::sources::refresh_views();
+            super::sources::refresh(false);
             refresh_status();
         }
         Target::Search => {

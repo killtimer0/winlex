@@ -58,7 +58,7 @@ struct Search {
     deadline: Cell<Option<std::time::Instant>>,
 }
 struct Sources {
-    controls: [HWND; 5],
+    controls: [HWND; 4],
 }
 fn search<T>(f: impl FnOnce(&Search) -> T) -> T {
     let panel: Rc<dyn Any> = read(|a| a.sidebar.panel(SEARCH_PANEL));
@@ -110,10 +110,9 @@ impl Sources {
     fn create(frame: HWND) -> Option<Rc<dyn Panel>> {
         let list = create_list(frame, SOURCE_LIST)?;
         let tools = [
-            (LOAD_METADATA, IDS_ADD),
-            (REFRESH_SOURCES, IDS_REFRESH),
-            (ADD_DIRECTORY, IDS_DIRECTORY),
-            (FORGET_LOCATION, IDS_FORGET_LOCATION),
+            (LOAD_METADATA, IDS_LOAD_METADATA),
+            (RELOAD_SOURCE, IDS_RELOAD),
+            (REMOVE_SOURCE, IDS_UNLOAD),
         ]
         .map(|(id, label)| {
             child(
@@ -126,7 +125,7 @@ impl Sources {
         });
         tools.iter().all(|h| !h.is_null()).then(|| {
             Rc::new(Self {
-                controls: [list, tools[0], tools[1], tools[2], tools[3]],
+                controls: [list, tools[0], tools[1], tools[2]],
             }) as Rc<dyn Panel>
         })
     }
@@ -172,8 +171,7 @@ impl Panel for Search {
             List {
                 hwnd: self.controls[1],
                 cell: catalog::cell,
-                open: catalog::open,
-                preview: true,
+                open: Some(catalog::open),
             }
             .notify(l)
         }
@@ -198,23 +196,17 @@ impl Panel for Sources {
     fn command(&self, id: u16, _code: u32) -> bool {
         match id {
             LOAD_METADATA => sources::choose_add(),
-            ADD_DIRECTORY => sources::choose_directory(),
-            REFRESH_SOURCES => sources::refresh(),
-            FORGET_LOCATION => sources::forget_selected(),
+            RELOAD_SOURCE | REMOVE_SOURCE => sources::action(id),
             _ => return false,
         }
         true
-    }
-    fn region(&self, hwnd: HWND) -> Option<keys::Region> {
-        (hwnd == self.controls[0]).then_some(keys::Region::Sources)
     }
     unsafe fn notify(&self, l: isize) -> Option<isize> {
         unsafe {
             List {
                 hwnd: self.controls[0],
                 cell: sources::cell,
-                open: |row, _| sources::open_row(row),
-                preview: false,
+                open: None,
             }
             .notify(l)
         }
@@ -239,8 +231,7 @@ fn prepare_list(controls: &[HWND], list: HWND, m: &layout::Metrics) {
 struct List {
     hwnd: HWND,
     cell: fn(usize, bool) -> String,
-    open: fn(isize, catalog::Open),
-    preview: bool,
+    open: Option<fn(isize, catalog::Open)>,
 }
 impl List {
     pub unsafe fn notify(&self, l: isize) -> Option<isize> {
@@ -272,14 +263,15 @@ impl List {
                 }
                 NM_CLICK | NM_DBLCLK => {
                     let i = &*(l as *const NMITEMACTIVATE);
-                    if i.iItem >= 0 {
-                        // A single search click previews; sources and explicit opens are permanent.
-                        let mode = if !self.preview || hdr.code == NM_DBLCLK {
+                    if i.iItem >= 0
+                        && let Some(open) = self.open
+                    {
+                        let mode = if hdr.code == NM_DBLCLK {
                             catalog::Open::Pin
                         } else {
                             catalog::Open::Preview
                         };
-                        (self.open)(i.iItem as isize, mode);
+                        open(i.iItem as isize, mode);
                     }
                     Some(0)
                 }
