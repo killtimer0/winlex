@@ -125,6 +125,7 @@ pub(super) fn create(frame: HWND) -> bool {
         };
         write(|a| a.sidebar.panels.push((registration, panel)));
     }
+    sync_visibility();
     true
 }
 pub(super) fn show(id: u32, toggle: bool) {
@@ -133,8 +134,25 @@ pub(super) fn show(id: u32, toggle: bool) {
         s.collapsed = toggle && s.active == id && !s.collapsed;
         s.active = id;
     });
+    sync_visibility();
     super::frame::layout_frame();
     focus();
+}
+fn sync_visibility() {
+    let sidebar = read(|a| a.sidebar.clone());
+    for (registration, panel) in sidebar.panels {
+        let visible = !sidebar.collapsed && sidebar.active == registration.id;
+        send(
+            sidebar.toolbar,
+            TB_CHECKBUTTON,
+            registration.command as usize,
+            isize::from(visible),
+        );
+        for control in panel.controls() {
+            crate::native::show(control, visible);
+        }
+    }
+    crate::native::show(sidebar.splitter, !sidebar.collapsed);
 }
 pub(super) fn prepare() {
     let (frame, sidebar) = read(|a| (a.frame, a.sidebar.clone()));
@@ -169,21 +187,10 @@ pub(super) fn layout(bottom: i32) -> i32 {
         layout::rect(s(3), s(4), x - s(6), bottom - s(8)),
     );
     for (registration, panel) in sidebar.panels {
-        let visible = !sidebar.collapsed && sidebar.active == registration.id;
-        send(
-            sidebar.toolbar,
-            TB_CHECKBUTTON,
-            registration.command as usize,
-            isize::from(visible),
-        );
-        for control in panel.controls() {
-            crate::native::show(control, visible);
-        }
-        if visible {
+        if !sidebar.collapsed && sidebar.active == registration.id {
             panel.layout(layout::rect(x, 0, width, bottom), &m);
         }
     }
-    crate::native::show(sidebar.splitter, !sidebar.collapsed);
     if sidebar.collapsed {
         return x;
     }

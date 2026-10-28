@@ -243,19 +243,28 @@ pub fn set_content(hwnd: HWND, body: &str, syntax: bool) {
     }
     send(hwnd, WM_SETREDRAW, 0, 0);
     set_text(hwnd, &body);
-    recolor(hwnd, syntax);
+    apply_colors(hwnd, &body, syntax);
+    redraw(hwnd);
+}
+
+pub fn recolor(hwnd: HWND, syntax: bool) {
+    let body = text(hwnd).replace("\r\n", "\n").replace('\n', "\r");
+    send(hwnd, WM_SETREDRAW, 0, 0);
+    apply_colors(hwnd, &body, syntax);
+    redraw(hwnd);
+}
+
+fn redraw(hwnd: HWND) {
     send(hwnd, WM_SETREDRAW, 1, 0);
     unsafe {
         InvalidateRect(hwnd, std::ptr::null(), 1);
     }
 }
 
-pub fn recolor(hwnd: HWND, syntax: bool) {
-    let body = text(hwnd).replace("\r\n", "\n").replace('\n', "\r");
+fn apply_colors(hwnd: HWND, body: &str, syntax: bool) {
     let mut range = CHARRANGE::default();
     send(hwnd, EM_EXGETSEL, 0, &mut range as *mut _ as isize);
     let first_line = send(hwnd, EM_GETFIRSTVISIBLELINE, 0, 0);
-    send(hwnd, WM_SETREDRAW, 0, 0);
     send(hwnd, EM_SETBKGNDCOLOR, 1, 0);
     color(hwnd, 0, -1, unsafe { GetSysColor(COLOR_WINDOWTEXT) });
     let mut contrast = HIGHCONTRASTW {
@@ -284,10 +293,6 @@ pub fn recolor(hwnd: HWND, syntax: bool) {
         0,
         first_line - send(hwnd, EM_GETFIRSTVISIBLELINE, 0, 0),
     );
-    send(hwnd, WM_SETREDRAW, 1, 0);
-    unsafe {
-        InvalidateRect(hwnd, std::ptr::null(), 1);
-    }
 }
 
 fn spans(text: &[u16]) -> Vec<(usize, usize, u32)> {
