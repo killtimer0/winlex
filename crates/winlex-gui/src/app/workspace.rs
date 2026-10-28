@@ -1,5 +1,5 @@
 //! MDI lifecycle, activation projection and one-shot arrangement commands.
-use super::{document as host, dpi, metadata, read, write};
+use super::{document as host, dpi, read, write};
 use crate::{
     layout::{Arrangement, Placement},
     native::*,
@@ -9,7 +9,7 @@ use crate::{
 pub(super) struct Workspace {
     pub mdi: HWND,
     pub tabs: HWND,
-    pub documents: Vec<Document>,
+    pub documents: Vec<DocumentHost>,
     maximized: bool,
     serial: u64,
 }
@@ -24,16 +24,16 @@ impl Default for Workspace {
         }
     }
 }
-pub(super) struct Document {
+pub(super) struct DocumentHost {
     pub id: u64,
     pub hwnd: HWND,
     pub title: String,
-    pub content: metadata::Document,
+    pub content: std::rc::Rc<dyn host::View>,
     pub placement: Option<Placement>,
     /// A transient document that the next preview request may replace in place.
     pub preview: bool,
 }
-pub(super) fn document<T>(hwnd: HWND, inspect: impl FnOnce(&Document) -> T) -> Option<T> {
+pub(super) fn document<T>(hwnd: HWND, inspect: impl FnOnce(&DocumentHost) -> T) -> Option<T> {
     read(|a| {
         a.workspace
             .documents
@@ -42,7 +42,7 @@ pub(super) fn document<T>(hwnd: HWND, inspect: impl FnOnce(&Document) -> T) -> O
             .map(inspect)
     })
 }
-pub(super) fn edit_document(hwnd: HWND, edit: impl FnOnce(&mut Document)) {
+pub(super) fn edit_document(hwnd: HWND, edit: impl FnOnce(&mut DocumentHost)) {
     write(|a| {
         if let Some(doc) = a.workspace.documents.iter_mut().find(|d| d.hwnd == hwnd) {
             edit(doc);
@@ -79,7 +79,7 @@ pub(super) fn keep_focus(open: impl FnOnce()) {
         focus(previous);
     }
 }
-pub(super) fn register_document(doc: Document) {
+pub(super) fn register_document(doc: DocumentHost) {
     write(|a| a.workspace.documents.push(doc));
 }
 pub(super) fn unregister_document(hwnd: HWND) {
@@ -330,7 +330,7 @@ pub(super) fn next_id() -> u64 {
 }
 pub(super) fn create_document(
     title: &str,
-    content: metadata::Document,
+    content: Box<dyn host::View>,
     preview: bool,
 ) -> Result<HWND, String> {
     let (mdi, maximized) = read(|a| (a.workspace.mdi, a.workspace.maximized));
@@ -366,8 +366,32 @@ pub(super) fn create_document(
     };
     edit_document(hwnd, |d| d.placement = Some(placement));
     refresh_document_tabs();
-    if let Some(content) = document(hwnd, |d| d.content.clone()) {
+    if let Some(content) = view(hwnd) {
         content.prepare(hwnd);
     }
     Ok(hwnd)
+}
+pub(super) fn view(hwnd: HWND) -> Option<std::rc::Rc<dyn host::View>> {
+    document(hwnd, |d| d.content.clone())
+}
+pub(super) fn views() -> Vec<(HWND, std::rc::Rc<dyn host::View>)> {
+    read(|a| {
+        a.workspace
+            .documents
+            .iter()
+            .map(|d| (d.hwnd, d.content.clone()))
+            .collect()
+    })
+}
+pub(super) fn complete(id: u64, completion: crate::tasks::Completion) {
+    let target = read(|a| {
+        a.workspace
+            .documents
+            .iter()
+            .find(|d| d.id == id)
+            .map(|d| (d.hwnd, d.content.clone()))
+    });
+    if let Some((hwnd, view)) = target {
+        view.complete(hwnd, completion);
+    }
 }

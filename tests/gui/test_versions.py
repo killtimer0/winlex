@@ -1,4 +1,5 @@
 import shutil
+import win32con
 from support import native as n
 
 
@@ -15,9 +16,12 @@ def test_reload_keeps_old_document_snapshot(launch, settings):
     n.wait(lambda: app.count(app.sources) == 1, "discovery")
     source = app.open_row(source=True)
     n.wait(lambda: '"sources"' in app.content(source), "inspect", 45)
+    editor = n.get_item(entity, 1203)
+    n.send(editor, win32con.EM_SETSEL, 2, 8)
     app.command(1044, source)
     n.wait(lambda: app.status_text().startswith(("Results ", "共 ")), "reload", 45)
     n.wait(lambda: "Earlier catalog snapshot" in n.window_text(n.get_item(entity, 1204)) or "先前的目录快照" in n.window_text(n.get_item(entity, 1204)), "earlier snapshot", 45)
+    assert n.send(editor, win32con.EM_GETSEL) == (8 << 16) | 2
     before = set(app.documents())
     app.command(1045, entity)
     current = n.wait(lambda: next(iter(set(app.documents()) - before), None), "open current")
@@ -26,3 +30,4 @@ def test_reload_keeps_old_document_snapshot(launch, settings):
     assert "Earlier catalog snapshot" not in header
     assert "先前的目录快照" not in header
     assert app.content(entity) == old
+    assert n.send(editor, win32con.EM_GETSEL) == (8 << 16) | 2

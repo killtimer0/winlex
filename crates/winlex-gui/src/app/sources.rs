@@ -166,7 +166,7 @@ pub(super) fn apply_discovery(c: Completion) {
         }
         _ => unreachable!(),
     };
-    let list = read(|a| a.sidebar.panel(super::panel::SOURCES_PANEL).list());
+    let list = unsafe { GetDlgItem(read(|a| a.frame), SOURCE_LIST as i32) };
     let selected = [LVNI_SELECTED, LVNI_FOCUSED].map(|flag| {
         let row = send(list, LVM_GETNEXTITEM, usize::MAX, flag as isize);
         read(|a| {
@@ -282,7 +282,7 @@ pub(super) fn choose_directory() {
     }
 }
 pub(super) fn forget_selected() {
-    let list = read(|a| a.sidebar.panel(super::panel::SOURCES_PANEL).list());
+    let list = unsafe { GetDlgItem(read(|a| a.frame), SOURCE_LIST as i32) };
     let row = send(list, LVM_GETNEXTITEM, usize::MAX, LVNI_SELECTED as isize);
     let path = read(|a| {
         a.session
@@ -299,7 +299,7 @@ pub(super) fn forget_selected() {
     }
 }
 pub(super) fn open_selected() {
-    let list = read(|a| a.sidebar.panel(super::panel::SOURCES_PANEL).list());
+    let list = unsafe { GetDlgItem(read(|a| a.frame), SOURCE_LIST as i32) };
     let row = send(list, LVM_GETNEXTITEM, usize::MAX, LVNI_SELECTED as isize);
     open_row(row);
 }
@@ -407,7 +407,7 @@ pub(super) fn details(path: &Path, snapshot: &Catalog) -> String {
 pub(super) fn refresh_views() {
     let (list, count) = read(|a| {
         (
-            a.sidebar.panel(super::panel::SOURCES_PANEL).list(),
+            unsafe { GetDlgItem(a.frame, SOURCE_LIST as i32) },
             a.session.sources.entries.len(),
         )
     });
@@ -416,14 +416,16 @@ pub(super) fn refresh_views() {
     unsafe {
         InvalidateRect(list, std::ptr::null(), 0);
     }
-    metadata::refresh_all();
+    for (hwnd, view) in workspace::views() {
+        view.catalog_changed(hwnd);
+    }
 }
 pub(super) fn action(hwnd: HWND, command: u16) {
     let Some(Binding::Source { path, .. }) = metadata::get(hwnd, |_, d| d.binding.clone()) else {
         return;
     };
     if command == REFRESH_SOURCE {
-        catalog::request_document(hwnd);
+        metadata::request_document(hwnd);
         return;
     }
     let mut paths = catalog::paths();

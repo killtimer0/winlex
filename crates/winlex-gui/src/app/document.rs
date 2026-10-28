@@ -1,20 +1,39 @@
 //! MDI document host. Content owns its controls, commands and asynchronous work.
-use super::{document, dpi, metadata, read, workspace};
+use super::{dpi, read, workspace};
 use crate::native::*;
+use std::{any::Any, rc::Rc};
+
+/// Calls run outside the app-state borrow: native controls can synchronously reenter.
+pub(super) trait View: Any {
+    fn create(&mut self, hwnd: HWND) -> Result<(), String>;
+    fn prepare(&self, hwnd: HWND);
+    fn layout(&self, hwnd: HWND);
+    fn focus(&self);
+    fn command(&self, _hwnd: HWND, _id: u16, _code: u32) -> bool {
+        false
+    }
+    fn context_menu(&self, _control: HWND, _location: isize) -> bool {
+        false
+    }
+    fn cancel(&self) {}
+    fn complete(&self, _hwnd: HWND, _completion: crate::tasks::Completion) {}
+    fn catalog_changed(&self, _hwnd: HWND) {}
+    fn worker_stopped(&self, _hwnd: HWND) {}
+}
 
 pub(super) struct Init {
-    pub content: Option<metadata::Document>,
+    pub content: Option<Box<dyn View>>,
     pub preview: bool,
     pub error: Option<String>,
 }
 pub(super) fn layout_document(hwnd: HWND) {
-    if let Some(content) = document(hwnd, |d| d.content.clone()) {
+    if let Some(content) = workspace::view(hwnd) {
         content.layout(hwnd);
     }
 }
 pub(super) fn focus_document(hwnd: HWND) {
-    if let Some(body) = document(hwnd, |d| d.content.editor) {
-        focus(body);
+    if let Some(view) = workspace::view(hwnd) {
+        view.focus();
     }
 }
 pub(super) fn track_editor(owner: HWND, editor: HWND) -> Result<(), String> {
@@ -55,11 +74,11 @@ pub(super) unsafe extern "system" fn document_proc(
                     init.error = Some(error);
                     return -1;
                 }
-                workspace::register_document(workspace::Document {
+                workspace::register_document(workspace::DocumentHost {
                     id: workspace::next_id(),
                     hwnd,
                     title: text(hwnd),
-                    content,
+                    content: Rc::from(content),
                     placement: None,
                     preview: init.preview,
                 });
@@ -120,17 +139,16 @@ pub(super) unsafe extern "system" fn document_proc(
             WM_COMMAND => {
                 let id = (w & 0xffff) as u16;
                 let code = (w >> 16) as u32;
-                if let Some(content) = document(hwnd, |d| d.content.clone())
+                if let Some(content) = workspace::view(hwnd)
                     && content.command(hwnd, id, code)
                 {
                     return 0;
                 }
             }
             WM_CONTEXTMENU => {
-                if let Some(doc) = metadata::get(hwnd, |_, d| d.clone())
-                    && w == doc.editor as usize
+                if let Some(view) = workspace::view(hwnd)
+                    && view.context_menu(w as HWND, l)
                 {
-                    doc.context_menu(l);
                     return 0;
                 }
             }

@@ -14,18 +14,8 @@ fn update_environment(suggested: Option<(RECT, u32)>, invalidate_fonts: bool) {
     } else {
         Vec::new()
     };
-    let (frame, tabs, status, docs) = read(|a| {
-        (
-            a.frame,
-            a.workspace.tabs,
-            a.status,
-            a.workspace
-                .documents
-                .iter()
-                .map(|d| (d.hwnd, d.content.clone()))
-                .collect::<Vec<_>>(),
-        )
-    });
+    let (frame, tabs, status) = read(|a| (a.frame, a.workspace.tabs, a.status));
+    let docs = workspace::views();
     let (font, _) = super::font_for(suggested.map_or_else(|| dpi().window(frame), |(_, dpi)| dpi));
     super::bind(tabs, font);
     super::bind(status, font);

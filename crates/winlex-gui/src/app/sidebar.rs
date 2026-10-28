@@ -10,13 +10,12 @@ use crate::{
     native::*,
     resources::{self, *},
 };
-use std::ptr;
+use std::{ptr, rc::Rc};
 
-#[derive(Clone)]
 pub(super) struct Sidebar {
     toolbar: HWND,
     splitter: HWND,
-    panels: Vec<(&'static Registration, Panel)>,
+    panels: Vec<(&'static Registration, Rc<dyn Panel>)>,
     pub active: u32,
     pub collapsed: bool,
     pub width: i32,
@@ -47,16 +46,18 @@ impl Sidebar {
         key.set_number("ActivePanel", self.active)?;
         key.set_number("PanelCollapsed", u32::from(self.collapsed))
     }
-    pub fn panel(&self, id: u32) -> &Panel {
-        &self.panels.iter().find(|(r, _)| r.id == id).unwrap().1
-    }
-    pub fn panel_mut(&mut self, id: u32) -> &mut Panel {
-        &mut self.panels.iter_mut().find(|(r, _)| r.id == id).unwrap().1
-    }
-    pub fn owner(&self, hwnd: HWND) -> Option<Panel> {
+    pub fn panel(&self, id: u32) -> Rc<dyn Panel> {
         self.panels
             .iter()
-            .find(|(_, p)| p.controls().any(|h| h == hwnd))
+            .find(|(r, _)| r.id == id)
+            .unwrap()
+            .1
+            .clone()
+    }
+    pub fn owner(&self, hwnd: HWND) -> Option<Rc<dyn Panel>> {
+        self.panels
+            .iter()
+            .find(|(_, p)| p.controls().contains(&hwnd))
             .map(|(_, p)| p.clone())
     }
 }
@@ -64,7 +65,7 @@ pub(super) fn focus() {
     let (toolbar, panel) = read(|a| {
         (
             a.sidebar.toolbar,
-            (!a.sidebar.collapsed).then(|| a.sidebar.panel(a.sidebar.active).clone()),
+            (!a.sidebar.collapsed).then(|| a.sidebar.panel(a.sidebar.active)),
         )
     });
     if let Some(panel) = panel {
@@ -139,62 +140,68 @@ pub(super) fn show(id: u32, toggle: bool) {
     focus();
 }
 fn sync_visibility() {
-    let sidebar = read(|a| a.sidebar.clone());
-    for (registration, panel) in sidebar.panels {
-        let visible = !sidebar.collapsed && sidebar.active == registration.id;
+    let (toolbar, splitter, collapsed, active, panels) = read(|a| {
+        let s = &a.sidebar;
+        (
+            s.toolbar,
+            s.splitter,
+            s.collapsed,
+            s.active,
+            s.panels.clone(),
+        )
+    });
+    for (registration, panel) in panels {
+        let visible = !collapsed && active == registration.id;
         send(
-            sidebar.toolbar,
+            toolbar,
             TB_CHECKBUTTON,
             registration.command as usize,
             isize::from(visible),
         );
-        for control in panel.controls() {
+        for &control in panel.controls() {
             crate::native::show(control, visible);
         }
     }
-    crate::native::show(sidebar.splitter, !sidebar.collapsed);
+    crate::native::show(splitter, !collapsed);
 }
 pub(super) fn prepare() {
-    let (frame, sidebar) = read(|a| (a.frame, a.sidebar.clone()));
+    let (frame, toolbar, panels) = read(|a| (a.frame, a.sidebar.toolbar, a.sidebar.panels.clone()));
     let m = super::metrics(frame);
-    bind(sidebar.toolbar, m.font);
+    bind(toolbar, m.font);
     let width = m.label_width(PANELS.iter().map(|r| resources::wide_text(r.label)), 66) as u32;
     let row = m.row() as u32;
+    send(toolbar, TB_SETBUTTONSIZE, 0, (width | (row << 16)) as isize);
     send(
-        sidebar.toolbar,
-        TB_SETBUTTONSIZE,
-        0,
-        (width | (row << 16)) as isize,
-    );
-    send(
-        sidebar.toolbar,
+        toolbar,
         TB_SETBUTTONWIDTH,
         0,
         (width | (width << 16)) as isize,
     );
-    for (_, panel) in sidebar.panels {
+    for (_, panel) in panels {
         panel.prepare(&m);
     }
 }
 pub(super) fn layout(bottom: i32) -> i32 {
-    let (frame, sidebar) = read(|a| (a.frame, a.sidebar.clone()));
+    let (frame, toolbar, splitter, width, panel) = read(|a| {
+        let s = &a.sidebar;
+        (
+            a.frame,
+            s.toolbar,
+            s.splitter,
+            s.width,
+            (!s.collapsed).then(|| s.panel(s.active)),
+        )
+    });
     let m = super::metrics(frame);
     let s = |n| m.px(n);
-    let x = (send(sidebar.toolbar, TB_GETBUTTONSIZE, 0, 0) & 0xffff) as i32 + s(6);
-    let width = s(sidebar.width).min((client(frame).right - x - s(160)).max(0));
-    place(
-        sidebar.toolbar,
-        layout::rect(s(3), s(4), x - s(6), bottom - s(8)),
-    );
-    for (registration, panel) in sidebar.panels {
-        if !sidebar.collapsed && sidebar.active == registration.id {
-            panel.layout(layout::rect(x, 0, width, bottom), &m);
-        }
-    }
-    if sidebar.collapsed {
+    let x = (send(toolbar, TB_GETBUTTONSIZE, 0, 0) & 0xffff) as i32 + s(6);
+    let width = s(width).min((client(frame).right - x - s(160)).max(0));
+    place(toolbar, layout::rect(s(3), s(4), x - s(6), bottom - s(8)));
+    let Some(panel) = panel else {
         return x;
-    }
-    place(sidebar.splitter, layout::rect(x + width, 0, s(5), bottom));
+    };
+    panel.layout(layout::rect(x, 0, width, bottom), &m);
+    place(splitter, layout::rect(x + width, 0, s(5), bottom));
     x + width + s(5)
 }
 pub(super) fn command(w: usize) -> bool {

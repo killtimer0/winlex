@@ -26,7 +26,7 @@ mod workspace;
 use crate::resources::{self, *};
 use document::document_proc;
 use frame::frame_proc;
-use workspace::{active, document};
+use workspace::active;
 
 struct App {
     config: crate::config::Config,
@@ -263,13 +263,15 @@ fn poll_completions() {
                 match c.target {
                     Target::Load | Target::Search => catalog::apply(c),
                     Target::Discover => sources::apply_discovery(c),
-                    Target::Document(id) | Target::Reopen(id) => metadata::apply(id, c),
+                    Target::Document(id) | Target::Reopen(id) => workspace::complete(id, c),
                 }
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => return,
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 catalog::worker_stopped();
-                metadata::worker_stopped();
+                for (hwnd, view) in workspace::views() {
+                    view.worker_stopped(hwnd);
+                }
                 panel::cancel_debounce();
                 return;
             }

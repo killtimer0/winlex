@@ -1,17 +1,17 @@
-//! Sidebar content. Each variant owns its controls and input state.
-use super::{bind, catalog, dpi, keys, read, sidebar, sources, write};
+//! Registered sidebar views and their shared owner-data list presentation.
+use super::{bind, catalog, dpi, keys, read, sidebar, sources};
 use crate::{
     layout,
     native::*,
     resources::{self, *},
 };
-use std::ptr;
+use std::{any::Any, cell::Cell, ptr, rc::Rc};
 
 pub(super) struct Registration {
     pub id: u32,
     pub command: u16,
     pub label: u16,
-    pub create: fn(HWND) -> Option<Panel>,
+    pub create: fn(HWND) -> Option<Rc<dyn Panel>>,
 }
 pub(super) const SEARCH_PANEL: u32 = 0;
 pub(super) const SOURCES_PANEL: u32 = 1;
@@ -20,41 +20,55 @@ pub(super) static PANELS: &[Registration] = &[
         id: SEARCH_PANEL,
         command: PANEL_SEARCH,
         label: IDS_PANEL_SEARCH,
-        create: Panel::search,
+        create: Search::create,
     },
     Registration {
         id: SOURCES_PANEL,
         command: MANAGE_SOURCES,
         label: IDS_PANEL_SOURCES,
-        create: Panel::sources,
+        create: Sources::create,
     },
 ];
-#[derive(Clone)]
-pub(super) enum Panel {
-    Search {
-        input: HWND,
-        results: HWND,
-        composing: bool,
-        deadline: Option<std::time::Instant>,
-    },
-    Sources {
-        list: HWND,
-        tools: [HWND; 4],
-    },
+pub(super) trait Panel: Any {
+    // Pure handle inspection; the host may call this while reading its own state.
+    fn controls(&self) -> &[HWND];
+    fn focus(&self) {
+        focus(self.controls()[0]);
+    }
+    fn prepare(&self, m: &layout::Metrics) {
+        for &h in self.controls() {
+            bind(h, m.font);
+        }
+    }
+    fn layout(&self, area: RECT, m: &layout::Metrics);
+    fn command(&self, _id: u16, _code: u32) -> bool {
+        false
+    }
+    fn region(&self, _hwnd: HWND) -> Option<keys::Region> {
+        None
+    }
+    unsafe fn notify(&self, _l: isize) -> Option<isize> {
+        None
+    }
+    fn help(&self) {}
+}
+struct Search {
+    controls: [HWND; 2],
+    composing: Cell<bool>,
+    deadline: Cell<Option<std::time::Instant>>,
+}
+struct Sources {
+    controls: [HWND; 5],
+}
+fn search<T>(f: impl FnOnce(&Search) -> T) -> T {
+    let panel: Rc<dyn Any> = read(|a| a.sidebar.panel(SEARCH_PANEL));
+    f(panel.downcast_ref().expect("registered search panel"))
 }
 const SEARCH_TIMER: usize = 1;
 pub(super) fn cancel_debounce() -> (HWND, bool) {
-    let state = write(|a| match a.sidebar.panel_mut(SEARCH_PANEL) {
-        Panel::Search {
-            input,
-            deadline,
-            composing,
-            ..
-        } => {
-            *deadline = None;
-            (*input, *composing)
-        }
-        _ => unreachable!(),
+    let state = search(|s| {
+        s.deadline.set(None);
+        (s.controls[0], s.composing.get())
     });
     unsafe {
         KillTimer(state.0, SEARCH_TIMER);
@@ -65,15 +79,15 @@ pub(super) fn debounce(input: HWND) -> Result<(), String> {
     if unsafe { SetTimer(input, SEARCH_TIMER, 200, None) } == 0 {
         return Err(error("Search debounce"));
     }
-    write(|a| {
-        if let Panel::Search { deadline, .. } = a.sidebar.panel_mut(SEARCH_PANEL) {
-            *deadline = Some(std::time::Instant::now() + std::time::Duration::from_millis(200));
-        }
+    search(|s| {
+        s.deadline.set(Some(
+            std::time::Instant::now() + std::time::Duration::from_millis(200),
+        ))
     });
     Ok(())
 }
-impl Panel {
-    fn search(frame: HWND) -> Option<Self> {
+impl Search {
+    fn create(frame: HWND) -> Option<Rc<dyn Panel>> {
         let input = child_ex(
             frame,
             w!("EDIT"),
@@ -85,14 +99,15 @@ impl Panel {
         if input.is_null() || unsafe { set_subclass(input, Some(edit_proc), 1, 0) } == 0 {
             return None;
         }
-        Some(Self::Search {
-            input,
-            results: create_list(frame, RESULTS)?,
-            composing: false,
-            deadline: None,
-        })
+        Some(Rc::new(Self {
+            controls: [input, create_list(frame, RESULTS)?],
+            composing: Cell::new(false),
+            deadline: Cell::new(None),
+        }))
     }
-    fn sources(frame: HWND) -> Option<Self> {
+}
+impl Sources {
+    fn create(frame: HWND) -> Option<Rc<dyn Panel>> {
         let list = create_list(frame, SOURCE_LIST)?;
         let tools = [
             (LOAD_METADATA, IDS_ADD),
@@ -109,119 +124,129 @@ impl Panel {
                 id,
             )
         });
-        tools
-            .iter()
-            .all(|h| !h.is_null())
-            .then_some(Self::Sources { list, tools })
+        tools.iter().all(|h| !h.is_null()).then(|| {
+            Rc::new(Self {
+                controls: [list, tools[0], tools[1], tools[2], tools[3]],
+            }) as Rc<dyn Panel>
+        })
     }
-    pub fn list(&self) -> HWND {
-        match self {
-            Self::Search { results, .. } => *results,
-            Self::Sources { list, .. } => *list,
-        }
+}
+impl Panel for Search {
+    fn controls(&self) -> &[HWND] {
+        &self.controls
     }
-    pub fn focus(&self) {
-        focus(match self {
-            Self::Search { input, .. } => *input,
-            Self::Sources { list, .. } => *list,
-        });
+    fn prepare(&self, m: &layout::Metrics) {
+        prepare_list(&self.controls, self.controls[1], m);
     }
-    pub fn controls(&self) -> impl Iterator<Item = HWND> + '_ {
-        let (first, rest) = match self {
-            Self::Search { input, results, .. } => (*input, std::slice::from_ref(results)),
-            Self::Sources { list, tools } => (*list, tools.as_slice()),
-        };
-        std::iter::once(first).chain(rest.iter().copied())
-    }
-    pub fn prepare(&self, m: &layout::Metrics) {
-        for h in self.controls() {
-            bind(h, m.font);
-        }
-        // A transparent small image defines a fixed two-line native row height.
-        unsafe {
-            let image = ImageList_Create(1, m.height * 2 + m.px(8), ILC_COLOR32, 1, 1);
-            let old = send(
-                self.list(),
-                LVM_SETIMAGELIST,
-                LVSIL_SMALL as usize,
-                image as isize,
-            );
-            if old != 0 {
-                ImageList_Destroy(old as _);
-            }
-        }
-    }
-    pub fn layout(&self, area: RECT, m: &layout::Metrics) {
+    fn layout(&self, area: RECT, m: &layout::Metrics) {
+        let [input, results] = self.controls;
         let mut area = layout::inset(area, m.px(4));
-        match self {
-            Self::Search { input, .. } => {
-                let outer = dpi().child_outer(*input, layout::rect(0, 0, 1, m.height + m.px(4)));
-                place(
-                    *input,
-                    layout::take_top(&mut area, outer.bottom - outer.top),
-                );
-                layout::take_top(&mut area, m.px(4));
-            }
-            Self::Sources { tools, .. } => m.buttons(&mut area, *tools),
-        }
-        place(self.list(), area);
-        fit(self.list());
+        let outer = dpi().child_outer(input, layout::rect(0, 0, 1, m.height + m.px(4)));
+        place(input, layout::take_top(&mut area, outer.bottom - outer.top));
+        layout::take_top(&mut area, m.px(4));
+        place(results, area);
+        fit(results);
     }
-    pub fn command(&self, id: u16, code: u32) -> bool {
-        match self {
-            Self::Search { input, .. } => match id {
-                SEARCH if code == EN_CHANGE => catalog::input_changed(),
-                FOCUS_SEARCH => {
-                    sidebar::show(SEARCH_PANEL, false);
-                    send(*input, EM_SETSEL, 0, -1);
-                }
-                _ => return false,
-            },
-            Self::Sources { .. } => match id {
-                LOAD_METADATA => sources::choose_add(),
-                ADD_DIRECTORY => sources::choose_directory(),
-                REFRESH_SOURCES => sources::refresh(),
-                FORGET_LOCATION => sources::forget_selected(),
-                _ => return false,
-            },
+    fn command(&self, id: u16, code: u32) -> bool {
+        match id {
+            SEARCH if code == EN_CHANGE => catalog::input_changed(),
+            FOCUS_SEARCH => {
+                sidebar::show(SEARCH_PANEL, false);
+                send(self.controls[0], EM_SETSEL, 0, -1);
+            }
+            _ => return false,
         }
         true
     }
-    pub fn region(&self, hwnd: HWND) -> Option<keys::Region> {
-        match self {
-            Self::Search {
-                input,
-                results,
-                composing,
-                ..
-            } => {
-                if *input == hwnd {
-                    Some(keys::Region::SearchEntry {
-                        composing: *composing,
-                    })
-                } else {
-                    (*results == hwnd).then_some(keys::Region::Results)
-                }
+    fn region(&self, hwnd: HWND) -> Option<keys::Region> {
+        if hwnd == self.controls[0] {
+            Some(keys::Region::SearchEntry {
+                composing: self.composing.get(),
+            })
+        } else {
+            (hwnd == self.controls[1]).then_some(keys::Region::Results)
+        }
+    }
+    unsafe fn notify(&self, l: isize) -> Option<isize> {
+        unsafe {
+            List {
+                hwnd: self.controls[1],
+                cell: catalog::cell,
+                open: catalog::open,
+                preview: true,
             }
-            Self::Sources { list, .. } => (*list == hwnd).then_some(keys::Region::Sources),
+            .notify(l)
         }
     }
-    fn open(&self, row: isize, mode: catalog::Open) {
-        match self {
-            Self::Search { .. } => catalog::open(row, mode),
-            Self::Sources { .. } => sources::open_row(row),
+    fn help(&self) {
+        list_help(self.controls[1], catalog::cell);
+    }
+}
+impl Panel for Sources {
+    fn controls(&self) -> &[HWND] {
+        &self.controls
+    }
+    fn prepare(&self, m: &layout::Metrics) {
+        prepare_list(&self.controls, self.controls[0], m);
+    }
+    fn layout(&self, area: RECT, m: &layout::Metrics) {
+        let mut area = layout::inset(area, m.px(4));
+        m.buttons(&mut area, self.controls[1..].iter().copied());
+        place(self.controls[0], area);
+        fit(self.controls[0]);
+    }
+    fn command(&self, id: u16, _code: u32) -> bool {
+        match id {
+            LOAD_METADATA => sources::choose_add(),
+            ADD_DIRECTORY => sources::choose_directory(),
+            REFRESH_SOURCES => sources::refresh(),
+            FORGET_LOCATION => sources::forget_selected(),
+            _ => return false,
+        }
+        true
+    }
+    fn region(&self, hwnd: HWND) -> Option<keys::Region> {
+        (hwnd == self.controls[0]).then_some(keys::Region::Sources)
+    }
+    unsafe fn notify(&self, l: isize) -> Option<isize> {
+        unsafe {
+            List {
+                hwnd: self.controls[0],
+                cell: sources::cell,
+                open: |row, _| sources::open_row(row),
+                preview: false,
+            }
+            .notify(l)
         }
     }
-    fn cell(&self, row: usize, detail: bool) -> String {
-        match self {
-            Self::Search { .. } => catalog::cell(row, detail),
-            Self::Sources { .. } => sources::cell(row, detail),
+    fn help(&self) {
+        list_help(self.controls[0], sources::cell);
+    }
+}
+fn prepare_list(controls: &[HWND], list: HWND, m: &layout::Metrics) {
+    for &h in controls {
+        bind(h, m.font);
+    }
+    // A transparent small image defines a fixed two-line native row height.
+    unsafe {
+        let image = ImageList_Create(1, m.height * 2 + m.px(8), ILC_COLOR32, 1, 1);
+        let old = send(list, LVM_SETIMAGELIST, LVSIL_SMALL as usize, image as isize);
+        if old != 0 {
+            ImageList_Destroy(old as _);
         }
     }
+}
+struct List {
+    hwnd: HWND,
+    cell: fn(usize, bool) -> String,
+    open: fn(isize, catalog::Open),
+    preview: bool,
+}
+impl List {
     pub unsafe fn notify(&self, l: isize) -> Option<isize> {
         unsafe {
             let hdr = &*(l as *const NMHDR);
-            if hdr.hwndFrom != self.list() {
+            if hdr.hwndFrom != self.hwnd {
                 return None;
             }
             match hdr.code {
@@ -229,7 +254,7 @@ impl Panel {
                     let i = &mut *(l as *mut NMLVDISPINFOW);
                     if i.item.mask & LVIF_TEXT != 0 {
                         copy_text(
-                            &self.cell(i.item.iItem as usize, true),
+                            &(self.cell)(i.item.iItem as usize, true),
                             i.item.pszText,
                             i.item.cchTextMax,
                         );
@@ -238,20 +263,23 @@ impl Panel {
                 }
                 LVN_GETINFOTIPW => {
                     let i = &mut *(l as *mut NMLVGETINFOTIPW);
-                    copy_text(&self.cell(i.iItem as usize, true), i.pszText, i.cchTextMax);
+                    copy_text(
+                        &(self.cell)(i.iItem as usize, true),
+                        i.pszText,
+                        i.cchTextMax,
+                    );
                     Some(0)
                 }
                 NM_CLICK | NM_DBLCLK => {
                     let i = &*(l as *const NMITEMACTIVATE);
                     if i.iItem >= 0 {
                         // A single search click previews; sources and explicit opens are permanent.
-                        let mode = if matches!(self, Self::Sources { .. }) || hdr.code == NM_DBLCLK
-                        {
+                        let mode = if !self.preview || hdr.code == NM_DBLCLK {
                             catalog::Open::Pin
                         } else {
                             catalog::Open::Preview
                         };
-                        self.open(i.iItem as isize, mode);
+                        (self.open)(i.iItem as isize, mode);
                     }
                     Some(0)
                 }
@@ -262,7 +290,7 @@ impl Panel {
                         CDDS_ITEMPREPAINT => {
                             draw_list_background(hdr.hwndFrom, d);
                             SetBkMode(d.nmcd.hdc, TRANSPARENT as i32);
-                            let content = self.cell(d.nmcd.dwItemSpec, false);
+                            let content = (self.cell)(d.nmcd.dwItemSpec, false);
                             let mid = (d.nmcd.rc.top + d.nmcd.rc.bottom) / 2;
                             for (line, (top, bottom)) in content
                                 .splitn(2, '\n')
@@ -396,28 +424,22 @@ unsafe extern "system" fn edit_proc(
 ) -> isize {
     unsafe {
         if msg == WM_TIMER && w == SEARCH_TIMER {
-            if read(
-                |a| matches!(a.sidebar.panel(SEARCH_PANEL), Panel::Search { deadline: Some(deadline), .. } if std::time::Instant::now() >= *deadline),
-            ) {
+            if search(|s| {
+                s.deadline
+                    .get()
+                    .is_some_and(|deadline| std::time::Instant::now() >= deadline)
+            }) {
                 catalog::search();
             }
             return 0;
         }
         if msg == WM_IME_STARTCOMPOSITION {
-            write(|a| {
-                if let Panel::Search { composing, .. } = &mut a.sidebar.panel_mut(SEARCH_PANEL) {
-                    *composing = true;
-                }
-            });
+            search(|s| s.composing.set(true));
             catalog::input_changed();
         }
         let result = default_subclass(h, msg, w, l);
         if msg == WM_IME_ENDCOMPOSITION {
-            write(|a| {
-                if let Panel::Search { composing, .. } = &mut a.sidebar.panel_mut(SEARCH_PANEL) {
-                    *composing = false;
-                }
-            });
+            search(|s| s.composing.set(false));
             catalog::input_changed();
         }
         if msg == WM_NCDESTROY {
@@ -436,16 +458,8 @@ unsafe extern "system" fn list_proc(
 ) -> isize {
     unsafe {
         if msg == WM_KEYDOWN && w == VK_F1 as usize {
-            let row = send(h, LVM_GETNEXTITEM, usize::MAX, LVNI_SELECTED as isize);
-            if row >= 0
-                && let Some(panel) = read(|a| a.sidebar.owner(h))
-            {
-                MessageBoxW(
-                    h,
-                    wide(&panel.cell(row as usize, true)).as_ptr(),
-                    resources::wide_text(IDS_SOURCE).as_ptr(),
-                    MB_OK | MB_ICONINFORMATION,
-                );
+            if let Some(panel) = read(|a| a.sidebar.owner(h)) {
+                panel.help();
             }
             return 0;
         }
@@ -457,5 +471,18 @@ unsafe extern "system" fn list_proc(
             remove_subclass(h, Some(list_proc), 1);
         }
         default_subclass(h, msg, w, l)
+    }
+}
+fn list_help(hwnd: HWND, cell: fn(usize, bool) -> String) {
+    let row = send(hwnd, LVM_GETNEXTITEM, usize::MAX, LVNI_SELECTED as isize);
+    if row >= 0 {
+        unsafe {
+            MessageBoxW(
+                hwnd,
+                wide(&cell(row as usize, true)).as_ptr(),
+                resources::wide_text(IDS_SOURCE).as_ptr(),
+                MB_OK | MB_ICONINFORMATION,
+            );
+        }
     }
 }

@@ -25,9 +25,11 @@ def test_real_search_keyboard(request, launch, settings):
         win32gui.SetWindowPos(app.frame, win32con.HWND_TOPMOST, 0, 0, 0, 0,
                               win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_NOACTIVATE)
         try:
-            left, top, right, bottom = n.rectangle(app.search)
-            input_state.click((left+right)//2, (top+bottom)//2)
+            with n.window_dpi_context(app.frame):
+                left, top, right, bottom = n.rectangle(app.search)
+                input_state.click((left+right)//2, (top+bottom)//2)
             n.wait(lambda: win32gui.GetForegroundWindow() == app.frame, "foreground ownership")
+            n.wait(lambda: app.focused() == app.search, "search input focus")
         finally:
             win32gui.SetWindowPos(app.frame, win32con.HWND_NOTOPMOST, 0, 0, 0, 0,
                                   win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_NOACTIVATE)

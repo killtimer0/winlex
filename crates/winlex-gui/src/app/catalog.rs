@@ -229,7 +229,7 @@ pub(super) fn search() {
 fn update_results(append: bool) {
     let (hwnd, count) = read(|a| {
         (
-            a.sidebar.panel(super::panel::SEARCH_PANEL).list(),
+            unsafe { GetDlgItem(a.frame, RESULTS as i32) },
             a.session.results.len(),
         )
     });
@@ -379,103 +379,6 @@ fn open_now(row: isize, mode: Open) -> Option<HWND> {
             None
         }
     }
-}
-pub(super) fn old_version(binding: &Binding) -> bool {
-    let Binding::Entity { id, catalog, .. } = binding else {
-        return false;
-    };
-    let source = &catalog.sources()[id.source_id];
-    read(|a| {
-        a.session.catalog.as_ref().is_some_and(|current| {
-            !Arc::ptr_eq(current, catalog)
-                && current.sources().iter().any(|s| s.path == source.path)
-        })
-    })
-}
-pub(super) fn open_current(hwnd: HWND) {
-    let Some((
-        document,
-        Binding::Entity {
-            id,
-            catalog: old,
-            architecture,
-            ..
-        },
-        pending,
-    )) = metadata::get(hwnd, |id, d| (id, d.binding.clone(), d.ticket.is_some()))
-    else {
-        return;
-    };
-    let current = read(|a| {
-        let old_source = &old.sources()[id.source_id];
-        let current = a.session.catalog.as_ref()?;
-        let mut sources = current
-            .sources()
-            .iter()
-            .filter(|s| s.path == old_source.path);
-        let source = sources.next()?.id;
-        if sources.next().is_some() {
-            return None;
-        }
-        Some((current.clone(), source))
-    });
-    let Some((current, source)) = current else {
-        set_status(resources::text(IDS_CURRENT_UNAVAILABLE));
-        return;
-    };
-    if pending {
-        return;
-    }
-    workspace::pin_document(hwnd);
-    let ticket = write(|a| a.session.ticket());
-    let job = Job::Reopen {
-        document,
-        previous: old,
-        current,
-        source,
-        entity: id,
-        arch: architecture,
-    };
-    if let Err(e) = read(|a| a.worker.replace(None, ticket.clone(), job)) {
-        set_status(e);
-    } else {
-        metadata::edit(hwnd, |d| d.ticket = Some(ticket));
-    }
-}
-pub(super) fn request_document(hwnd: HWND) {
-    let Some((document, binding, previous)) =
-        metadata::get(hwnd, |id, d| (id, d.binding.clone(), d.ticket.clone()))
-    else {
-        return;
-    };
-    let ticket = write(|a| a.session.ticket());
-    let job = match binding {
-        Binding::Source { path, .. } => Job::Inspect { document, path },
-        Binding::Entity {
-            id,
-            catalog,
-            architecture,
-            ..
-        } => Job::Describe {
-            document,
-            catalog,
-            entity: id,
-            arch: architecture,
-        },
-    };
-    metadata::edit(hwnd, |d| {
-        d.ticket = Some(ticket.clone());
-        d.content = resources::text(IDS_QUERYING).into();
-        d.detail_content = "".into();
-        d.numbers = std::sync::Arc::from([]);
-    });
-    if let Err(e) = read(|a| a.worker.replace(previous.map(|t| t.id), ticket, job)) {
-        metadata::edit(hwnd, |d| {
-            d.ticket = None;
-            d.content = e.into();
-        });
-    }
-    metadata::refresh_content(hwnd);
 }
 pub(super) fn worker_stopped() {
     write(|a| {
