@@ -260,29 +260,7 @@ impl Panel {
                     match d.nmcd.dwDrawStage {
                         CDDS_PREPAINT => Some(CDRF_NOTIFYITEMDRAW as isize),
                         CDDS_ITEMPREPAINT => {
-                            let selected = send(
-                                hdr.hwndFrom,
-                                LVM_GETITEMSTATE,
-                                d.nmcd.dwItemSpec,
-                                LVIS_SELECTED as isize,
-                            ) != 0;
-                            FillRect(
-                                d.nmcd.hdc,
-                                &d.nmcd.rc,
-                                GetSysColorBrush(if selected {
-                                    COLOR_HIGHLIGHT
-                                } else {
-                                    COLOR_WINDOW
-                                }),
-                            );
-                            SetTextColor(
-                                d.nmcd.hdc,
-                                GetSysColor(if selected {
-                                    COLOR_HIGHLIGHTTEXT
-                                } else {
-                                    COLOR_WINDOWTEXT
-                                }),
-                            );
+                            draw_list_background(hdr.hwndFrom, d);
                             SetBkMode(d.nmcd.hdc, TRANSPARENT as i32);
                             let content = self.cell(d.nmcd.dwItemSpec, false);
                             let mid = (d.nmcd.rc.top + d.nmcd.rc.bottom) / 2;
@@ -302,7 +280,12 @@ impl Panel {
                                     DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX | DT_VCENTER,
                                 );
                             }
-                            if d.nmcd.uItemState & CDIS_FOCUS != 0 {
+                            if d.nmcd.uItemState & CDIS_FOCUS != 0
+                                && GetFocus() == hdr.hwndFrom
+                                && send(hdr.hwndFrom, WM_QUERYUISTATE, 0, 0)
+                                    & UISF_HIDEFOCUS as isize
+                                    == 0
+                            {
                                 DrawFocusRect(d.nmcd.hdc, &d.nmcd.rc);
                             }
                             Some(CDRF_SKIPDEFAULT as isize)
@@ -313,6 +296,58 @@ impl Panel {
                 _ => None,
             }
         }
+    }
+}
+unsafe fn draw_list_background(hwnd: HWND, draw: &NMLVCUSTOMDRAW) {
+    unsafe {
+        let focused = GetFocus() == hwnd;
+        let selected = send(
+            hwnd,
+            LVM_GETITEMSTATE,
+            draw.nmcd.dwItemSpec,
+            LVIS_SELECTED as isize,
+        ) != 0
+            && (focused || GetWindowLongPtrW(hwnd, GWL_STYLE) as u32 & LVS_SHOWSELALWAYS != 0);
+        let hot = draw.nmcd.uItemState & CDIS_HOT != 0;
+        let state = match (selected, focused, hot) {
+            (true, false, _) => LISS_SELECTEDNOTFOCUS,
+            (true, true, true) => LISS_HOTSELECTED,
+            (true, true, false) => LISS_SELECTED,
+            (false, _, true) => LISS_HOT,
+            _ => LISS_NORMAL,
+        };
+        let background = if selected {
+            if focused {
+                COLOR_HIGHLIGHT
+            } else {
+                COLOR_BTNFACE
+            }
+        } else {
+            COLOR_WINDOW
+        };
+        let mut color = GetSysColor(if selected && focused {
+            COLOR_HIGHLIGHTTEXT
+        } else {
+            COLOR_WINDOWTEXT
+        });
+        let theme = GetWindowTheme(hwnd);
+        // The control owns this theme handle and refreshes it on theme changes.
+        FillRect(draw.nmcd.hdc, &draw.nmcd.rc, GetSysColorBrush(COLOR_WINDOW));
+        if theme == 0
+            || DrawThemeBackground(
+                theme,
+                draw.nmcd.hdc,
+                LVP_LISTITEM,
+                state,
+                &draw.nmcd.rc,
+                ptr::null(),
+            ) < 0
+        {
+            FillRect(draw.nmcd.hdc, &draw.nmcd.rc, GetSysColorBrush(background));
+        } else {
+            GetThemeColor(theme, LVP_LISTITEM, state, TMT_TEXTCOLOR as i32, &mut color);
+        }
+        SetTextColor(draw.nmcd.hdc, color);
     }
 }
 fn create_list(frame: HWND, id: u16) -> Option<HWND> {
