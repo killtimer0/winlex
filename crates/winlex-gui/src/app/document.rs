@@ -72,40 +72,21 @@ pub(super) unsafe extern "system" fn document_proc(
                 }
                 return result;
             }
-            WM_SIZING => {
-                // A WM_GETMINMAXINFO minimum can block a DPI downscale.
-                // Use WM_SIZING for interactive limits; allow programmatic MDI sizing.
-                let rect = &mut *(l as *mut RECT);
-                let value = dpi().window(hwnd);
-                let width = crate::layout::scale(320, value);
-                let height = crate::layout::scale(400, value);
-                if rect.right - rect.left < width {
-                    match w as u32 {
-                        WMSZ_LEFT | WMSZ_TOPLEFT | WMSZ_BOTTOMLEFT => {
-                            rect.left = rect.right - width
-                        }
-                        WMSZ_RIGHT | WMSZ_TOPRIGHT | WMSZ_BOTTOMRIGHT => {
-                            rect.right = rect.left + width
-                        }
-                        _ => {}
-                    }
+            WM_GETMINMAXINFO => {
+                let result = DefMDIChildProcW(hwnd, msg, w, l);
+                if IsZoomed(hwnd) == 0 && IsIconic(hwnd) == 0 {
+                    let info = &mut *(l as *mut MINMAXINFO);
+                    let value = dpi().window(hwnd);
+                    info.ptMinTrackSize.x = crate::layout::scale(320, value);
+                    info.ptMinTrackSize.y = crate::layout::scale(400, value);
                 }
-                if rect.bottom - rect.top < height {
-                    match w as u32 {
-                        WMSZ_TOP | WMSZ_TOPLEFT | WMSZ_TOPRIGHT => rect.top = rect.bottom - height,
-                        WMSZ_BOTTOM | WMSZ_BOTTOMLEFT | WMSZ_BOTTOMRIGHT => {
-                            rect.bottom = rect.top + height
-                        }
-                        _ => {}
-                    }
-                }
-                return 1;
+                return result;
             }
             WM_WINDOWPOSCHANGING => {
                 let result = DefMDIChildProcW(hwnd, msg, w, l);
-                // Native MDI can retain system-DPI nonclient extents after a monitor
-                // change. Keep the maximized child's client aligned with the MDI client.
-                if IsZoomed(hwnd) != 0 {
+                // Native MDI uses system DPI for maximized bounds, including MDICLIENT
+                // resizing. Match the PMv2 child's nonclient metrics before positioning.
+                if dpi().mode == crate::dpi::Mode::Pmv2 && IsZoomed(hwnd) != 0 {
                     let r = dpi().child_outer(hwnd, client(read(|a| a.workspace.mdi)));
                     let p = &mut *(l as *mut WINDOWPOS);
                     if p.flags & SWP_NOMOVE == 0 {

@@ -1,3 +1,4 @@
+import time
 import win32con
 from support import native as n
 
@@ -139,7 +140,7 @@ def test_architecture_cancel_keeps_current_document(launch, profile, settings):
     assert profile.get("PreferredArchitecture") is None
 
 
-def test_document_minimum_only_limits_interactive_sizing(launch, settings):
+def test_document_minimum_limits_normal_not_maximized_windows(launch, settings):
     app = launch(["--winmd", settings[1]])
     app.query("CreateFileW")
     doc = app.open_row()
@@ -147,24 +148,46 @@ def test_document_minimum_only_limits_interactive_sizing(launch, settings):
     with n.window_dpi_context(app.frame):
         dpi = n.api(n.user, "GetDpiForWindow", n.w.UINT, n.w.HWND)(doc) if hasattr(n.user, "GetDpiForWindow") else 96
         width, height = (320 * dpi + 48) // 96, (400 * dpi + 48) // 96
-        for edge in range(win32con.WMSZ_LEFT, win32con.WMSZ_BOTTOMRIGHT + 1):
-            rect = n.w.RECT(100, 100, 200, 200)
-            assert n.send(doc, win32con.WM_SIZING, edge, n.c.addressof(rect))  # WM_SIZING marshals RECT
-            expected = [100, 100, 200, 200]
-            if edge in (win32con.WMSZ_LEFT, win32con.WMSZ_TOPLEFT, win32con.WMSZ_BOTTOMLEFT):
-                expected[0] = 200 - width
-            if edge in (win32con.WMSZ_RIGHT, win32con.WMSZ_TOPRIGHT, win32con.WMSZ_BOTTOMRIGHT):
-                expected[2] = 100 + width
-            if edge in (win32con.WMSZ_TOP, win32con.WMSZ_TOPLEFT, win32con.WMSZ_TOPRIGHT):
-                expected[1] = 200 - height
-            if edge in (win32con.WMSZ_BOTTOM, win32con.WMSZ_BOTTOMLEFT, win32con.WMSZ_BOTTOMRIGHT):
-                expected[3] = 100 + height
-            assert [rect.left, rect.top, rect.right, rect.bottom] == expected
-        # DPI restoration and MDI arrangement must be able to size below the interactive minimum.
+        class MinMax(n.c.Structure):
+            _fields_ = [(name, n.w.POINT) for name in
+                        ("reserved", "size", "position", "minimum", "maximum")]
+        limits = MinMax()
+        n.send(doc, win32con.WM_GETMINMAXINFO, 0, n.c.addressof(limits))
+        assert (limits.minimum.x, limits.minimum.y) == (width, height)
         for w, h in ((280 * dpi // 96, 340 * dpi // 96), (width, height), (280 * dpi // 96, 340 * dpi // 96)):
             assert n.set_pos(doc, None, 0, 0, w, h, RESIZE_NO_MOVE)
             left, top, right, bottom = n.rectangle(doc)
-            assert (right - left, bottom - top) == (w, h)
+            assert (right - left, bottom - top) == (max(width, w), max(height, h))
+
+        # A maximized document must still fit a container smaller than its normal minimum.
+        assert n.set_pos(app.frame, None, 0, 0, 600 * dpi // 96, 300 * dpi // 96, RESIZE_NO_MOVE)
+        for state in (win32con.SC_MAXIMIZE, win32con.SC_MINIMIZE, win32con.SC_RESTORE,
+                      win32con.SC_MAXIMIZE):
+            if state == win32con.SC_MAXIMIZE and n.is_zoomed(doc):
+                continue
+            n.send(doc, win32con.WM_SYSCOMMAND, state)
+            if n.is_zoomed(doc):
+                # MDI layout can finish after the synchronous system command returns.
+                stable_since = None
+                def aligned():
+                    nonlocal stable_since
+                    if n.rectangle(doc, client=True) != n.rectangle(app.mdi, client=True):
+                        stable_since = None
+                        return False
+                    if stable_since is None:
+                        stable_since = time.monotonic()
+                    return time.monotonic() - stable_since >= 0.2
+                n.wait(aligned, "stable maximized document fills MDI client", 5)
+                origin = n.w.POINT()
+                n.api(n.user, "MapWindowPoints", n.c.c_int, n.w.HWND, n.w.HWND,
+                      n.c.POINTER(n.w.POINT), n.w.UINT)(doc, app.mdi, n.c.byref(origin), 1)
+                assert (origin.x, origin.y) == (0, 0)
+                assert n.rectangle(doc, client=True) == n.rectangle(app.mdi, client=True)
+        assert n.rectangle(app.mdi, client=True)[3] < height
+        n.send(doc, win32con.WM_SYSCOMMAND, win32con.SC_RESTORE)
+        assert n.set_pos(doc, None, 0, 0, 100, 100, RESIZE_NO_MOVE)
+        left, top, right, bottom = n.rectangle(doc)
+        assert (right - left, bottom - top) == (width, height)
 
 
 def test_tab_traverses_document_controls(launch, settings):

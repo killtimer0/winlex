@@ -141,6 +141,17 @@ def test_native_mdi_and_sidebar(launch, profile, settings):
     app.command(1010)
     rectangles = [n.rectangle(h) for h in app.documents()]
     assert rectangles[0] != rectangles[1]
+    with n.window_dpi_context(app.frame):
+        dpi = n.api(n.user, "GetDpiForWindow", n.w.UINT, n.w.HWND)(original) if hasattr(n.user, "GetDpiForWindow") else 96
+        for message, flags in ((win32con.WM_MDITILE, win32con.MDITILE_VERTICAL),
+                               (win32con.WM_MDITILE, win32con.MDITILE_HORIZONTAL),
+                               (win32con.WM_MDICASCADE, 0)):
+            n.send(app.mdi, message, flags)
+            for doc in app.documents():
+                left, top, right, bottom = n.rectangle(doc)
+                assert not n.is_zoomed(doc)
+                assert right - left >= (320 * dpi + 48) // 96
+                assert bottom - top >= (400 * dpi + 48) // 96
     app.command(1040)
     assert not n.is_visible(app.results)
     app.close()
