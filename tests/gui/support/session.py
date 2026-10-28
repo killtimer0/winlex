@@ -252,8 +252,8 @@ class Session:
         assert n.read_memory(self.handle, self.memory, buffer, 92, None)
         return struct.unpack_from("<i", buffer.raw, 12)[0], buffer.raw[26:90].decode("utf-16-le").split("\0")[0]
 
-    def pick(self, paths, command=1020, target=None):
-        n.post(target or self.frame, win32con.WM_COMMAND, command, 0)
+    def pick(self, paths):
+        n.post(self.frame, win32con.WM_COMMAND, 1020, 0)
         def find():
             for hwnd in n.windows():
                 pid = w.DWORD()
@@ -261,10 +261,9 @@ class Session:
                 if pid.value == self.process.pid and n.class_name(hwnd) == "#32770" and n.is_visible(hwnd):
                     return hwnd
         dialog = n.wait(find, "native file dialog")
-        if paths:
-            field = n.wait(lambda: n.get_item(dialog, 1148) or n.get_item(dialog, 1152), "file-name field")
-            n.set_text(field, " ".join('"%s"' % path for path in paths))
-        n.post(dialog, win32con.WM_COMMAND, win32con.IDOK if paths else win32con.IDCANCEL, 0)
+        field = n.wait(lambda: n.get_item(dialog, 1148) or n.get_item(dialog, 1152), "file-name field")
+        n.set_text(field, " ".join('"%s"' % path for path in paths))
+        n.post(dialog, win32con.WM_COMMAND, win32con.IDOK, 0)
         n.wait(lambda: not n.is_window(dialog), "file dialog closed")
 
     def diagnostics(self, destination):

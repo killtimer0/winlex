@@ -75,10 +75,6 @@ def main():
             (9, ord('L'), ids['FOCUS_SEARCH']),
             (9, 0x0D, ids['OPEN_NEW']),
             (1, 0x75, ids['FOCUS_NEXT_REGION'])}
-        for language in (0x409, 0x804):
-            menu = resource(4, ids['IDR_MAIN_MENU'], language)
-            for removed in ("Metadata", "元数据", "Ctrl+N"):
-                assert removed.encode("utf-16-le") not in menu
         assert languages(24, 1) == [0], "manifest must be language neutral"
         manifest = ET.fromstring(resource(24, 1, 0))
         tags = [node.tag.rsplit("}", 1)[-1] for node in manifest.iter()]

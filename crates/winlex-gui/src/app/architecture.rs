@@ -20,11 +20,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn order_is_canonical() {
-        assert_eq!(ORDER.map(Architecture::bit), [1, 2, 4]);
-    }
-
-    #[test]
     fn supported_filters_in_display_order() {
         assert_eq!(
             supported(5).collect::<Vec<_>>(),

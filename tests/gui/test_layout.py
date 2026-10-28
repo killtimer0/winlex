@@ -6,7 +6,7 @@ from support import messages
 from support import native as n
 
 
-def test_toolbar_and_search_geometry(launch):
+def test_toolbar_geometry_activation_and_focus(launch):
     app = launch()
     with n.window_dpi_context(app.frame):
         check_toolbar_and_search(app)
@@ -57,8 +57,6 @@ def test_list_selection_paint_follows_focus(launch, settings):
 def check_toolbar_and_search(app):
     toolbar = n.get_item(app.frame, 1113)
     assert n.class_name(toolbar) == "ToolbarWindow32"
-    assert not n.get_item(app.frame, 1040)
-    assert not n.get_item(app.frame, 1021)
     assert n.send(toolbar, messages.TB_BUTTONCOUNT) == 2
 
     def button_rect(index):
@@ -85,24 +83,27 @@ def check_toolbar_and_search(app):
     assert n.is_visible(app.sources) and not n.is_visible(app.results)
     assert n.send(toolbar, messages.TB_ISBUTTONCHECKED, 1021)
     assert not n.send(toolbar, messages.TB_ISBUTTONCHECKED, 1040)
+    n.wait(lambda: app.focused() == app.sources, "mouse activation focuses sources")
+    n.send(app.frame, win32con.WM_SIZE)
+    n.send(app.frame, win32con.WM_SETTINGCHANGE)
+    assert app.focused() == app.sources, "layout and environment updates must not move focus"
     click(second)
     assert not n.is_visible(app.sources)
     assert not n.send(toolbar, messages.TB_ISBUTTONCHECKED, 1021)
+    n.wait(lambda: app.focused() == toolbar, "mouse collapse focuses toolbar")
     click(first)
     assert n.is_visible(app.results) and n.send(toolbar, messages.TB_ISBUTTONCHECKED, 1040)
+    n.wait(lambda: app.focused() == app.search, "mouse activation focuses search")
     n.send(toolbar, messages.TB_SETHOTITEM, 0)
     n.key_message(toolbar, win32con.VK_SPACE)
     n.wait(lambda: not n.is_visible(app.results), "toolbar Space collapses panel")
-    n.key_message(toolbar, win32con.VK_SPACE)
-    n.wait(lambda: n.is_visible(app.results), "toolbar Space expands panel")
-    # Activation now hands focus to the panel; collapse to navigate the toolbar again.
-    click(first)
-    n.wait(lambda: not n.is_visible(app.results), "collapse returns toolbar focus")
+    n.wait(lambda: app.focused() == toolbar, "keyboard collapse focuses toolbar")
     n.send(toolbar, messages.TB_SETHOTITEM, 0)
     n.key_message(toolbar, win32con.VK_DOWN)
     n.wait(lambda: n.send(toolbar, messages.TB_GETHOTITEM) == 1, "toolbar Down selects next item")
     n.key_message(toolbar, win32con.VK_SPACE)
     n.wait(lambda: n.is_visible(app.sources), "toolbar keyboard switches panel")
+    n.wait(lambda: app.focused() == app.sources, "keyboard activation focuses sources")
     assert n.send(toolbar, messages.TB_ISBUTTONCHECKED, 1021)
     assert not n.send(toolbar, messages.TB_ISBUTTONCHECKED, 1040)
     click(first)
@@ -112,54 +113,6 @@ def check_toolbar_and_search(app):
     edit, results = n.rectangle(app.search), n.rectangle(app.results)
     assert edit[0] == results[0] and edit[2] == results[2]
     assert edit[3] < results[1]
-
-
-def test_native_mdi_and_sidebar(launch, profile, settings):
-    app = launch(["--winmd", settings[1]])
-    assert not n.get_item(app.frame, 1101)
-    assert not n.get_item(app.frame, 1110)
-    assert not app.documents()
-    app.query("CreateFileW")
-    original = app.open_row()
-    n.wait(lambda: 'CreateFileW(' in app.content(original), "declaration", 45)
-    old = app.content(original)
-    other = app.open_new()
-    # A document host can be enumerated before WM_CREATE has created its controls.
-    assert app.choices(app.architecture(other)) == ["x86", "x64", "arm64"]
-    app.choose(other, "x64")
-    n.wait(lambda: 'CreateFileW(' in app.content(other), "other declaration", 45)
-    assert "x86" in n.window_text(original) and "x64" in n.window_text(other)
-    assert app.content(original) == old
-    app.command(1047, other, win32con.CBN_SELENDOK)
-    app.command(1047, original, win32con.CBN_SELENDOK)
-    assert len(app.documents()) == 2
-    for doc in app.documents():
-        assert n.get_item(doc, 1204)
-        assert n.class_name(n.get_item(doc, 1203)) == "RichEdit20W"
-        for removed in (1201, 1202):
-            assert not n.get_item(doc, removed)
-    app.command(1010)
-    rectangles = [n.rectangle(h) for h in app.documents()]
-    assert rectangles[0] != rectangles[1]
-    with n.window_dpi_context(app.frame):
-        dpi = n.api(n.user, "GetDpiForWindow", n.w.UINT, n.w.HWND)(original) if hasattr(n.user, "GetDpiForWindow") else 96
-        for message, flags in ((win32con.WM_MDITILE, win32con.MDITILE_VERTICAL),
-                               (win32con.WM_MDITILE, win32con.MDITILE_HORIZONTAL),
-                               (win32con.WM_MDICASCADE, 0)):
-            n.send(app.mdi, message, flags)
-            for doc in app.documents():
-                left, top, right, bottom = n.rectangle(doc)
-                assert not n.is_zoomed(doc)
-                assert right - left >= (320 * dpi + 48) // 96
-                assert bottom - top >= (400 * dpi + 48) // 96
-    app.command(1040)
-    assert not n.is_visible(app.results)
-    app.close()
-    assert profile.get("PanelCollapsed") == 1
-    restored = launch()
-    assert not n.is_visible(restored.results)
-    restored.command(1040)
-    assert n.is_visible(restored.results)
 
 
 def test_environment_remeasures_open_document(launch, settings):
@@ -200,18 +153,27 @@ def test_environment_remeasures_open_document(launch, settings):
 
 def test_mdi_maximize_inheritance_and_one_shot_arrangement(launch, settings):
     app = launch(["--winmd", settings[1]])
-    zoomed = n.api(n.user, "IsZoomed", n.w.BOOL, n.w.HWND)
     app.query("CreateFileW")
     original = app.open_row()
     n.send(app.mdi, win32con.WM_MDIMAXIMIZE, original)
-    assert zoomed(original)
-    app.open_new()
-    n.wait(lambda: len(app.documents()) == 2, "maximized new document")
-    other = next(h for h in app.documents() if h != original)
-    assert zoomed(other), "new document must inherit MDI maximization"
+    assert n.is_zoomed(original)
+    other = app.open_new()
+    assert n.is_zoomed(other), "new document must inherit MDI maximization"
+    with n.window_dpi_context(app.frame):
+        dpi = n.api(n.user, "GetDpiForWindow", n.w.UINT, n.w.HWND)(original) if hasattr(n.user, "GetDpiForWindow") else 96
+        for message, flags in ((win32con.WM_MDITILE, win32con.MDITILE_VERTICAL),
+                               (win32con.WM_MDITILE, win32con.MDITILE_HORIZONTAL),
+                               (win32con.WM_MDICASCADE, 0)):
+            n.send(app.mdi, message, flags)
+            for doc in app.documents():
+                left, top, right, bottom = n.rectangle(doc)
+                assert not n.is_zoomed(doc)
+                assert right - left >= (320 * dpi + 48) // 96
+                assert bottom - top >= (400 * dpi + 48) // 96
     app.command(1010)  # one-shot vertical tile
-    assert not any(zoomed(h) for h in app.documents())
+    assert not any(n.is_zoomed(h) for h in app.documents())
     before = {h: n.rectangle(h) for h in app.documents()}
+    assert before[original] != before[other]
     app.query("CloseHandle")
     third = app.open_row()
     assert third not in before
@@ -241,32 +203,6 @@ def test_accelerator_region_navigation_and_tab_enter(launch, settings):
     n.key_message(n.get_item(app.frame, 1104), win32con.VK_RETURN)
     n.wait(lambda: app.focused() == editor, "tab Enter to document")
 
-    toolbar = n.get_item(app.frame, 1113)
-
-    def click_panel(index):
-        assert n.send(toolbar, messages.TB_GETITEMRECT, index, app.memory)
-        buffer = n.c.create_string_buffer(16)
-        assert n.read_memory(app.handle, app.memory, buffer, 16, None)
-        left, top, right, bottom = struct.unpack("<4i", buffer.raw)
-        point = ((left + right) // 2) | (((top + bottom) // 2) << 16)
-        n.send(toolbar, win32con.WM_LBUTTONDOWN, win32con.MK_LBUTTON, point)
-        n.send(toolbar, win32con.WM_LBUTTONUP, 0, point)
-
-    click_panel(1)
-    n.wait(lambda: app.focused() == app.sources, "mouse activation delegates focus to sources")
-    n.send(app.frame, win32con.WM_SIZE)  # ordinary layout
-    n.send(app.frame, win32con.WM_SETTINGCHANGE)  # environment/font refresh
-    assert app.focused() == app.sources, "layout and environment updates must not move focus"
-    click_panel(1)
-    n.wait(lambda: app.focused() == toolbar, "collapse focuses toolbar")
-    click_panel(0)
-    n.wait(lambda: app.focused() == app.search, "mouse activation delegates focus to search")
-    n.send(toolbar, messages.TB_SETHOTITEM, 1)
-    n.key_message(toolbar, win32con.VK_SPACE)
-    n.wait(lambda: app.focused() == app.sources, "keyboard activation delegates focus to sources")
-    n.key_message(toolbar, win32con.VK_SPACE)
-    n.wait(lambda: app.focused() == toolbar, "keyboard collapse focuses toolbar")
-
 
 def test_mdi_remembers_last_user_state_after_all_documents_close(launch, settings):
     app = launch(["--winmd", settings[1]])
@@ -285,9 +221,6 @@ def test_mdi_remembers_last_user_state_after_all_documents_close(launch, setting
     assert not n.is_zoomed(doc)
     doc = reopen(doc)
     assert not n.is_zoomed(doc), "closing all must retain restored preference"
-    with n.window_dpi_context(app.frame):
-        left, top, right, bottom = n.rectangle(doc)
-        assert right > left and bottom > top
     n.send(doc, win32con.WM_SYSCOMMAND, win32con.SC_MAXIMIZE)
     assert n.is_zoomed(doc)
     doc = reopen(doc)

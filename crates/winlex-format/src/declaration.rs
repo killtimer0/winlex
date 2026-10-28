@@ -467,6 +467,5 @@ mod tests {
         assert_eq!(out.text, "// 文😀\n64(0x40) bytes");
         assert_eq!(out.numbers[0].range, 7..21);
         assert_eq!(out.numbers[0].entity, id);
-        assert!(!out.numbers[0].range.contains(&21));
     }
 }

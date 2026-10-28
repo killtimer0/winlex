@@ -29,3 +29,11 @@ def test_placement_and_language_restart(launch, profile):
     n.send(restored.frame, win32con.WM_SYSCOMMAND, win32con.SC_RESTORE)
     actual = n.rectangle(restored.frame)
     assert all(abs(a-b) <= 2 for a,b in zip(actual, rect))
+    restored.command(1021)
+    assert not n.is_visible(restored.sources)
+    restored.close()
+    assert profile.get("PanelCollapsed") == 1
+    collapsed = launch()
+    assert not n.is_visible(collapsed.sources) and not n.is_visible(collapsed.results)
+    collapsed.command(1021)
+    assert n.is_visible(collapsed.sources)

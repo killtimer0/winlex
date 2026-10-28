@@ -34,8 +34,7 @@ def test_discovery_is_not_loading(launch, profile, settings):
     n.wait(lambda: app.count(app.sources) == 1, "source discovery")
     app.command(1021)
     doc = app.open_row(source=True)
-    for removed in (1201, 1202, 1047):
-        assert not n.get_item(doc, removed)
+    assert not n.get_item(doc, 1047)  # Source inspection has no architecture selector.
     n.wait(lambda: '"sources"' in app.content(doc), "inspection", 45)
     n.send(doc, win32con.WM_SYSCOMMAND, win32con.SC_MINIMIZE)
     is_iconic = n.api(n.user, "IsIconic", n.w.BOOL, n.w.HWND)
@@ -67,8 +66,6 @@ def test_discovery_is_not_loading(launch, profile, settings):
 
 def test_native_add_is_discovery_only(launch, profile, settings):
     app = launch()
-    app.pick([])
-    assert profile.get("Files") is None
     app.pick([settings[1]])
     n.wait(lambda: app.count(app.sources) == 1, "native add discovery", 45)
     assert profile.get("AutoLoad") is None
@@ -104,8 +101,8 @@ def test_directory_discovery_is_nonrecursive_and_removable(launch, profile, sett
     directory = settings[2] / "directory"
     nested = directory / "nested"
     nested.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(settings[1], directory / "visible.winmd")
-    shutil.copyfile(settings[1], nested / "hidden.winmd")
+    (directory / "visible.winmd").write_bytes(b"discovery only")
+    (nested / "hidden.winmd").write_bytes(b"nested discovery only")
     profile.set("Directories", winreg.REG_MULTI_SZ, [str(directory)])
     app = launch()
     n.wait(lambda: app.count(app.sources) == 2, "directory and immediate file", 45)

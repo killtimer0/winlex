@@ -22,6 +22,7 @@ def test_reload_keeps_old_document_snapshot(launch, settings):
     app.command(1045, entity)
     current = n.wait(lambda: next(iter(set(app.documents()) - before), None), "open current")
     n.wait(lambda: 'CreateFileW(' in app.content(current), "current declaration", 45)
-    assert "Earlier catalog snapshot" not in app.content(current)
-    assert "先前的目录快照" not in app.content(current)
-    assert old in app.content(entity)
+    header = n.window_text(n.get_item(current, 1204))
+    assert "Earlier catalog snapshot" not in header
+    assert "先前的目录快照" not in header
+    assert app.content(entity) == old

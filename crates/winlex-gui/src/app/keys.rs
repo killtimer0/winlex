@@ -78,35 +78,22 @@ mod tests {
     const SPACE: usize = VK_SPACE as usize;
 
     #[test]
-    fn enter_follows_the_focused_region() {
-        assert_eq!(
-            action(Region::SearchEntry { composing: false }, ENTER),
-            Some(Action::Search)
-        );
-        assert_eq!(action(Region::Results, ENTER), Some(Action::Pin));
-        assert_eq!(action(Region::Sources, ENTER), Some(Action::OpenSource));
-        assert_eq!(action(Region::Tabs, ENTER), Some(Action::FocusDocument));
-    }
-
-    #[test]
-    fn composing_text_keeps_enter() {
-        assert_eq!(action(Region::SearchEntry { composing: true }, ENTER), None);
-    }
-
-    #[test]
-    fn space_previews_only_in_the_result_list() {
-        assert_eq!(action(Region::Results, SPACE), Some(Action::Preview));
-        assert_eq!(
-            action(Region::SearchEntry { composing: false }, SPACE),
-            None
-        );
-        assert_eq!(action(Region::Sources, SPACE), None);
-        assert_eq!(action(Region::Other, SPACE), None);
-    }
-
-    #[test]
-    fn unclaimed_keys_keep_their_native_meaning() {
-        assert_eq!(action(Region::Other, ENTER), None);
+    fn semantic_keys_respect_region_and_composition() {
+        for (region, enter, space) in [
+            (
+                Region::SearchEntry { composing: false },
+                Some(Action::Search),
+                None,
+            ),
+            (Region::SearchEntry { composing: true }, None, None),
+            (Region::Results, Some(Action::Pin), Some(Action::Preview)),
+            (Region::Sources, Some(Action::OpenSource), None),
+            (Region::Tabs, Some(Action::FocusDocument), None),
+            (Region::Other, None, None),
+        ] {
+            assert_eq!(action(region, ENTER), enter, "{region:?}: Enter");
+            assert_eq!(action(region, SPACE), space, "{region:?}: Space");
+        }
         assert_eq!(action(Region::Results, VK_F1 as usize), None);
     }
 }
