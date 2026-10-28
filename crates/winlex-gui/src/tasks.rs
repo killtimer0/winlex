@@ -77,7 +77,10 @@ pub enum Output {
     SearchDone,
     Discovered(Vec<Discovered>),
     Inspected(Arc<Catalog>),
-    Description(String),
+    Description {
+        body: winlex_format::declaration::Rendered,
+        details: String,
+    },
 }
 pub struct Completion {
     pub id: u64,
@@ -249,7 +252,13 @@ fn execute(
             entity,
             arch,
             ..
-        } => winlex_format::describe(&catalog, entity, Some(arch))
-            .map(|value| Output::Description(format!("{value:#}").replace('\n', "\r\n"))),
+        } => {
+            let body = winlex_format::declaration::render(&catalog, entity, arch)?;
+            let details = format!(
+                "{:#}",
+                winlex_format::describe(&catalog, entity, Some(arch))?
+            );
+            Ok(Output::Description { body, details })
+        }
     }
 }

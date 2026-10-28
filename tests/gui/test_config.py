@@ -1,5 +1,6 @@
 import struct
 import winreg
+import win32con
 from support import native as n
 
 
@@ -15,7 +16,7 @@ def test_placement_and_language_restart(launch, profile):
     rect = n.rectangle(app.frame)
     assert any(m[0] <= rect[0] < rect[2] <= m[2] and m[1] <= rect[1] < rect[3] <= m[3] for m in n.monitors())
     app.command(1032)
-    n.send(app.frame, 0x112, 0xF030)
+    n.send(app.frame, win32con.WM_SYSCOMMAND, win32con.SC_MAXIMIZE)
     assert n.is_zoomed(app.frame)
     app.close()
     assert profile.get("Language") == "zh-CN"
@@ -25,6 +26,6 @@ def test_placement_and_language_restart(launch, profile):
     assert n.is_visible(restored.sources) and not n.is_visible(restored.results)
     assert n.is_zoomed(restored.frame)
     assert restored.toolbar_text(1040) == "搜索"
-    n.send(restored.frame, 0x112, 0xF120)
+    n.send(restored.frame, win32con.WM_SYSCOMMAND, win32con.SC_RESTORE)
     actual = n.rectangle(restored.frame)
     assert all(abs(a-b) <= 2 for a,b in zip(actual, rect))

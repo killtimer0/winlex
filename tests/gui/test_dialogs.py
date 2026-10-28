@@ -1,4 +1,5 @@
 import pytest
+import win32con
 from support import native as n
 
 
@@ -13,10 +14,10 @@ def test_native_picker_cancel_keeps_application_state(launch, command):
         return [h for h in n.windows() if n.class_name(h) == "#32770"
                 and owner(h, 4) == app.frame and n.is_visible(h)]
 
-    assert n.post(app.frame, 0x111, command, 0)
+    assert n.post(app.frame, win32con.WM_COMMAND, command, 0)
     dialog = n.wait(lambda: next(iter(dialogs()), None), "owned system picker")
     assert not enabled(app.frame)
-    assert n.post(dialog, 0x111, 2, 0)  # IDCANCEL
+    assert n.post(dialog, win32con.WM_COMMAND, win32con.IDCANCEL, 0)
     n.wait(lambda: not dialogs() and enabled(app.frame), "picker cancellation")
     assert not app.documents()
-    n.send(app.frame, 0)  # the owner remains responsive; no error or fallback dialog
+    n.send(app.frame, win32con.WM_NULL)  # the owner remains responsive; no error or fallback dialog

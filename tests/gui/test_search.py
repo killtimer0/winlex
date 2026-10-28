@@ -1,4 +1,6 @@
 import time
+import win32con
+from support import messages
 from support import native as n
 
 
@@ -10,11 +12,11 @@ def test_stream_and_panel_state(launch, settings):
     rect0, rect1 = app.item_rect(0), app.item_rect(1)
     assert rect0[3] - rect0[1] >= 28
     assert rect0[3] - rect0[1] == rect1[3] - rect1[1]
-    header = n.send(app.results, 0x101F)
+    header = n.send(app.results, messages.LVM_GETHEADER)
     header_rect = n.rectangle(header)
     assert not n.is_visible(header) or header_rect[1] == header_rect[3]
-    style = n.api(n.user, "GetWindowLongW", n.c.c_long, n.w.HWND, n.c.c_int)(app.results, -16)
-    assert not style & 0x100000, "horizontal scrollbar visible"
+    style = n.api(n.user, "GetWindowLongW", n.c.c_long, n.w.HWND, n.c.c_int)(app.results, win32con.GWL_STYLE)
+    assert not style & win32con.WS_HSCROLL, "horizontal scrollbar visible"
     first, last = app.cell(0), app.cell(app.count() - 1)
     app.select(3)
     app.command(1021)
@@ -24,7 +26,7 @@ def test_stream_and_panel_state(launch, settings):
     app.command(1040)
     assert n.is_visible(app.results)
     assert (app.cell(0), app.cell(app.count() - 1)) == (first, last)
-    assert n.send(app.results, 0x100C, 2**(8*n.c.sizeof(n.c.c_size_t))-1, 2) == 3
+    assert n.send(app.results, messages.LVM_GETNEXTITEM, -1, messages.LVNI_SELECTED) == 3
     app.query("CreateFileW")
     assert app.count() >= 1
     assert all("CreateFileW" in app.cell(i) for i in range(app.count()))
@@ -37,9 +39,9 @@ def test_stream_and_panel_state(launch, settings):
 def test_ime_defers_search(launch, settings):
     app = launch(["--winmd", settings[1]])
     n.wait(lambda: app.status_text().startswith(("Ready.", "已就绪")), "loaded", 45)
-    n.send(app.search, 0x10D)
+    n.send(app.search, win32con.WM_IME_STARTCOMPOSITION)
     n.set_text(app.search, "CreateFileW")
     time.sleep(.35)
     assert app.count() == 0
-    n.send(app.search, 0x10E)
+    n.send(app.search, win32con.WM_IME_ENDCOMPOSITION)
     n.wait(lambda: app.count() > 0, "search after IME commit", 45)

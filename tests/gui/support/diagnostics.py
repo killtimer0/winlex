@@ -5,6 +5,8 @@ import win32ui
 
 
 def screenshot(hwnd, path):
+    win32gui.RedrawWindow(hwnd, None, None,
+                         win32con.RDW_INVALIDATE | win32con.RDW_UPDATENOW | win32con.RDW_ALLCHILDREN)
     left, top, right, bottom = win32gui.GetWindowRect(hwnd)
     handle = win32gui.GetWindowDC(hwnd)
     source = win32ui.CreateDCFromHandle(handle)

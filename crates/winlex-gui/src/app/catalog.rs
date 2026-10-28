@@ -305,11 +305,10 @@ pub(super) fn open_row(row: isize) {
     let Some((id, title, mask, Some(catalog))) = item else {
         return;
     };
-    let arch = if Architecture::X64.supported_by(mask) {
-        Architecture::X64
-    } else if Architecture::X86.supported_by(mask) {
-        Architecture::X86
-    } else {
+    let Some(arch) = [Architecture::X64, Architecture::X86, Architecture::Arm64]
+        .into_iter()
+        .find(|arch| arch.bit() & mask != 0)
+    else {
         set_status(resources::text(IDS_UNSUPPORTED_ARCH));
         return;
     };
@@ -378,7 +377,7 @@ pub(super) fn open_current(hwnd: HWND) {
         current,
         source,
         entity: id,
-        arch: architecture.core(),
+        arch: architecture,
     };
     if let Err(e) = read(|a| a.worker.replace(None, ticket.clone(), job)) {
         set_status(e);
@@ -404,12 +403,14 @@ pub(super) fn request_document(hwnd: HWND) {
             document,
             catalog,
             entity: id,
-            arch: architecture.core(),
+            arch: architecture,
         },
     };
     metadata::edit(hwnd, |d| {
         d.ticket = Some(ticket.clone());
         d.content = resources::text(IDS_QUERYING).into();
+        d.detail_content = "".into();
+        d.numbers = std::sync::Arc::from([]);
     });
     if let Err(e) = read(|a| a.worker.replace(previous.map(|t| t.id), ticket, job)) {
         metadata::edit(hwnd, |d| {

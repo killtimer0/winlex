@@ -25,7 +25,12 @@ BEGIN
 END
 STRINGTABLE
 BEGIN
-    IDS_OPEN_OTHER_ARCH "Open as {arch}"
+    IDS_ARCHITECTURE "Architecture"
+    IDS_DETAILS "Details"
+    IDS_COPY_DECIMAL "Copy decimal"
+    IDS_COPY_HEX "Copy hexadecimal"
+    IDS_COPY_VALUE "Copy value with unit"
+    IDS_COPY_SELECTION "Copy selected text"
     IDS_LOADED "Loaded"
     IDS_FORGET_LOCATION "Forget location"
     IDS_FAILED "Failed"
@@ -47,8 +52,6 @@ BEGIN
     IDS_UNSUPPORTED_ARCH "This declaration does not support x86 or x64."
     IDS_APP_TITLE "Winlex"
     IDS_NOT_LOADED "Not loaded"
-    IDS_X86 "x86"
-    IDS_X64 "x64"
     IDS_EMPTY_CATALOG "No metadata loaded. Open a metadata source to load it."
     IDS_LOADING "Loading metadata..."
     IDS_LOAD_FAILED "Load failed; previous catalog retained: {error}"

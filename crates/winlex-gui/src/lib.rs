@@ -8,6 +8,7 @@ mod layout;
 mod native;
 mod platform;
 mod resources;
+mod rich_text;
 mod tasks;
 mod worker;
 

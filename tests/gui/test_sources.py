@@ -1,5 +1,7 @@
 import winreg
 import shutil
+import win32con
+from support import messages
 from support import native as n
 
 
@@ -18,12 +20,12 @@ def test_discovery_restores_selection_by_location(launch, profile, settings):
     (directory / "a.winmd").write_bytes(b"new earlier location")
     app.command(1042)
     n.wait(lambda: app.count(app.sources) == 4, "inserted location")
-    row = n.c.c_int(n.send(app.sources, 0x100C, -1, 2)).value  # LVM_GETNEXTITEM / LVNI_SELECTED
+    row = n.c.c_int(n.send(app.sources, messages.LVM_GETNEXTITEM, -1, messages.LVNI_SELECTED)).value  # LVM_GETNEXTITEM / LVNI_SELECTED
     assert row >= 0 and str(selected) in app.cell(row, app.sources)
     selected.unlink()
     app.command(1042)
     n.wait(lambda: app.count(app.sources) == 3, "removed selected location")
-    assert n.c.c_int(n.send(app.sources, 0x100C, -1, 2)).value == -1
+    assert n.c.c_int(n.send(app.sources, messages.LVM_GETNEXTITEM, -1, messages.LVNI_SELECTED)).value == -1
 
 
 def test_discovery_is_not_loading(launch, profile, settings):
@@ -32,14 +34,14 @@ def test_discovery_is_not_loading(launch, profile, settings):
     n.wait(lambda: app.count(app.sources) == 1, "source discovery")
     app.command(1021)
     doc = app.open_row(source=True)
-    for removed in (1201, 1202, 1204, 1047):
+    for removed in (1201, 1202, 1047):
         assert not n.get_item(doc, removed)
     n.wait(lambda: '"sources"' in app.content(doc), "inspection", 45)
-    n.send(doc, 0x112, 0xF020)  # WM_SYSCOMMAND / SC_MINIMIZE
+    n.send(doc, win32con.WM_SYSCOMMAND, win32con.SC_MINIMIZE)
     is_iconic = n.api(n.user, "IsIconic", n.w.BOOL, n.w.HWND)
     assert is_iconic(doc)
     app.select(0, app.sources)
-    n.key_message(app.sources, 13)
+    n.key_message(app.sources, win32con.VK_RETURN)
     n.wait(lambda: not is_iconic(doc), "restore existing source document")
     assert app.documents() == [doc]
     assert profile.get("AutoLoad") is None
@@ -49,20 +51,19 @@ def test_discovery_is_not_loading(launch, profile, settings):
     app.command(1040)
     app.query("CreateFileW")
     entity = app.open_row()
-    n.wait(lambda: '"parameters"' in app.content(entity), "declaration", 45)
+    n.wait(lambda: 'CreateFileW(' in app.content(entity), "declaration", 45)
     old = app.content(entity)
     declaration = n.get_item(entity, 1203)
-    n.send(declaration, 0xB1, 2, 8)  # EM_SETSEL
+    n.send(declaration, win32con.EM_SETSEL, 2, 8)
     app.command(1022, doc)
     n.wait(lambda: profile.get("AutoLoad") == [], "unload persisted")
     assert app.content(entity) == old
-    assert n.send(declaration, 0xB0) == (8 << 16) | 2  # EM_GETSEL
+    assert n.send(declaration, win32con.EM_GETSEL) == (8 << 16) | 2  # EM_GETSEL
+    n.send(n.get_item(entity, 1047), win32con.CB_SETCURSEL, 2)  # ARM64 from unloaded snapshot
     app.command(1047, entity)
-    n.wait(lambda: len(app.documents()) == 3, "unloaded snapshot document")
-    other = next(h for h in app.documents() if h not in (doc, entity))
-    n.wait(lambda: '"parameters"' in app.content(other), "unloaded snapshot architecture query", 45)
-    assert ("x86" in n.window_text(entity)) != ("x86" in n.window_text(other))
-    assert app.content(entity) == old
+    n.wait(lambda: 'CreateFileW(' in app.content(entity), "unloaded snapshot architecture query", 45)
+    assert "arm64" in n.window_text(entity)
+    assert len(app.documents()) == 2
 
 
 def test_native_add_is_discovery_only(launch, profile, settings):
@@ -95,8 +96,9 @@ def test_long_unicode_input(launch, settings):
     n.wait(lambda: app.status_text().startswith(("Ready.", "已就绪")), "long path loaded", 45)
     app.query("CreateFileW")
     doc = app.open_row()
-    n.wait(lambda: '"parameters"' in app.content(doc), "declaration", 45)
-    assert str(path) in app.content(doc)
+    n.wait(lambda: 'CreateFileW(' in app.content(doc), "declaration", 45)
+    app.command(1048, doc)
+    assert str(path) in n.window_text(n.get_item(doc, 1205))
 
 
 def test_directory_discovery_is_nonrecursive_and_removable(launch, profile, settings):

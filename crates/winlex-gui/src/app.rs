@@ -26,40 +26,9 @@ use document::document_proc;
 use frame::frame_proc;
 use workspace::{active, document, edit_document};
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Architecture {
-    X86,
-    X64,
-}
-impl Architecture {
-    fn core(self) -> winlex_core::Architecture {
-        match self {
-            Self::X86 => winlex_core::Architecture::X86,
-            Self::X64 => winlex_core::Architecture::X64,
-        }
-    }
-    fn supported_by(self, mask: i32) -> bool {
-        mask & (1 << self.index()) != 0
-    }
-    fn index(self) -> usize {
-        match self {
-            Self::X86 => 0,
-            Self::X64 => 1,
-        }
-    }
-    fn label(self) -> String {
-        resources::text(match self {
-            Self::X86 => IDS_X86,
-            Self::X64 => IDS_X64,
-        })
-    }
-    fn other(self) -> Self {
-        match self {
-            Self::X86 => Self::X64,
-            Self::X64 => Self::X86,
-        }
-    }
-}
+use winlex_core::Architecture;
+const ARCHITECTURES: [Architecture; 3] =
+    [Architecture::X86, Architecture::X64, Architecture::Arm64];
 
 struct App {
     config: crate::config::Config,

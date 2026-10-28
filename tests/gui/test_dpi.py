@@ -1,6 +1,7 @@
 import ctypes as c
 from ctypes import wintypes as w
 import pytest
+import win32con
 from support import native as n
 
 
@@ -12,15 +13,15 @@ def test_cross_monitor_layout(launch, settings, maximized):
     app = launch(["--winmd", settings[1]])
     app.query("CreateFileW")
     doc = app.open_row()
-    n.wait(lambda: '"parameters"' in app.content(doc), "document before DPI change", 45)
+    n.wait(lambda: 'CreateFileW(' in app.content(doc), "document before DPI change", 45)
     if not maximized:
-        n.send(doc, 0x112, 0xF120)  # native SC_RESTORE
+        n.send(doc, win32con.WM_SYSCOMMAND, win32con.SC_RESTORE)
     assert bool(n.is_zoomed(doc)) == maximized
     displays = n.monitors()
     values = []
     for left, top, right, bottom in displays:
-        assert n.set_pos(app.frame, None, left + 20, top + 20, 0, 0, 0x15)
-        n.send(app.frame, 0)
+        assert n.set_pos(app.frame, None, left + 20, top + 20, 0, 0, win32con.SWP_NOSIZE | win32con.SWP_NOZORDER | win32con.SWP_NOACTIVATE)
+        n.send(app.frame, win32con.WM_NULL)
         value = get_dpi(app.frame)
         values.append(value)
         tabs = n.get_item(app.frame, 1104)
@@ -35,7 +36,9 @@ def test_cross_monitor_layout(launch, settings, maximized):
             editor = n.get_item(doc, 1203)
             b, e = n.rectangle(button), n.rectangle(editor)
             assert e[0] <= b[0] < b[2] <= e[2] and b[3] <= e[1]
-            assert n.send(button, 0x31) == n.send(editor, 0x31) != 0
+            assert n.send(button, win32con.WM_GETFONT) != 0
+            height, face = app.declaration_font(doc)
+            assert height > 0 and face == "Courier New"
     (settings[2] / "observed-dpi.txt").write_text(repr(values), encoding="utf-8")
     if len(set(values)) < 2:
         pytest.skip("geometry checked; no differing effective DPI observed")

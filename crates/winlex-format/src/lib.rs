@@ -1,4 +1,5 @@
 //! Presentation adapters shared by the CLI and native declaration viewer.
+pub mod declaration;
 use serde_json::{Value as Json, json};
 use winlex_core::metadata::key;
 use winlex_core::windows_metadata::{reader::*, *};

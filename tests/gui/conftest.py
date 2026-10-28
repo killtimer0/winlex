@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 from support.config import ConfigProfile
 from support.session import Session
+from support.pe import is_64_bit
 from support import native as n
 from support.diagnostics import screenshot
 
@@ -43,8 +44,7 @@ def settings(request):
             "dependencies": {name: importlib.metadata.version(name) for name in ("pytest", "pywin32")},
             "hashes": {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in (exe, winmd)},
             "language": option("--language"), "dpi": option("--dpi"), "capabilities": n.capabilities()}
-    data = exe.read_bytes()
-    info["exe_bits"] = 64 if struct.unpack_from("<H", data, struct.unpack_from("<I", data, 0x3c)[0] + 4)[0] == 0x8664 else 32
+    info["exe_bits"] = 64 if is_64_bit(exe) else 32
     (output / "environment.json").write_text(json.dumps(info, indent=2), encoding="utf-8")
     yield exe, winmd, output
     hashes = {str(p.relative_to(output)): hashlib.sha256(p.read_bytes()).hexdigest() for p in output.rglob("*.winmd")}

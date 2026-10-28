@@ -5,8 +5,11 @@ import json
 from pathlib import Path
 import struct
 import subprocess
+import win32con
 
+from . import messages
 from . import native as n
+from .pe import is_64_bit
 
 
 class Session:
@@ -22,12 +25,14 @@ class Session:
             self.sources = n.get_item(self.frame, 1112)
             self.status = n.get_item(self.frame, 1105)
             self.mdi = next(h for h in n.windows(self.frame) if n.class_name(h) == "MDIClient")
-            self.handle = n.open_process(0x38, False, self.process.pid)
+            self.handle = n.open_process(
+                win32con.PROCESS_VM_OPERATION | win32con.PROCESS_VM_READ | win32con.PROCESS_VM_WRITE,
+                False, self.process.pid)
             assert self.handle
-            self.memory = n.alloc(self.handle, None, 8192, 0x3000, 4)
+            self.memory = n.alloc(self.handle, None, 8192,
+                                  win32con.MEM_COMMIT | win32con.MEM_RESERVE, win32con.PAGE_READWRITE)
             assert self.memory
-            data = Path(exe).read_bytes()
-            self.is64 = struct.unpack_from("<H", data, struct.unpack_from("<I", data, 0x3c)[0] + 4)[0] == 0x8664
+            self.is64 = is_64_bit(exe)
             if hasattr(n.user, "GetDpiForWindow"):
                 self.actual_dpi = n.api(n.user, "GetDpiForWindow", w.UINT, w.HWND)(self.frame)
         except BaseException:
@@ -40,11 +45,11 @@ class Session:
             pid = w.DWORD()
             n.get_pid(hwnd, c.byref(pid))
             if pid.value == self.process.pid and n.class_name(hwnd) == "Winlex.Frame":
-                n.send(hwnd, 0)
+                n.send(hwnd, win32con.WM_NULL)
                 return hwnd
 
     def command(self, command, target=None):
-        n.send(target or self.frame, 0x111, command)
+        n.send(target or self.frame, win32con.WM_COMMAND, command)
 
     def remote_text(self, address, size):
         buffer = c.create_string_buffer(size)
@@ -52,20 +57,20 @@ class Session:
         return buffer.raw.decode("utf-16-le", errors="surrogatepass").split("\0", 1)[0]
 
     def status_text(self):
-        size = ((n.send(self.status, 0x40C) & 0xffff) + 1) * 2
+        size = ((n.send(self.status, messages.SB_GETTEXTLENGTHW) & 0xffff) + 1) * 2
         assert size <= 8192
-        n.send(self.status, 0x40D, 0, self.memory)
+        n.send(self.status, messages.SB_GETTEXTW, 0, self.memory)
         return self.remote_text(self.memory, size)
 
     def toolbar_text(self, command):
         toolbar = n.get_item(self.frame, 1113)
-        count = n.send(toolbar, 0x44B, command, 0)  # TB_GETBUTTONTEXTW
+        count = n.send(toolbar, messages.TB_GETBUTTONTEXTW, command, 0)
         assert 0 <= count < 4096
-        assert n.send(toolbar, 0x44B, command, self.memory) == count
+        assert n.send(toolbar, messages.TB_GETBUTTONTEXTW, command, self.memory) == count
         return self.remote_text(self.memory, (count + 1) * 2)
 
     def count(self, control=None):
-        return n.send(control or self.results, 0x1004)
+        return n.send(control or self.results, messages.LVM_GETITEMCOUNT)
 
     def cell(self, row, control=None):
         item = bytearray(8192)
@@ -74,7 +79,7 @@ class Session:
         struct.pack_into("<I", item, 32 if self.is64 else 24, 3500)
         raw = bytes(item)
         assert n.write_memory(self.handle, self.memory, raw, len(raw), None)
-        n.send(control or self.results, 0x1073, row, self.memory)
+        n.send(control or self.results, messages.LVM_GETITEMTEXTW, row, self.memory)
         return self.remote_text(self.memory + 128, 7000)
 
     def select(self, row, control=None):
@@ -82,12 +87,12 @@ class Session:
         for index, state in ((-1, 0), (row, 3)):
             item = struct.pack("<IIIII", 8, max(index, 0), 0, state, 3) + bytes(108)
             assert n.write_memory(self.handle, self.memory, item, len(item), None)
-            n.send(control, 0x102B, c.c_size_t(index).value, self.memory)
+            n.send(control, messages.LVM_SETITEMSTATE, c.c_size_t(index).value, self.memory)
 
     def item_rect(self, row):
         raw = bytes(16)
         assert n.write_memory(self.handle, self.memory, raw, len(raw), None)
-        assert n.send(self.results, 0x100E, row, self.memory)
+        assert n.send(self.results, messages.LVM_GETITEMRECT, row, self.memory)
         buffer = c.create_string_buffer(16)
         assert n.read_memory(self.handle, self.memory, buffer, 16, None)
         return struct.unpack("<4i", buffer.raw)
@@ -104,15 +109,23 @@ class Session:
         control = self.sources if source else self.results
         before = set(self.documents())
         self.select(row, control)
-        n.key_message(control, 13)
+        n.key_message(control, win32con.VK_RETURN)
         return n.wait(lambda: next(iter(set(self.documents()) - before), None), "document opened")
 
     def content(self, doc):
         control = n.get_item(doc, 1203)
         return n.window_text(control) if control else ""
 
+    def declaration_font(self, doc):
+        raw = struct.pack("<I", 92) + bytes(88)  # CHARFORMATW, identical on x86/x64
+        assert n.write_memory(self.handle, self.memory, raw, len(raw), None)
+        n.send(n.get_item(doc, 1203), messages.EM_GETCHARFORMAT, messages.SCF_SELECTION, self.memory)
+        buffer = c.create_string_buffer(92)
+        assert n.read_memory(self.handle, self.memory, buffer, 92, None)
+        return struct.unpack_from("<i", buffer.raw, 12)[0], buffer.raw[26:90].decode("utf-16-le").split("\0")[0]
+
     def pick(self, paths, command=1020, target=None):
-        n.post(target or self.frame, 0x111, command, 0)
+        n.post(target or self.frame, win32con.WM_COMMAND, command, 0)
         def find():
             for hwnd in n.windows():
                 pid = w.DWORD()
@@ -123,7 +136,7 @@ class Session:
         if paths:
             field = n.wait(lambda: n.get_item(dialog, 1148) or n.get_item(dialog, 1152), "file-name field")
             n.set_text(field, " ".join('"%s"' % path for path in paths))
-        n.post(dialog, 0x111, 1 if paths else 2, 0)
+        n.post(dialog, win32con.WM_COMMAND, win32con.IDOK if paths else win32con.IDCANCEL, 0)
         n.wait(lambda: not n.is_window(dialog), "file dialog closed")
 
     def diagnostics(self, destination):
@@ -142,10 +155,10 @@ class Session:
             return
         if self.process and self.process.poll() is None:
             if self.memory:
-                assert n.free(self.handle, self.memory, 0, 0x8000)
+                assert n.free(self.handle, self.memory, 0, win32con.MEM_RELEASE)
                 self.memory = None
             if self.frame:
-                n.post(self.frame, 0x10, 0, 0)
+                n.post(self.frame, win32con.WM_CLOSE, 0, 0)
             try:
                 self.process.wait(timeout=5)
             except subprocess.TimeoutExpired:

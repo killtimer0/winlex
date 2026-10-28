@@ -46,9 +46,9 @@ def test_same_name_sources_remain_distinct(launch, settings):
     assert rows[0].splitlines()[0] == rows[1].splitlines()[0]
     assert rows[0].splitlines()[-1] != rows[1].splitlines()[-1]
     first = app.open_row(0)
-    n.wait(lambda: '"parameters"' in app.content(first), "first declaration", 45)
+    n.wait(lambda: 'CreateFileW(' in app.content(first), "first declaration", 45)
     second = app.open_row(1)
-    n.wait(lambda: '"parameters"' in app.content(second), "second declaration", 45)
+    n.wait(lambda: 'CreateFileW(' in app.content(second), "second declaration", 45)
     assert first != second
     assert n.window_text(first) == n.window_text(second)
-    assert str(independent) in app.content(second)
+    assert str(independent) in n.window_text(n.get_item(second, 1205))

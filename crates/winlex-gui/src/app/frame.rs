@@ -167,6 +167,7 @@ pub(super) unsafe extern "system" fn frame_proc(hwnd: HWND, msg: u32, w: usize, 
             WM_SETTINGCHANGE => {
                 update_environment(None, w == 0 || w as u32 == SPI_SETNONCLIENTMETRICS);
             }
+            WM_SYSCOLORCHANGE | WM_THEMECHANGED => update_environment(None, false),
             WM_COMMAND => {
                 if sidebar::command(w) || command(w as u16) {
                     return 0;

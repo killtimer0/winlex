@@ -107,6 +107,35 @@ pub(super) unsafe extern "system" fn document_proc(
                 }
                 return result;
             }
+            WM_SIZING => {
+                // A WM_GETMINMAXINFO minimum can block a DPI downscale.
+                // Use WM_SIZING for interactive limits; allow programmatic MDI sizing.
+                let rect = &mut *(l as *mut RECT);
+                let value = dpi().window(hwnd);
+                let width = crate::layout::scale(320, value);
+                let height = crate::layout::scale(400, value);
+                if rect.right - rect.left < width {
+                    match w as u32 {
+                        WMSZ_LEFT | WMSZ_TOPLEFT | WMSZ_BOTTOMLEFT => {
+                            rect.left = rect.right - width
+                        }
+                        WMSZ_RIGHT | WMSZ_TOPRIGHT | WMSZ_BOTTOMRIGHT => {
+                            rect.right = rect.left + width
+                        }
+                        _ => {}
+                    }
+                }
+                if rect.bottom - rect.top < height {
+                    match w as u32 {
+                        WMSZ_TOP | WMSZ_TOPLEFT | WMSZ_TOPRIGHT => rect.top = rect.bottom - height,
+                        WMSZ_BOTTOM | WMSZ_BOTTOMLEFT | WMSZ_BOTTOMRIGHT => {
+                            rect.bottom = rect.top + height
+                        }
+                        _ => {}
+                    }
+                }
+                return 1;
+            }
             WM_WINDOWPOSCHANGING => {
                 let result = DefMDIChildProcW(hwnd, msg, w, l);
                 let r = if IsZoomed(hwnd) != 0 {
@@ -151,6 +180,17 @@ pub(super) unsafe extern "system" fn document_proc(
                     return 0;
                 }
             }
+            WM_CONTEXTMENU => {
+                if let Some(doc) = metadata::get(hwnd, |_, d| d.clone())
+                    && w == doc.editor as usize
+                {
+                    if let Err(error) = crate::rich_text::context_menu(doc.editor, l, &doc.numbers)
+                    {
+                        super::catalog::set_status(error);
+                    }
+                    return 0;
+                }
+            }
             WM_NCDESTROY => {
                 workspace::unregister_document(hwnd);
                 let result = DefMDIChildProcW(hwnd, msg, w, l);
@@ -171,6 +211,40 @@ unsafe extern "system" fn focus_proc(
     owner: usize,
 ) -> isize {
     unsafe {
+        if GetDlgCtrlID(hwnd) == crate::resources::DECLARATION as i32 {
+            match msg {
+                // RichEdit must not collapse an existing selection on a contextual click.
+                WM_RBUTTONDOWN => return 0,
+                WM_RBUTTONUP => {
+                    let mut point = POINT {
+                        x: l as i16 as i32,
+                        y: (l >> 16) as i16 as i32,
+                    };
+                    ClientToScreen(hwnd, &mut point);
+                    send(
+                        owner as HWND,
+                        WM_CONTEXTMENU,
+                        hwnd as usize,
+                        ((point.x as u16 as u32) | ((point.y as u16 as u32) << 16)) as isize,
+                    );
+                    return 0;
+                }
+                WM_CONTEXTMENU => return send(owner as HWND, msg, hwnd as usize, l),
+                WM_KEYDOWN
+                    if w == VK_APPS as usize
+                        || w == VK_F10 as usize && GetKeyState(VK_SHIFT as i32) < 0 =>
+                {
+                    return send(owner as HWND, WM_CONTEXTMENU, hwnd as usize, -1);
+                }
+                WM_KEYUP
+                    if w == VK_APPS as usize
+                        || w == VK_F10 as usize && GetKeyState(VK_SHIFT as i32) < 0 =>
+                {
+                    return 0;
+                }
+                _ => {}
+            }
+        }
         if msg == WM_SETFOCUS {
             edit_document(owner as HWND, |d| d.last_focus = hwnd);
         }

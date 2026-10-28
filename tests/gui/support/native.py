@@ -3,6 +3,10 @@ import ctypes as c
 from ctypes import wintypes as w
 import time
 from contextlib import contextmanager
+import win32con
+
+# Scan code 1, repeat count 1, previous state down, transition bit set.
+KEY_UP_LPARAM = 0xC0000001
 
 user = c.WinDLL("user32", use_last_error=True)
 kernel = c.WinDLL("kernel32", use_last_error=True)
@@ -44,19 +48,19 @@ def send(hwnd, message, wp=0, lp=0):
 
 
 def window_text(hwnd):
-    buffer = c.create_unicode_buffer(send(hwnd, 0xE) + 1)
-    send(hwnd, 0xD, len(buffer), c.addressof(buffer))
+    buffer = c.create_unicode_buffer(send(hwnd, win32con.WM_GETTEXTLENGTH) + 1)
+    send(hwnd, win32con.WM_GETTEXT, len(buffer), c.addressof(buffer))
     return buffer.value
 
 
 def set_text(hwnd, value):
     buffer = c.create_unicode_buffer(value)
-    send(hwnd, 0xC, 0, c.addressof(buffer))
+    send(hwnd, win32con.WM_SETTEXT, 0, c.addressof(buffer))
 
 
 def key_message(hwnd, code):
-    assert post(hwnd, 0x100, code, 1)
-    assert post(hwnd, 0x101, code, 0xC0000001)
+    assert post(hwnd, win32con.WM_KEYDOWN, code, 1)
+    assert post(hwnd, win32con.WM_KEYUP, code, KEY_UP_LPARAM)
 
 
 def windows(parent=None):
