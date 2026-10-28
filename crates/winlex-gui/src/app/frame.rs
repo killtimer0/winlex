@@ -65,7 +65,8 @@ pub(super) fn layout_frame() {
     let sidebar = sidebar::layout(area.bottom);
     layout::take_left(&mut area, sidebar);
     place(tabs, layout::take_top(&mut area, m.height + m.px(16)));
-    place(mdi, area);
+    // Sidebar layout can overlap the old MDI bounds; do not preserve those pixels.
+    place_with_flags(mdi, area, SWP_NOCOPYBITS);
 }
 pub(super) fn command(id: u16) -> bool {
     match id {

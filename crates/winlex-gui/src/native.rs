@@ -66,6 +66,9 @@ pub fn bounds(hwnd: HWND, parent: HWND) -> RECT {
     r
 }
 pub fn place(hwnd: HWND, r: RECT) {
+    place_with_flags(hwnd, r, 0);
+}
+pub fn place_with_flags(hwnd: HWND, r: RECT, flags: SET_WINDOW_POS_FLAGS) {
     if hwnd.is_null() {
         return;
     }
@@ -81,7 +84,7 @@ pub fn place(hwnd: HWND, r: RECT) {
             r.top,
             (r.right - r.left).max(0),
             (r.bottom - r.top).max(0),
-            SWP_NOZORDER | SWP_NOACTIVATE,
+            SWP_NOZORDER | SWP_NOACTIVATE | flags,
         );
     }
 }
