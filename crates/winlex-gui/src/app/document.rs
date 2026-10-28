@@ -45,14 +45,6 @@ pub(super) fn track_editor(owner: HWND, editor: HWND) -> Result<(), String> {
         Ok(())
     }
 }
-/// Read-only text keeps arrows and characters but lets Tab reach the dialog manager.
-pub(super) fn track_text(control: HWND) -> Result<(), String> {
-    if control.is_null() || unsafe { set_subclass(control, Some(text_tab_proc), 1, 0) } == 0 {
-        Err(error("Create document control"))
-    } else {
-        Ok(())
-    }
-}
 pub(super) unsafe extern "system" fn document_proc(
     hwnd: HWND,
     msg: u32,
@@ -209,24 +201,6 @@ unsafe extern "system" fn editor_proc(
                 remove_subclass(hwnd, Some(editor_proc), 1);
             }
             _ => {}
-        }
-        default_subclass(hwnd, msg, w, l)
-    }
-}
-unsafe extern "system" fn text_tab_proc(
-    hwnd: HWND,
-    msg: u32,
-    w: usize,
-    l: isize,
-    _id: usize,
-    _data: usize,
-) -> isize {
-    unsafe {
-        if msg == WM_GETDLGCODE && w == VK_TAB as usize {
-            return (DLGC_WANTARROWS | DLGC_WANTCHARS) as isize;
-        }
-        if msg == WM_NCDESTROY {
-            remove_subclass(hwnd, Some(text_tab_proc), 1);
         }
         default_subclass(hwnd, msg, w, l)
     }

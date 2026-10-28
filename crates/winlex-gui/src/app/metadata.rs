@@ -23,17 +23,14 @@ struct State {
     name: String,
     ticket: Option<Ticket>,
     numbers: Arc<[winlex_format::declaration::NumberRegion]>,
-    details_visible: bool,
     old_version: bool,
 }
 struct MetadataView {
     state: RefCell<State>,
     editor: HWND,
     header: HWND,
-    details: HWND,
     architecture_label: HWND,
     architecture_select: HWND,
-    details_button: HWND,
 }
 fn view(hwnd: HWND) -> Option<Rc<MetadataView>> {
     let view: Rc<dyn Any> = workspace::view(hwnd)?;
@@ -61,15 +58,12 @@ pub(super) fn open(name: &str, binding: Binding, preview: bool) -> Result<HWND, 
                 name: name.into(),
                 ticket: None,
                 numbers: Arc::from([]),
-                details_visible: false,
                 old_version: false,
             }),
             editor: std::ptr::null_mut(),
             header: std::ptr::null_mut(),
-            details: std::ptr::null_mut(),
             architecture_label: std::ptr::null_mut(),
             architecture_select: std::ptr::null_mut(),
-            details_button: std::ptr::null_mut(),
         }),
         preview,
     )?;
@@ -122,7 +116,6 @@ impl MetadataView {
         workspace::refresh_document_tabs();
         self.state.borrow_mut().old_version = old_version(&binding);
         self.update_header(hwnd);
-        self.set_details(&binding, "");
         let job = Job::Describe {
             document: id,
             catalog: binding.catalog,
@@ -167,49 +160,9 @@ impl MetadataView {
             self.request(hwnd);
         }
     }
-    fn set_details(&self, binding: &Binding, details: &str) {
-        set_text(
-            self.details,
-            &format!(
-                "{}\r\n{}\r\n\r\n{}",
-                binding.catalog.sources()[binding.id.source_id]
-                    .path
-                    .display(),
-                binding.id,
-                details.replace('\n', "\r\n")
-            ),
-        );
-    }
     fn update_header(&self, hwnd: HWND) {
-        let (binding, name, old) = {
-            let state = self.state.borrow();
-            (state.binding.clone(), state.name.clone(), state.old_version)
-        };
-        let entity = match binding.catalog.entity(binding.id) {
-            Ok(entity) => entity,
-            Err(error) => {
-                catalog::set_status(error.to_string());
-                return;
-            }
-        };
-        let prefix = if old {
-            format!("{}\r\n", resources::text(IDS_OLD_VERSION))
-        } else {
-            String::new()
-        };
-        set_text(
-            self.header,
-            &format!(
-                "{prefix}{name}\r\n{} · {}\r\n{}",
-                entity.kind,
-                entity.full_name,
-                binding.catalog.sources()[binding.id.source_id]
-                    .path
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-            ),
-        );
+        let old = self.state.borrow().old_version;
+        show(self.header, old);
         self.layout(hwnd);
     }
 }
@@ -231,10 +184,8 @@ impl document::View for MetadataView {
             state.ticket = None;
         }
         let body = match completion.result {
-            Ok(Output::Description { body, details }) => {
+            Ok(Output::Description { body }) => {
                 self.state.borrow_mut().numbers = body.numbers.into();
-                let binding = self.state.borrow().binding.clone();
-                self.set_details(&binding, &details);
                 body.text
             }
             Err(error) => error,
@@ -270,29 +221,13 @@ impl document::View for MetadataView {
         self.editor = crate::rich_text::create(hwnd, DECLARATION)?;
         self.header = child(
             hwnd,
-            w!("EDIT"),
-            &[0],
-            WS_TABSTOP | ES_MULTILINE as u32 | ES_READONLY as u32 | ES_AUTOHSCROLL as u32,
+            w!("STATIC"),
+            resources::wide_text(IDS_OLD_VERSION),
+            0,
             DOCUMENT_HEADER,
         );
-        self.details = child(
-            hwnd,
-            w!("EDIT"),
-            &[0],
-            WS_TABSTOP
-                | WS_VSCROLL
-                | WS_HSCROLL
-                | ES_MULTILINE as u32
-                | ES_READONLY as u32
-                | ES_AUTOHSCROLL as u32
-                | ES_AUTOVSCROLL as u32,
-            DOCUMENT_DETAILS,
-        );
         document::track_editor(hwnd, self.editor)?;
-        document::track_text(self.header)?;
-        document::track_text(self.details)?;
-        send(self.details, EM_SETLIMITTEXT, 0x7ffffffe, 0);
-        show(self.details, false);
+        show(self.header, false);
         self.architecture_label = child(
             hwnd,
             w!("STATIC"),
@@ -307,17 +242,10 @@ impl document::View for MetadataView {
             WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST as u32,
             SELECT_ARCH,
         );
-        self.details_button = child(
-            hwnd,
-            w!("BUTTON"),
-            resources::wide_text(IDS_DETAILS),
-            WS_TABSTOP,
-            TOGGLE_DETAILS,
-        );
         if [
             self.architecture_label,
             self.architecture_select,
-            self.details_button,
+            self.header,
         ]
         .iter()
         .any(|h| h.is_null())
@@ -332,10 +260,8 @@ impl document::View for MetadataView {
         for h in [
             self.editor,
             self.header,
-            self.details,
             self.architecture_label,
             self.architecture_select,
-            self.details_button,
         ] {
             bind(h, font);
         }
@@ -344,16 +270,12 @@ impl document::View for MetadataView {
         self.layout(hwnd);
     }
     fn layout(&self, hwnd: HWND) {
-        let (old, details) = {
-            let state = self.state.borrow();
-            (state.old_version, state.details_visible)
-        };
+        let old = self.state.borrow().old_version;
         let m = super::metrics(hwnd);
         let mut area = layout::inset(client(hwnd), m.px(8));
-        place(
-            self.header,
-            layout::take_top(&mut area, m.height * if old { 4 } else { 3 } + m.px(8)),
-        );
+        if old {
+            place(self.header, layout::take_top(&mut area, m.height + m.px(8)));
+        }
         let mut row = layout::take_top(&mut area, m.row() + m.px(4));
         let width = m.label_width([resources::wide_text(IDS_ARCHITECTURE)].into_iter(), 70);
         place(self.architecture_label, layout::take_left(&mut row, width));
@@ -366,26 +288,11 @@ impl document::View for MetadataView {
                 m.row() * 6,
             ),
         );
-        m.buttons(&mut area, [self.details_button]);
-        if details {
-            let height = ((area.bottom - area.top) / 3).min(m.row() * 8);
-            place(self.details, layout::take_top(&mut area, height));
-            layout::take_top(&mut area, m.px(4));
-        }
         place(self.editor, area);
     }
     fn command(&self, hwnd: HWND, id: u16, code: u32) -> bool {
         match id {
             SELECT_ARCH => self.select_architecture(hwnd, code),
-            TOGGLE_DETAILS => {
-                let visible = {
-                    let mut state = self.state.borrow_mut();
-                    state.details_visible = !state.details_visible;
-                    state.details_visible
-                };
-                show(self.details, visible);
-                self.layout(hwnd);
-            }
             _ => return false,
         }
         true

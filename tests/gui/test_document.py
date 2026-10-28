@@ -15,14 +15,9 @@ def test_document_controls_and_close_during_architecture_reload(launch, settings
     body = app.content(doc)
     n.send(editor, win32con.WM_CHAR, ord("X"))  # WM_CHAR: declaration stays read-only.
     assert app.content(doc) == body
-    details = n.get_item(doc, 1205)
-    assert not n.is_visible(details)
-    app.command(1048, doc)
-    assert n.is_visible(details)
-    assert str(settings[1]) in n.window_text(details)
-    assert '"parameters"' in n.window_text(details)
-    app.command(1048, doc)
-    assert not n.is_visible(details)
+    assert str(settings[1]) in body
+    assert '"parameters"' in body
+    assert "Windows.Win32.Storage.FileSystem" in body
 
     app.choose(doc, "x64")
     n.send(doc, win32con.WM_CLOSE)  # Close while a replacement may still be running.
@@ -146,13 +141,8 @@ def test_tab_traverses_document_controls(launch, settings):
     app.query("CreateFileW")
     doc = app.open_row()
     n.wait(lambda: "CreateFileW(" in app.content(doc), "declaration", 45)
-    app.command(1048, doc)  # Show details so they join the tab order.
-    details = n.get_item(doc, 1205)
-    assert n.is_visible(details)
-
     editor = n.get_item(doc, 1203)
-    order = [n.get_item(doc, 1204), details, app.architecture(doc),
-             n.get_item(doc, 1048), editor]
+    order = [app.architecture(doc), editor]
     app.focus(editor)
     for target in order:
         current = app.focused() or editor
@@ -165,25 +155,21 @@ def test_tab_traverses_document_controls(launch, settings):
     assert len(app.documents()) == 1
 
 
-def test_narrow_document_keeps_details_and_declaration_usable(launch, settings):
+def test_narrow_document_keeps_complete_body_usable(launch, settings):
     app = launch(["--winmd", settings[1]])
     app.query("CreateFileW")
     doc = app.open_row()
     n.wait(lambda: "CreateFileW(" in app.content(doc), "declaration", 45)
-    app.command(1048, doc)
     n.send(doc, win32con.WM_SYSCOMMAND, win32con.SC_RESTORE)  # SC_RESTORE
     with n.window_dpi_context(app.frame):
         dpi = n.api(n.user, "GetDpiForWindow", n.w.UINT, n.w.HWND)(doc) if hasattr(n.user, "GetDpiForWindow") else 96
         assert n.set_pos(doc, None, 0, 0, 340 * dpi // 96, 440 * dpi // 96, RESIZE_NO_MOVE)
-        header = n.get_item(doc, 1204)
-        details = n.get_item(doc, 1205)
         editor = n.get_item(doc, 1203)
-        assert n.class_name(header) == "Edit"
-        assert "Windows.Win32.Storage.FileSystem" in n.window_text(header)
-        n.send(header, win32con.EM_SETSEL, 0, -1)  # Full header is selectable despite the narrow view.
-        assert n.send(header, win32con.EM_GETSEL) != 0
-        h, d, e = map(n.rectangle, (header, details, editor))
-        assert h[3] <= d[1] < d[3] < e[1] < e[3]
-        assert e[3] - e[1] >= d[3] - d[1]
-        n.send(details, win32con.EM_LINESCROLL, 0, 20)  # EM_LINESCROLL
-        assert n.send(details, win32con.EM_GETFIRSTVISIBLELINE) > 0  # EM_GETFIRSTVISIBLELINE
+        assert "Windows.Win32.Storage.FileSystem" in app.content(doc)
+        assert '"parameters"' in app.content(doc)
+        n.send(editor, win32con.EM_SETSEL, 0, -1)
+        assert n.send(editor, win32con.EM_GETSEL) != 0
+        a, e = map(n.rectangle, (app.architecture(doc), editor))
+        assert a[3] <= e[1] < e[3]
+        n.send(editor, win32con.EM_LINESCROLL, 0, 20)
+        assert n.send(editor, win32con.EM_GETFIRSTVISIBLELINE) > 0

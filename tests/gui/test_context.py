@@ -1,5 +1,6 @@
 """Context menus use native popup loops, preserving the declaration selection."""
 import struct
+import shutil
 import time
 import win32clipboard as clipboard
 import win32con
@@ -63,13 +64,16 @@ def character_point(app, editor, index):
 
 
 def test_numeric_context_and_selection_survive_architecture_changes(launch, settings):
-    app = launch(["--winmd", settings[1]])
+    path = settings[2] / "来源😀.winmd"
+    shutil.copyfile(settings[1], path)
+    app = launch(["--winmd", path])
     app.query("Windows.Win32.Security.SECURITY_ATTRIBUTES")
     doc = app.open_row()
     app.choose(doc, "x64")
     n.wait(lambda: "24(0x18) bytes" in app.content(doc), "layout", 45)
     editor = n.get_item(doc, 1203)
-    index = app.content(doc).replace("\r\n", "\r").index("24(0x18)")
+    prefix = app.content(doc).replace("\r\n", "\r").split("24(0x18)")[0]
+    index = len(prefix.encode("utf-16-le")) // 2
     n.send(editor, win32con.EM_SETSEL, index, index + 2)
     menu, items = popup(app, editor, keyboard=True)
     assert items == [2071, 2072, 2073, 0, 2074]
@@ -100,7 +104,8 @@ def test_numeric_context_and_selection_survive_architecture_changes(launch, sett
 
     app.choose(doc, "x86")
     n.wait(lambda: "12(0xC) bytes" in app.content(doc), "new layout", 45)
-    index = app.content(doc).replace("\r\n", "\r").index("12(0xC)")
+    prefix = app.content(doc).replace("\r\n", "\r").split("12(0xC)")[0]
+    index = len(prefix.encode("utf-16-le")) // 2
     n.send(editor, win32con.EM_SETSEL, index, index)
     menu, items = popup(app, editor)
     get_label = n.api(n.user, "GetMenuStringW", n.c.c_int, n.w.HMENU, n.w.UINT, n.w.LPWSTR, n.c.c_int, n.w.UINT)

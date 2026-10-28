@@ -50,7 +50,6 @@ pub(super) trait Panel: Any {
     unsafe fn notify(&self, _l: isize) -> Option<isize> {
         None
     }
-    fn help(&self) {}
 }
 struct Search {
     controls: [HWND; 2],
@@ -176,9 +175,6 @@ impl Panel for Search {
             .notify(l)
         }
     }
-    fn help(&self) {
-        list_help(self.controls[1], catalog::cell);
-    }
 }
 impl Panel for Sources {
     fn controls(&self) -> &[HWND] {
@@ -210,9 +206,6 @@ impl Panel for Sources {
             }
             .notify(l)
         }
-    }
-    fn help(&self) {
-        list_help(self.controls[0], sources::cell);
     }
 }
 fn prepare_list(controls: &[HWND], list: HWND, m: &layout::Metrics) {
@@ -449,12 +442,6 @@ unsafe extern "system" fn list_proc(
     _data: usize,
 ) -> isize {
     unsafe {
-        if msg == WM_KEYDOWN && w == VK_F1 as usize {
-            if let Some(panel) = read(|a| a.sidebar.owner(h)) {
-                panel.help();
-            }
-            return 0;
-        }
         if msg == WM_NCDESTROY {
             let image = send(h, LVM_SETIMAGELIST, LVSIL_SMALL as usize, 0);
             if image != 0 {
@@ -463,18 +450,5 @@ unsafe extern "system" fn list_proc(
             remove_subclass(h, Some(list_proc), 1);
         }
         default_subclass(h, msg, w, l)
-    }
-}
-fn list_help(hwnd: HWND, cell: fn(usize, bool) -> String) {
-    let row = send(hwnd, LVM_GETNEXTITEM, usize::MAX, LVNI_SELECTED as isize);
-    if row >= 0 {
-        unsafe {
-            MessageBoxW(
-                hwnd,
-                wide(&cell(row as usize, true)).as_ptr(),
-                resources::wide_text(IDS_SOURCE).as_ptr(),
-                MB_OK | MB_ICONINFORMATION,
-            );
-        }
     }
 }

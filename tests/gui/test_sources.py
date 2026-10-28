@@ -80,5 +80,4 @@ def test_long_unicode_input(launch, settings):
     app.query("CreateFileW")
     doc = app.open_row()
     n.wait(lambda: 'CreateFileW(' in app.content(doc), "declaration", 45)
-    app.command(1048, doc)
-    assert str(path) in n.window_text(n.get_item(doc, 1205))
+    assert str(path) in app.content(doc)

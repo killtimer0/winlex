@@ -23,7 +23,7 @@ def test_same_name_sources_open_and_unload_independently_with_failed_load_rollba
     n.wait(lambda: 'CreateFileW(' in app.content(second), "second declaration", 45)
     assert first != second
     assert n.window_text(first) == n.window_text(second)
-    assert str(alias) in n.window_text(n.get_item(second, 1205))
+    assert str(alias) in app.content(second)
     app.command(1021)
     assert app.count(app.sources) == 2
     saved = profile.get("AutoLoad")

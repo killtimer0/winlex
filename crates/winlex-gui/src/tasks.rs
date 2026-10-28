@@ -42,7 +42,6 @@ pub enum Output {
     SearchDone,
     Description {
         body: winlex_format::declaration::Rendered,
-        details: String,
     },
 }
 pub struct Completion {
@@ -125,12 +124,27 @@ fn execute(
             arch,
             ..
         } => {
-            let body = winlex_format::declaration::render(&catalog, entity, arch)?;
+            let mut body = winlex_format::declaration::render(&catalog, entity, arch)?;
+            let summary = catalog.entity(entity)?;
+            let prefix = format!(
+                "{} · {}\n{}\n{}\n\n",
+                summary.kind,
+                summary.full_name,
+                catalog.sources()[entity.source_id].path.display(),
+                entity
+            )
+            .replace("\r\n", "\n");
+            let offset = prefix.encode_utf16().count();
+            for number in &mut body.numbers {
+                number.range.start += offset;
+                number.range.end += offset;
+            }
             let details = format!(
                 "{:#}",
                 winlex_format::describe(&catalog, entity, Some(arch))?
             );
-            Ok(Output::Description { body, details })
+            body.text = format!("{prefix}{}\n\n{details}", body.text);
+            Ok(Output::Description { body })
         }
     }
 }

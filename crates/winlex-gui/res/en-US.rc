@@ -29,7 +29,6 @@ END
 STRINGTABLE
 BEGIN
     IDS_ARCHITECTURE "Architecture"
-    IDS_DETAILS "Details"
     IDS_PREVIEW "Preview"
     IDS_WORKER_STOPPED "Background worker stopped"
     IDS_COPY_DECIMAL "Copy decimal"
@@ -53,7 +52,6 @@ BEGIN
     IDS_SEARCHING "Searching..."
     IDS_SEARCH_STATUS "Results {total}. Click or Space to preview; double-click or Enter to open."
     IDS_QUERYING "Loading declaration..."
-    IDS_SOURCE "Source"
     IDS_WINMD_FILES "Windows metadata (*.winmd)"
     IDS_ALL_FILES "All files (*.*)"
     IDS_LOAD_METADATA "Open files"

@@ -29,7 +29,6 @@ END
 STRINGTABLE
 BEGIN
     IDS_ARCHITECTURE "架构"
-    IDS_DETAILS "详细信息"
     IDS_PREVIEW "预览"
     IDS_WORKER_STOPPED "后台工作线程已停止"
     IDS_COPY_DECIMAL "复制十进制"
@@ -53,7 +52,6 @@ BEGIN
     IDS_SEARCHING "正在搜索…"
     IDS_SEARCH_STATUS "共 {total} 条。单击或空格预览，双击或回车打开。"
     IDS_QUERYING "正在加载声明…"
-    IDS_SOURCE "来源"
     IDS_WINMD_FILES "Windows 元数据 (*.winmd)"
     IDS_ALL_FILES "所有文件 (*.*)"
     IDS_LOAD_METADATA "打开文件"
