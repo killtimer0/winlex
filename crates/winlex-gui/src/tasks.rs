@@ -1,5 +1,8 @@
 //! Metadata operations executed by the application's background executor.
-use crate::worker::Ticket;
+use crate::{
+    results::{Builder, Items, ResultItem},
+    worker::Ticket,
+};
 use anyhow::{Context, bail};
 use std::{
     path::PathBuf,
@@ -48,7 +51,7 @@ impl Job {
 }
 pub enum Output {
     Loaded(Option<Arc<Catalog>>),
-    Matches(Vec<SearchMatch>),
+    Matches(Items),
     SearchDone,
     Description {
         body: winlex_format::declaration::Rendered,
@@ -120,7 +123,14 @@ fn execute(
                     ..Default::default()
                 },
             )?;
-            search_batches(ticket, || search.step(), publish, Instant::now)
+            let mut builder = Builder::new(&query);
+            search_batches(
+                ticket,
+                || search.step(),
+                publish,
+                Instant::now,
+                |item| builder.prepare(&catalog, item),
+            )
         }
         Job::Describe {
             catalog,
@@ -158,6 +168,7 @@ fn search_batches(
     mut next: impl FnMut() -> anyhow::Result<SearchStep>,
     publish: &impl Fn(anyhow::Result<Output>) -> anyhow::Result<()>,
     mut now: impl FnMut() -> Instant,
+    mut prepare: impl FnMut(SearchMatch) -> anyhow::Result<Box<ResultItem>>,
 ) -> anyhow::Result<Output> {
     let mut batch = Vec::new();
     let mut sent = now();
@@ -170,7 +181,10 @@ fn search_batches(
             bail!("cancelled");
         }
         match step {
-            Ok(SearchStep::Match(item)) => batch.push(item),
+            Ok(SearchStep::Match(item)) => match prepare(item) {
+                Ok(item) => batch.push(item),
+                Err(error) => break Err(error),
+            },
             Ok(SearchStep::Skipped) => {}
             Ok(SearchStep::Done) => break Ok(Output::SearchDone),
             Err(error) => break Err(error),
@@ -214,6 +228,12 @@ mod tests {
     }
 
     type BatchLog = Vec<(u64, Vec<u32>)>;
+    fn prepare(matched: SearchMatch) -> anyhow::Result<Box<ResultItem>> {
+        Ok(Box::new(ResultItem {
+            matched,
+            display: Default::default(),
+        }))
+    }
     fn collect_batches(
         events: Vec<(u64, anyhow::Result<SearchStep>)>,
         cancel_at: Option<usize>,
@@ -247,6 +267,7 @@ mod tests {
                 Ok(())
             },
             || time.get(),
+            prepare,
         );
         (result, batches.into_inner())
     }
@@ -327,6 +348,7 @@ mod tests {
             },
             &|_| Err(anyhow::anyhow!("queue closed")),
             || time.get(),
+            prepare,
         );
         assert_eq!(result.err().unwrap().to_string(), "queue closed");
         assert_eq!(count, 1);

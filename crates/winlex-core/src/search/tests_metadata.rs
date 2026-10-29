@@ -166,6 +166,27 @@ fn combined_union_is_unique_and_uses_strongest_quality() {
 }
 
 #[test]
+fn entity_context_preserves_metadata_namespace_owner_and_values() {
+    let db = Catalog::from_inputs([fixture()]).unwrap();
+    let field = hits(&db, "ValueOnly", SearchMode::Name).pop().unwrap();
+    let context = db.entity_context(field.id).unwrap();
+    assert_eq!(context.namespace, "Fixture");
+    assert_eq!(context.owner.as_deref(), Some("Outer"));
+    assert!(matches!(context.constant, Some(Value::I32(257))));
+    assert_eq!(
+        context.guid.as_deref(),
+        Some("02570000-9abc-def0-1234-56789abcdef0")
+    );
+    let inner = hits(&db, "Fixture.Outer+Inner", SearchMode::Name)
+        .pop()
+        .unwrap();
+    let context = db.entity_context(inner.id).unwrap();
+    assert_eq!(context.namespace, "Fixture");
+    assert!(context.owner.is_none());
+    assert!(context.constant.is_none());
+}
+
+#[test]
 fn combined_guid_matching_requires_four_normalized_hex_digits() {
     let db = Catalog::from_inputs([fixture()]).unwrap();
     for query in ["5", "bc", "abc", "{abc}", "0-1", "0xBC", "123"] {

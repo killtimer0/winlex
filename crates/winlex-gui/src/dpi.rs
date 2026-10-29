@@ -107,7 +107,32 @@ impl Font {
             {
                 return Err(error("Read system font"));
             }
-            let handle = CreateFontIndirectW(&ncm.lfMessageFont);
+            Self::create(dpi, &ncm.lfMessageFont)
+        }
+    }
+    pub fn heading(dpi: u32, base: HFONT) -> anyhow::Result<Self> {
+        unsafe {
+            let mut font: LOGFONTW = std::mem::zeroed();
+            anyhow::ensure!(
+                GetObjectW(
+                    base,
+                    std::mem::size_of::<LOGFONTW>() as i32,
+                    (&mut font as *mut LOGFONTW).cast()
+                ) != 0,
+                "Read list font failed"
+            );
+            font.lfHeight += if font.lfHeight < 0 {
+                -crate::layout::scale(2, dpi)
+            } else {
+                crate::layout::scale(2, dpi)
+            };
+            font.lfWeight = FW_BOLD as i32;
+            Self::create(dpi, &font)
+        }
+    }
+    unsafe fn create(dpi: u32, definition: &LOGFONTW) -> anyhow::Result<Self> {
+        unsafe {
+            let handle = CreateFontIndirectW(definition);
             if handle.is_null() {
                 anyhow::bail!("Create system font failed");
             }

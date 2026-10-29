@@ -4,6 +4,7 @@ use super::{
     read, workspace, write,
 };
 use crate::native::text;
+use crate::results::Items;
 use crate::{
     native::*,
     resources::{self, *},
@@ -11,7 +12,7 @@ use crate::{
     worker::Ticket,
 };
 use std::{path::PathBuf, sync::Arc};
-use winlex_core::{Catalog, SearchMatch, SourceData};
+use winlex_core::{Catalog, SourceData};
 
 struct Load {
     ticket: Ticket,
@@ -31,9 +32,9 @@ pub(super) struct Session {
     load: Option<Load>,
     load_error: Option<String>,
     search: Search,
-    pub results: Vec<SearchMatch>,
-    pending_results: Vec<SearchMatch>,
-    merge_buffer: Vec<SearchMatch>,
+    pub results: Items,
+    pending_results: Items,
+    merge_buffer: Items,
     pub remember_sources: bool,
     notice: Option<String>,
 }
@@ -274,12 +275,12 @@ fn update_results(append: bool) {
 }
 
 fn merge_results(
-    results: &mut Vec<SearchMatch>,
-    batch: &mut Vec<SearchMatch>,
-    buffer: &mut Vec<SearchMatch>,
+    results: &mut Items,
+    batch: &mut Items,
+    buffer: &mut Items,
     tracked: &mut [isize; 4],
 ) {
-    batch.sort_unstable_by(SearchMatch::compare);
+    batch.sort_unstable_by(|a, b| a.compare(b));
     buffer.clear();
     buffer.reserve(results.len() + batch.len());
     let mut old = results.drain(..).enumerate().peekable();
@@ -414,22 +415,22 @@ pub(super) fn cell(row: usize, detail: bool) -> String {
             .file_name()
             .unwrap_or_default()
             .to_string_lossy();
-        let arches = super::architecture::supported(e.architecture_mask)
-            .map(|architecture| architecture.name())
-            .collect::<Vec<_>>()
-            .join("/");
         if detail {
             format!(
-                "{}\r\n{} · {} · {}\r\n{}\r\n{}",
+                "{}\r\n{} · {}\r\n{}\r\n{}\r\n{}",
                 e.full_name,
                 e.kind,
                 label,
-                arches,
+                String::from_utf16_lossy(&e.display.detail),
                 source.path.display(),
                 e.id
             )
         } else {
-            format!("{}\n{} · {} · {}", e.name, e.kind, arches, label)
+            format!(
+                "{}\n{}",
+                e.name,
+                String::from_utf16_lossy(&e.display.detail)
+            )
         }
     })
 }
@@ -589,23 +590,27 @@ pub(super) fn apply(c: Completion) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn hit(token: u32, score: u16) -> SearchMatch {
-        SearchMatch {
-            entity: winlex_core::EntitySummary {
-                id: winlex_core::EntityId {
-                    source_id: 0,
-                    token,
+    use crate::results::ResultItem;
+    fn hit(token: u32, score: u16) -> Box<ResultItem> {
+        Box::new(ResultItem {
+            display: Default::default(),
+            matched: winlex_core::SearchMatch {
+                entity: winlex_core::EntitySummary {
+                    id: winlex_core::EntityId {
+                        source_id: 0,
+                        token,
+                    },
+                    name: format!("symbol{token}"),
+                    full_name: format!("Fixture.symbol{token}"),
+                    kind: "type".into(),
+                    architecture_mask: 7,
                 },
-                name: format!("symbol{token}"),
-                full_name: format!("Fixture.symbol{token}"),
-                kind: "type".into(),
-                architecture_mask: 7,
+                quality: winlex_core::MatchQuality::Fuzzy {
+                    score,
+                    field: winlex_core::MatchField::Name,
+                },
             },
-            quality: winlex_core::MatchQuality::Fuzzy {
-                score,
-                field: winlex_core::MatchField::Name,
-            },
-        }
+        })
     }
     #[test]
     fn incremental_merge_matches_global_ranking_for_every_batch_size() {
@@ -623,7 +628,7 @@ mod tests {
                 assert!(batch.is_empty());
             }
             let mut expected: Vec<_> = (1..=200).map(|id| hit(id, (id * 71 % 23) as u16)).collect();
-            expected.sort_unstable_by(SearchMatch::compare);
+            expected.sort_unstable_by(|a, b| a.compare(b));
             assert_eq!(
                 results.iter().map(|m| m.id).collect::<Vec<_>>(),
                 expected.iter().map(|m| m.id).collect::<Vec<_>>()

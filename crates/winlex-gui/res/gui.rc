@@ -3,6 +3,17 @@
 #include "version.h"
 
 LANGUAGE 0, 0
+IDR_SYMBOL_CLASS 10 "codicons/symbol-class.emf"
+IDR_SYMBOL_INTERFACE 10 "codicons/symbol-interface.emf"
+IDR_SYMBOL_STRUCT 10 "codicons/symbol-structure.emf"
+IDR_SYMBOL_ENUM 10 "codicons/symbol-enum.emf"
+IDR_SYMBOL_METHOD 10 "codicons/symbol-method.emf"
+IDR_SYMBOL_CONSTANT 10 "codicons/symbol-constant.emf"
+IDR_SYMBOL_FIELD 10 "codicons/symbol-field.emf"
+IDR_SYMBOL_PROPERTY 10 "codicons/symbol-property.emf"
+IDR_SYMBOL_EVENT 10 "codicons/symbol-event.emf"
+IDR_SYMBOL_REFERENCE 10 "codicons/references.emf"
+IDR_SYMBOL_MISC 10 "codicons/symbol-misc.emf"
 IDR_ACCELERATORS ACCELERATORS
 BEGIN
     "O", LOAD_METADATA, VIRTKEY, CONTROL

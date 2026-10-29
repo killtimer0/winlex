@@ -3,11 +3,14 @@
 mod app;
 mod config;
 mod dpi;
+mod icons;
 mod input;
 mod layout;
 mod native;
 mod platform;
 mod resources;
+mod result_view;
+mod results;
 mod rich_text;
 mod tasks;
 mod worker;

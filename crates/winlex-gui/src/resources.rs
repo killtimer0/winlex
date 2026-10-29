@@ -82,6 +82,9 @@ pub fn initialize(language: Language) -> anyhow::Result<()> {
     Ok(())
 }
 
+pub fn binary(id: u16) -> anyhow::Result<&'static [u8]> {
+    data(10usize as *const u16, id)
+}
 fn data(kind: *const u16, id: u16) -> anyhow::Result<&'static [u8]> {
     unsafe {
         let module = instance();
@@ -89,6 +92,9 @@ fn data(kind: *const u16, id: u16) -> anyhow::Result<&'static [u8]> {
         let mut resource = FindResourceExW(module, kind, id as usize as *const u16, language);
         if resource.is_null() && language != ENGLISH {
             resource = FindResourceExW(module, kind, id as usize as *const u16, ENGLISH);
+        }
+        if resource.is_null() {
+            resource = FindResourceExW(module, kind, id as usize as *const u16, 0);
         }
         if resource.is_null() {
             return Err(error("Find GUI resource").context(format!("Missing GUI resource {id}")));

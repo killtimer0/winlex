@@ -1,11 +1,17 @@
 //! Registered sidebar views and their shared owner-data list presentation.
 use super::{bind, catalog, dpi, keys, read, sidebar, sources};
+use crate::result_view::Visuals;
 use crate::{
     layout,
     native::*,
     resources::{self, *},
 };
-use std::{any::Any, cell::Cell, ptr, rc::Rc};
+use std::{
+    any::Any,
+    cell::{Cell, RefCell},
+    ptr,
+    rc::Rc,
+};
 use winlex_core::SearchMode;
 
 const SEARCH_MODES: &[(u16, SearchMode)] = &[
@@ -68,6 +74,7 @@ struct Search {
     mode: Cell<usize>,
     composing: Cell<bool>,
     deadline: Cell<Option<std::time::Instant>>,
+    visuals: RefCell<Option<Visuals>>,
 }
 struct Sources {
     controls: [HWND; 4],
@@ -132,6 +139,7 @@ impl Search {
             mode: Cell::new(0),
             composing: Cell::new(false),
             deadline: Cell::new(None),
+            visuals: RefCell::new(None),
         }))
     }
 }
@@ -164,7 +172,16 @@ impl Panel for Search {
         &self.controls
     }
     fn prepare(&self, m: &layout::Metrics) {
-        prepare_list(&self.controls, self.controls[1], m);
+        for &h in &self.controls {
+            bind(h, m.font);
+        }
+        match Visuals::new(m) {
+            Ok(visuals) => {
+                row_height(self.controls[1], visuals.row_height());
+                self.visuals.replace(Some(visuals));
+            }
+            Err(error) => super::write(|a| a.failure = Some(error)),
+        }
     }
     fn layout(&self, area: RECT, m: &layout::Metrics) {
         let [input, results, mode] = self.controls;
@@ -226,6 +243,7 @@ impl Panel for Search {
                 hwnd: self.controls[1],
                 cell: catalog::cell,
                 open: Some(catalog::open),
+                visuals: self.visuals.borrow().as_ref(),
             }
             .notify(l)
         }
@@ -258,6 +276,7 @@ impl Panel for Sources {
                 hwnd: self.controls[0],
                 cell: sources::cell,
                 open: None,
+                visuals: None,
             }
             .notify(l)
         }
@@ -267,21 +286,25 @@ fn prepare_list(controls: &[HWND], list: HWND, m: &layout::Metrics) {
     for &h in controls {
         bind(h, m.font);
     }
+    row_height(list, m.height * 2 + m.px(8));
+}
+fn row_height(list: HWND, height: i32) {
     // A transparent small image defines a fixed two-line native row height.
     unsafe {
-        let image = ImageList_Create(1, m.height * 2 + m.px(8), ILC_COLOR32, 1, 1);
+        let image = ImageList_Create(1, height, ILC_COLOR32, 1, 1);
         let old = send(list, LVM_SETIMAGELIST, LVSIL_SMALL as usize, image as isize);
         if old != 0 {
             ImageList_Destroy(old as _);
         }
     }
 }
-struct List {
+struct List<'a> {
     hwnd: HWND,
     cell: fn(usize, bool) -> String,
     open: Option<fn(isize, catalog::Open)>,
+    visuals: Option<&'a Visuals>,
 }
-impl List {
+impl List<'_> {
     pub unsafe fn notify(&self, l: isize) -> Option<isize> {
         unsafe {
             let hdr = &*(l as *const NMHDR);
@@ -339,25 +362,38 @@ impl List {
                             {
                                 return Some(CDRF_DODEFAULT as isize);
                             }
-                            draw_list_background(hdr.hwndFrom, d);
+                            let selected = draw_list_background(hdr.hwndFrom, d);
                             SetBkMode(d.nmcd.hdc, TRANSPARENT as i32);
-                            let content = (self.cell)(d.nmcd.dwItemSpec, false);
-                            let mid = (d.nmcd.rc.top + d.nmcd.rc.bottom) / 2;
-                            for (line, (top, bottom)) in content
-                                .splitn(2, '\n')
-                                .zip([(d.nmcd.rc.top, mid), (mid, d.nmcd.rc.bottom)])
-                            {
-                                let mut r = d.nmcd.rc;
-                                r.left += layout::scale(4, dpi().window(hdr.hwndFrom));
-                                r.top = top;
-                                r.bottom = bottom;
-                                DrawTextW(
-                                    d.nmcd.hdc,
-                                    wide(line).as_mut_ptr(),
-                                    -1,
-                                    &mut r,
-                                    DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX | DT_VCENTER,
-                                );
+                            if let Some(visuals) = self.visuals {
+                                read(|a| {
+                                    if let Some(item) = a.session.results.get(d.nmcd.dwItemSpec) {
+                                        visuals.draw(
+                                            d.nmcd.hdc,
+                                            d.nmcd.rc,
+                                            &item.display,
+                                            selected,
+                                        );
+                                    }
+                                });
+                            } else {
+                                let content = (self.cell)(d.nmcd.dwItemSpec, false);
+                                let mid = (d.nmcd.rc.top + d.nmcd.rc.bottom) / 2;
+                                for (line, (top, bottom)) in content
+                                    .splitn(2, '\n')
+                                    .zip([(d.nmcd.rc.top, mid), (mid, d.nmcd.rc.bottom)])
+                                {
+                                    let mut r = d.nmcd.rc;
+                                    r.left += layout::scale(4, dpi().window(hdr.hwndFrom));
+                                    r.top = top;
+                                    r.bottom = bottom;
+                                    DrawTextW(
+                                        d.nmcd.hdc,
+                                        wide(line).as_mut_ptr(),
+                                        -1,
+                                        &mut r,
+                                        DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX | DT_VCENTER,
+                                    );
+                                }
                             }
                             if d.nmcd.uItemState & CDIS_FOCUS != 0
                                 && GetFocus() == hdr.hwndFrom
@@ -377,7 +413,7 @@ impl List {
         }
     }
 }
-unsafe fn draw_list_background(hwnd: HWND, draw: &NMLVCUSTOMDRAW) {
+unsafe fn draw_list_background(hwnd: HWND, draw: &NMLVCUSTOMDRAW) -> bool {
     unsafe {
         let focused = GetFocus() == hwnd;
         let selected = send(
@@ -427,6 +463,7 @@ unsafe fn draw_list_background(hwnd: HWND, draw: &NMLVCUSTOMDRAW) {
             GetThemeColor(theme, LVP_LISTITEM, state, TMT_TEXTCOLOR as i32, &mut color);
         }
         SetTextColor(draw.nmcd.hdc, color);
+        selected
     }
 }
 fn create_list(frame: HWND, id: u16) -> anyhow::Result<HWND> {

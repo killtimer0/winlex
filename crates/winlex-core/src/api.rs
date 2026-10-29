@@ -100,9 +100,19 @@ pub struct EntitySummary {
     pub kind: String,
     pub architecture_mask: i32,
 }
+pub struct EntityContext {
+    pub namespace: String,
+    pub owner: Option<String>,
+    pub constant: Option<Value>,
+    pub guid: Option<String>,
+}
+struct TypeName {
+    full: String,
+    namespace_len: usize,
+}
 pub struct Catalog {
     db: Db,
-    names: HashMap<EntityId, String>,
+    names: HashMap<EntityId, TypeName>,
     search_index: Vec<EntityId>,
 }
 fn raw_mask<'a>(r: impl HasAttributes<'a>) -> i32 {
@@ -227,10 +237,10 @@ impl Catalog {
             t: TypeDef<'_>,
             parents: &HashMap<(usize, usize), usize>,
             depth: usize,
-        ) -> Result<String> {
+        ) -> Result<TypeName> {
             ensure!(depth < 128, "nested type depth exceeds limit");
             let file = t.to_row().file;
-            Ok(if let Some(parent) = parents.get(&(file, t.pos())) {
+            if let Some(parent) = parents.get(&(file, t.pos())) {
                 let p = db.row::<TypeDef>(
                     EntityId {
                         source_id: file,
@@ -238,12 +248,21 @@ impl Catalog {
                     },
                     2,
                 )?;
-                format!("{}+{}", full(db, p, parents, depth + 1)?, t.name())
-            } else if t.namespace().is_empty() {
-                t.name().into()
+                let parent = full(db, p, parents, depth + 1)?;
+                Ok(TypeName {
+                    full: format!("{}+{}", parent.full, t.name()),
+                    namespace_len: parent.namespace_len,
+                })
             } else {
-                format!("{}.{}", t.namespace(), t.name())
-            })
+                Ok(TypeName {
+                    full: if t.namespace().is_empty() {
+                        t.name().into()
+                    } else {
+                        format!("{}.{}", t.namespace(), t.name())
+                    },
+                    namespace_len: t.namespace().len(),
+                })
+            }
         }
         let mut names = HashMap::new();
         let mut search_index = Vec::new();
@@ -283,7 +302,7 @@ impl Catalog {
     }
     fn full_name(&self, row: &Declaration<'_>) -> String {
         match row {
-            Declaration::Type(t) => self.names[&key(*t, 2)].clone(),
+            Declaration::Type(t) => self.names[&key(*t, 2)].full.clone(),
             Declaration::Reference(r) => {
                 if r.namespace().is_empty() {
                     r.name().into()
@@ -293,7 +312,7 @@ impl Catalog {
             }
             _ => format!(
                 "{}.{}",
-                self.names[&key(row.owner().unwrap(), 2)],
+                self.names[&key(row.owner().unwrap(), 2)].full,
                 row.name()
             ),
         }
@@ -329,6 +348,39 @@ impl Catalog {
     }
     pub fn entity(&self, id: EntityId) -> Result<EntitySummary> {
         Ok(self.summarize(id, &self.declaration(id, None)?))
+    }
+    /// Metadata-owned context, without interpreting container names or member flags.
+    pub fn entity_context(&self, id: EntityId) -> Result<EntityContext> {
+        let row = self.declaration(id, None)?;
+        let (namespace, owner) = if let Some(owner) = row.owner() {
+            let name = &self.names[&key(owner, 2)];
+            (
+                name.full[..name.namespace_len].to_owned(),
+                (!matches!(row, Declaration::Type(_))).then(|| {
+                    name.full[name.namespace_len + usize::from(name.namespace_len != 0)..]
+                        .to_owned()
+                }),
+            )
+        } else if let Declaration::Reference(r) = row {
+            (r.namespace().to_owned(), None)
+        } else {
+            unreachable!()
+        };
+        let constant = match row {
+            Declaration::Field(field) => field.constant().map(|value| value.value()),
+            _ => None,
+        };
+        let guid = match row {
+            Declaration::Type(row) => guid(row),
+            Declaration::Field(row) => guid(row),
+            _ => None,
+        };
+        Ok(EntityContext {
+            namespace,
+            owner,
+            constant,
+            guid,
+        })
     }
     pub fn resolve_reference(&self, id: EntityId, arch: Architecture) -> Result<EntityId> {
         let r: TypeRef = self.db.row(id, 1)?;

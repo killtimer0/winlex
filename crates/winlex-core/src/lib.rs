@@ -14,7 +14,7 @@ pub mod metadata;
 
 pub use anyhow::{Error, Result};
 pub use api::{
-    Architecture, Catalog, EntityCategory, EntitySummary, InvalidSearchInput, Search, SearchMode,
-    SearchOptions, SearchStep, guid, integer,
+    Architecture, Catalog, EntityCategory, EntityContext, EntitySummary, InvalidSearchInput,
+    Search, SearchMode, SearchOptions, SearchStep, guid, integer,
 };
 pub use windows_metadata;

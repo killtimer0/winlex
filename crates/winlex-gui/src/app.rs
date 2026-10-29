@@ -93,6 +93,7 @@ pub fn run(
 ) -> anyhow::Result<()> {
     let system_version = crate::platform::WindowsVersion::query()?;
     let _apartment = crate::input::Apartment::initialize()?;
+    let _graphics = crate::icons::Runtime::new()?;
     let settings = settings::Settings::load(&config);
     resources::initialize(settings.preferences.language)?;
     let mut session = catalog::Session::new();

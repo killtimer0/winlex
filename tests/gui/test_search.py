@@ -2,8 +2,56 @@ import time
 import json
 import subprocess
 import win32con
+import win32gui
+from support.diagnostics import capture, screenshot
 from support import messages
 from support import native as n
+
+
+def test_result_rows_show_icons_context_and_match_emphasis(launch, settings):
+    app = launch([settings[1]])
+    mode = n.get_item(app.frame, 1114)
+    for index, query, prefix, name_match in [
+        (0, "CrtFlW", "Apis · ", True),
+        (2, "5", "= 5 · ", False),
+        (3, "0000000c00000000c000000000000046", "= {...} · ", False),
+    ]:
+        n.send(mode, win32con.CB_SETCURSEL, index)
+        app.command(1114, code=win32con.CBN_SELENDOK)
+        app.query(query)
+        assert app.count() > 0
+        row = app.named_rows("CreateFileW")[0] if name_match else 0
+        n.send(app.results, 0x1013, row, 0)  # LVM_ENSUREVISIBLE
+        lines = app.cell(row).splitlines()
+        detail = lines[2]
+        assert detail.startswith(prefix), detail
+        assert "全架构" not in detail and "All architectures" not in detail
+        assert "x86 x64 arm64" not in detail
+        assert " ·  · " not in detail
+        assert ".winmd" not in detail.lower() and "0x0" not in detail
+        with n.window_dpi_context(app.frame):
+            left, top, right, bottom = app.item_rect(row)
+            dc = win32gui.GetDC(app.frame)
+            try:
+                dpi = app.actual_dpi or n.api(n.c.WinDLL("gdi32"), "GetDeviceCaps", n.c.c_int,
+                                              n.w.HDC, n.c.c_int)(dc, 88)
+            finally:
+                win32gui.ReleaseDC(app.frame, dc)
+            scale = dpi / 96
+            pad, icon = round(4 * scale), round(16 * scale)
+            midpoint = (top + bottom) // 2
+            with capture(app.results, client=True) as (dc, _, _):
+                background = win32gui.GetSysColor(win32con.COLOR_WINDOW)
+                assert sum(win32gui.GetPixel(dc, x, y) != background
+                           for x in range(left + pad, left + pad + icon)
+                           for y in range(top + pad, top + pad + icon)) > 4
+                accent = win32gui.GetSysColor(win32con.COLOR_HOTLIGHT)
+                y_range = range(top + pad, midpoint) if name_match else range(midpoint, bottom - pad)
+                assert any(win32gui.GetPixel(dc, x, y) == accent
+                           for x in range(left + pad * 2 + icon, min(right, left + round(240 * scale)))
+                           for y in y_range), (query, "missing match emphasis")
+            screenshot(app.frame, settings[2] / ("result-row-%d.bmp" % index))
+            screenshot(app.results, settings[2] / ("result-list-%d.bmp" % index))
 
 
 def test_search_modes_match_cli_order(launch, settings):

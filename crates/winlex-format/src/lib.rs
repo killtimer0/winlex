@@ -5,6 +5,20 @@ use winlex_core::metadata::key;
 use winlex_core::windows_metadata::{reader::*, *};
 use winlex_core::{Architecture, Catalog, Declaration, EntityId, Result, guid, integer};
 
+pub fn constant(value: &Value) -> String {
+    if let Some(value) = integer(value) {
+        return value.to_string();
+    }
+    match value {
+        Value::EnumValue(_, value) => constant(value),
+        Value::Bool(value) => value.to_string(),
+        Value::F32(value) => value.to_string(),
+        Value::F64(value) => value.to_string(),
+        Value::Utf8(value) | Value::Utf16(value) => format!("{value:?}"),
+        _ => format!("{value:?}"),
+    }
+}
+
 pub fn summary(c: &Catalog) -> Json {
     let (types, fields, methods) = c.row_counts();
     json!({"sources":c.sources(),"type_rows":types,"field_rows":fields,"method_rows":methods})
