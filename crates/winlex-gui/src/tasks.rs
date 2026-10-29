@@ -7,7 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 use winlex_core::{
-    Architecture, Catalog, EntityId, SearchMatch, SearchOptions, SearchStep, SourceData,
+    Architecture, Catalog, EntityId, SearchMatch, SearchMode, SearchOptions, SearchStep, SourceData,
 };
 
 const SEARCH_BATCH_INTERVAL: Duration = Duration::from_millis(100);
@@ -21,6 +21,7 @@ pub enum Job {
     Search {
         catalog: Arc<Catalog>,
         query: String,
+        mode: SearchMode,
         categories: u32,
     },
     Describe {
@@ -107,11 +108,13 @@ fn execute(
         Job::Search {
             catalog,
             query,
+            mode,
             categories,
         } => {
             let mut search = catalog.search(
                 &query,
                 SearchOptions {
+                    mode,
                     cancel: Some(&ticket.cancel),
                     categories: Some(categories),
                     ..Default::default()
@@ -203,8 +206,10 @@ mod tests {
                 kind: "type".into(),
                 architecture_mask: 7,
             },
-            score: 1,
-            field: winlex_core::MatchField::Name,
+            quality: winlex_core::MatchQuality::Fuzzy {
+                score: 1,
+                field: winlex_core::MatchField::Name,
+            },
         })
     }
 

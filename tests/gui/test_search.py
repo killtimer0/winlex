@@ -1,8 +1,83 @@
 import time
 import json
+import subprocess
 import win32con
 from support import messages
 from support import native as n
+
+
+def test_search_modes_match_cli_order(launch, settings):
+    cli = settings[0].with_name("winlex-fuzzy.exe")
+    app = launch([settings[1]])
+    mode = n.get_item(app.frame, 1114)
+    for index, query, flag in [
+        (0, "CrtFlW", None), (1, "CreateFileW", "--name"),
+        (2, "0x80000000", "--value"), (2, "1.5", "--value"),
+        (3, "0000000c00000000c000000000000046", "--guid"),
+        (0, "0x80000000", None),
+    ]:
+        n.send(mode, win32con.CB_SETCURSEL, index)
+        app.command(1114, code=win32con.CBN_SELENDOK)
+        app.query(query)
+        command = [str(cli), str(settings[1]), "search", query, "--limit", "1000", "--json"]
+        if flag:
+            command.append(flag)
+        result = json.loads(subprocess.check_output(command, encoding="utf-8"))["result"]
+        expected = result["matches"]
+        assert len(expected) < 1000
+        # The GUI's default categories exclude ordinary fields and type references.
+        expected = [hit for hit in expected if hit["kind"] not in {"field", "type_reference", "property", "event"}]
+        assert [app.cell(row).splitlines()[0] for row in range(app.count())] == [hit["full_name"] for hit in expected]
+
+
+def test_search_modes_labels_mapping_errors_and_ime(launch, settings):
+    app = launch([settings[1]])
+    app.query("CrtFlW")
+    mode = n.get_item(app.frame, 1114)
+    chinese = app.toolbar_text(1040) == "搜索"
+    assert app.choices(mode) == (["综合", "符号名", "数字", "GUID"] if chinese
+                                 else ["Combined", "Name", "Number", "GUID"])
+    assert n.send(mode, win32con.CB_GETCURSEL) == 0
+    assert app.named_rows("CreateFileW")
+
+    def choose(index):
+        n.send(mode, win32con.CB_SETCURSEL, index)
+        app.command(1114, code=win32con.CBN_SELENDOK)
+
+    choose(1)
+    n.wait(lambda: app.status_text().startswith(("Results ", "共 ")), "exact search")
+    assert app.count() == 0
+    app.query("CreateFileW")
+    assert app.count() > 0
+    n.send(mode, win32con.CB_SETCURSEL, 3)
+    app.command(1114, code=win32con.CBN_SELENDCANCEL)
+    assert n.send(mode, win32con.CB_GETCURSEL) == 1
+    choose(2)
+    n.wait(lambda: ("数字无效" if chinese else "Invalid number") in app.status_text(), "number error")
+    assert app.count() == 0
+    app.query("0x80000000")
+    expected = [app.cell(i) for i in range(app.count())]
+    assert expected
+    app.query("2147483648")
+    assert [app.cell(i) for i in range(app.count())] == expected
+    choose(3)
+    app.query("0000000c00000000c000000000000046")
+    expected = [app.cell(i) for i in range(app.count())]
+    assert expected
+    app.query("0,0,0,12,0,0,0,0,192,0,0,0,0,0,0,70")
+    assert [app.cell(i) for i in range(app.count())] == expected
+    n.send(app.search, win32con.WM_IME_STARTCOMPOSITION)
+    n.set_text(app.search, "CreateFileW")
+    choose(1)
+    time.sleep(.35)
+    assert app.count() == 0
+    n.send(app.search, win32con.WM_IME_ENDCOMPOSITION)
+    n.wait(lambda: app.count() > 0, "mode search after IME")
+    app.focus(app.search)
+    n.key_message(app.search, win32con.VK_TAB)
+    n.wait(lambda: app.focused() == mode, "Tab reaches mode selector")
+    n.key_message(mode, win32con.VK_TAB)
+    n.wait(lambda: app.focused() == app.results, "Tab reaches results")
 
 
 def test_stream_and_panel_state(launch, settings):

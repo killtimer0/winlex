@@ -1,10 +1,10 @@
 use crate::{
     metadata::{Db, key, supports},
     model::*,
-    search::{MatchField, NameMatcher, SearchMatch},
+    search::{MatchField, MatchQuality, SearchMatch, SearchQuery},
     source::{EntityId, Source},
 };
-use anyhow::{Result, bail, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use std::{
     collections::HashMap,
     path::Path,
@@ -51,14 +51,22 @@ impl std::str::FromStr for Architecture {
         })
     }
 }
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SearchMode {
-    Exact,
     #[default]
-    Fuzzy,
-    Integer,
+    Combined,
+    Name,
+    Value,
     Guid,
 }
+#[derive(Debug)]
+pub struct InvalidSearchInput(pub SearchMode);
+impl std::fmt::Display for InvalidSearchInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "invalid {:?} search input", self.0)
+    }
+}
+impl std::error::Error for InvalidSearchInput {}
 #[derive(Default)]
 pub struct SearchOptions<'a> {
     pub source: Option<usize>,
@@ -345,37 +353,27 @@ impl Catalog {
     }
     pub fn search<'a>(&'a self, query: &str, options: SearchOptions<'a>) -> Result<Search<'a>> {
         ensure!(!query.is_empty(), "empty search query");
-        let matcher = match options.mode {
-            SearchMode::Exact => Matcher::Exact(if options.case_sensitive {
+        let matcher = Matcher::Query(Box::new(
+            SearchQuery::compile(query, options.mode, options.case_sensitive)
+                .with_context(|| InvalidSearchInput(options.mode))?,
+        ));
+        self.iter(matcher, options)
+    }
+    /// Exact short or full name lookup, without scope browsing or combined search.
+    pub fn search_exact<'a>(
+        &'a self,
+        query: &str,
+        options: SearchOptions<'a>,
+    ) -> Result<Search<'a>> {
+        ensure!(!query.is_empty(), "empty search query");
+        self.iter(
+            Matcher::Exact(if options.case_sensitive {
                 query.to_owned()
             } else {
                 query.to_lowercase()
             }),
-            SearchMode::Integer => Matcher::Integer(
-                if let Some(h) = query
-                    .strip_prefix("0x")
-                    .or_else(|| query.strip_prefix("0X"))
-                {
-                    i128::from_str_radix(h, 16)?
-                } else {
-                    query.parse()?
-                },
-            ),
-            SearchMode::Guid => {
-                let g = query.trim_matches(['{', '}']).to_ascii_lowercase();
-                ensure!(
-                    g.len() == 36
-                        && [8, 13, 18, 23].iter().all(|i| g.as_bytes()[*i] == b'-')
-                        && g.bytes()
-                            .enumerate()
-                            .all(|(i, c)| [8, 13, 18, 23].contains(&i) || c.is_ascii_hexdigit()),
-                    "invalid GUID"
-                );
-                Matcher::Guid(g)
-            }
-            _ => Matcher::Name(Box::new(NameMatcher::new(query, options.case_sensitive))),
-        };
-        self.iter(matcher, options)
+            options,
+        )
     }
     pub fn references<'a>(
         &'a self,
@@ -417,9 +415,7 @@ impl Catalog {
 }
 enum Matcher {
     Exact(String),
-    Name(Box<NameMatcher>),
-    Integer(i128),
-    Guid(String),
+    Query(Box<SearchQuery>),
     References(EntityId, Architecture),
 }
 /// Lazy scan order, not relevance order. Errors terminate iteration; dropping stops the query.
@@ -483,8 +479,7 @@ impl Search<'_> {
             {
                 return Ok(SearchStep::Skipped);
             }
-            let mut quality = (0, MatchField::Name);
-            let matches = match &mut self.matcher {
+            let quality = match &mut self.matcher {
                 Matcher::Exact(query) => {
                     let full = self.catalog.full_name(&row);
                     let equal = |text: &str| {
@@ -495,34 +490,20 @@ impl Search<'_> {
                         }
                     };
                     if equal(row.name()) {
-                        true
+                        Some(MatchQuality::NameExact(MatchField::Name))
                     } else if equal(&full) {
-                        quality.1 = MatchField::FullName;
-                        true
+                        Some(MatchQuality::NameExact(MatchField::FullName))
                     } else {
-                        false
+                        None
                     }
                 }
-                Matcher::Name(matcher) => {
-                    let full = self.catalog.full_name(&row);
-                    if let Some(hit) = matcher.score(row.name(), &full) {
-                        quality = hit;
-                        true
+                Matcher::Query(query) => {
+                    let full = if query.needs_full_name() {
+                        self.catalog.full_name(&row)
                     } else {
-                        false
-                    }
-                }
-                Matcher::Integer(n) => {
-                    matches!(&row,Declaration::Field(f) if f.constant().and_then(|c|integer(&c.value()))==Some(*n))
-                }
-                Matcher::Guid(g) => {
-                    match &row {
-                        Declaration::Type(t) => guid(*t),
-                        Declaration::Field(f) => guid(*f),
-                        _ => None,
-                    }
-                    .as_ref()
-                        == Some(g)
+                        String::new()
+                    };
+                    query.matches(&row, &full, self.options.architecture)
                 }
                 Matcher::References(target, arch) => {
                     let Some(owner) = row.owner() else {
@@ -538,7 +519,7 @@ impl Search<'_> {
                             &mut self.unresolved,
                         )
                     };
-                    match &row {
+                    let matches = match &row {
                         Declaration::Type(t) => t
                             .interface_impls()
                             .any(|i| check(&i.interface(&t.generic_types()))),
@@ -557,14 +538,14 @@ impl Search<'_> {
                                 .fold(check(&s.return_type), |hit, t| check(t) || hit)
                         }
                         Declaration::Reference(_) => false,
-                    }
+                    };
+                    matches.then_some(MatchQuality::Reference)
                 }
             };
-            if matches {
+            if let Some(quality) = quality {
                 return Ok(SearchStep::Match(SearchMatch {
                     entity: self.catalog.summarize(id, &row),
-                    score: quality.0,
-                    field: quality.1,
+                    quality,
                 }));
             }
             return Ok(SearchStep::Skipped);

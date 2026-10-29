@@ -45,6 +45,13 @@ END
 STRINGTABLE
 BEGIN
     IDS_SETTINGS "设置"
+    IDS_MODE_COMBINED "综合"
+    IDS_MODE_NAME "符号名"
+    IDS_MODE_VALUE "数字"
+    IDS_MODE_GUID "GUID"
+    IDS_INVALID_NAME_QUERY "名称范围无效。请在末尾的“.”或“+”前输入所属名称。"
+    IDS_INVALID_VALUE_QUERY "数字无效。请输入整数或十进制小数，可带指数。"
+    IDS_INVALID_GUID_QUERY "GUID 输入无效。请输入十六进制片段，或以逗号、空格分隔的字节。"
     IDS_GENERAL "常规"
     IDS_LANGUAGE_AUTO "跟随系统"
     IDS_LANGUAGE_ENGLISH "English"
@@ -70,7 +77,7 @@ BEGIN
     IDS_EMPTY_CATALOG "尚未加载元数据。打开文件即可开始。"
     IDS_LOADING "正在加载元数据…"
     IDS_LOAD_FAILED "加载失败，已保留原目录：{error}"
-    IDS_ENTER_QUERY "已就绪。输入名称自动搜索，回车立即执行。"
+    IDS_ENTER_QUERY "已就绪。输入查询自动搜索，回车立即执行。"
     IDS_SEARCHING "正在搜索…"
     IDS_SEARCH_STATUS "共 {total} 条。单击或空格预览，双击或回车打开。"
     IDS_QUERYING "正在加载声明…"

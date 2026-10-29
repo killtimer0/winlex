@@ -33,7 +33,7 @@ mod snapshot_tests {
         db.search(
             name,
             crate::SearchOptions {
-                mode: crate::SearchMode::Exact,
+                mode: crate::SearchMode::Name,
                 types_only: true,
                 ..Default::default()
             },
@@ -53,7 +53,7 @@ mod snapshot_tests {
             .search(
                 "Widget",
                 crate::SearchOptions {
-                    mode: crate::SearchMode::Exact,
+                    mode: crate::SearchMode::Name,
                     ..Default::default()
                 },
             )

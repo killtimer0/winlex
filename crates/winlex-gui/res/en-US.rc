@@ -45,6 +45,13 @@ END
 STRINGTABLE
 BEGIN
     IDS_SETTINGS "Settings"
+    IDS_MODE_COMBINED "Combined"
+    IDS_MODE_NAME "Name"
+    IDS_MODE_VALUE "Number"
+    IDS_MODE_GUID "GUID"
+    IDS_INVALID_NAME_QUERY "Invalid name scope. Enter a parent name before the trailing '.' or '+'."
+    IDS_INVALID_VALUE_QUERY "Invalid number. Use an integer or a decimal number with an optional exponent."
+    IDS_INVALID_GUID_QUERY "Invalid GUID input. Use a hexadecimal fragment or bytes separated by commas or spaces."
     IDS_GENERAL "General"
     IDS_LANGUAGE_AUTO "System default"
     IDS_LANGUAGE_ENGLISH "English"
@@ -70,7 +77,7 @@ BEGIN
     IDS_EMPTY_CATALOG "No metadata loaded. Open files to begin."
     IDS_LOADING "Loading metadata..."
     IDS_LOAD_FAILED "Load failed; previous catalog retained: {error}"
-    IDS_ENTER_QUERY "Ready. Type a name to search; Enter searches immediately."
+    IDS_ENTER_QUERY "Ready. Type a query; Enter searches immediately."
     IDS_SEARCHING "Searching..."
     IDS_SEARCH_STATUS "Results {total}. Click or Space to preview; double-click or Enter to open."
     IDS_QUERYING "Loading declaration..."

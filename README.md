@@ -2,7 +2,7 @@
 
 离线 Windows API 参考查询工具，直接读取 WinMD 文件。
 
-- 按名称、整数值和 GUID 搜索声明。
+- 综合搜索名称、数字和 GUID，也可选择专用模式。
 - 查看 API 参数、类型、回调及反向类型引用。
 - 按 x86、x64、ARM64 ABI 计算结构布局、位域位置和 COM vtable 槽位。
 - 支持文本和 JSON 输出。
@@ -17,7 +17,9 @@
 
 ```powershell
 winlex Windows.Win32.winmd search OPENFILE
-winlex Windows.Win32.winmd value 0x80000000
+winlex Windows.Win32.winmd search 0x80000000 --value
+winlex Windows.Win32.winmd search CreateFileW --name
+winlex Windows.Win32.winmd search "FF 0A" --guid
 winlex Windows.Win32.winmd show CreateFileW --arch x64
 winlex Windows.Win32.winmd layout OVERLAPPED --arch x64
 winlex Windows.Win32.winmd vtable IStream --arch x64 --json
@@ -27,7 +29,7 @@ winlex Windows.Win32.winmd vtable IStream --arch x64 --json
 
 ### 图形界面
 
-`winlex-gui.exe` 提供原生 MDI 多文档界面，支持后台加载多个 WinMD、名称搜索、来源管理和不同架构的声明比较。
+`winlex-gui.exe` 提供原生 MDI 多文档界面，支持后台加载多个 WinMD、综合搜索、来源管理和不同架构的声明比较。
 
 ```powershell
 winlex-gui
@@ -35,7 +37,7 @@ winlex-gui Windows.Win32.winmd Windows.Wdk.winmd
 ```
 
 无显式输入时恢复保存的自动加载集合，首次启动为空。通过“添加”或拖放发现来源，再从来源详情加载。
-输入名称后自动搜索，Enter 立即执行；单击结果或按空格预览文档，双击、Enter 或“打开选定结果”将其固定并进入文档；`Ctrl+L` 聚焦搜索框，`F6` 切换区域。
+输入查询后自动搜索，Enter 立即执行；右侧可选择综合、符号名、数字或 GUID 模式。单击结果或按空格预览文档，双击、Enter 或“打开选定结果”将其固定并进入文档；`Ctrl+L` 聚焦搜索框，`F6` 切换区域。
 文档内可选择 x86、x64 或 ARM64 架构，原地更新声明；打开的文档沿用当前阅读架构，无法沿用时才使用上次显式选择或按 x86、x64、ARM64 顺序回退。“详细信息”显示完整路径和实体标识。
 
 界面支持中英文和 DPI 缩放，语言在“设置 > 语言”中选择，下次启动生效。

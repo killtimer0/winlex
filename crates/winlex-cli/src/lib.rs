@@ -9,9 +9,7 @@ Usage: winlex FILE... COMMAND [QUERY] [options]
 
 Commands:
   summary                 Sources, assembly identities and row counts
-  search TEXT             Case-insensitive fuzzy name search, ranked by relevance
-  value INTEGER           Decimal or 0x hexadecimal integer search
-  guid GUID               GUID lookup (optional braces)
+  search TEXT             Combined name, number and GUID search, ranked by quality
   show NAME|ID            Declaration, members and typed references
   layout TYPE             Compute size/alignment/offsets (bits)
   vtable INTERFACE        Compute inherited method slots
@@ -21,7 +19,9 @@ Options:
   --source SOURCE         Zero-based input index or unique assembly name
   --arch x86|x64|arm64     Required for layout/vtable/references
   --json                  Versioned machine-readable output
-  --exact                 Exact name search (default: fuzzy)
+  --name                  Exact name or trailing '.'/'+' scope search
+  --value                 Integer bits or decimal-precision floating range
+  --guid                  GUID text fragment or byte sequence
   --limit N               Page size, 0..1000 (default: 50)
   --offset N              Matching rows to skip
   --help, --version       No input required
@@ -30,8 +30,11 @@ Input files precede the command. Use .\search for a file named search.
 Declaration selectors accept SOURCE::NAME or SOURCE::0xTOKEN.
 Bare tokens require a single input source. Names can be namespace-qualified.
 Source indices follow input order and belong to this catalog only.
-Fuzzy queries containing '.' or '+' match qualified names; otherwise short names.
-Numeric queries compare mathematical integers: -1 differs from 0xffffffff.
+Search modes are mutually exclusive; the default tries all three branches.
+Name queries containing '.' or '+' match qualified names; otherwise short names.
+Integers accept signs and 0b/leading-zero/0o/decimal/0x notation, using width-local bits.
+Decimal points/exponents select floating ranges: 1.5 matches [1.45, 1.55).
+GUID bytes: 239,254 (decimal), FF 0A (hex), or 0xBC,0xAB (explicit hex).
 "#;
 
 struct Options {
@@ -50,7 +53,7 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
     let mut source = None;
     let mut arch = None;
     let mut json = false;
-    let mut mode = SearchMode::Fuzzy;
+    let mut mode = SearchMode::Combined;
     let mut selected_mode = false;
     let mut limit = 50;
     let mut offset = 0;
@@ -85,20 +88,22 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
                 }
             }
             "--json" => json = true,
-            "--exact" => {
+            "--name" | "--value" | "--guid" => {
                 if selected_mode {
-                    return Err("choose only one name search mode".into());
+                    return Err("choose only one search mode".into());
                 }
                 selected_mode = true;
-                mode = SearchMode::Exact;
+                mode = match a {
+                    "--name" => SearchMode::Name,
+                    "--value" => SearchMode::Value,
+                    _ => SearchMode::Guid,
+                };
             }
             _ if a.starts_with("--") => return Err(format!("unknown option {a}")),
             _ if positional.is_empty()
                 && ![
                     "summary",
                     "search",
-                    "value",
-                    "guid",
                     "show",
                     "layout",
                     "vtable",
@@ -120,7 +125,7 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
         return Err(format!("{command} expects {} query argument(s)", count - 1));
     }
     if selected_mode && command != "search" {
-        return Err("--exact applies only to search".into());
+        return Err("--name/--value/--guid apply only to search".into());
     }
     if ["layout", "vtable", "references"].contains(&command.as_str()) && arch.is_none() {
         return Err(format!("{command} requires --arch"));
@@ -205,27 +210,17 @@ pub fn run(
     let result: winlex_core::Result<Query> = (|| {
         Ok(match o.command.as_str() {
             "summary" => Query::Summary,
-            "search" | "value" | "guid" => {
+            "search" => {
                 let mut opt = options();
                 opt.source = o
                     .source
                     .as_deref()
                     .map(|s| source_index(&db, s))
                     .transpose()?;
-                if o.command == "value" {
-                    opt.mode = SearchMode::Integer;
-                }
-                if o.command == "guid" {
-                    opt.mode = SearchMode::Guid;
-                }
                 let matches = db.search(q, opt)?;
-                let result = if o.command == "search" {
-                    let mut matches = matches.collect::<winlex_core::Result<Vec<_>>>()?;
-                    matches.sort_unstable_by(winlex_core::SearchMatch::compare);
-                    page(matches.into_iter().map(|m| Ok(m.entity)), o.offset, o.limit)?
-                } else {
-                    page(matches.map(|m| m.map(|m| m.entity)), o.offset, o.limit)?
-                };
+                let mut matches = matches.collect::<winlex_core::Result<Vec<_>>>()?;
+                matches.sort_unstable_by(winlex_core::SearchMatch::compare);
+                let result = page(matches.into_iter().map(|m| Ok(m.entity)), o.offset, o.limit)?;
                 Query::Matches(result)
             }
             "show" => Query::Show(select(&db, &selector, o.arch, false)?),
@@ -259,7 +254,7 @@ pub fn run(
             Err(e) => return error(out, err, true, 3, "query_error", &e.to_string()),
         };
         let response = Response {
-            schema: "winlex-cli-5",
+            schema: "winlex-cli-6",
             ok: true,
             sources: db.sources(),
             command: &o.command,
@@ -412,11 +407,10 @@ pub fn select(
         }
         return Ok(id);
     }
-    let mut matches = db.search(
+    let mut matches = db.search_exact(
         name,
         SearchOptions {
             source,
-            mode: SearchMode::Exact,
             case_sensitive: true,
             architecture: arch,
             types_only,
@@ -448,7 +442,7 @@ fn error(
     let result = if json_mode {
         serde_json::to_writer(
             &mut *out,
-            &serde_json::json!({"schema":"winlex-cli-5","ok":false,"error":{"code":code,"message":message}}),
+            &serde_json::json!({"schema":"winlex-cli-6","ok":false,"error":{"code":code,"message":message}}),
         )
         .map_err(std::io::Error::other)
         .and_then(|_| writeln!(out))

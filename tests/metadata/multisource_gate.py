@@ -56,16 +56,16 @@ def main():
     slots = query(files, "vtable", "IDerived")["result"]["slots"]
     assert [s["method"] for s in slots] == ["First", "Second"]
     assert slots[0]["id"]["source_id"] == source != slots[1]["id"]["source_id"]
-    matches = query(files, "search", "Item", "--exact")["result"]["matches"]
+    matches = query(files, "search", "Item", "--name")["result"]["matches"]
     assert len(matches) == 2 and matches[0]["id"]["token"] == matches[1]["id"]["token"] and matches[0]["id"] != matches[1]["id"]
     query(files, "show", "Item", error="found 2")
     query(files, "show", f'0x{matches[0]["id"]["token"]:08x}', error="requires SOURCE")
     assert query(files, "show", "Base::Shared.Item")["result"]["entity"]["id"]["source_id"] == source
-    page = query(files, "search", "Item", "--exact", "--source", "Base")["result"]
+    page = query(files, "search", "Item", "--name", "--source", "Base")["result"]
     assert len(page["matches"]) == 1
-    reversed_matches = query(files[::-1], "search", "Item", "--exact")["result"]["matches"]
+    reversed_matches = query(files[::-1], "search", "Item", "--name")["result"]["matches"]
     assert [m["id"]["source_id"] for m in reversed_matches] == [0, 1]
-    assert query(files, "search", "Item", "--exact", "--limit", "1", "--offset", "1")["result"]["matches"] == matches[1:]
+    assert query(files, "search", "Item", "--name", "--limit", "1", "--offset", "1")["result"]["matches"] == matches[1:]
     assert len(query([base, base], "summary")["sources"]) == 2
     uses = query(files, "references", "Base::Shared.Item")["result"]["page"]["matches"]
     assert len(uses) == 1 and uses[0]["name"] == "A"

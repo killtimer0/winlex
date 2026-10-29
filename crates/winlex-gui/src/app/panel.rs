@@ -6,6 +6,18 @@ use crate::{
     resources::{self, *},
 };
 use std::{any::Any, cell::Cell, ptr, rc::Rc};
+use winlex_core::SearchMode;
+
+const SEARCH_MODES: &[(u16, SearchMode)] = &[
+    (IDS_MODE_COMBINED, SearchMode::Combined),
+    (IDS_MODE_NAME, SearchMode::Name),
+    (IDS_MODE_VALUE, SearchMode::Value),
+    (IDS_MODE_GUID, SearchMode::Guid),
+];
+
+pub(super) fn search_mode() -> SearchMode {
+    search(|s| SEARCH_MODES[s.mode.get()].1)
+}
 
 pub(super) struct Registration {
     pub id: u32,
@@ -52,7 +64,8 @@ pub(super) trait Panel: Any {
     }
 }
 struct Search {
-    controls: [HWND; 2],
+    controls: [HWND; 3],
+    mode: Cell<usize>,
     composing: Cell<bool>,
     deadline: Cell<Option<std::time::Instant>>,
 }
@@ -98,8 +111,25 @@ impl Search {
         if unsafe { set_subclass(input, Some(edit_proc), 1, 0) } == 0 {
             anyhow::bail!("Subclass search input failed");
         }
+        let mode = child(
+            frame,
+            w!("COMBOBOX"),
+            &[0],
+            WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST as u32,
+            SEARCH_MODE,
+        )?;
+        for &(label, _) in SEARCH_MODES {
+            send(
+                mode,
+                CB_ADDSTRING,
+                0,
+                resources::wide_text(label).as_ptr() as isize,
+            );
+        }
+        send(mode, CB_SETCURSEL, 0, 0);
         Ok(Rc::new(Self {
-            controls: [input, create_list(frame, RESULTS)?],
+            controls: [input, create_list(frame, RESULTS)?, mode],
+            mode: Cell::new(0),
             composing: Cell::new(false),
             deadline: Cell::new(None),
         }))
@@ -137,10 +167,25 @@ impl Panel for Search {
         prepare_list(&self.controls, self.controls[1], m);
     }
     fn layout(&self, area: RECT, m: &layout::Metrics) {
-        let [input, results] = self.controls;
+        let [input, results, mode] = self.controls;
         let mut area = layout::inset(area, m.px(4));
         let outer = dpi().child_outer(input, layout::rect(0, 0, 1, m.height + m.px(4)));
-        place(input, layout::take_top(&mut area, outer.bottom - outer.top));
+        let mut row = layout::take_top(&mut area, outer.bottom - outer.top);
+        let width = m
+            .label_width(
+                SEARCH_MODES
+                    .iter()
+                    .map(|&(label, _)| resources::wide_text(label)),
+                60,
+            )
+            .min((row.right - row.left) / 2);
+        let right = row.right;
+        row.right = (right - width - m.px(4)).max(row.left);
+        place(input, row);
+        place(
+            mode,
+            layout::rect(right - width, row.top, width, m.row() * 6),
+        );
         layout::take_top(&mut area, m.px(4));
         place(results, area);
         fit(results);
@@ -148,6 +193,16 @@ impl Panel for Search {
     fn command(&self, id: u16, code: u32) -> bool {
         match id {
             SEARCH if code == EN_CHANGE => catalog::input_changed(),
+            SEARCH_MODE if code == CBN_SELENDOK => {
+                let index = send(self.controls[2], CB_GETCURSEL, 0, 0) as usize;
+                if index < SEARCH_MODES.len() && self.mode.replace(index) != index {
+                    catalog::input_changed();
+                    catalog::search();
+                }
+            }
+            SEARCH_MODE if code == CBN_SELENDCANCEL => {
+                send(self.controls[2], CB_SETCURSEL, self.mode.get(), 0);
+            }
             FOCUS_SEARCH => {
                 sidebar::show(SEARCH_PANEL, false);
                 send(self.controls[0], EM_SETSEL, 0, -1);

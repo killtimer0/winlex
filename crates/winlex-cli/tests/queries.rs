@@ -25,6 +25,70 @@ fn catalog() -> &'static Catalog {
 }
 
 #[test]
+fn search_mode_flags_are_exclusive_and_only_apply_to_search() {
+    for arguments in [
+        vec!["search", "1", "--name", "--value"],
+        vec!["search", "1", "--value", "--guid"],
+        vec!["search", "1", "--guid", "--name"],
+        vec!["search", "1", "--name", "--name"],
+        vec!["show", "CreateFileW", "--name"],
+        vec!["summary", "--value"],
+        vec!["search", "CreateFileW", "--exact"],
+        vec!["value", "1"],
+        vec!["guid", "1234"],
+    ] {
+        let (code, result, _) = cli(&arguments);
+        assert_eq!(code, 2, "{arguments:?}");
+        assert_eq!(result["schema"], "winlex-cli-6");
+        assert_eq!(result["ok"], false);
+    }
+    for (query, flag) in [
+        ("08", "--value"),
+        ("NaN", "--value"),
+        ("FF 239", "--guid"),
+        (".", "--name"),
+    ] {
+        let (code, result, _) = cli(&["search", query, flag]);
+        assert_eq!(code, 3, "{query}");
+        assert_eq!(result["ok"], false);
+        assert_eq!(cli(&["search", query]).0, 0);
+    }
+}
+
+#[test]
+fn guid_fragments_bytes_and_numeric_radices_share_the_cli_search_contract() {
+    let (_, expected, _) = cli(&["search", "2147483648", "--value", "--limit", "1000"]);
+    for query in [
+        "+0x80000000",
+        "0b10000000000000000000000000000000",
+        "020000000000",
+        "0o20000000000",
+    ] {
+        let (code, result, _) = cli(&["search", query, "--value", "--limit", "1000"]);
+        assert_eq!(code, 0, "{query}");
+        assert_eq!(result["result"], expected["result"], "{query}");
+    }
+    let (_, expected, _) = cli(&[
+        "search",
+        "0000000c00000000c000000000000046",
+        "--guid",
+        "--limit",
+        "1000",
+    ]);
+    for query in [
+        "{0000000C-0000-0000-C000-000000000046}",
+        "0,0,0,12,0,0,0,0,192,0,0,0,0,0,0,70",
+    ] {
+        let (code, result, _) = cli(&["search", query, "--guid", "--limit", "1000"]);
+        assert_eq!(code, 0);
+        assert_eq!(result["result"], expected["result"]);
+    }
+    let (_, scope, _) = cli(&["search", "Windows.Win32.Storage.FileSystem.", "--name"]);
+    assert!(!scope["result"]["matches"].as_array().unwrap().is_empty());
+    assert_eq!(cli(&["show", "Windows.Win32.Storage.FileSystem."]).0, 3);
+}
+
+#[test]
 fn search_categories_partition_results_without_name_conventions() {
     use winlex_core::EntityCategory;
     let db = catalog();
@@ -97,7 +161,7 @@ fn core_index_keeps_types_and_indexes_members_uniformly() {
             .search(
                 name,
                 SearchOptions {
-                    mode: SearchMode::Exact,
+                    mode: SearchMode::Name,
                     categories: Some(category as u32),
                     ..Default::default()
                 },
@@ -220,7 +284,7 @@ fn fuzzy_search_ranks_before_paging_and_rejects_prefix_option() {
             .any(|m| m["name"] == "CreateFileW")
     );
     assert_eq!(cli(&["search", "file", "--prefix"]).0, 2);
-    let (_, exact, _) = cli(&["search", "createfilew", "--exact"]);
+    let (_, exact, _) = cli(&["search", "createfilew", "--name"]);
     assert!(
         exact["result"]["matches"]
             .as_array()
@@ -246,10 +310,18 @@ fn fuzzy_scope_is_selected_by_the_query_and_exact_selectors_remain_independent()
     assert!(collect("WindowsWin32").is_empty());
     let short = collect("CrtFlW");
     assert!(short.iter().any(|m| m.name == "CreateFileW"));
-    assert!(short.iter().all(|m| m.field == MatchField::Name));
+    assert!(
+        short
+            .iter()
+            .all(|m| m.quality.field() == Some(MatchField::Name))
+    );
     let qualified = collect("Storage.FileSystem.CrtFlW");
     assert!(qualified.iter().any(|m| m.name == "CreateFileW"));
-    assert!(qualified.iter().all(|m| m.field == MatchField::FullName));
+    assert!(
+        qualified
+            .iter()
+            .all(|m| m.quality.field() == Some(MatchField::FullName))
+    );
     let mut search = db.search("CrtFlW", SearchOptions::default()).unwrap();
     let mut stepped = vec![];
     let mut skipped = 0;
@@ -301,7 +373,7 @@ fn fuzzy_scope_is_selected_by_the_query_and_exact_selectors_remain_independent()
     let name = "Windows.Win32.Storage.FileSystem.Apis.CreateFileW";
     let id = winlex_cli::select(db, name, Some(Architecture::X64), false).unwrap();
     assert_eq!(db.entity(id).unwrap().name, "CreateFileW");
-    let (code, exact, _) = cli(&["search", name, "--exact"]);
+    let (code, exact, _) = cli(&["search", name, "--name"]);
     assert_eq!(code, 0);
     assert!(
         exact["result"]["matches"]
@@ -364,7 +436,7 @@ fn cli_errors_are_machine_readable() {
         (vec!["search", "x", "--limit", "1001"], 2),
         (vec!["show", "0x02ffffff"], 3),
         (vec!["show", "OPENFILENAMEW"], 3),
-        (vec!["guid", "invalid"], 3),
+        (vec!["search", "invalid", "--guid"], 3),
     ] {
         let (c, v, e) = cli(&args);
         assert_eq!(c, code);
@@ -376,7 +448,7 @@ fn cli_errors_are_machine_readable() {
 
 #[test]
 fn architecture_ambiguity_and_pagination_are_preserved() {
-    let (c, v, _) = cli(&["search", "OPENFILENAMEW", "--exact", "--limit", "1"]);
+    let (c, v, _) = cli(&["search", "OPENFILENAMEW", "--name", "--limit", "1"]);
     assert_eq!(c, 0);
     assert_eq!(v["result"]["total"], 3);
     assert_eq!(v["result"]["matches"][0]["kind"], "type_reference");
@@ -384,7 +456,7 @@ fn architecture_ambiguity_and_pagination_are_preserved() {
     let (_, next, _) = cli(&[
         "search",
         "OPENFILENAMEW",
-        "--exact",
+        "--name",
         "--limit",
         "1",
         "--offset",
@@ -394,7 +466,7 @@ fn architecture_ambiguity_and_pagination_are_preserved() {
         v["result"]["matches"][0]["id"],
         next["result"]["matches"][0]["id"]
     );
-    let (_, v, _) = cli(&["search", "OPENFILENAMEW", "--exact", "--arch", "x64"]);
+    let (_, v, _) = cli(&["search", "OPENFILENAMEW", "--name", "--arch", "x64"]);
     assert_eq!(v["result"]["total"], 2);
 }
 
@@ -460,17 +532,17 @@ fn api_has_import_and_parameter_semantics() {
 
 #[test]
 fn values_guids_and_source_identity() {
-    let (_, decimal, _) = cli(&["value", "2147483648"]);
-    let (_, hex, _) = cli(&["value", "0x80000000"]);
+    let (_, decimal, _) = cli(&["search", "2147483648", "--value"]);
+    let (_, hex, _) = cli(&["search", "0x80000000", "--value"]);
     assert_eq!(decimal["result"], hex["result"]);
-    assert_eq!(decimal["schema"], "winlex-cli-5");
+    assert_eq!(decimal["schema"], "winlex-cli-6");
     assert_eq!(decimal["sources"][0]["id"], 0);
     let (code, response, _) = cli(&["show", "GENERIC_READ", "--arch", "x64"]);
     assert_eq!(code, 0);
     let d = &response["result"];
     assert_eq!(d["value"]["decimal"], "2147483648");
     assert_eq!(d["value"]["hex"], "0x80000000");
-    let (_, g, _) = cli(&["guid", "{0000000C-0000-0000-C000-000000000046}"]);
+    let (_, g, _) = cli(&["search", "{0000000C-0000-0000-C000-000000000046}", "--guid"]);
     assert!(
         g["result"]["matches"]
             .as_array()
@@ -592,7 +664,7 @@ fn qualified_name_and_token_select_the_same_declaration() {
         .search(
             "OPENFILE",
             SearchOptions {
-                mode: SearchMode::Fuzzy,
+                mode: SearchMode::Combined,
                 ..Default::default()
             },
         )
@@ -604,7 +676,7 @@ fn qualified_name_and_token_select_the_same_declaration() {
 fn duplicate_inputs_and_numeric_source_selectors() {
     let path = input();
     let path = path.to_str().unwrap();
-    let (code, result, _) = cli(&[path, "search", "CreateFileW", "--exact"]);
+    let (code, result, _) = cli(&[path, "search", "CreateFileW", "--name"]);
     assert_eq!(code, 0);
     assert_eq!(result["sources"].as_array().unwrap().len(), 2);
     let matches = result["result"]["matches"].as_array().unwrap();
@@ -616,7 +688,7 @@ fn duplicate_inputs_and_numeric_source_selectors() {
         assert_eq!(code, 0);
         assert_eq!(shown["result"]["entity"]["id"], entity["id"]);
     }
-    let (code, filtered, _) = cli(&[path, "--source", "1", "search", "CreateFileW", "--exact"]);
+    let (code, filtered, _) = cli(&[path, "--source", "1", "search", "CreateFileW", "--name"]);
     assert_eq!(code, 0);
     assert_eq!(filtered["result"]["total"], 1);
     assert_eq!(filtered["result"]["matches"][0]["id"]["source_id"], 1);
@@ -634,7 +706,7 @@ fn exact_selection_does_not_fall_back_to_case_insensitive_search() {
             .unwrap()
             .contains("found 0")
     );
-    let (code, result, _) = cli(&["search", "createfilew", "--exact"]);
+    let (code, result, _) = cli(&["search", "createfilew", "--name"]);
     assert_eq!(code, 0);
     assert_eq!(result["result"]["total"], 1);
     let id = entity_id(&result["result"]["matches"][0]["id"]);
@@ -699,7 +771,7 @@ fn text_output_and_input_error() {
             vec!["layout: sequential", "hEvent", "type:"],
         ),
         (
-            vec!["search", "CreateFileW", "--exact"],
+            vec!["search", "CreateFileW", "--name"],
             vec!["1 match(es)", "CreateFileW"],
         ),
         (

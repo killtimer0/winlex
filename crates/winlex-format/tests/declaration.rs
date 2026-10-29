@@ -12,7 +12,7 @@ fn declarations_cover_native_signatures_and_architecture_specific_types() {
                 .search(
                     name,
                     SearchOptions {
-                        mode: SearchMode::Exact,
+                        mode: SearchMode::Name,
                         categories: Some(
                             winlex_core::EntityCategory::ALL
                                 & !(winlex_core::EntityCategory::TypeReference as u32),
@@ -63,7 +63,7 @@ fn declarations_cover_native_signatures_and_architecture_specific_types() {
                 .search(
                     name,
                     SearchOptions {
-                        mode: SearchMode::Exact,
+                        mode: SearchMode::Name,
                         categories: Some(
                             winlex_core::EntityCategory::ALL
                                 & !(winlex_core::EntityCategory::TypeReference as u32),
@@ -195,7 +195,7 @@ fn generic_inheritance_and_delegate_signatures_are_preserved() {
             .search(
                 name,
                 SearchOptions {
-                    mode: SearchMode::Exact,
+                    mode: SearchMode::Name,
                     ..Default::default()
                 },
             )

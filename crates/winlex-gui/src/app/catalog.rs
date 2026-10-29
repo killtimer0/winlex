@@ -74,7 +74,21 @@ impl Session {
         match completion.result {
             Ok(Output::Matches(batch)) => self.pending_results.extend(batch),
             Ok(Output::SearchDone) => self.search = Search::Done,
-            Err(e) => self.search = Search::Failed(e),
+            Err(e) => {
+                let error = if let Some(input) = e.downcast_ref::<winlex_core::InvalidSearchInput>()
+                {
+                    let label = match input.0 {
+                        winlex_core::SearchMode::Name => IDS_INVALID_NAME_QUERY,
+                        winlex_core::SearchMode::Value => IDS_INVALID_VALUE_QUERY,
+                        winlex_core::SearchMode::Guid => IDS_INVALID_GUID_QUERY,
+                        winlex_core::SearchMode::Combined => unreachable!(),
+                    };
+                    anyhow::anyhow!(resources::text(label))
+                } else {
+                    e
+                };
+                self.search = Search::Failed(error);
+            }
             _ => unreachable!(),
         }
         true
@@ -200,6 +214,7 @@ pub(super) fn search() {
         return;
     }
     let query = text(input).trim().to_owned();
+    let mode = super::panel::search_mode();
     let sent = write(|a| {
         let s = &mut a.session;
         let previous = match std::mem::replace(&mut s.search, Search::Idle) {
@@ -222,6 +237,7 @@ pub(super) fn search() {
             Job::Search {
                 catalog,
                 query,
+                mode,
                 categories: a.settings.preferences.categories,
             },
         )
@@ -359,6 +375,7 @@ pub(super) fn flush_results() {
     }
     send(hwnd, LVM_SETSELECTIONMARK, 0, tracked[2]);
     if tracked[3] >= 0 {
+        send(hwnd, LVM_ENSUREVISIBLE, tracked[3] as usize, 0);
         let mut now = RECT {
             left: LVIR_BOUNDS as i32,
             ..unsafe { std::mem::zeroed() }
@@ -584,8 +601,10 @@ mod tests {
                 kind: "type".into(),
                 architecture_mask: 7,
             },
-            score,
-            field: winlex_core::MatchField::Name,
+            quality: winlex_core::MatchQuality::Fuzzy {
+                score,
+                field: winlex_core::MatchField::Name,
+            },
         }
     }
     #[test]
