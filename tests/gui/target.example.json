@@ -1,7 +1,10 @@
 {
   "transport": "ssh",
   "host": "winlex-test-host",
-  "python": "C:\\WinlexTests\\venv\\Scripts\\python.exe",
+  "key_file": "~/.ssh/id_test",
+  "port": 22,
+  "sftp_drive_root": "/",
+  "python": "C:\\Python\\python.exe",
   "script": "C:\\WinlexTests\\tests\\gui\\remote.py",
   "root": "C:\\WinlexTests\\runs"
 }

@@ -154,6 +154,7 @@ def test_numeric_copy_formats(launch, settings):
     index = app.content(doc).replace("\r\n", "\r").index("24(0x18)")
     for down, expected in ((0, "24"), (1, "0x18"), (2, "24(0x18) bytes"), (3, "24")):
         wait_clipboard_available()
+        sequence = clipboard.GetClipboardSequenceNumber()
         n.send(editor, win32con.EM_SETSEL, index, index + 2)
         popup(app, editor)
         # A fresh popup has no highlight; Down selects the first item.
@@ -163,7 +164,8 @@ def test_numeric_copy_formats(launch, settings):
         wait_closed(editor)
         n.send(editor, win32con.WM_NULL)
 
-        n.wait(lambda: clipboard_text() == expected, "copied numeric value")
+        n.wait(lambda: clipboard.GetClipboardSequenceNumber() != sequence, "clipboard changed")
+        assert clipboard_text() == expected
         assert n.send(editor, win32con.EM_GETSEL) == ((index + 2) << 16) | index
 
 
@@ -209,9 +211,11 @@ finally:
         holder.communicate("release\n", timeout=5)
     assert holder.returncode == 0
     assert clipboard_text() == "contention sentinel"
+    sequence = clipboard.GetClipboardSequenceNumber()
     popup(app, editor)
     n.key_message(editor, win32con.VK_DOWN)
     n.key_message(editor, win32con.VK_RETURN)
     wait_closed(editor)
     n.send(editor, win32con.WM_NULL)
-    n.wait(lambda: clipboard_text() == "24", "copy after contention")
+    n.wait(lambda: clipboard.GetClipboardSequenceNumber() != sequence, "copy after contention")
+    assert clipboard_text() == "24"

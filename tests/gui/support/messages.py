@@ -1,7 +1,6 @@
 """Control messages that pywin32's win32con does not define.
 
-Values come from CommCtrl.h (TB_*, LVM_*) and RichEdit.h (EM_GETCHARFORMAT),
-which are not part of the classic constants exported by pywin32 310.
+Values come from CommCtrl.h (TB_*, LVM_*) and RichEdit.h (EM_GETCHARFORMAT).
 """
 from win32con import WM_USER
 

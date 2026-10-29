@@ -10,6 +10,8 @@ import uuid
 import winreg
 import importlib.metadata
 
+import support
+from packaging.requirements import Requirement
 import win32api
 import win32con
 import win32event
@@ -40,10 +42,12 @@ def main():
     try:
         for line in Path(__file__).with_name("requirements.txt").read_text(encoding="utf-8").splitlines():
             if line.strip() and not line.startswith("#"):
-                name, expected = line.split("==")
-                actual = importlib.metadata.version(name)
-                if actual != expected:
-                    raise RuntimeError("Dependency mismatch: %s expected %s, found %s" % (name, expected, actual))
+                requirement = Requirement(line)
+                if requirement.marker and not requirement.marker.evaluate():
+                    continue
+                actual = importlib.metadata.version(requirement.name)
+                if actual not in requirement.specifier:
+                    raise RuntimeError("Dependency mismatch: %s, found %s" % (requirement, actual))
         if "--real-input" in tests:
             if args.desktop != "current":
                 raise RuntimeError("Actual input requires --desktop current")
@@ -59,7 +63,8 @@ def main():
             startup.lpDesktop = name
         command = subprocess.list2cmdline([sys.executable, "-X", "utf8", "-m", "pytest", str(Path(__file__).parent), "--artifacts", str(output), "--junitxml", str(output / "tests.xml"), *tests])
         environment = {**os.environ, "WINLEX_TEST_LEDGER": str(output / "profiles")}
-        process, thread, _, _ = win32process.CreateProcess(None, command, None, None, False,
+        # Keep redirected standard handles available to pytest.
+        process, thread, _, _ = win32process.CreateProcess(None, command, None, None, True,
             win32process.CREATE_SUSPENDED, environment, str(Path(__file__).resolve().parents[2]), startup)
         win32job.AssignProcessToJobObject(job, process)
         assigned = True

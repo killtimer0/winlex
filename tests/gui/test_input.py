@@ -33,6 +33,7 @@ def test_real_search_keyboard(request, launch, settings):
         finally:
             win32gui.SetWindowPos(app.frame, win32con.HWND_NOTOPMOST, 0, 0, 0, 0,
                                   win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_NOACTIVATE)
+        input_state.disable_ime(app.search)
         for character in "CREATEFILEW":
             input_state.key(ord(character))
         n.wait(lambda: n.window_text(app.search).casefold() == "createfilew", "real input delivered")

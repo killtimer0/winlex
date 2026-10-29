@@ -5,6 +5,14 @@ from pathlib import Path
 import win32api
 import win32con
 import win32gui
+from . import native as n
+
+IMC_GETOPENSTATUS = 5
+IMC_SETOPENSTATUS = 6
+
+
+def ime_window(hwnd):
+    return n.api(n.c.WinDLL("imm32"), "ImmGetDefaultIMEWnd", n.w.HWND, n.w.HWND)(hwnd)
 
 
 def recover(path):
@@ -16,6 +24,14 @@ def recover(path):
             win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0)
         else:
             win32api.keybd_event(key, 0, win32con.KEYEVENTF_KEYUP, 0)
+    ime = state.get("ime")
+    if ime and n.is_window(ime["control"]):
+        pid = n.w.DWORD()
+        n.get_pid(ime["control"], n.c.byref(pid))
+        if pid.value == ime["pid"] and ime_window(ime["control"]) == ime["window"]:
+            n.send(ime["window"], win32con.WM_IME_CONTROL, IMC_SETOPENSTATUS, ime["open"])
+            n.wait(lambda: n.send(ime["window"], win32con.WM_IME_CONTROL, IMC_GETOPENSTATUS) == ime["open"],
+                   "IME state restored")
     win32api.SetCursorPos(tuple(state["cursor"]))
     foreground = state["foreground"]
     if foreground and win32gui.IsWindow(foreground):
@@ -57,6 +73,20 @@ class InputState:
         win32api.keybd_event(code, 0, win32con.KEYEVENTF_KEYUP, 0)
         self.state["held"].remove(code)
         self.save()
+
+    def disable_ime(self, control):
+        window = ime_window(control)
+        if not window:
+            return
+        opened = n.send(window, win32con.WM_IME_CONTROL, IMC_GETOPENSTATUS)
+        if not opened:
+            return
+        pid = n.w.DWORD()
+        n.get_pid(control, n.c.byref(pid))
+        self.state["ime"] = {"control": control, "window": window, "pid": pid.value, "open": opened}
+        self.save()
+        n.send(window, win32con.WM_IME_CONTROL, IMC_SETOPENSTATUS, 0)
+        n.wait(lambda: n.send(window, win32con.WM_IME_CONTROL, IMC_GETOPENSTATUS) == 0, "IME closed")
 
     def __exit__(self, *args):
         recover(self.path)

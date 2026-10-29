@@ -1,7 +1,7 @@
 import struct
 import win32con
 import win32gui
-import win32ui
+from support.diagnostics import capture
 from support import messages
 from support import native as n
 
@@ -21,22 +21,9 @@ def test_list_selection_paint_follows_focus(launch, settings):
         with n.window_dpi_context(app.frame):
             _, _, width, height = n.rectangle(app.results, client=True)
             left, top, right, bottom = app.item_rect(0)
-            handle = win32gui.GetDC(app.results)
-            source = win32ui.CreateDCFromHandle(handle)
-            target = source.CreateCompatibleDC()
-            bitmap = win32ui.CreateBitmap()
-            try:
-                bitmap.CreateCompatibleBitmap(source, width, height)
-                target.SelectObject(bitmap)
-                assert n.api(n.user, "PrintWindow", n.w.BOOL, n.w.HWND, n.w.HDC,
-                             n.w.UINT)(app.results, target.GetSafeHdc(), messages.PW_CLIENTONLY)
-                return win32gui.GetPixel(target.GetSafeHdc(), min(right, width) - 4,
+            with capture(app.results, client=True) as (target, _, _):
+                return win32gui.GetPixel(target, min(right, width) - 4,
                                         (top + bottom) // 2 - 3)
-            finally:
-                target.DeleteDC()
-                source.DeleteDC()
-                win32gui.DeleteObject(bitmap.GetHandle())
-                win32gui.ReleaseDC(app.results, handle)
 
     for classic in (False, True):
         if classic:
@@ -44,11 +31,12 @@ def test_list_selection_paint_follows_focus(launch, settings):
             assert n.api(theme, "SetWindowTheme", n.c.c_long, n.w.HWND,
                          n.w.LPCWSTR, n.w.LPCWSTR)(app.results, "", "") == 0
         app.focus(app.results)
+        assert app.focused() == app.results
         selected = background()
         app.focus(app.search)
         unfocused = background()
         assert app.selected_row() == 0  # Losing focus hides the highlight, not selection.
-        assert selected != unfocused
+        assert selected != unfocused, (classic, selected, unfocused)
         if classic:
             assert selected == win32gui.GetSysColor(win32con.COLOR_HIGHLIGHT)
             assert unfocused == win32gui.GetSysColor(win32con.COLOR_WINDOW)

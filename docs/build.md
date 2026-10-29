@@ -75,25 +75,29 @@ python tests/gui/resources.py --exe target/i686-pc-windows-msvc/release/winlex-g
 `--language/--dpi` 属于测试参数，通过独立配置根及 `WINLEX_DPI` 启动 EXE。
 结果在 `tmp/gui-tests/<run-id>/`：JUnit、环境/输入哈希、窗口树、失败截图、退出码和清理记录。
 Runner 管理测试进程和隔离资源，退出及清理结果记录在 `run.json`。
-消息测试通过发送窗口消息验证控件行为。实际键鼠专项使用 `--desktop current --real-input -k real_search`，要求解锁的活动输入桌面并取得前台；无法满足条件时报告失败。
-Python 3.8+ 依赖锁定在 `tests/gui/requirements.txt`；可选新 API 按能力探测。XP RTM 解释器/系统支持仍须实机验证。
+消息测试通过发送窗口消息验证控件行为。实际键鼠专项使用 `--desktop current --real-input -k real_search`，要求解锁的活动输入桌面并取得前台；无法满足条件时报告失败。字母输入专项会临时关闭搜索框的 IME，并在清理时恢复原状态。
+执行端使用与目标系统兼容的 Python 3.8+ 和 pywin32。直接依赖列在 `tests/gui/requirements.txt`，按 Python 版本选择 pywin32：Python 3.8 使用 228，更新版本使用 310。可选系统 API 按能力探测。
+被测 EXE 可为 x86 或 x64，控件数据结构按 EXE 位数处理。x64 EXE 需要 64 位执行端 Python；x86 EXE 可使用 32 位或 64 位执行端 Python。元数据查询的架构选项独立于执行端和 EXE 位数。
 
 ### 本机/SSH 调度
 
 目标配置参考 `tests/gui/target.example.json`，实际主机配置放 `tmp/`。
-`tests/gui/remote.py` 支持 `deploy/submit/status/cancel/collect/capabilities`，`local` 与 `ssh` 使用相同文件队列。
-目标端先部署仓库、解释器和已记录哈希的输入，再从已登录交互会话启动：
+配置中的 `python` 指向目标机已有的系统解释器，`key_file` 指定 SSH 私钥，`port` 默认为 22。Bitvise 的 `/C/...` 路径映射使用 `sftp_drive_root: "/"`；使用原生 Windows 路径的 SFTP 服务可省略该字段。
+目标端部署 `tests/gui/`、被测 EXE 和 WinMD 输入，保留 `tests/gui` 目录结构。系统 Python 应已具备测试依赖。以下操作从调度机执行：
 
 ```powershell
-python tests/gui/remote.py worker --root C:/WinlexTests/runs
+python tests/gui/remote.py --config tmp/target.json deploy --source tests/gui --destination C:/WinlexTests/tests
+python tests/gui/remote.py --config tmp/target.json start-worker
+python tests/gui/remote.py --config tmp/target.json capabilities
 python tests/gui/remote.py --config tmp/target.json submit --exe C:/WinlexTests/winlex-gui.exe --winmd C:/WinlexTests/Windows.Win32.winmd -q
 python tests/gui/remote.py --config tmp/target.json status --run-id RUN_ID
 python tests/gui/remote.py --config tmp/target.json cancel --run-id RUN_ID
 python tests/gui/remote.py --config tmp/target.json collect --run-id RUN_ID
 ```
 
-SSH 仅操作队列及传输，GUI 由交互 worker 启动。收集 ZIP 默认回收到 `tmp/remote-tests/`。
-验证范围分别记录：本机消息与 DPI、远程交互会话、实际键鼠输入，以及目标系统兼容性。XP RTM 兼容性需要在对应系统上进行实机验证。
+`start-worker` 通过任务计划程序请求在当前用户已登录的交互会话中启动 worker，使用配置指定的 Python；`capabilities` 显示解释器路径、桌面和心跳。需要该用户已登录以及创建计划任务的权限。也可在目标交互桌面手动执行 `python tests/gui/remote.py worker --root C:/WinlexTests/runs`。同一桌面只运行一个 worker。
+`deploy` 的目标父目录须已存在。SSH 负责调度和传输，GUI 由交互 worker 启动。收集 ZIP 默认回收到 `tmp/remote-tests/`。真实键鼠测试在提交时增加 `--desktop current --real-input -k real_search_keyboard`。
+每轮结果记录目标系统、解释器与 EXE 位数、API 能力及跳过原因；本机消息与 DPI、远程交互会话、实际键鼠输入分别验证。
 
 可选的 SDK ABI 检查使用真实 SDK 声明验证布局、COM 槽位及位域初始化字节：
 

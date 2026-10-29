@@ -70,11 +70,12 @@ def test_failed_restore_preserves_saved_files(launch, profile, settings):
 
 
 def test_long_unicode_input(launch, settings):
+    from support.paths import extended
     directory = settings[2] / ("长路径" * 40) / ("metadata-" * 12)
-    directory.mkdir(parents=True, exist_ok=True)
+    extended(directory).mkdir(parents=True, exist_ok=True)
     path = directory / "来源.winmd"
     assert len(str(path)) > 260
-    shutil.copyfile(settings[1], path)
+    shutil.copyfile(settings[1], extended(path))
     app = launch(["--winmd", path])
     n.wait(lambda: app.status_text().startswith(("Ready.", "已就绪")), "long path loaded", 45)
     app.query("CreateFileW")

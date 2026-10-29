@@ -12,6 +12,7 @@ from support.session import Session
 from support.pe import is_64_bit
 from support import native as n
 from support.diagnostics import screenshot
+from support.paths import extended
 
 
 def pytest_addoption(parser):
@@ -40,14 +41,15 @@ def settings(request):
     output = Path(option("--artifacts")).resolve()
     output.mkdir(parents=True, exist_ok=True)
     info = {"exe": str(exe), "winmd": str(winmd), "os": platform.platform(),
-            "python": sys.version, "python_bits": struct.calcsize("P") * 8,
+             "python": sys.version, "python_executable": sys.executable, "python_bits": struct.calcsize("P") * 8,
             "dependencies": {name: importlib.metadata.version(name) for name in ("pytest", "pywin32")},
             "hashes": {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in (exe, winmd)},
             "language": option("--language"), "dpi": option("--dpi"), "capabilities": n.capabilities()}
     info["exe_bits"] = 64 if is_64_bit(exe) else 32
     (output / "environment.json").write_text(json.dumps(info, indent=2), encoding="utf-8")
     yield exe, winmd, output
-    hashes = {str(p.relative_to(output)): hashlib.sha256(p.read_bytes()).hexdigest() for p in output.rglob("*.winmd")}
+    root = extended(output)
+    hashes = {str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest() for p in root.rglob("*.winmd")}
     (output / "fixture-hashes.json").write_text(json.dumps(hashes, indent=2), encoding="utf-8")
 
 
