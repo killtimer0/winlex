@@ -1,5 +1,6 @@
 //! Typed registry access beneath one application-selected HKCU root.
 use crate::native::*;
+use anyhow::Context;
 use std::{
     ffi::{OsStr, OsString},
     os::windows::ffi::{OsStrExt, OsStringExt},
@@ -12,10 +13,14 @@ const MAX_VALUE: u32 = 1024 * 1024;
 pub struct Config {
     root: Vec<u16>,
     version: u32,
-    pub warning: Option<String>,
+    warning: Option<Warning>,
     pub key: Option<Key>,
 }
 pub struct Key(HKEY);
+enum Warning {
+    UnsupportedVersion,
+    Read(u32),
+}
 impl Drop for Key {
     fn drop(&mut self) {
         unsafe {
@@ -23,26 +28,24 @@ impl Drop for Key {
         }
     }
 }
-fn registry_error(operation: &str, status: u32) -> String {
-    format!(
-        "{operation}: {}",
-        std::io::Error::from_raw_os_error(status as i32)
-    )
+fn registry_error(operation: &str, status: u32) -> anyhow::Error {
+    anyhow::Error::new(std::io::Error::from_raw_os_error(status as i32))
+        .context(operation.to_owned())
 }
 impl Config {
-    pub fn load(version: u32) -> Result<Self, String> {
+    pub fn load(version: u32) -> anyhow::Result<Self> {
         let root =
             std::env::var_os("WINLEX_CONFIG_ROOT").unwrap_or_else(|| "Software\\Winlex".into());
         Self::from_root(&root, version)
     }
-    fn from_root(root: &OsStr, version: u32) -> Result<Self, String> {
+    fn from_root(root: &OsStr, version: u32) -> anyhow::Result<Self> {
         let mut root: Vec<_> = root.encode_wide().collect();
         if root.is_empty()
             || root.contains(&0)
             || root[0] == b'\\' as u16
             || root.split(|&c| c == b'\\' as u16).any(|s| s.is_empty())
         {
-            return Err("WINLEX_CONFIG_ROOT must be a nonempty HKCU-relative registry path".into());
+            anyhow::bail!("WINLEX_CONFIG_ROOT must be a nonempty HKCU-relative registry path");
         }
         root.push(0);
         let mut config = Self {
@@ -66,18 +69,26 @@ impl Config {
             ERROR_SUCCESS => {
                 let key = Key(handle);
                 if key.number("Version").is_some_and(|v| v != version) {
-                    config.warning = Some("Unsupported configuration version; defaults used without overwriting settings".into());
+                    config.warning = Some(Warning::UnsupportedVersion);
                 } else {
                     config.key = Some(key);
                 }
             }
-            _ => config.warning = Some(registry_error("Read configuration", status)),
+            _ => config.warning = Some(Warning::Read(status)),
         }
         Ok(config)
     }
-    pub fn write_key(&self) -> Result<Key, String> {
-        if let Some(warning) = &self.warning {
-            return Err(warning.clone());
+    pub fn warning(&self) -> Option<anyhow::Error> {
+        self.warning.as_ref().map(|warning| match warning {
+            Warning::UnsupportedVersion => anyhow::anyhow!(
+                "Unsupported configuration version; defaults used without overwriting settings"
+            ),
+            Warning::Read(status) => registry_error("Read configuration", *status),
+        })
+    }
+    pub fn write_key(&self) -> anyhow::Result<Key> {
+        if let Some(warning) = self.warning() {
+            return Err(warning);
         }
         let mut handle = ptr::null_mut();
         let status = unsafe {
@@ -135,8 +146,8 @@ impl Key {
             Some(bytes)
         }
     }
-    fn set(&self, name: &str, kind: u32, bytes: &[u8]) -> Result<(), String> {
-        let size = u32::try_from(bytes.len()).map_err(|_| "Configuration value too large")?;
+    fn set(&self, name: &str, kind: u32, bytes: &[u8]) -> anyhow::Result<()> {
+        let size = u32::try_from(bytes.len()).context("Configuration value too large")?;
         let status =
             unsafe { RegSetValueExW(self.0, wide(name).as_ptr(), 0, kind, bytes.as_ptr(), size) };
         if status == ERROR_SUCCESS {
@@ -150,13 +161,13 @@ impl Key {
             self.value(name, REG_DWORD)?.try_into().ok()?,
         ))
     }
-    pub fn set_number(&self, name: &str, value: u32) -> Result<(), String> {
+    pub fn set_number(&self, name: &str, value: u32) -> anyhow::Result<()> {
         self.set(name, REG_DWORD, &value.to_le_bytes())
     }
     pub fn bytes(&self, name: &str) -> Option<Vec<u8>> {
         self.value(name, REG_BINARY)
     }
-    pub fn set_bytes(&self, name: &str, value: &[u8]) -> Result<(), String> {
+    pub fn set_bytes(&self, name: &str, value: &[u8]) -> anyhow::Result<()> {
         self.set(name, REG_BINARY, value)
     }
     pub fn text(&self, name: &str) -> Option<String> {
@@ -166,7 +177,7 @@ impl Key {
         }
         String::from_utf16(&words[..words.len() - 1]).ok()
     }
-    pub fn set_text(&self, name: &str, value: &str) -> Result<(), String> {
+    pub fn set_text(&self, name: &str, value: &str) -> anyhow::Result<()> {
         let bytes: Vec<_> = wide(value).into_iter().flat_map(u16::to_le_bytes).collect();
         self.set(name, REG_SZ, &bytes)
     }
@@ -175,12 +186,12 @@ impl Key {
             .and_then(|bytes| decode_paths(&bytes))
             .unwrap_or_default()
     }
-    pub fn set_paths(&self, name: &str, paths: &[PathBuf]) -> Result<(), String> {
+    pub fn set_paths(&self, name: &str, paths: &[PathBuf]) -> anyhow::Result<()> {
         let mut words = Vec::new();
         for path in paths {
             let path: Vec<_> = path.as_os_str().encode_wide().collect();
             if path.is_empty() || path.contains(&0) {
-                return Err("Invalid configuration path".into());
+                anyhow::bail!("Invalid configuration path");
             }
             words.extend(path);
             words.push(0);
@@ -188,7 +199,7 @@ impl Key {
         words.push(0);
         let bytes: Vec<_> = words.into_iter().flat_map(u16::to_le_bytes).collect();
         if bytes.len() > MAX_VALUE as usize {
-            return Err("Configuration paths too large".into());
+            anyhow::bail!("Configuration paths too large");
         }
         self.set(name, REG_MULTI_SZ, &bytes)
     }
@@ -227,6 +238,31 @@ fn decode_paths(bytes: &[u8]) -> Option<Vec<PathBuf>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn read_warning_preserves_status_when_writes_are_blocked() {
+        let config = Config {
+            root: vec![],
+            version: 1,
+            warning: Some(Warning::Read(ERROR_ACCESS_DENIED)),
+            key: None,
+        };
+        let warning = config.warning().unwrap();
+        unsafe {
+            SetLastError(ERROR_FILE_NOT_FOUND);
+        }
+        let failure = config.write_key().err().unwrap();
+        for error in [warning, failure] {
+            assert_eq!(
+                error
+                    .downcast_ref::<std::io::Error>()
+                    .unwrap()
+                    .raw_os_error(),
+                Some(ERROR_ACCESS_DENIED as i32)
+            );
+            assert!(format!("{error:#}").starts_with("Read configuration: "));
+        }
+    }
+
     struct Profile(OsString);
     impl Profile {
         fn new() -> Self {

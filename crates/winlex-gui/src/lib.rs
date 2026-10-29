@@ -15,7 +15,7 @@ mod worker;
 pub fn run(args: impl Iterator<Item = std::ffi::OsString>) -> anyhow::Result<()> {
     use anyhow::{Context, anyhow, bail};
     let mode = match std::env::var("WINLEX_DPI") {
-        Ok(value) => value.parse().map_err(anyhow::Error::msg)?,
+        Ok(value) => value.parse()?,
         Err(std::env::VarError::NotPresent) => dpi::Mode::Auto,
         Err(_) => bail!("WINLEX_DPI must be valid Unicode"),
     };
@@ -35,8 +35,8 @@ pub fn run(args: impl Iterator<Item = std::ffi::OsString>) -> anyhow::Result<()>
             }
         }
     }
-    let config = config::Config::load(1).map_err(anyhow::Error::msg)?;
-    app::run(dpi::Dpi::initialize(mode), config, paths).map_err(anyhow::Error::msg)
+    let config = config::Config::load(1)?;
+    app::run(dpi::Dpi::initialize(mode), config, paths)
 }
 
 pub fn show_error(message: &str) {

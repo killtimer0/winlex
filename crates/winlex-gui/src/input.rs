@@ -4,11 +4,12 @@ use crate::{
     platform::WindowsVersion,
     resources::{self, *},
 };
+use anyhow::Context;
 use std::{ffi::OsString, os::windows::ffi::OsStringExt, path::PathBuf, ptr};
 use windows_sys::Win32::UI::Controls::Dialogs::*;
 pub struct Apartment;
 impl Apartment {
-    pub fn initialize() -> Result<Self, String> {
+    pub fn initialize() -> anyhow::Result<Self> {
         unsafe {
             windows::Win32::System::Com::CoInitializeEx(
                 None,
@@ -16,7 +17,7 @@ impl Apartment {
             )
             .ok()
         }
-        .map_err(|e| format!("Initialize COM: {e}"))?;
+        .context("Initialize COM")?;
         Ok(Self)
     }
 }
@@ -27,7 +28,7 @@ impl Drop for Apartment {
         }
     }
 }
-pub fn choose_files(owner: HWND, version: WindowsVersion) -> Result<Vec<PathBuf>, String> {
+pub fn choose_files(owner: HWND, version: WindowsVersion) -> anyhow::Result<Vec<PathBuf>> {
     if version.at_least(WindowsVersion::VISTA) {
         return modern_choose(owner);
     }
@@ -50,7 +51,7 @@ pub fn choose_files(owner: HWND, version: WindowsVersion) -> Result<Vec<PathBuf>
         ofn.lpstrFilter = filter.as_ptr();
         ofn.lpstrTitle = title.as_ptr();
         ofn.lpstrFile = buffer.as_mut_ptr();
-        ofn.nMaxFile = u32::try_from(buffer.len()).map_err(|_| "File selection is too large")?;
+        ofn.nMaxFile = u32::try_from(buffer.len()).context("File selection is too large")?;
         ofn.Flags = OFN_EXPLORER
             | OFN_FILEMUSTEXIST
             | OFN_PATHMUSTEXIST
@@ -77,19 +78,19 @@ pub fn choose_files(owner: HWND, version: WindowsVersion) -> Result<Vec<PathBuf>
             return Ok(Vec::new());
         }
         if error != FNERR_BUFFERTOOSMALL {
-            return Err(format!("GetOpenFileNameW: 0x{error:08x}"));
+            anyhow::bail!("GetOpenFileNameW: 0x{error:08x}");
         }
         let size = (buffer[0] as usize).max(
             buffer
                 .len()
                 .checked_mul(2)
-                .ok_or("File selection is too large")?,
+                .context("File selection is too large")?,
         );
         buffer = vec![0; size];
     }
 }
 
-fn modern_choose(owner: HWND) -> Result<Vec<PathBuf>, String> {
+fn modern_choose(owner: HWND) -> anyhow::Result<Vec<PathBuf>> {
     use windows::{
         Win32::{
             Foundation::{ERROR_CANCELLED, HWND as ComHwnd},
@@ -145,7 +146,7 @@ fn modern_choose(owner: HWND) -> Result<Vec<PathBuf>, String> {
             Ok(paths)
         })()
     };
-    result.map_err(|e| format!("Select files: {e}"))
+    result.context("Select files")
 }
 
 // Explorer drops use the same append operation as the file picker.

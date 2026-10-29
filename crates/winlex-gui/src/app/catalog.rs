@@ -23,7 +23,7 @@ enum Search {
     Waiting,
     Running(Ticket),
     Done,
-    Failed(String),
+    Failed(anyhow::Error),
 }
 pub(super) struct Session {
     serial: u64,
@@ -98,7 +98,7 @@ impl Session {
                 .replace("{count}", &self.results.len().to_string()),
             Search::Done => resources::text(IDS_SEARCH_STATUS)
                 .replace("{total}", &self.results.len().to_string()),
-            Search::Failed(e) => e.clone(),
+            Search::Failed(e) => format!("{e:#}"),
         }
     }
 }
@@ -163,7 +163,7 @@ pub(super) fn reload(paths: Vec<PathBuf>, mut reload: Vec<PathBuf>) {
         result
     });
     if let Err(e) = result {
-        write(|a| a.session.load_error = Some(e));
+        write(|a| a.session.load_error = Some(format!("{e:#}")));
     }
     refresh_status();
     super::sources::refresh(false);
@@ -352,7 +352,7 @@ fn open_now(row: isize, mode: Open) -> Option<HWND> {
         None => match metadata::open(&title, binding, mode == Open::Preview) {
             Ok(hwnd) => hwnd,
             Err(error) => {
-                set_status(error);
+                set_status(format!("{error:#}"));
                 return None;
             }
         },
@@ -400,9 +400,9 @@ pub(super) fn apply(c: Completion) {
                                 .collect();
                             a.config.write_key()?.set_paths("AutoLoad", &paths)?;
                         }
-                        Ok::<_, String>(())
+                        Ok::<_, anyhow::Error>(())
                     }) {
-                        set_status(error);
+                        set_status(format!("{error:#}"));
                     }
                     for (hwnd, view) in workspace::views() {
                         view.catalog_changed(hwnd);
@@ -411,8 +411,9 @@ pub(super) fn apply(c: Completion) {
                 }
                 Err(e) => {
                     write(|a| {
-                        a.session.load_error =
-                            Some(resources::text(IDS_LOAD_FAILED).replace("{error}", &e))
+                        a.session.load_error = Some(
+                            resources::text(IDS_LOAD_FAILED).replace("{error}", &format!("{e:#}")),
+                        )
                     });
                     false
                 }
@@ -453,7 +454,7 @@ mod tests {
         assert_eq!(session.status(), "load transaction failed");
         assert!(session.accept_search(completion(2, Ok(Output::SearchDone))));
         assert_eq!(session.status(), "load transaction failed");
-        assert!(!session.accept_search(completion(2, Err("late failure".into()))));
+        assert!(!session.accept_search(completion(2, Err(anyhow::anyhow!("late failure")))));
         assert!(matches!(session.search, Search::Done));
     }
 }

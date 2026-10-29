@@ -213,4 +213,5 @@ finally:
     n.key_message(editor, win32con.VK_DOWN)
     n.key_message(editor, win32con.VK_RETURN)
     wait_closed(editor)
+    n.send(editor, win32con.WM_NULL)
     n.wait(lambda: clipboard_text() == "24", "copy after contention")

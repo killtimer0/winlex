@@ -311,7 +311,7 @@ pub(super) fn set_arrangement(arrangement: Arrangement) {
 pub(super) fn set_maximized(maximized: bool) {
     write(|a| a.workspace.maximized = maximized);
 }
-fn normal_placement(hwnd: HWND) -> Result<Placement, String> {
+fn normal_placement(hwnd: HWND) -> anyhow::Result<Placement> {
     let mut placement: WINDOWPLACEMENT = unsafe { std::mem::zeroed() };
     placement.length = std::mem::size_of::<WINDOWPLACEMENT>() as u32;
     if unsafe { GetWindowPlacement(hwnd, &mut placement) } == 0 {
@@ -332,7 +332,7 @@ pub(super) fn create_document(
     title: &str,
     content: Box<dyn host::View>,
     preview: bool,
-) -> Result<HWND, String> {
+) -> anyhow::Result<HWND> {
     let (mdi, maximized) = read(|a| (a.workspace.mdi, a.workspace.maximized));
     let mut init = host::Init {
         content: Some(content),

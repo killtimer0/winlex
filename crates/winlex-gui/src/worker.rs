@@ -1,4 +1,5 @@
 //! Single-threaded executor with explicit replacement, cooperative cancellation and bounded output.
+use anyhow::Context;
 use std::{
     collections::VecDeque,
     sync::{
@@ -69,10 +70,10 @@ impl<J> Default for Requests<J> {
     }
 }
 impl<J> Requests<J> {
-    fn replace(&self, old: Option<u64>, ticket: Ticket, job: J) -> Result<(), String> {
+    fn replace(&self, old: Option<u64>, ticket: Ticket, job: J) -> anyhow::Result<()> {
         let mut pending = self.pending.lock().unwrap();
         if self.stop.load(Ordering::Relaxed) {
-            return Err("Background worker stopped".into());
+            anyhow::bail!("Background worker stopped");
         }
         if let Some(id) = old {
             Self::cancel_locked(&mut pending, id);
@@ -145,8 +146,8 @@ pub struct Worker<J, O> {
 }
 impl<J: Send + 'static, O: Send + 'static> Worker<J, O> {
     pub fn new(
-        execute: impl Fn(J, &Ticket, &dyn Fn(O) -> Result<(), String>) + Send + 'static,
-    ) -> Result<Self, String> {
+        execute: impl Fn(J, &Ticket, &dyn Fn(O) -> anyhow::Result<()>) + Send + 'static,
+    ) -> anyhow::Result<Self> {
         let requests = Arc::new(Requests::default());
         let (tx, rx) = mpsc::sync_channel(8);
         let handle = unsafe { CreateEventW(std::ptr::null(), 0, 0, std::ptr::null()) };
@@ -168,14 +169,14 @@ impl<J: Send + 'static, O: Send + 'static> Worker<J, O> {
                     execute(job, &ticket, &publish);
                 }
             })
-            .map_err(|e| e.to_string())?;
+            .context("Start background worker")?;
         Ok(Self {
             requests,
             rx,
             ready,
         })
     }
-    pub fn replace(&self, old: Option<u64>, ticket: Ticket, job: J) -> Result<(), String> {
+    pub fn replace(&self, old: Option<u64>, ticket: Ticket, job: J) -> anyhow::Result<()> {
         self.requests.replace(old, ticket, job)
     }
     pub fn cancel(&self, id: u64) {
@@ -193,10 +194,10 @@ impl<J, O> Drop for Worker<J, O> {
         self.requests.close();
     }
 }
-fn publish<J, O>(results: &Results<J, O>, ticket: &Ticket, mut value: O) -> Result<(), String> {
+fn publish<J, O>(results: &Results<J, O>, ticket: &Ticket, mut value: O) -> anyhow::Result<()> {
     loop {
         if ticket.cancelled() || results.requests.stop.load(Ordering::Relaxed) {
-            return Err("cancelled".into());
+            anyhow::bail!("cancelled");
         }
         match results.tx.as_ref().unwrap().try_send(value) {
             Ok(()) => {
@@ -205,7 +206,7 @@ fn publish<J, O>(results: &Results<J, O>, ticket: &Ticket, mut value: O) -> Resu
             }
             Err(TrySendError::Disconnected(_)) => {
                 results.requests.close();
-                return Err("UI closed".into());
+                anyhow::bail!("UI closed");
             }
             Err(TrySendError::Full(v)) => {
                 value = v;

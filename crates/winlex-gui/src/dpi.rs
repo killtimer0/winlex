@@ -11,15 +11,15 @@ pub enum Mode {
     Unaware,
 }
 impl FromStr for Mode {
-    type Err = String;
-    fn from_str(s: &str) -> Result<Self, String> {
+    type Err = anyhow::Error;
+    fn from_str(s: &str) -> anyhow::Result<Self> {
         Ok(match s {
             "auto" => Self::Auto,
             "pmv2" => Self::Pmv2,
             "pmv1" => Self::Pmv1,
             "system" => Self::System,
             "unaware" => Self::Unaware,
-            _ => return Err(format!("Unknown DPI mode: {s}")),
+            _ => anyhow::bail!("Unknown DPI mode: {s}"),
         })
     }
 }
@@ -93,7 +93,7 @@ pub struct Font {
     pub height: i32,
 }
 impl Font {
-    pub fn new(dpi: u32) -> Result<Self, String> {
+    pub fn new(dpi: u32) -> anyhow::Result<Self> {
         unsafe {
             let mut ncm: NONCLIENTMETRICSW = std::mem::zeroed();
             ncm.cbSize = std::mem::size_of::<NONCLIENTMETRICSW>() as u32;
@@ -109,7 +109,7 @@ impl Font {
             }
             let handle = CreateFontIndirectW(&ncm.lfMessageFont);
             if handle.is_null() {
-                return Err(error("Create system font"));
+                anyhow::bail!("Create system font failed");
             }
             let mut font = Self {
                 dpi,
@@ -118,17 +118,14 @@ impl Font {
             };
             let dc = CreateCompatibleDC(ptr::null_mut());
             if dc.is_null() {
-                return Err(error("Create font measurement DC"));
+                anyhow::bail!("Create font measurement DC failed");
             }
             let previous = SelectObject(dc, handle);
             let mut metrics: TEXTMETRICW = std::mem::zeroed();
             let success = GetTextMetricsW(dc, &mut metrics);
-            let failure = (success == 0).then(|| error("Measure system font"));
             SelectObject(dc, previous);
             DeleteDC(dc);
-            if let Some(failure) = failure {
-                return Err(failure);
-            }
+            anyhow::ensure!(success != 0, "Measure system font failed");
             font.height = metrics.tmHeight;
             Ok(font)
         }

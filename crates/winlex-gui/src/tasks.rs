@@ -47,9 +47,9 @@ pub enum Output {
 pub struct Completion {
     pub id: u64,
     pub target: Target,
-    pub result: Result<Output, String>,
+    pub result: anyhow::Result<Output>,
 }
-pub fn run(job: Job, ticket: &Ticket, publish: &dyn Fn(Completion) -> Result<(), String>) {
+pub fn run(job: Job, ticket: &Ticket, publish: &dyn Fn(Completion) -> anyhow::Result<()>) {
     let target = job.target();
     let emit = |result| {
         publish(Completion {
@@ -58,13 +58,13 @@ pub fn run(job: Job, ticket: &Ticket, publish: &dyn Fn(Completion) -> Result<(),
             result,
         })
     };
-    let result = execute(job, ticket, &emit).map_err(|e| format!("{e:#}"));
+    let result = execute(job, ticket, &emit);
     let _ = emit(result);
 }
 fn execute(
     job: Job,
     ticket: &Ticket,
-    publish: &impl Fn(Result<Output, String>) -> Result<(), String>,
+    publish: &impl Fn(anyhow::Result<Output>) -> anyhow::Result<()>,
 ) -> anyhow::Result<Output> {
     match job {
         Job::Load {
@@ -109,12 +109,11 @@ fn execute(
                     publish(Ok(Output::Matches(std::mem::replace(
                         &mut batch,
                         Vec::with_capacity(128),
-                    ))))
-                    .map_err(winlex_core::Error::msg)?;
+                    ))))?;
                 }
             }
             if !batch.is_empty() {
-                publish(Ok(Output::Matches(batch))).map_err(winlex_core::Error::msg)?;
+                publish(Ok(Output::Matches(batch)))?;
             }
             Ok(Output::SearchDone)
         }
@@ -146,5 +145,41 @@ fn execute(
             body.text = format!("{prefix}{}\n\n{details}", body.text);
             Ok(Output::Description { body })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn load_error_retains_io_source_across_worker_completion() {
+        let worker = crate::worker::Worker::new(run).unwrap();
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Winlex.Test.Missing.winmd");
+        assert!(!path.exists());
+        worker
+            .replace(
+                None,
+                Ticket::new(1),
+                Job::Load {
+                    paths: vec![path.clone()],
+                    previous: None,
+                    reload: vec![],
+                },
+            )
+            .unwrap();
+        let completion = worker
+            .rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        assert_eq!(completion.id, 1);
+        assert!(completion.target == Target::Load);
+        let error = completion.result.err().unwrap();
+        assert_eq!(
+            error.downcast_ref::<std::io::Error>().unwrap().kind(),
+            std::io::ErrorKind::NotFound
+        );
+        assert!(format!("{error:#}").starts_with(&format!("Read {}: ", path.display())));
+        assert_eq!(error.chain().count(), 2);
     }
 }

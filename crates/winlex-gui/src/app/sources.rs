@@ -54,7 +54,7 @@ pub(super) fn add(files: Vec<PathBuf>) {
 pub(super) fn choose_add() {
     match input::choose_files(read(|a| a.frame), read(|a| a.system_version)) {
         Ok(paths) => add(paths),
-        Err(error) => catalog::set_status(error),
+        Err(error) => catalog::set_status(format!("{error:#}")),
     }
 }
 

@@ -1,5 +1,6 @@
 //! RichEdit 2.0-compatible declaration presentation. Offsets are UTF-16 positions.
 use crate::native::*;
+use anyhow::Context;
 use std::{mem::size_of, sync::OnceLock};
 use windows::Win32::UI::Controls::RichEdit::{
     CFM_COLOR, CFM_FACE, CHARFORMATW, CHARRANGE, EM_EXGETSEL, EM_EXSETSEL, EM_GETSELTEXT,
@@ -9,7 +10,7 @@ use windows_sys::Win32::UI::Accessibility::{HCF_HIGHCONTRASTON, HIGHCONTRASTW};
 use winlex_format::declaration::NumberRegion;
 
 /// Capture context before TrackPopupMenu enters its nested message loop.
-pub fn context_menu(hwnd: HWND, location: isize, numbers: &[NumberRegion]) -> Result<(), String> {
+pub fn context_menu(hwnd: HWND, location: isize, numbers: &[NumberRegion]) -> anyhow::Result<()> {
     use crate::resources::{
         self, IDS_COPY_DECIMAL, IDS_COPY_HEX, IDS_COPY_SELECTION, IDS_COPY_VALUE,
     };
@@ -116,7 +117,7 @@ pub fn context_menu(hwnd: HWND, location: isize, numbers: &[NumberRegion]) -> Re
     Ok(())
 }
 
-fn copy_text(hwnd: HWND, value: &str) -> Result<(), String> {
+fn copy_text(hwnd: HWND, value: &str) -> anyhow::Result<()> {
     use windows_sys::Win32::System::{DataExchange::*, Memory::*};
     let text = wide(
         &value
@@ -154,18 +155,10 @@ fn copy_text(hwnd: HWND, value: &str) -> Result<(), String> {
     }
 }
 
-pub fn create(parent: HWND, id: u16) -> Result<HWND, String> {
+pub fn create(parent: HWND, id: u16) -> anyhow::Result<HWND> {
     // Keep the module loaded for the lifetime of every control.
-    static LOADED: OnceLock<Result<(), String>> = OnceLock::new();
-    LOADED
-        .get_or_init(|| {
-            if unsafe { LoadLibraryW(w!("riched20.dll")) }.is_null() {
-                Err(error("Load RichEdit"))
-            } else {
-                Ok(())
-            }
-        })
-        .clone()?;
+    static LOADED: OnceLock<Result<(), u32>> = OnceLock::new();
+    load_module(&LOADED, w!("riched20.dll")).context("Load RichEdit")?;
     let hwnd = child(
         parent,
         w!("RichEdit20W"),
@@ -181,6 +174,18 @@ pub fn create(parent: HWND, id: u16) -> Result<HWND, String> {
     )?;
     send(hwnd, EM_SETLIMITTEXT, 0x7ffffffe, 0);
     Ok(hwnd)
+}
+
+fn load_module(cache: &OnceLock<Result<(), u32>>, name: *const u16) -> std::io::Result<()> {
+    cache
+        .get_or_init(|| {
+            if unsafe { LoadLibraryW(name) }.is_null() {
+                Err(unsafe { GetLastError() })
+            } else {
+                Ok(())
+            }
+        })
+        .map_err(|code| std::io::Error::from_raw_os_error(code as i32))
 }
 
 pub fn font(hwnd: HWND) {
@@ -368,6 +373,31 @@ fn spans(text: &[u16]) -> Vec<(usize, usize, u32)> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cached_module_failure_preserves_original_error_code() {
+        use super::*;
+        let cache = OnceLock::new();
+        let failure = load_module(&cache, w!("Winlex.Test.Missing.RichEdit.dll"))
+            .context("Load RichEdit")
+            .unwrap_err();
+        unsafe {
+            SetLastError(ERROR_ACCESS_DENIED);
+        }
+        let cached = load_module(&cache, w!("Winlex.Test.Missing.RichEdit.dll"))
+            .context("Load RichEdit")
+            .unwrap_err();
+        for error in [failure, cached] {
+            assert_eq!(
+                error
+                    .downcast_ref::<std::io::Error>()
+                    .unwrap()
+                    .raw_os_error(),
+                Some(ERROR_MOD_NOT_FOUND as i32)
+            );
+            assert!(format!("{error:#}").starts_with("Load RichEdit: "));
+        }
+    }
+
     #[test]
     fn highlighting_uses_utf16_and_keeps_comments_and_strings_whole() {
         let text: Vec<_> = "// 😀 struct 42\rconst char *s = \"a\\\"b\"; /* int 7 */ 123"

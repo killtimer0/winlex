@@ -101,7 +101,7 @@ pub(super) unsafe extern "system" fn frame_proc(hwnd: HWND, msg: u32, w: usize, 
                 dpi().enable_nonclient(hwnd);
             }
             WM_CREATE => {
-                let result = (|| -> Result<(), String> {
+                let result = (|| -> anyhow::Result<()> {
                     let tabs = child(
                         hwnd,
                         w!("SysTabControl32"),
@@ -138,7 +138,7 @@ pub(super) unsafe extern "system" fn frame_proc(hwnd: HWND, msg: u32, w: usize, 
                         return Err(error("Create MDI client"));
                     }
                     if set_subclass(tabs, Some(workspace::document_tabs_proc), 1, 0) == 0 {
-                        return Err("Subclass document tabs failed".into());
+                        anyhow::bail!("Subclass document tabs failed");
                     }
                     write(|a| {
                         a.workspace.tabs = tabs;

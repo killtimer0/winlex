@@ -41,7 +41,7 @@ impl Sidebar {
                 .unwrap_or(240) as i32,
         }
     }
-    pub fn save(&self, key: &crate::config::Key) -> Result<(), String> {
+    pub fn save(&self, key: &crate::config::Key) -> anyhow::Result<()> {
         key.set_number("SidebarWidth", self.width as u32)?;
         key.set_number("ActivePanel", self.active)?;
         key.set_number("PanelCollapsed", u32::from(self.collapsed))
@@ -74,7 +74,7 @@ pub(super) fn focus() {
         crate::native::focus(toolbar);
     }
 }
-pub(super) fn create(frame: HWND) -> Result<(), String> {
+pub(super) fn create(frame: HWND) -> anyhow::Result<()> {
     let toolbar = child(
         frame,
         w!("ToolbarWindow32"),
@@ -105,7 +105,7 @@ pub(super) fn create(frame: HWND) -> Result<(), String> {
         text.push(0);
         let index = send(toolbar, TB_ADDSTRINGW, 0, text.as_ptr() as isize);
         if index < 0 {
-            return Err("Add panel toolbar string failed".into());
+            anyhow::bail!("Add panel toolbar string failed");
         }
         let button = TBBUTTON {
             iBitmap: I_IMAGENONE,
@@ -116,7 +116,7 @@ pub(super) fn create(frame: HWND) -> Result<(), String> {
             ..unsafe { std::mem::zeroed() }
         };
         if send(toolbar, TB_ADDBUTTONSW, 1, &button as *const _ as isize) == 0 {
-            return Err("Add panel toolbar button failed".into());
+            anyhow::bail!("Add panel toolbar button failed");
         }
         let panel = (registration.create)(frame)?;
         write(|a| a.sidebar.panels.push((registration, panel)));

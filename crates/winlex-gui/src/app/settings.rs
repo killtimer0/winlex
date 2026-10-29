@@ -70,13 +70,13 @@ impl Settings {
         &mut self,
         config: &Config,
         architecture: Architecture,
-    ) -> Result<(), String> {
+    ) -> anyhow::Result<()> {
         self.preferred_architecture = Some(architecture);
         config
             .write_key()?
             .set_text("PreferredArchitecture", architecture.name())
     }
-    fn set_language(&mut self, config: &Config, language: Language) -> Result<(), String> {
+    fn set_language(&mut self, config: &Config, language: Language) -> anyhow::Result<()> {
         config.write_key()?.set_text("Language", language.name())?;
         self.language = language;
         Ok(())
@@ -129,7 +129,7 @@ pub(super) fn restore_window(hwnd: HWND) {
     }
 }
 
-pub(super) fn save_window(hwnd: HWND) -> Result<(), String> {
+pub(super) fn save_window(hwnd: HWND) -> anyhow::Result<()> {
     unsafe {
         let mut placement: WINDOWPLACEMENT = std::mem::zeroed();
         placement.length = std::mem::size_of::<WINDOWPLACEMENT>() as u32;
@@ -193,6 +193,6 @@ pub(super) fn language(language: Language) {
             update_language_menu();
             catalog::set_status(resources::text(IDS_LANGUAGE_RESTART));
         }
-        Err(error) => catalog::set_status(error),
+        Err(error) => catalog::set_status(format!("{error:#}")),
     }
 }

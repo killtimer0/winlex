@@ -11,7 +11,7 @@ pub(super) struct Registration {
     pub id: u32,
     pub command: u16,
     pub label: u16,
-    pub create: fn(HWND) -> Result<Rc<dyn Panel>, String>,
+    pub create: fn(HWND) -> anyhow::Result<Rc<dyn Panel>>,
 }
 pub(super) const SEARCH_PANEL: u32 = 0;
 pub(super) const SOURCES_PANEL: u32 = 1;
@@ -74,7 +74,7 @@ pub(super) fn cancel_debounce() -> (HWND, bool) {
     }
     state
 }
-pub(super) fn debounce(input: HWND) -> Result<(), String> {
+pub(super) fn debounce(input: HWND) -> anyhow::Result<()> {
     if unsafe { SetTimer(input, SEARCH_TIMER, 200, None) } == 0 {
         return Err(error("Search debounce"));
     }
@@ -86,7 +86,7 @@ pub(super) fn debounce(input: HWND) -> Result<(), String> {
     Ok(())
 }
 impl Search {
-    fn create(frame: HWND) -> Result<Rc<dyn Panel>, String> {
+    fn create(frame: HWND) -> anyhow::Result<Rc<dyn Panel>> {
         let input = child_ex(
             frame,
             w!("EDIT"),
@@ -96,7 +96,7 @@ impl Search {
             SEARCH,
         )?;
         if unsafe { set_subclass(input, Some(edit_proc), 1, 0) } == 0 {
-            return Err("Subclass search input failed".into());
+            anyhow::bail!("Subclass search input failed");
         }
         Ok(Rc::new(Self {
             controls: [input, create_list(frame, RESULTS)?],
@@ -106,7 +106,7 @@ impl Search {
     }
 }
 impl Sources {
-    fn create(frame: HWND) -> Result<Rc<dyn Panel>, String> {
+    fn create(frame: HWND) -> anyhow::Result<Rc<dyn Panel>> {
         let list = create_list(frame, SOURCE_LIST)?;
         let tools = [
             (LOAD_METADATA, IDS_LOAD_METADATA),
@@ -363,7 +363,7 @@ unsafe fn draw_list_background(hwnd: HWND, draw: &NMLVCUSTOMDRAW) {
         SetTextColor(draw.nmcd.hdc, color);
     }
 }
-fn create_list(frame: HWND, id: u16) -> Result<HWND, String> {
+fn create_list(frame: HWND, id: u16) -> anyhow::Result<HWND> {
     let h = child(
         frame,
         w!("SysListView32"),
@@ -372,7 +372,7 @@ fn create_list(frame: HWND, id: u16) -> Result<HWND, String> {
         id,
     )?;
     if unsafe { set_subclass(h, Some(list_proc), 1, 0) } == 0 {
-        return Err(format!("Subclass list control {id} failed"));
+        anyhow::bail!("Subclass list control {id} failed");
     }
     list_column(h, 0, "", 100);
     send(

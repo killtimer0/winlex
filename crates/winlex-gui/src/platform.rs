@@ -15,7 +15,7 @@ impl WindowsVersion {
         build: 0,
     };
 
-    pub fn query() -> Result<Self, String> {
+    pub fn query() -> anyhow::Result<Self> {
         let mut version: OSVERSIONINFOW = unsafe { std::mem::zeroed() };
         version.dwOSVersionInfoSize = std::mem::size_of::<OSVERSIONINFOW>() as u32;
         if unsafe { GetVersionExW(&mut version) } == 0 {

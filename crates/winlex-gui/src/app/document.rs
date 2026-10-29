@@ -5,7 +5,7 @@ use std::{any::Any, rc::Rc};
 
 /// Calls run outside the app-state borrow: native controls can synchronously reenter.
 pub(super) trait View: Any {
-    fn create(&mut self, hwnd: HWND) -> Result<(), String>;
+    fn create(&mut self, hwnd: HWND) -> anyhow::Result<()>;
     fn prepare(&self, hwnd: HWND);
     fn layout(&self, hwnd: HWND);
     fn focus(&self);
@@ -24,7 +24,7 @@ pub(super) trait View: Any {
 pub(super) struct Init {
     pub content: Option<Box<dyn View>>,
     pub preview: bool,
-    pub error: Option<String>,
+    pub error: Option<anyhow::Error>,
 }
 pub(super) fn layout_document(hwnd: HWND) {
     if let Some(content) = workspace::view(hwnd) {
@@ -36,9 +36,9 @@ pub(super) fn focus_document(hwnd: HWND) {
         view.focus();
     }
 }
-pub(super) fn track_editor(owner: HWND, editor: HWND) -> Result<(), String> {
+pub(super) fn track_editor(owner: HWND, editor: HWND) -> anyhow::Result<()> {
     if unsafe { set_subclass(editor, Some(editor_proc), 1, owner as usize) } == 0 {
-        Err("Subclass document editor failed".into())
+        anyhow::bail!("Subclass document editor failed")
     } else {
         Ok(())
     }

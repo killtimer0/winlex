@@ -40,7 +40,7 @@ struct App {
     sidebar: sidebar::Sidebar,
     workspace: workspace::Workspace,
     fonts: Vec<Font>,
-    failure: Option<String>,
+    failure: Option<anyhow::Error>,
 }
 thread_local! {static APP:RefCell<Option<App>>=const {RefCell::new(None)};}
 // These closures only inspect/update owned data; never send messages inside them.
@@ -90,7 +90,7 @@ pub fn run(
     dpi: Dpi,
     config: crate::config::Config,
     paths: Vec<std::path::PathBuf>,
-) -> Result<(), String> {
+) -> anyhow::Result<()> {
     let system_version = crate::platform::WindowsVersion::query()?;
     let _apartment = crate::input::Apartment::initialize()?;
     let settings = settings::Settings::load(&config);
@@ -127,14 +127,14 @@ pub fn run(
     APP.with(|a| a.borrow_mut().take());
     result
 }
-unsafe fn run_windows(paths: Vec<std::path::PathBuf>) -> Result<(), String> {
+unsafe fn run_windows(paths: Vec<std::path::PathBuf>) -> anyhow::Result<()> {
     unsafe {
         let controls = INITCOMMONCONTROLSEX {
             dwSize: std::mem::size_of::<INITCOMMONCONTROLSEX>() as u32,
             dwICC: ICC_LISTVIEW_CLASSES | ICC_TAB_CLASSES | ICC_BAR_CLASSES,
         };
         if InitCommonControlsEx(&controls) == 0 {
-            return Err(error("Initialize common controls"));
+            anyhow::bail!("Initialize common controls failed");
         }
         let classes: [(*const u16, WNDPROC); 3] = [
             (w!("Winlex.Frame"), Some(frame_proc)),
@@ -193,8 +193,8 @@ unsafe fn run_windows(paths: Vec<std::path::PathBuf>) -> Result<(), String> {
         if !paths.is_empty() {
             catalog::reload(paths, vec![]);
         }
-        if let Some(warning) = read(|a| a.config.warning.clone()) {
-            catalog::set_status(warning);
+        if let Some(warning) = read(|a| a.config.warning()) {
+            catalog::set_status(format!("{warning:#}"));
         }
         ShowWindow(
             frame,

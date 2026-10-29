@@ -51,7 +51,7 @@ pub(super) fn find(binding: &Binding) -> Option<HWND> {
         .then_some(hwnd)
     })
 }
-pub(super) fn open(name: &str, binding: Binding, preview: bool) -> Result<HWND, String> {
+pub(super) fn open(name: &str, binding: Binding, preview: bool) -> anyhow::Result<HWND> {
     let title = format!("{name} — {}", binding.architecture.name());
     let hwnd = workspace::create_document(
         &title,
@@ -129,7 +129,7 @@ impl MetadataView {
             Ok(()) => resources::text(IDS_QUERYING),
             Err(error) => {
                 self.state.borrow_mut().ticket = None;
-                error
+                format!("{error:#}")
             }
         };
         crate::rich_text::set_content(self.editor, &body, true);
@@ -156,7 +156,7 @@ impl MetadataView {
         if supported.len() > 1
             && let Err(error) = write(|a| a.settings.set_preferred_architecture(&a.config, arch))
         {
-            catalog::set_status(error);
+            catalog::set_status(format!("{error:#}"));
         }
         if arch != binding.architecture {
             self.state.borrow_mut().binding.architecture = arch;
@@ -191,7 +191,7 @@ impl document::View for MetadataView {
                 self.state.borrow_mut().numbers = body.numbers.into();
                 body.text
             }
-            Err(error) => error,
+            Err(error) => format!("{error:#}"),
             _ => unreachable!(),
         };
         crate::rich_text::set_content(self.editor, &body, true);
@@ -216,11 +216,11 @@ impl document::View for MetadataView {
         }
         let numbers = self.state.borrow().numbers.clone();
         if let Err(error) = crate::rich_text::context_menu(self.editor, location, &numbers) {
-            catalog::set_status(error);
+            catalog::set_status(format!("{error:#}"));
         }
         true
     }
-    fn create(&mut self, hwnd: HWND) -> Result<(), String> {
+    fn create(&mut self, hwnd: HWND) -> anyhow::Result<()> {
         self.editor = crate::rich_text::create(hwnd, DECLARATION)?;
         self.header = child(
             hwnd,

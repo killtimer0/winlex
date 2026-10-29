@@ -18,8 +18,8 @@ pub fn wide(s: &str) -> Vec<u16> {
 pub fn instance() -> HINSTANCE {
     unsafe { GetModuleHandleW(ptr::null()) }
 }
-pub fn error(action: &str) -> String {
-    format!("{action}: {}", std::io::Error::last_os_error())
+pub fn error(action: &str) -> anyhow::Error {
+    anyhow::Error::new(std::io::Error::last_os_error()).context(action.to_owned())
 }
 
 pub fn child(
@@ -28,7 +28,7 @@ pub fn child(
     text: &[u16],
     style: u32,
     id: u16,
-) -> Result<HWND, String> {
+) -> anyhow::Result<HWND> {
     child_ex(parent, class, text, style, 0, id)
 }
 pub fn child_ex(
@@ -38,7 +38,7 @@ pub fn child_ex(
     style: u32,
     ex_style: u32,
     id: u16,
-) -> Result<HWND, String> {
+) -> anyhow::Result<HWND> {
     let hwnd = unsafe {
         CreateWindowExW(
             ex_style,
@@ -57,7 +57,7 @@ pub fn child_ex(
     };
     if hwnd.is_null() {
         let failure = std::io::Error::last_os_error();
-        Err(format!("Create child control {id}: {failure}"))
+        Err(anyhow::Error::new(failure).context(format!("Create child control {id}")))
     } else {
         Ok(hwnd)
     }
@@ -147,4 +147,32 @@ pub fn list_column(hwnd: HWND, index: usize, title: &str, width: i32) {
         ..unsafe { std::mem::zeroed() }
     };
     send(hwnd, LVM_INSERTCOLUMNW, index, &col as *const _ as isize);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn child_creation_preserves_error_before_later_native_calls() {
+        let failure = child(
+            unsafe { GetDesktopWindow() },
+            w!("Winlex.Test.UnregisteredControl"),
+            &[0],
+            0,
+            123,
+        )
+        .unwrap_err();
+        unsafe {
+            SetLastError(ERROR_ACCESS_DENIED);
+        }
+        assert_eq!(
+            failure
+                .downcast_ref::<std::io::Error>()
+                .unwrap()
+                .raw_os_error(),
+            Some(ERROR_CANNOT_FIND_WND_CLASS as i32)
+        );
+        assert!(format!("{failure:#}").starts_with("Create child control 123: "));
+    }
 }

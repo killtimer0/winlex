@@ -78,7 +78,7 @@ const RT_STRING: *const u16 = 6usize as *const u16;
 static LANGUAGE: OnceLock<u16> = OnceLock::new();
 static STRINGS: OnceLock<std::collections::HashMap<u16, Vec<u16>>> = OnceLock::new();
 
-pub fn initialize(language: Language) -> Result<(), String> {
+pub fn initialize(language: Language) -> anyhow::Result<()> {
     let selected = language.langid();
     let _ = LANGUAGE.set(selected);
     // Validate before entering window callbacks, where Rust unwinding is forbidden.
@@ -91,7 +91,7 @@ pub fn initialize(language: Language) -> Result<(), String> {
     Ok(())
 }
 
-fn data(kind: *const u16, id: u16) -> Result<&'static [u8], String> {
+fn data(kind: *const u16, id: u16) -> anyhow::Result<&'static [u8]> {
     unsafe {
         let module = instance();
         let language = *LANGUAGE.get().expect("initialized resource language");
@@ -100,19 +100,25 @@ fn data(kind: *const u16, id: u16) -> Result<&'static [u8], String> {
             resource = FindResourceExW(module, kind, id as usize as *const u16, ENGLISH);
         }
         if resource.is_null() {
-            return Err(format!("Missing GUI resource {id}"));
+            return Err(error("Find GUI resource").context(format!("Missing GUI resource {id}")));
         }
         let size = SizeofResource(module, resource) as usize;
+        if size == 0 {
+            return Err(error("Read GUI resource size").context(format!("GUI resource {id}")));
+        }
         let loaded = LoadResource(module, resource);
+        if loaded.is_null() {
+            return Err(error("Load GUI resource").context(format!("GUI resource {id}")));
+        }
         let pointer = LockResource(loaded);
-        if pointer.is_null() || size == 0 {
-            return Err(format!("Cannot load GUI resource {id}"));
+        if pointer.is_null() {
+            anyhow::bail!("Cannot load GUI resource {id}");
         }
         // Resources belong to the executable module, which stays loaded for the process lifetime.
         Ok(std::slice::from_raw_parts(pointer.cast(), size))
     }
 }
-fn load_text(id: u16) -> Result<Vec<u16>, String> {
+fn load_text(id: u16) -> anyhow::Result<Vec<u16>> {
     let bytes = data(RT_STRING, id / 16 + 1)?;
     let mut words = bytes
         .as_chunks::<2>()
@@ -122,17 +128,18 @@ fn load_text(id: u16) -> Result<Vec<u16>, String> {
     for index in 0..=id % 16 {
         let count = words
             .next()
-            .ok_or_else(|| format!("Invalid string resource {id}"))? as usize;
+            .ok_or_else(|| anyhow::anyhow!("Invalid string resource {id}"))?
+            as usize;
         let mut value: Vec<_> = words.by_ref().take(count).collect();
         if value.len() != count {
-            return Err(format!("Truncated string resource {id}"));
+            anyhow::bail!("Truncated string resource {id}");
         }
         if index == id % 16 {
             if value.is_empty() {
-                return Err(format!("Missing string resource {id}"));
+                anyhow::bail!("Missing string resource {id}");
             }
             if char::decode_utf16(value.iter().copied()).any(|c| c.is_err()) {
-                return Err(format!("Invalid UTF-16 resource {id}"));
+                anyhow::bail!("Invalid UTF-16 resource {id}");
             }
             value.push(0);
             return Ok(value);
@@ -147,7 +154,7 @@ pub fn text(id: u16) -> String {
 pub fn wide_text(id: u16) -> &'static [u16] {
     &STRINGS.get().expect("initialized resources")[&id]
 }
-pub fn menu() -> Result<HMENU, String> {
+pub fn menu() -> anyhow::Result<HMENU> {
     let bytes = data(RT_MENU, IDR_MAIN_MENU)?;
     let menu = unsafe { LoadMenuIndirectW(bytes.as_ptr().cast()) };
     if menu.is_null() {
