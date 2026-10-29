@@ -273,6 +273,17 @@ impl List {
                     match d.nmcd.dwDrawStage {
                         CDDS_PREPAINT => Some(CDRF_NOTIFYITEMDRAW as isize),
                         CDDS_ITEMPREPAINT => {
+                            // XP custom-draw notifications do not supply usable item bounds.
+                            d.nmcd.rc.left = LVIR_BOUNDS as i32;
+                            if send(
+                                hdr.hwndFrom,
+                                LVM_GETITEMRECT,
+                                d.nmcd.dwItemSpec,
+                                &mut d.nmcd.rc as *mut RECT as isize,
+                            ) == 0
+                            {
+                                return Some(CDRF_DODEFAULT as isize);
+                            }
                             draw_list_background(hdr.hwndFrom, d);
                             SetBkMode(d.nmcd.hdc, TRANSPARENT as i32);
                             let content = (self.cell)(d.nmcd.dwItemSpec, false);

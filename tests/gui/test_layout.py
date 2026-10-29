@@ -1,4 +1,5 @@
 import struct
+import pytest
 import win32con
 import win32gui
 from support.diagnostics import capture
@@ -12,16 +13,21 @@ def test_toolbar_geometry_activation_and_focus(launch):
         check_toolbar_and_search(app)
 
 
-def test_list_selection_paint_follows_focus(launch, settings):
+@pytest.mark.parametrize("sources", [False, True])
+def test_list_selection_paint_follows_focus(launch, settings, sources):
     app = launch([settings[1]])
     app.query("CreateFileW")
-    app.select(0)
+    if sources:
+        app.command(1021)
+    control = app.sources if sources else app.results
+    other = n.get_item(app.frame, 1020) if sources else app.search
+    app.select(0, control)
 
     def background():
         with n.window_dpi_context(app.frame):
-            _, _, width, height = n.rectangle(app.results, client=True)
-            left, top, right, bottom = app.item_rect(0)
-            with capture(app.results, client=True) as (target, _, _):
+            _, _, width, height = n.rectangle(control, client=True)
+            left, top, right, bottom = app.item_rect(0, control)
+            with capture(control, client=True) as (target, _, _):
                 return win32gui.GetPixel(target, min(right, width) - 4,
                                         (top + bottom) // 2 - 3)
 
@@ -29,13 +35,13 @@ def test_list_selection_paint_follows_focus(launch, settings):
         if classic:
             theme = n.c.WinDLL("uxtheme")
             assert n.api(theme, "SetWindowTheme", n.c.c_long, n.w.HWND,
-                         n.w.LPCWSTR, n.w.LPCWSTR)(app.results, "", "") == 0
-        app.focus(app.results)
-        assert app.focused() == app.results
+                         n.w.LPCWSTR, n.w.LPCWSTR)(control, "", "") == 0
+        app.focus(control)
+        assert app.focused() == control
         selected = background()
-        app.focus(app.search)
+        app.focus(other)
         unfocused = background()
-        assert app.selected_row() == 0  # Losing focus hides the highlight, not selection.
+        assert app.selected_row(control) == 0  # Losing focus hides the highlight, not selection.
         assert selected != unfocused, (classic, selected, unfocused)
         if classic:
             assert selected == win32gui.GetSysColor(win32con.COLOR_HIGHLIGHT)

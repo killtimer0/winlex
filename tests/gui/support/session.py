@@ -131,10 +131,10 @@ class Session:
         return n.send(control or self.results, messages.LVM_GETNEXTITEM,
                       c.c_size_t(-1).value, messages.LVNI_SELECTED)
 
-    def item_rect(self, row):
+    def item_rect(self, row, control=None):
         raw = bytes(16)
         assert n.write_memory(self.handle, self.memory, raw, len(raw), None)
-        assert n.send(self.results, messages.LVM_GETITEMRECT, row, self.memory)
+        assert n.send(control or self.results, messages.LVM_GETITEMRECT, row, self.memory)
         buffer = c.create_string_buffer(16)
         assert n.read_memory(self.handle, self.memory, buffer, 16, None)
         return struct.unpack("<4i", buffer.raw)
