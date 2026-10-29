@@ -26,7 +26,7 @@ def build(folder, name, version, code, dependency=None, public_sign=False):
 def query(files, command, name=None, *options, error=None):
     args = [EXE, "--json", "--arch", "x64"]
     for file in files:
-        args.extend(["--winmd", file])
+        args.append(file)
     args.extend(options)
     args.append(command)
     if name is not None:

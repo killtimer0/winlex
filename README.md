@@ -13,14 +13,14 @@
 
 ## 使用
 
-用 `--winmd PATH` 显式指定输入：
+在命令前指定输入文件：
 
 ```powershell
-winlex --winmd Windows.Win32.winmd search OPENFILE --prefix
-winlex --winmd Windows.Win32.winmd value 0x80000000
-winlex --winmd Windows.Win32.winmd show CreateFileW --arch x64
-winlex --winmd Windows.Win32.winmd layout OVERLAPPED --arch x64
-winlex --winmd Windows.Win32.winmd vtable IStream --arch x64 --json
+winlex Windows.Win32.winmd search OPENFILE --prefix
+winlex Windows.Win32.winmd value 0x80000000
+winlex Windows.Win32.winmd show CreateFileW --arch x64
+winlex Windows.Win32.winmd layout OVERLAPPED --arch x64
+winlex Windows.Win32.winmd vtable IStream --arch x64 --json
 ```
 
 查询架构与程序自身架构无关。命令、输出及限制见 [CLI 文档](docs/cli.md)。
@@ -31,7 +31,7 @@ winlex --winmd Windows.Win32.winmd vtable IStream --arch x64 --json
 
 ```powershell
 winlex-gui
-winlex-gui --winmd Windows.Win32.winmd --winmd Windows.Wdk.winmd
+winlex-gui Windows.Win32.winmd Windows.Wdk.winmd
 ```
 
 无显式输入时恢复保存的自动加载集合，首次启动为空。通过“添加”或拖放发现来源，再从来源详情加载。

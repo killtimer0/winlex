@@ -18,7 +18,7 @@ def test_real_search_keyboard(request, launch, settings):
     finally:
         active.CloseDesktop()
     with InputState() as input_state:
-        app = launch(["--winmd", settings[1]])
+        app = launch([settings[1]])
         n.wait(lambda: app.status_text().startswith(("Ready.", "已就绪")), "loaded", 45)
         # Expose our own window, then let a real mouse click obtain foreground
         # ownership (SetForegroundWindow may be rejected by the foreground lock).

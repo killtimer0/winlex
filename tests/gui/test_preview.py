@@ -13,7 +13,7 @@ def body(app, doc):
 
 
 def test_single_click_replaces_preview_preserving_architecture_and_focus(launch, settings):
-    app = launch(["--winmd", settings[1]])
+    app = launch([settings[1]])
     app.query("CreateFileW")
     name = title(app)
     app.focus(app.results)
@@ -37,7 +37,7 @@ def test_single_click_replaces_preview_preserving_architecture_and_focus(launch,
 
 
 def test_preview_rebinds_architecture_choices_and_body(launch, settings):
-    app = launch(["--winmd", settings[1]])
+    app = launch([settings[1]])
     app.query("CreateFileW")
     doc = app.preview_row()
     app.choose(doc, "x64")
@@ -59,7 +59,7 @@ def test_preview_rebinds_architecture_choices_and_body(launch, settings):
 
 
 def test_preview_inherits_the_architecture_being_read(launch, profile, settings):
-    app = launch(["--winmd", settings[1]])
+    app = launch([settings[1]])
     app.query("CreateFileW")
     doc = app.open_row()
     app.choose(doc, "x64")
@@ -81,7 +81,7 @@ def test_preview_inherits_the_architecture_being_read(launch, profile, settings)
 
 
 def test_space_previews_without_leaving_the_list(launch, settings):
-    app = launch(["--winmd", settings[1]])
+    app = launch([settings[1]])
     app.query("CreateFileW")
     doc = app.preview_row()
     n.wait(lambda: "CreateFileW(" in app.content(doc), "declaration", 45)
@@ -98,7 +98,7 @@ def test_space_previews_without_leaving_the_list(launch, settings):
 
 
 def test_arrow_keys_only_move_the_selection(launch, settings):
-    app = launch(["--winmd", settings[1]])
+    app = launch([settings[1]])
     app.query("CreateFile")
     doc = app.preview_row()
     n.wait(lambda: "CREATEFILE" in app.content(doc), "declaration", 45)
@@ -119,7 +119,7 @@ def test_arrow_keys_only_move_the_selection(launch, settings):
 
 
 def test_pinning_and_open_commands_preserve_documents_and_focus(launch, settings):
-    app = launch(["--winmd", settings[1]])
+    app = launch([settings[1]])
     app.query("CreateFileW")
     app.focus(app.results)
     doc = app.preview_row()

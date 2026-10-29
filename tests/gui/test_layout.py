@@ -13,7 +13,7 @@ def test_toolbar_geometry_activation_and_focus(launch):
 
 
 def test_list_selection_paint_follows_focus(launch, settings):
-    app = launch(["--winmd", settings[1]])
+    app = launch([settings[1]])
     app.query("CreateFileW")
     app.select(0)
 
@@ -104,7 +104,7 @@ def check_toolbar_and_search(app):
 
 
 def test_environment_remeasures_open_document(launch, settings):
-    app = launch(["--winmd", settings[1]])
+    app = launch([settings[1]])
     app.query("CreateFileW")
     doc = app.open_row()
     n.wait(lambda: 'CreateFileW(' in app.content(doc), "declaration", 45)
@@ -138,7 +138,7 @@ def test_environment_remeasures_open_document(launch, settings):
 
 
 def test_mdi_maximize_inheritance_and_one_shot_arrangement(launch, settings):
-    app = launch(["--winmd", settings[1]])
+    app = launch([settings[1]])
     app.query("CreateFileW")
     original = app.open_row()
     n.send(app.mdi, win32con.WM_MDIMAXIMIZE, original)
@@ -173,7 +173,7 @@ def test_mdi_maximize_inheritance_and_one_shot_arrangement(launch, settings):
 
 
 def test_accelerator_region_navigation_and_tab_enter(launch, settings):
-    app = launch(["--winmd", settings[1]])
+    app = launch([settings[1]])
     app.query("CreateFileW")
     doc = app.open_row()
     editor = n.get_item(doc, 1203)
@@ -191,7 +191,7 @@ def test_accelerator_region_navigation_and_tab_enter(launch, settings):
 
 
 def test_mdi_remembers_last_user_state_after_all_documents_close(launch, settings):
-    app = launch(["--winmd", settings[1]])
+    app = launch([settings[1]])
     app.query("CreateFileW")
     doc = app.open_row()
     assert n.is_zoomed(doc), "first document defaults to maximized"

@@ -5,7 +5,7 @@ from support import native as n
 
 
 def test_stream_and_panel_state(launch, settings):
-    app = launch(["--winmd", settings[1]])
+    app = launch([settings[1]])
     n.wait(lambda: app.status_text().startswith(("Ready.", "已就绪")), "loaded", 45)
     app.query("file")
     assert app.count() > 100
@@ -37,7 +37,7 @@ def test_stream_and_panel_state(launch, settings):
 
 
 def test_ime_defers_search(launch, settings):
-    app = launch(["--winmd", settings[1]])
+    app = launch([settings[1]])
     n.wait(lambda: app.status_text().startswith(("Ready.", "已就绪")), "loaded", 45)
     n.send(app.search, win32con.WM_IME_STARTCOMPOSITION)
     n.set_text(app.search, "CreateFileW")

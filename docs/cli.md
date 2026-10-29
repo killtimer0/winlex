@@ -1,15 +1,15 @@
 # CLI 与查询接口
 
 ```text
-winlex --winmd PATH [选项] 命令 [查询]
+winlex FILE... 命令 [查询] [选项]
 ```
 
-查询命令必须通过 `--winmd PATH` 显式指定输入；`--help`、`--version` 无需输入。
-重复 `--winmd` 可加载多个文件；来源按输入顺序编号，从 0 开始，重复输入保留独立条目。
+输入文件放在命令前；`--help`、`--version` 无需输入。文件名与命令同名时使用带目录的路径，例如 `.\search`；以 `--` 开头的文件名也使用带目录的路径。
+依次列出文件路径可加载多个文件；来源按输入顺序编号，从 0 开始，重复输入保留独立条目。
 
 ```powershell
-winlex --winmd Windows.Win32.winmd --winmd Windows.Wdk.winmd summary
-winlex --winmd Windows.Win32.winmd --winmd Windows.Wdk.winmd show Windows.Wdk.winmd::NtCancelIoFileEx --arch x64
+winlex Windows.Win32.winmd Windows.Wdk.winmd summary
+winlex Windows.Win32.winmd Windows.Wdk.winmd show Windows.Wdk.winmd::NtCancelIoFileEx --arch x64
 ```
 
 ## 命令
@@ -59,7 +59,7 @@ winlex --winmd Windows.Win32.winmd --winmd Windows.Wdk.winmd show Windows.Wdk.wi
 
 ## WinRT 与 Windows App SDK
 
-可加载 Windows SDK 合并版 `Windows.winmd`，或通过重复 `--winmd` 加载分立 contracts。Windows App SDK 的 WinMD 位于各组件 NuGet 包的 `metadata/` 下；所需依赖也须显式加载。
+可加载 Windows SDK 合并版 `Windows.winmd`，或依次列出文件路径加载分立 contracts。Windows App SDK 的 WinMD 位于各组件 NuGet 包的 `metadata/` 下；所需依赖也须显式加载。
 
 - WinRT 引用按类型全名匹配已加载的 WinRT 定义。合并版与分立 contracts 应选择一套，重叠定义会导致歧义。
 - 声明保留类型/方法泛型参数、实例化参数、属性、事件和 accessor 方法 ID。`interface_implementations` 提供默认接口标记及关系属性，`base_type` 提供基类。

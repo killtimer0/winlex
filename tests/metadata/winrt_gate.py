@@ -13,7 +13,7 @@ EXE = ROOT / "target/release/examples/host-cli.exe"
 def query(files, command, name, error=None):
     args = [EXE, "--json", "--arch", "x64", "--limit", "1000"]
     for file in files:
-        args.extend(["--winmd", file])
+        args.append(file)
     p = subprocess.run(args + [command, name], capture_output=True)
     data = json.loads(p.stdout)
     if error:

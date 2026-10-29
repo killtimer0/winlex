@@ -13,27 +13,18 @@ mod tasks;
 mod worker;
 
 pub fn run(args: impl Iterator<Item = std::ffi::OsString>) -> anyhow::Result<()> {
-    use anyhow::{Context, anyhow, bail};
+    use anyhow::{Context, bail};
     let mode = match std::env::var("WINLEX_DPI") {
         Ok(value) => value.parse()?,
         Err(std::env::VarError::NotPresent) => dpi::Mode::Auto,
         Err(_) => bail!("WINLEX_DPI must be valid Unicode"),
     };
-    let mut args = args;
     let mut paths = Vec::new();
-    while let Some(arg) = args.next() {
-        match arg.to_str() {
-            Some("--winmd") => paths.push(
-                std::path::absolute(
-                    args.next()
-                        .ok_or_else(|| anyhow!("--winmd requires a path"))?,
-                )
-                .context("Resolve input path")?,
-            ),
-            _ => {
-                bail!("Unknown argument: {arg:?}\nUsage: winlex-gui [--winmd PATH ...]");
-            }
+    for arg in args {
+        if arg.to_str().is_some_and(|value| value.starts_with("--")) {
+            bail!("Unknown argument: {arg:?}\nUsage: winlex-gui [FILE ...]");
         }
+        paths.push(std::path::absolute(arg).context("Resolve input path")?);
     }
     let config = config::Config::load(1)?;
     app::run(dpi::Dpi::initialize(mode), config, paths)

@@ -5,7 +5,7 @@ use winlex_core::{Architecture, Catalog, SearchMode, SearchOptions};
 
 pub const HELP: &str = r#"Winlex - offline Win32 metadata queries
 
-Usage: winlex --winmd PATH [options] COMMAND [QUERY]
+Usage: winlex FILE... COMMAND [QUERY] [options]
 
 Commands:
   summary                 Sources, assembly identities and row counts
@@ -18,7 +18,6 @@ Commands:
   references TYPE         Reverse type uses across loaded sources
 
 Options:
-  --winmd PATH            Required input file (repeat to load multiple files)
   --source SOURCE         Zero-based input index or unique assembly name
   --arch x86|x64|arm64     Required for layout/vtable/references
   --json                  Versioned machine-readable output
@@ -27,6 +26,7 @@ Options:
   --offset N              Matching rows to skip
   --help, --version       No input required
 
+Input files precede the command. Use .\search for a file named search.
 Declaration selectors accept SOURCE::NAME or SOURCE::0xTOKEN.
 Bare tokens require a single input source. Names can be namespace-qualified.
 Source indices follow input order and belong to this catalog only.
@@ -61,16 +61,16 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
             .ok_or("argument must be valid Unicode".to_owned())
     };
     while i < args.len() {
-        let a = text(&args[i])?;
+        let arg = &args[i];
+        let a = arg.to_str().unwrap_or("");
         i += 1;
-        match a.as_str() {
-            "--winmd" | "--source" | "--arch" | "--limit" | "--offset" => {
+        match a {
+            "--source" | "--arch" | "--limit" | "--offset" => {
                 let v = args
                     .get(i)
                     .ok_or_else(|| format!("missing value for {a}"))?;
                 i += 1;
-                match a.as_str() {
-                    "--winmd" => paths.push(PathBuf::from(v)),
+                match a {
                     "--source" => source = Some(text(v)?),
                     "--arch" => {
                         arch = Some(
@@ -96,27 +96,28 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
                 };
             }
             _ if a.starts_with("--") => return Err(format!("unknown option {a}")),
-            _ => positional.push(a),
+            _ if positional.is_empty()
+                && ![
+                    "summary",
+                    "search",
+                    "value",
+                    "guid",
+                    "show",
+                    "layout",
+                    "vtable",
+                    "references",
+                ]
+                .contains(&a) =>
+            {
+                paths.push(PathBuf::from(arg))
+            }
+            _ => positional.push(text(arg)?),
         }
     }
     if limit > 1000 {
         return Err("limit must be <= 1000".into());
     }
     let command = positional.first().ok_or("missing command")?.clone();
-    if ![
-        "summary",
-        "search",
-        "value",
-        "guid",
-        "show",
-        "layout",
-        "vtable",
-        "references",
-    ]
-    .contains(&command.as_str())
-    {
-        return Err(format!("unknown command {command}"));
-    }
     let count = if command == "summary" { 1 } else { 2 };
     if positional.len() != count {
         return Err(format!("{command} expects {} query argument(s)", count - 1));
@@ -135,7 +136,7 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
         );
     }
     if paths.is_empty() {
-        return Err("at least one --winmd PATH is required".into());
+        return Err("at least one input file is required before the command".into());
     }
     Ok(Options {
         command,

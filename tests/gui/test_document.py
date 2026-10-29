@@ -6,7 +6,7 @@ RESIZE_NO_MOVE = win32con.SWP_NOMOVE | win32con.SWP_NOZORDER | win32con.SWP_NOAC
 
 
 def test_document_controls_and_close_during_architecture_reload(launch, settings):
-    app = launch(["--winmd", settings[1]])
+    app = launch([settings[1]])
     app.query("CreateFileW")
     doc = app.open_row()
     n.wait(lambda: "CreateFileW(" in app.content(doc), "initial declaration", 45)
@@ -28,7 +28,7 @@ def test_document_controls_and_close_during_architecture_reload(launch, settings
 
 
 def test_architecture_preference_applies_to_new_documents(launch, profile, settings):
-    app = launch(["--winmd", settings[1]])
+    app = launch([settings[1]])
     app.query("Windows.Win32.Security.SECURITY_ATTRIBUTES")
     first = app.open_row()
     assert app.choices(app.architecture(first)) == ["x86", "x64", "arm64"]
@@ -67,7 +67,7 @@ def test_architecture_preference_applies_to_new_documents(launch, profile, setti
 
 
 def test_architecture_preference_survives_restart(launch, profile, settings):
-    app = launch(["--winmd", settings[1]])
+    app = launch([settings[1]])
     app.query("CreateFileW")
     doc = app.open_row()
     app.choose(doc, "x64")
@@ -75,14 +75,14 @@ def test_architecture_preference_survives_restart(launch, profile, settings):
     assert profile.get("PreferredArchitecture") == "x64"
     app.close()
 
-    restarted = launch(["--winmd", settings[1]])
+    restarted = launch([settings[1]])
     restarted.query("CreateFileW")
     reopened = restarted.open_row()
     n.wait(lambda: restarted.choice(reopened) == "x64", "preference persisted")
 
 
 def test_architecture_cancel_keeps_current_document(launch, profile, settings):
-    app = launch(["--winmd", settings[1]])
+    app = launch([settings[1]])
     app.query("CreateFileW")
     doc = app.open_row()
     combo = app.architecture(doc)
@@ -95,7 +95,7 @@ def test_architecture_cancel_keeps_current_document(launch, profile, settings):
 
 
 def test_document_minimum_limits_normal_not_maximized_windows(launch, settings):
-    app = launch(["--winmd", settings[1]])
+    app = launch([settings[1]])
     app.query("CreateFileW")
     doc = app.open_row()
     n.send(doc, win32con.WM_SYSCOMMAND, win32con.SC_RESTORE)  # SC_RESTORE
@@ -137,7 +137,7 @@ def test_document_minimum_limits_normal_not_maximized_windows(launch, settings):
 
 
 def test_tab_traverses_document_controls(launch, settings):
-    app = launch(["--winmd", settings[1]])
+    app = launch([settings[1]])
     app.query("CreateFileW")
     doc = app.open_row()
     n.wait(lambda: "CreateFileW(" in app.content(doc), "declaration", 45)
@@ -156,7 +156,7 @@ def test_tab_traverses_document_controls(launch, settings):
 
 
 def test_narrow_document_keeps_complete_body_usable(launch, settings):
-    app = launch(["--winmd", settings[1]])
+    app = launch([settings[1]])
     app.query("CreateFileW")
     doc = app.open_row()
     n.wait(lambda: "CreateFileW(" in app.content(doc), "declaration", 45)

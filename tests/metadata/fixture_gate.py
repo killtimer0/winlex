@@ -7,7 +7,7 @@ EXE = ROOT / "target/release/examples/host-cli.exe"
 
 
 def layout(source, name):
-    return subprocess.run([EXE, "--winmd", source, "--json", "--arch", "x64", "layout", name], capture_output=True, text=True, encoding="utf-8")
+    return subprocess.run([EXE, source, "--json", "--arch", "x64", "layout", name], capture_output=True, text=True, encoding="utf-8")
 
 
 def main():
@@ -35,7 +35,7 @@ def main():
     overlay = json.loads(result.stdout)["result"]
     assert overlay["size_bits"] == 64 and [f["offset_bits"] for f in overlay["fields"]] == [0, 0]
     def query(command, name):
-        p = subprocess.run([EXE, "--winmd", source, "--json", "--arch", "x64", command, name], capture_output=True, check=True)
+        p = subprocess.run([EXE, source, "--json", "--arch", "x64", command, name], capture_output=True, check=True)
         return json.loads(p.stdout)["result"]
     box = query("show", "Fixtures.IBox`1")
     assert box["generic_parameters"][0]["name"] == "T"

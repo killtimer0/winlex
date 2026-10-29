@@ -68,7 +68,7 @@ def character_point(app, editor, index):
 def test_numeric_context_and_selection_survive_architecture_changes(launch, settings):
     path = settings[2] / "来源😀.winmd"
     shutil.copyfile(settings[1], path)
-    app = launch(["--winmd", path])
+    app = launch([path])
     app.query("Windows.Win32.Security.SECURITY_ATTRIBUTES")
     doc = app.open_row()
     app.choose(doc, "x64")
@@ -145,7 +145,7 @@ def clipboard_text():
 
 
 def test_numeric_copy_formats(launch, settings):
-    app = launch(["--winmd", settings[1]])
+    app = launch([settings[1]])
     app.query("Windows.Win32.Security.SECURITY_ATTRIBUTES")
     doc = app.open_row()
     app.choose(doc, "x64")
@@ -170,7 +170,7 @@ def test_numeric_copy_formats(launch, settings):
 
 
 def test_copy_contention_preserves_clipboard_and_allows_retry(launch, settings, tmp_path):
-    app = launch(["--winmd", settings[1]])
+    app = launch([settings[1]])
     app.query("Windows.Win32.Security.SECURITY_ATTRIBUTES")
     doc = app.open_row()
     app.choose(doc, "x64")

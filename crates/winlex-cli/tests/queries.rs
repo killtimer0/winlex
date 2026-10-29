@@ -36,12 +36,12 @@ fn queries_require_explicit_inputs_but_help_and_version_do_not() {
                 response["error"]["message"]
                     .as_str()
                     .unwrap()
-                    .contains("--winmd")
+                    .contains("input file")
             );
             assert!(err.is_empty());
         } else {
             assert!(out.is_empty());
-            assert!(String::from_utf8(err).unwrap().contains("--winmd"));
+            assert!(String::from_utf8(err).unwrap().contains("input file"));
         }
     }
     for option in ["--help", "--version"] {
@@ -124,14 +124,25 @@ fn source_paths_preserve_native_utf16_without_changing_json() {
     let value = serde_json::to_value(&db.sources()[0]).unwrap();
     assert!(value.get("native_path").is_none());
     assert!(value["path"].as_str().unwrap().contains('\u{fffd}'));
+    let (mut out, mut err) = (vec![], vec![]);
+    assert_eq!(
+        winlex_cli::run(
+            [
+                path.clone().into_os_string(),
+                OsString::from("summary"),
+                OsString::from("--json"),
+            ],
+            &mut out,
+            &mut err,
+        ),
+        0
+    );
+    assert!(err.is_empty());
+    assert!(serde_json::from_slice::<Value>(&out).is_ok());
     std::fs::remove_file(path).unwrap();
 }
 fn cli(args: &[&str]) -> (u8, Value, String) {
-    let mut argv = vec![
-        OsString::from("--winmd"),
-        input().into_os_string(),
-        OsString::from("--json"),
-    ];
+    let mut argv = vec![input().into_os_string(), OsString::from("--json")];
     argv.extend(args.iter().map(OsString::from));
     let (mut out, mut err) = (vec![], vec![]);
     let code = winlex_cli::run(argv, &mut out, &mut err);
@@ -388,7 +399,7 @@ fn qualified_name_and_token_select_the_same_declaration() {
 fn duplicate_inputs_and_numeric_source_selectors() {
     let path = input();
     let path = path.to_str().unwrap();
-    let (code, result, _) = cli(&["--winmd", path, "search", "CreateFileW", "--exact"]);
+    let (code, result, _) = cli(&[path, "search", "CreateFileW", "--exact"]);
     assert_eq!(code, 0);
     assert_eq!(result["sources"].as_array().unwrap().len(), 2);
     let matches = result["result"]["matches"].as_array().unwrap();
@@ -396,26 +407,15 @@ fn duplicate_inputs_and_numeric_source_selectors() {
     for (index, entity) in matches.iter().enumerate() {
         let id = entity_id(&entity["id"]);
         assert_eq!(id.source_id, index);
-        let (code, shown, _) = cli(&["--winmd", path, "show", &id.to_string(), "--arch", "x64"]);
+        let (code, shown, _) = cli(&[path, "show", &id.to_string(), "--arch", "x64"]);
         assert_eq!(code, 0);
         assert_eq!(shown["result"]["entity"]["id"], entity["id"]);
     }
-    let (code, filtered, _) = cli(&[
-        "--winmd",
-        path,
-        "--source",
-        "1",
-        "search",
-        "CreateFileW",
-        "--exact",
-    ]);
+    let (code, filtered, _) = cli(&[path, "--source", "1", "search", "CreateFileW", "--exact"]);
     assert_eq!(code, 0);
     assert_eq!(filtered["result"]["total"], 1);
     assert_eq!(filtered["result"]["matches"][0]["id"]["source_id"], 1);
-    assert_eq!(
-        cli(&["--winmd", path, "show", "CreateFileW", "--arch", "x64"]).0,
-        3
-    );
+    assert_eq!(cli(&[path, "show", "CreateFileW", "--arch", "x64"]).0, 3);
     assert_eq!(cli(&["--source", "1", "search", "CreateFileW"]).0, 3);
 }
 
@@ -506,7 +506,7 @@ fn text_output_and_input_error() {
             vec!["type rows", "Windows.Win32.winmd", "assembly:"],
         ),
     ] {
-        let args = [OsString::from("--winmd"), input().into_os_string()]
+        let args = [input().into_os_string()]
             .into_iter()
             .chain(args.into_iter().map(OsString::from));
         let (mut out, mut err) = (vec![], vec![]);
@@ -522,7 +522,7 @@ fn text_output_and_input_error() {
         }
         assert!(err.is_empty());
     }
-    let args = ["--winmd", "/does-not-exist.winmd", "--json", "summary"].map(OsString::from);
+    let args = ["/does-not-exist.winmd", "--json", "summary"].map(OsString::from);
     let (mut out, mut err) = (vec![], vec![]);
     assert_eq!(winlex_cli::run(args, &mut out, &mut err), 3);
     let e: Value = serde_json::from_slice(&out).unwrap();

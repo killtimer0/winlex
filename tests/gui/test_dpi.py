@@ -10,7 +10,7 @@ def test_cross_monitor_layout(launch, settings, maximized):
     if not hasattr(n.user, "GetDpiForWindow"):
         pytest.skip("GetDpiForWindow unavailable; no actual-DPI assertion")
     get_dpi = n.api(n.user, "GetDpiForWindow", w.UINT, w.HWND)
-    app = launch(["--winmd", settings[1]])
+    app = launch([settings[1]])
     app.query("CreateFileW")
     doc = app.open_row()
     n.wait(lambda: 'CreateFileW(' in app.content(doc), "document before DPI change", 45)

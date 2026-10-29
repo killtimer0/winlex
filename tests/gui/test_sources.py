@@ -47,12 +47,12 @@ def test_restore_successful_files_ignores_legacy_discovery_locations(launch, pro
 
 def test_temporary_inputs_preserve_saved_files(launch, profile, settings):
     profile.set("AutoLoad", winreg.REG_MULTI_SZ, [str(settings[1])])
-    app = launch(["--winmd", str(settings[2] / "missing.winmd")])
+    app = launch([str(settings[2] / "missing.winmd")])
     n.wait(lambda: "failed" in app.status_text() or "失败" in app.status_text(), "load error")
     assert app.count(app.sources) == 0
     assert profile.get("AutoLoad") == [str(settings[1])]
     app.close()
-    temporary = launch(["--winmd", settings[1]])
+    temporary = launch([settings[1]])
     n.wait(lambda: temporary.count(temporary.sources) == 1, "temporary input loaded", 45)
     temporary.select(0, temporary.sources)
     temporary.command(1022)
@@ -69,6 +69,21 @@ def test_failed_restore_preserves_saved_files(launch, profile, settings):
     assert app.count(app.sources) == 0
 
 
+def test_multiple_positional_inputs_preserve_order(launch, profile, settings):
+    first = settings[2] / "first source.winmd"
+    second = settings[2] / "第二个来源.winmd"
+    for path in (first, second):
+        shutil.copyfile(settings[1], path)
+    profile.set("AutoLoad", winreg.REG_MULTI_SZ, [str(settings[1])])
+    app = launch([first, second])
+    n.wait(lambda: app.count(app.sources) == 2, "both inputs loaded", 45)
+    assert str(first) in app.cell(0, app.sources)
+    assert str(second) in app.cell(1, app.sources)
+    assert profile.get("AutoLoad") == [str(settings[1])]
+    app.query("CreateFileW")
+    assert app.count() == 2
+
+
 def test_long_unicode_input(launch, settings):
     from support.paths import extended
     directory = settings[2] / ("长路径" * 40) / ("metadata-" * 12)
@@ -76,7 +91,7 @@ def test_long_unicode_input(launch, settings):
     path = directory / "来源.winmd"
     assert len(str(path)) > 260
     shutil.copyfile(settings[1], extended(path))
-    app = launch(["--winmd", path])
+    app = launch([path])
     n.wait(lambda: app.status_text().startswith(("Ready.", "已就绪")), "long path loaded", 45)
     app.query("CreateFileW")
     doc = app.open_row()

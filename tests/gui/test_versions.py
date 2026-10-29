@@ -6,7 +6,7 @@ from support import native as n
 def test_reload_keeps_old_document_snapshot(launch, settings):
     path = settings[2] / "version.winmd"
     shutil.copyfile(settings[1], path)
-    app = launch(["--winmd", path])
+    app = launch([path])
     n.wait(lambda: app.status_text().startswith(("Ready.", "已就绪")), "loaded", 45)
     app.query("CreateFileW")
     entity = app.open_row()

@@ -16,7 +16,7 @@ OUT = ROOT / "tmp/verify/compiler"
 
 
 def query(command, name, arch):
-    cmd = [EXE, "--winmd", WINMD, "--json", "--arch", arch, command, name]
+    cmd = [EXE, WINMD, "--json", "--arch", arch, command, name]
     p = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", check=True)
     return json.loads(p.stdout)["result"]
 
