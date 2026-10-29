@@ -1,4 +1,5 @@
 import struct
+import pytest
 import winreg
 import win32con
 from support import native as n
@@ -37,3 +38,22 @@ def test_placement_and_language_restart(launch, profile):
     assert not n.is_visible(collapsed.sources) and not n.is_visible(collapsed.results)
     collapsed.command(1021)
     assert n.is_visible(collapsed.sources)
+
+
+@pytest.mark.parametrize("command,name,label", [
+    (1030, "auto", None), (1031, "en-US", "Search"), (1032, "zh-CN", "搜索"),
+], ids=["auto", "english", "chinese"])
+def test_language_option_round_trip(launch, profile, command, name, label):
+    app = launch()
+    app.command(command)
+    assert profile.get("Language") == name
+    menu = n.api(n.user, "GetMenu", n.w.HMENU, n.w.HWND)(app.frame)
+    get_state = n.api(n.user, "GetMenuState", n.w.UINT, n.w.HMENU, n.w.UINT, n.w.UINT)
+    for candidate in (1030, 1031, 1032):
+        assert bool(get_state(menu, candidate, win32con.MF_BYCOMMAND) & win32con.MF_CHECKED) == (candidate == command)
+    app.command(1033)
+    assert profile.get("Language") == name
+    app.close()
+    restored = launch()
+    if label is not None:
+        assert restored.toolbar_text(1040) == label

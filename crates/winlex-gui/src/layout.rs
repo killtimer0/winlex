@@ -56,15 +56,19 @@ impl Metrics {
             let dc = GetDC(std::ptr::null_mut());
             let old = SelectObject(dc, self.font);
             for label in labels {
+                let label = label.as_ref();
+                let length = label.iter().position(|&c| c == 0).unwrap_or(label.len());
                 let mut bounds = rect(0, 0, 0, 0);
-                DrawTextW(
-                    dc,
-                    // DT_MODIFYSTRING is not set; DrawTextW only reads the label.
-                    label.as_ref().as_ptr().cast_mut(),
-                    -1,
-                    &mut bounds,
-                    DT_CALCRECT | DT_SINGLELINE,
-                );
+                if length != 0 {
+                    DrawTextW(
+                        dc,
+                        // DT_MODIFYSTRING is not set; DrawTextW only reads the label.
+                        label.as_ptr().cast_mut(),
+                        i32::try_from(length).expect("label length fits DrawTextW"),
+                        &mut bounds,
+                        DT_CALCRECT | DT_SINGLELINE,
+                    );
+                }
                 width = width.max(bounds.right + self.px(24));
             }
             SelectObject(dc, old);
@@ -125,4 +129,25 @@ pub enum Arrangement {
     Free,
     Columns,
     Rows,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn label_measurement_accepts_bounded_utf16() {
+        let m = Metrics {
+            dpi: 96,
+            font: unsafe { GetStockObject(SYSTEM_FONT) },
+            height: 16,
+        };
+        let text: Vec<_> = "中文 label".encode_utf16().collect();
+        let mut terminated = text.clone();
+        terminated.push(0);
+        let width = m.label_width(std::iter::once(&text), 0);
+        assert!(width > m.px(24));
+        assert_eq!(width, m.label_width(std::iter::once(&terminated), 0));
+        assert_eq!(m.label_width(std::iter::once(&[]), 0), m.px(24));
+    }
 }

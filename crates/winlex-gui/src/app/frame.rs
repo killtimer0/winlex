@@ -59,6 +59,10 @@ pub(super) fn layout_frame() {
     place_with_flags(mdi, area, SWP_NOCOPYBITS);
 }
 pub(super) fn command(id: u16) -> bool {
+    if let Some(language) = Language::from_command(id) {
+        super::settings::language(language);
+        return true;
+    }
     match id {
         FOCUS_NEXT_REGION => {
             let h = unsafe { GetFocus() };
@@ -69,7 +73,6 @@ pub(super) fn command(id: u16) -> bool {
                 super::document::focus_document(d);
             }
         }
-        LANGUAGE_AUTO | LANGUAGE_ENGLISH | LANGUAGE_CHINESE => super::settings::language(id),
         CLOSE => workspace::close_document(active()),
         OPEN_RESULT => catalog::open_selected(catalog::Open::Pin),
         OPEN_NEW => catalog::open_selected(catalog::Open::New),
@@ -98,53 +101,59 @@ pub(super) unsafe extern "system" fn frame_proc(hwnd: HWND, msg: u32, w: usize, 
                 dpi().enable_nonclient(hwnd);
             }
             WM_CREATE => {
-                let tabs = child(
-                    hwnd,
-                    w!("SysTabControl32"),
-                    &[0],
-                    WS_TABSTOP | TCS_TOOLTIPS,
-                    DOCUMENT_TABS,
-                );
-                let status = child(
-                    hwnd,
-                    w!("msctls_statusbar32"),
-                    &[0],
-                    SBARS_SIZEGRIP | SBARS_TOOLTIPS,
-                    STATUS,
-                );
-                let c = CLIENTCREATESTRUCT {
-                    hWindowMenu: GetSubMenu(GetMenu(hwnd), 1),
-                    idFirstChild: 40000,
-                };
-                let mdi = CreateWindowExW(
-                    0,
-                    w!("MDICLIENT"),
-                    ptr::null(),
-                    WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_HSCROLL | WS_VSCROLL,
-                    0,
-                    0,
-                    0,
-                    0,
-                    hwnd,
-                    ptr::null_mut(),
-                    instance(),
-                    (&c as *const CLIENTCREATESTRUCT).cast(),
-                );
-                if [tabs, status, mdi].iter().any(|h| h.is_null())
-                    || set_subclass(tabs, Some(workspace::document_tabs_proc), 1, 0) == 0
-                {
+                let result = (|| -> Result<(), String> {
+                    let tabs = child(
+                        hwnd,
+                        w!("SysTabControl32"),
+                        &[0],
+                        WS_TABSTOP | TCS_TOOLTIPS,
+                        DOCUMENT_TABS,
+                    )?;
+                    let status = child(
+                        hwnd,
+                        w!("msctls_statusbar32"),
+                        &[0],
+                        SBARS_SIZEGRIP | SBARS_TOOLTIPS,
+                        STATUS,
+                    )?;
+                    let c = CLIENTCREATESTRUCT {
+                        hWindowMenu: GetSubMenu(GetMenu(hwnd), 1),
+                        idFirstChild: 40000,
+                    };
+                    let mdi = CreateWindowExW(
+                        0,
+                        w!("MDICLIENT"),
+                        ptr::null(),
+                        WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_HSCROLL | WS_VSCROLL,
+                        0,
+                        0,
+                        0,
+                        0,
+                        hwnd,
+                        ptr::null_mut(),
+                        instance(),
+                        (&c as *const CLIENTCREATESTRUCT).cast(),
+                    );
+                    if mdi.is_null() {
+                        return Err(error("Create MDI client"));
+                    }
+                    if set_subclass(tabs, Some(workspace::document_tabs_proc), 1, 0) == 0 {
+                        return Err("Subclass document tabs failed".into());
+                    }
+                    write(|a| {
+                        a.workspace.tabs = tabs;
+                        a.status = status;
+                        a.workspace.mdi = mdi;
+                    });
+                    sidebar::create(hwnd)?;
+                    windows_sys::Win32::UI::Shell::DragAcceptFiles(hwnd, 1);
+                    update_environment(None, false);
+                    Ok(())
+                })();
+                if let Err(error) = result {
+                    write(|a| a.failure = Some(error));
                     return -1;
                 }
-                write(|a| {
-                    a.workspace.tabs = tabs;
-                    a.status = status;
-                    a.workspace.mdi = mdi;
-                });
-                if !sidebar::create(hwnd) {
-                    return -1;
-                }
-                windows_sys::Win32::UI::Shell::DragAcceptFiles(hwnd, 1);
-                update_environment(None, false);
                 return 0;
             }
             WM_SIZE => {
@@ -185,6 +194,8 @@ pub(super) unsafe extern "system" fn frame_proc(hwnd: HWND, msg: u32, w: usize, 
                     return result;
                 }
             }
+            // A top-level WM_GETMINMAXINFO minimum can block a DPI downscale.
+            // Use WM_SIZING for interactive limits; retain child minmax for layouts.
             WM_SIZING => {
                 let r = &mut *(l as *mut RECT);
                 let value = dpi().window(hwnd);

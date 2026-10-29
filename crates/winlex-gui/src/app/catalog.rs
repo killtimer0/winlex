@@ -202,27 +202,19 @@ pub(super) fn search() {
             _ => None,
         };
         s.results.clear();
-        let Some(catalog) = s.catalog.clone() else {
+        let Some(catalog) = s.catalog.clone().filter(|_| !query.is_empty()) else {
             if let Some(ticket) = previous {
                 a.worker.cancel(ticket.id);
             }
-            return Ok(false);
+            return Ok(());
         };
-        if query.is_empty() {
-            if let Some(ticket) = previous {
-                a.worker.cancel(ticket.id);
-            }
-            return Ok(false);
-        }
         let ticket = s.ticket();
         s.search = Search::Running(ticket.clone());
-        a.worker
-            .replace(
-                previous.map(|t| t.id),
-                ticket,
-                Job::Search { catalog, query },
-            )
-            .map(|_| true)
+        a.worker.replace(
+            previous.map(|t| t.id),
+            ticket,
+            Job::Search { catalog, query },
+        )
     });
     update_results(false);
     if let Err(e) = sent {
@@ -391,7 +383,7 @@ pub(super) fn apply(c: Completion) {
                 return;
             }
             write(|a| a.session.load = None);
-            match c.result {
+            let committed = match c.result {
                 Ok(Output::Loaded(snapshot)) => {
                     write(|a| {
                         let s = &mut a.session;
@@ -412,20 +404,21 @@ pub(super) fn apply(c: Completion) {
                     }) {
                         set_status(error);
                     }
-                    super::sources::refresh(true);
                     for (hwnd, view) in workspace::views() {
                         view.catalog_changed(hwnd);
                     }
+                    true
                 }
                 Err(e) => {
                     write(|a| {
                         a.session.load_error =
                             Some(resources::text(IDS_LOAD_FAILED).replace("{error}", &e))
                     });
+                    false
                 }
                 _ => unreachable!(),
-            }
-            super::sources::refresh(false);
+            };
+            super::sources::refresh(committed);
             refresh_status();
         }
         Target::Search => {

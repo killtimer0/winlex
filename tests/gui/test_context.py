@@ -1,6 +1,8 @@
 """Context menus use native popup loops, preserving the declaration selection."""
 import struct
 import shutil
+import subprocess
+import sys
 import time
 import win32clipboard as clipboard
 import win32con
@@ -163,3 +165,52 @@ def test_numeric_copy_formats(launch, settings):
 
         n.wait(lambda: clipboard_text() == expected, "copied numeric value")
         assert n.send(editor, win32con.EM_GETSEL) == ((index + 2) << 16) | index
+
+
+def test_copy_contention_preserves_clipboard_and_allows_retry(launch, settings, tmp_path):
+    app = launch(["--winmd", settings[1]])
+    app.query("Windows.Win32.Security.SECURITY_ATTRIBUTES")
+    doc = app.open_row()
+    app.choose(doc, "x64")
+    n.wait(lambda: "24(0x18) bytes" in app.content(doc), "layout", 45)
+    editor = n.get_item(doc, 1203)
+    index = app.content(doc).replace("\r\n", "\r").index("24(0x18)")
+    n.send(editor, win32con.EM_SETSEL, index, index + 2)
+    wait_clipboard_available()
+    ready = tmp_path / "clipboard-held"
+    script = """
+import pathlib, sys, win32clipboard as c, win32con
+c.OpenClipboard()
+try:
+    c.EmptyClipboard()
+    c.SetClipboardData(win32con.CF_UNICODETEXT, 'contention sentinel')
+finally:
+    c.CloseClipboard()
+c.OpenClipboard()
+try:
+    pathlib.Path(sys.argv[1]).write_text('ready')
+    sys.stdin.readline()
+finally:
+    c.CloseClipboard()
+"""
+    holder = subprocess.Popen([sys.executable, "-c", script, str(ready)],
+                              stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              text=True)
+    try:
+        n.wait(lambda: ready.exists() or holder.poll() is not None, "clipboard holder")
+        assert ready.exists(), "clipboard holder exited before acquiring the clipboard"
+        popup(app, editor)
+        n.key_message(editor, win32con.VK_DOWN)
+        n.key_message(editor, win32con.VK_RETURN)
+        wait_closed(editor)
+        n.send(editor, win32con.WM_NULL)
+        assert "Open clipboard" in app.status_text()
+    finally:
+        holder.communicate("release\n", timeout=5)
+    assert holder.returncode == 0
+    assert clipboard_text() == "contention sentinel"
+    popup(app, editor)
+    n.key_message(editor, win32con.VK_DOWN)
+    n.key_message(editor, win32con.VK_RETURN)
+    wait_closed(editor)
+    n.wait(lambda: clipboard_text() == "24", "copy after contention")

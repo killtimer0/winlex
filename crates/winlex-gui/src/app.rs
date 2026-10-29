@@ -94,7 +94,7 @@ pub fn run(
     let system_version = crate::platform::WindowsVersion::query()?;
     let _apartment = crate::input::Apartment::initialize()?;
     let settings = settings::Settings::load(&config);
-    resources::initialize(settings.language.name())?;
+    resources::initialize(settings.language)?;
     let mut session = catalog::Session::new();
     let worker = crate::worker::Worker::new(crate::tasks::run)?;
     session.remember_sources = paths.is_empty();
@@ -173,7 +173,8 @@ unsafe fn run_windows(paths: Vec<std::path::PathBuf>) -> Result<(), String> {
             ptr::null(),
         );
         if frame.is_null() {
-            let failure = error("Create main window");
+            let failure =
+                write(|a| a.failure.take()).unwrap_or_else(|| error("Create main window"));
             DestroyMenu(menu);
             return Err(failure);
         }

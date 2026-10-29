@@ -9,22 +9,6 @@ use crate::{
 use std::ptr;
 use winlex_core::Architecture;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(super) enum Language {
-    #[default]
-    Auto,
-    English,
-    Chinese,
-}
-impl Language {
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Auto => "auto",
-            Self::English => "en-US",
-            Self::Chinese => "zh-CN",
-        }
-    }
-}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Window {
     pub x: i32,
@@ -42,11 +26,10 @@ pub(super) struct Settings {
 impl Settings {
     pub fn load(config: &Config) -> Self {
         let key = config.key.as_ref();
-        let language = match key.and_then(|k| k.text("Language")).as_deref() {
-            Some("en-US") => Language::English,
-            Some("zh-CN") => Language::Chinese,
-            _ => Language::Auto,
-        };
+        let language = key
+            .and_then(|k| k.text("Language"))
+            .and_then(|name| Language::from_name(&name))
+            .unwrap_or_default();
         let preferred_architecture = key
             .and_then(|k| k.text("PreferredArchitecture"))
             .and_then(|value| value.parse::<Architecture>().ok());
@@ -193,11 +176,7 @@ pub(super) fn save_window(hwnd: HWND) -> Result<(), String> {
 
 pub(super) fn update_language_menu() {
     let (hwnd, language) = read(|a| (a.frame, a.settings.language));
-    let selected = match language {
-        Language::Auto => LANGUAGE_AUTO,
-        Language::English => LANGUAGE_ENGLISH,
-        Language::Chinese => LANGUAGE_CHINESE,
-    };
+    let selected = language.command();
     unsafe {
         CheckMenuRadioItem(
             GetMenu(hwnd),
@@ -208,12 +187,7 @@ pub(super) fn update_language_menu() {
         );
     }
 }
-pub(super) fn language(id: u16) {
-    let language = match id {
-        LANGUAGE_ENGLISH => Language::English,
-        LANGUAGE_CHINESE => Language::Chinese,
-        _ => Language::Auto,
-    };
+pub(super) fn language(language: Language) {
     match write(|a| a.settings.set_language(&a.config, language)) {
         Ok(()) => {
             update_language_menu();

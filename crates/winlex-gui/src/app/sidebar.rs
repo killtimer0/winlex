@@ -74,7 +74,7 @@ pub(super) fn focus() {
         crate::native::focus(toolbar);
     }
 }
-pub(super) fn create(frame: HWND) -> bool {
+pub(super) fn create(frame: HWND) -> Result<(), String> {
     let toolbar = child(
         frame,
         w!("ToolbarWindow32"),
@@ -86,11 +86,8 @@ pub(super) fn create(frame: HWND) -> bool {
             | TBSTYLE_WRAPABLE
             | (CCS_NORESIZE | CCS_NOPARENTALIGN | CCS_NODIVIDER) as u32,
         PANEL_TOOLBAR,
-    );
-    let splitter = child(frame, w!("Winlex.Splitter"), &[0], 0, 0);
-    if toolbar.is_null() || splitter.is_null() {
-        return false;
-    }
+    )?;
+    let splitter = child(frame, w!("Winlex.Splitter"), &[0], 0, 0)?;
     write(|a| {
         a.sidebar.toolbar = toolbar;
         a.sidebar.splitter = splitter;
@@ -108,7 +105,7 @@ pub(super) fn create(frame: HWND) -> bool {
         text.push(0);
         let index = send(toolbar, TB_ADDSTRINGW, 0, text.as_ptr() as isize);
         if index < 0 {
-            return false;
+            return Err("Add panel toolbar string failed".into());
         }
         let button = TBBUTTON {
             iBitmap: I_IMAGENONE,
@@ -119,15 +116,13 @@ pub(super) fn create(frame: HWND) -> bool {
             ..unsafe { std::mem::zeroed() }
         };
         if send(toolbar, TB_ADDBUTTONSW, 1, &button as *const _ as isize) == 0 {
-            return false;
+            return Err("Add panel toolbar button failed".into());
         }
-        let Some(panel) = (registration.create)(frame) else {
-            return false;
-        };
+        let panel = (registration.create)(frame)?;
         write(|a| a.sidebar.panels.push((registration, panel)));
     }
     sync_visibility();
-    true
+    Ok(())
 }
 pub(super) fn show(id: u32, toggle: bool) {
     write(|a| {

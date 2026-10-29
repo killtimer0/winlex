@@ -40,8 +40,11 @@ pub(super) fn binding(hwnd: HWND) -> Option<Binding> {
     Some(view(hwnd)?.state.borrow().binding.clone())
 }
 pub(super) fn find(binding: &Binding) -> Option<HWND> {
-    workspace::views().into_iter().find_map(|(hwnd, _)| {
-        let candidate = self::binding(hwnd)?;
+    workspace::views().into_iter().find_map(|(hwnd, content)| {
+        let content: Rc<dyn Any> = content;
+        let view = content.downcast_ref::<MetadataView>()?;
+        let state = view.state.borrow();
+        let candidate = &state.binding;
         (candidate.id == binding.id
             && candidate.architecture == binding.architecture
             && Arc::ptr_eq(&candidate.catalog, &binding.catalog))
@@ -225,7 +228,7 @@ impl document::View for MetadataView {
             resources::wide_text(IDS_OLD_VERSION),
             0,
             DOCUMENT_HEADER,
-        );
+        )?;
         document::track_editor(hwnd, self.editor)?;
         show(self.header, false);
         self.architecture_label = child(
@@ -234,24 +237,14 @@ impl document::View for MetadataView {
             resources::wide_text(IDS_ARCHITECTURE),
             0,
             0,
-        );
+        )?;
         self.architecture_select = child(
             hwnd,
             w!("COMBOBOX"),
             &[0],
             WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST as u32,
             SELECT_ARCH,
-        );
-        if [
-            self.architecture_label,
-            self.architecture_select,
-            self.header,
-        ]
-        .iter()
-        .any(|h| h.is_null())
-        {
-            return Err(error("Create document control"));
-        }
+        )?;
         self.fill_architectures();
         Ok(())
     }

@@ -11,7 +11,7 @@ pub(super) struct Registration {
     pub id: u32,
     pub command: u16,
     pub label: u16,
-    pub create: fn(HWND) -> Option<Rc<dyn Panel>>,
+    pub create: fn(HWND) -> Result<Rc<dyn Panel>, String>,
 }
 pub(super) const SEARCH_PANEL: u32 = 0;
 pub(super) const SOURCES_PANEL: u32 = 1;
@@ -86,7 +86,7 @@ pub(super) fn debounce(input: HWND) -> Result<(), String> {
     Ok(())
 }
 impl Search {
-    fn create(frame: HWND) -> Option<Rc<dyn Panel>> {
+    fn create(frame: HWND) -> Result<Rc<dyn Panel>, String> {
         let input = child_ex(
             frame,
             w!("EDIT"),
@@ -94,11 +94,11 @@ impl Search {
             WS_TABSTOP | ES_AUTOHSCROLL as u32,
             WS_EX_CLIENTEDGE,
             SEARCH,
-        );
-        if input.is_null() || unsafe { set_subclass(input, Some(edit_proc), 1, 0) } == 0 {
-            return None;
+        )?;
+        if unsafe { set_subclass(input, Some(edit_proc), 1, 0) } == 0 {
+            return Err("Subclass search input failed".into());
         }
-        Some(Rc::new(Self {
+        Ok(Rc::new(Self {
             controls: [input, create_list(frame, RESULTS)?],
             composing: Cell::new(false),
             deadline: Cell::new(None),
@@ -106,13 +106,14 @@ impl Search {
     }
 }
 impl Sources {
-    fn create(frame: HWND) -> Option<Rc<dyn Panel>> {
+    fn create(frame: HWND) -> Result<Rc<dyn Panel>, String> {
         let list = create_list(frame, SOURCE_LIST)?;
         let tools = [
             (LOAD_METADATA, IDS_LOAD_METADATA),
             (RELOAD_SOURCE, IDS_RELOAD),
             (REMOVE_SOURCE, IDS_UNLOAD),
         ]
+        .into_iter()
         .map(|(id, label)| {
             child(
                 frame,
@@ -121,12 +122,11 @@ impl Sources {
                 WS_TABSTOP,
                 id,
             )
-        });
-        tools.iter().all(|h| !h.is_null()).then(|| {
-            Rc::new(Self {
-                controls: [list, tools[0], tools[1], tools[2]],
-            }) as Rc<dyn Panel>
         })
+        .collect::<Result<Vec<_>, _>>()?;
+        Ok(Rc::new(Self {
+            controls: [list, tools[0], tools[1], tools[2]],
+        }))
     }
 }
 impl Panel for Search {
@@ -363,16 +363,16 @@ unsafe fn draw_list_background(hwnd: HWND, draw: &NMLVCUSTOMDRAW) {
         SetTextColor(draw.nmcd.hdc, color);
     }
 }
-fn create_list(frame: HWND, id: u16) -> Option<HWND> {
+fn create_list(frame: HWND, id: u16) -> Result<HWND, String> {
     let h = child(
         frame,
         w!("SysListView32"),
         &[0],
         WS_TABSTOP | LVS_REPORT | LVS_OWNERDATA | LVS_SINGLESEL | LVS_NOCOLUMNHEADER,
         id,
-    );
-    if h.is_null() || unsafe { set_subclass(h, Some(list_proc), 1, 0) } == 0 {
-        return None;
+    )?;
+    if unsafe { set_subclass(h, Some(list_proc), 1, 0) } == 0 {
+        return Err(format!("Subclass list control {id} failed"));
     }
     list_column(h, 0, "", 100);
     send(
@@ -381,7 +381,7 @@ fn create_list(frame: HWND, id: u16) -> Option<HWND> {
         0,
         (LVS_EX_FULLROWSELECT | LVS_EX_INFOTIP | LVS_EX_DOUBLEBUFFER) as isize,
     );
-    Some(h)
+    Ok(h)
 }
 pub(super) fn fit(h: HWND) {
     send(h, LVM_SETCOLUMNWIDTH, 0, client(h).right.max(1) as isize);

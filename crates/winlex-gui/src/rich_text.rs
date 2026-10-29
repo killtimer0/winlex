@@ -116,20 +116,6 @@ pub fn context_menu(hwnd: HWND, location: isize, numbers: &[NumberRegion]) -> Re
     Ok(())
 }
 
-fn open_clipboard(hwnd: HWND) -> bool {
-    // The clipboard is shared; brief contention must not drop the copy.
-    use windows_sys::Win32::System::DataExchange::OpenClipboard;
-    for attempt in 0..5 {
-        if unsafe { OpenClipboard(hwnd) } != 0 {
-            return true;
-        }
-        if attempt < 4 {
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
-    }
-    false
-}
-
 fn copy_text(hwnd: HWND, value: &str) -> Result<(), String> {
     use windows_sys::Win32::System::{DataExchange::*, Memory::*};
     let text = wide(
@@ -139,7 +125,7 @@ fn copy_text(hwnd: HWND, value: &str) -> Result<(), String> {
             .replace('\n', "\r\n"),
     );
     unsafe {
-        if !open_clipboard(hwnd) {
+        if OpenClipboard(hwnd) == 0 {
             return Err(error("Open clipboard"));
         }
         let result = (|| {
@@ -170,10 +156,16 @@ fn copy_text(hwnd: HWND, value: &str) -> Result<(), String> {
 
 pub fn create(parent: HWND, id: u16) -> Result<HWND, String> {
     // Keep the module loaded for the lifetime of every control.
-    static LOADED: OnceLock<bool> = OnceLock::new();
-    if !*LOADED.get_or_init(|| unsafe { !LoadLibraryW(w!("riched20.dll")).is_null() }) {
-        return Err(error("Load RichEdit"));
-    }
+    static LOADED: OnceLock<Result<(), String>> = OnceLock::new();
+    LOADED
+        .get_or_init(|| {
+            if unsafe { LoadLibraryW(w!("riched20.dll")) }.is_null() {
+                Err(error("Load RichEdit"))
+            } else {
+                Ok(())
+            }
+        })
+        .clone()?;
     let hwnd = child(
         parent,
         w!("RichEdit20W"),
@@ -186,10 +178,7 @@ pub fn create(parent: HWND, id: u16) -> Result<HWND, String> {
             | ES_AUTOVSCROLL as u32
             | ES_AUTOHSCROLL as u32,
         id,
-    );
-    if hwnd.is_null() {
-        return Err(error("Create RichEdit"));
-    }
+    )?;
     send(hwnd, EM_SETLIMITTEXT, 0x7ffffffe, 0);
     Ok(hwnd)
 }

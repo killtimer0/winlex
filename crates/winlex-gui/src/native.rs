@@ -22,7 +22,13 @@ pub fn error(action: &str) -> String {
     format!("{action}: {}", std::io::Error::last_os_error())
 }
 
-pub fn child(parent: HWND, class: *const u16, text: &[u16], style: u32, id: u16) -> HWND {
+pub fn child(
+    parent: HWND,
+    class: *const u16,
+    text: &[u16],
+    style: u32,
+    id: u16,
+) -> Result<HWND, String> {
     child_ex(parent, class, text, style, 0, id)
 }
 pub fn child_ex(
@@ -32,8 +38,8 @@ pub fn child_ex(
     style: u32,
     ex_style: u32,
     id: u16,
-) -> HWND {
-    unsafe {
+) -> Result<HWND, String> {
+    let hwnd = unsafe {
         CreateWindowExW(
             ex_style,
             class,
@@ -48,6 +54,12 @@ pub fn child_ex(
             instance(),
             ptr::null(),
         )
+    };
+    if hwnd.is_null() {
+        let failure = std::io::Error::last_os_error();
+        Err(format!("Create child control {id}: {failure}"))
+    } else {
+        Ok(hwnd)
     }
 }
 pub fn client(hwnd: HWND) -> RECT {

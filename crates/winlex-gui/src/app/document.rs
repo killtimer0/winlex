@@ -37,10 +37,8 @@ pub(super) fn focus_document(hwnd: HWND) {
     }
 }
 pub(super) fn track_editor(owner: HWND, editor: HWND) -> Result<(), String> {
-    if editor.is_null()
-        || unsafe { set_subclass(editor, Some(editor_proc), 1, owner as usize) } == 0
-    {
-        Err(error("Create document control"))
+    if unsafe { set_subclass(editor, Some(editor_proc), 1, owner as usize) } == 0 {
+        Err("Subclass document editor failed".into())
     } else {
         Ok(())
     }

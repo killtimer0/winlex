@@ -6,21 +6,80 @@ include!(concat!(env!("OUT_DIR"), "/resource_ids.rs"));
 
 const ENGLISH: u16 = 0x0409;
 const CHINESE: u16 = 0x0804;
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Language {
+    #[default]
+    Auto,
+    English,
+    Chinese,
+}
+struct LanguageOption {
+    value: Language,
+    name: &'static str,
+    command: u16,
+    langid: Option<u16>,
+}
+const LANGUAGES: &[LanguageOption] = &[
+    LanguageOption {
+        value: Language::Auto,
+        name: "auto",
+        command: LANGUAGE_AUTO,
+        langid: None,
+    },
+    LanguageOption {
+        value: Language::English,
+        name: "en-US",
+        command: LANGUAGE_ENGLISH,
+        langid: Some(ENGLISH),
+    },
+    LanguageOption {
+        value: Language::Chinese,
+        name: "zh-CN",
+        command: LANGUAGE_CHINESE,
+        langid: Some(CHINESE),
+    },
+];
+impl Language {
+    fn option(self) -> &'static LanguageOption {
+        LANGUAGES
+            .iter()
+            .find(|option| option.value == self)
+            .expect("registered language")
+    }
+    pub fn name(self) -> &'static str {
+        self.option().name
+    }
+    pub fn command(self) -> u16 {
+        self.option().command
+    }
+    pub fn from_name(name: &str) -> Option<Self> {
+        LANGUAGES
+            .iter()
+            .find(|option| option.name == name)
+            .map(|option| option.value)
+    }
+    pub fn from_command(command: u16) -> Option<Self> {
+        LANGUAGES
+            .iter()
+            .find(|option| option.command == command)
+            .map(|option| option.value)
+    }
+    fn langid(self) -> u16 {
+        self.option().langid.unwrap_or_else(|| {
+            match unsafe { windows_sys::Win32::Globalization::GetUserDefaultUILanguage() } {
+                0x0804 | 0x1004 => CHINESE,
+                _ => ENGLISH,
+            }
+        })
+    }
+}
 // RT_STRING is misplaced under KernelStreaming in windows-sys 0.59.
 const RT_STRING: *const u16 = 6usize as *const u16;
 static LANGUAGE: OnceLock<u16> = OnceLock::new();
 static STRINGS: OnceLock<std::collections::HashMap<u16, Vec<u16>>> = OnceLock::new();
 
-pub fn initialize(language: &str) -> Result<(), String> {
-    let selected = match language {
-        "en-US" => ENGLISH,
-        "zh-CN" => CHINESE,
-        "auto" => match unsafe { windows_sys::Win32::Globalization::GetUserDefaultUILanguage() } {
-            0x0804 | 0x1004 => CHINESE,
-            _ => ENGLISH,
-        },
-        _ => return Err(format!("Unknown UI language: {language}")),
-    };
+pub fn initialize(language: Language) -> Result<(), String> {
+    let selected = language.langid();
     let _ = LANGUAGE.set(selected);
     // Validate before entering window callbacks, where Rust unwinding is forbidden.
     let strings = STRING_IDS
@@ -95,5 +154,25 @@ pub fn menu() -> Result<HMENU, String> {
         Err(error("Load GUI menu"))
     } else {
         Ok(menu)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn language_names_and_commands_round_trip() {
+        for option in LANGUAGES {
+            assert_eq!(Language::from_name(option.value.name()), Some(option.value));
+            assert_eq!(
+                Language::from_command(option.value.command()),
+                Some(option.value)
+            );
+        }
+        assert_eq!(Language::from_name("unknown"), None);
+        assert_eq!(Language::from_command(0), None);
+        assert_eq!(Language::English.langid(), 0x0409);
+        assert_eq!(Language::Chinese.langid(), 0x0804);
     }
 }
