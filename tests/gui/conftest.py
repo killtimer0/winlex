@@ -62,8 +62,8 @@ def profile(request):
 @pytest.fixture
 def launch(request, settings, profile):
     sessions = []
-    def start(arguments=()):
-        session = Session(settings[0], profile, arguments, request.config.getoption("--dpi"))
+    def start(arguments=(), dpi=None):
+        session = Session(settings[0], profile, arguments, dpi or request.config.getoption("--dpi"))
         sessions.append(session)
         return session
     yield start

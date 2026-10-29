@@ -266,14 +266,16 @@ mod tests {
     struct Profile(OsString);
     impl Profile {
         fn new() -> Self {
+            static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
             Self(
                 format!(
-                    "Software\\Winlex\\Tests\\rust-{}-{}",
+                    "Software\\Winlex\\Tests\\rust-{}-{}-{}",
                     std::process::id(),
                     std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap()
-                        .as_nanos()
+                        .as_nanos(),
+                    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
                 )
                 .into(),
             )

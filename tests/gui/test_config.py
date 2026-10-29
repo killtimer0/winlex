@@ -16,11 +16,14 @@ def test_placement_and_language_restart(launch, profile):
     assert n.is_visible(app.sources) and not n.is_visible(app.results)
     rect = n.rectangle(app.frame)
     assert any(m[0] <= rect[0] < rect[2] <= m[2] and m[1] <= rect[1] < rect[3] <= m[3] for m in n.monitors())
-    app.command(1032)
+    sheet = app.settings()
+    general = app.settings_page(sheet, 0)
+    n.send(n.get_item(general, 1300), win32con.CB_SETCURSEL, 2)
+    app.close_settings(sheet)
     n.send(app.frame, win32con.WM_SYSCOMMAND, win32con.SC_MAXIMIZE)
     assert n.is_zoomed(app.frame)
     app.close()
-    assert profile.get("Language") == "zh-CN"
+    assert profile.get("Preferences", profile.get("Language") + ":7") == "zh-CN:7"
     assert (profile.get("ActivePanel"), profile.get("PanelCollapsed")) == (1, 0)
     assert struct.unpack("<6i", profile.get("Window"))[-1] == 1
     restored = launch()
@@ -40,19 +43,25 @@ def test_placement_and_language_restart(launch, profile):
     assert n.is_visible(collapsed.sources)
 
 
-@pytest.mark.parametrize("command,name,label", [
-    (1030, "auto", None), (1031, "en-US", "Search"), (1032, "zh-CN", "搜索"),
+@pytest.mark.parametrize("index,name,label", [
+    (0, "auto", None), (1, "en-US", "Search"), (2, "zh-CN", "搜索"),
 ], ids=["auto", "english", "chinese"])
-def test_language_option_round_trip(launch, profile, command, name, label):
+def test_language_option_round_trip(launch, profile, index, name, label):
     app = launch()
-    app.command(command)
-    assert profile.get("Language") == name
-    menu = n.api(n.user, "GetMenu", n.w.HMENU, n.w.HWND)(app.frame)
-    get_state = n.api(n.user, "GetMenuState", n.w.UINT, n.w.HMENU, n.w.UINT, n.w.UINT)
-    for candidate in (1030, 1031, 1032):
-        assert bool(get_state(menu, candidate, win32con.MF_BYCOMMAND) & win32con.MF_CHECKED) == (candidate == command)
-    app.command(1033)
-    assert profile.get("Language") == name
+    sheet = app.settings()
+    general = app.settings_page(sheet, 0)
+    control = n.get_item(general, 1300)
+    assert app.choices(control) == (["跟随系统", "English", "简体中文"] if app.toolbar_text(1040) == "搜索"
+                                   else ["System default", "English", "简体中文"])
+    n.send(control, win32con.CB_SETCURSEL, index)
+    app.close_settings(sheet)
+    # Selecting the existing value does not require a write.
+    if name != profile.get("Language"):
+        assert profile.get("Preferences") == name + ":7"
+    sheet = app.settings()
+    general = app.settings_page(sheet, 0)
+    assert n.send(n.get_item(general, 1300), win32con.CB_GETCURSEL) == index
+    app.close_settings(sheet, accept=False)
     app.close()
     restored = launch()
     if label is not None:

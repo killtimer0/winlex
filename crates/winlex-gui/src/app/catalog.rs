@@ -213,7 +213,11 @@ pub(super) fn search() {
         a.worker.replace(
             previous.map(|t| t.id),
             ticket,
-            Job::Search { catalog, query },
+            Job::Search {
+                catalog,
+                query,
+                categories: a.settings.preferences.categories,
+            },
         )
     });
     update_results(false);

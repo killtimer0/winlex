@@ -66,7 +66,23 @@ pub struct SearchOptions<'a> {
     pub mode: SearchMode,
     pub architecture: Option<Architecture>,
     pub types_only: bool,
+    pub categories: Option<u32>,
     pub cancel: Option<&'a AtomicBool>,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
+pub enum EntityCategory {
+    Type = 1,
+    Method = 2,
+    Constant = 4,
+    Field = 8,
+    Property = 16,
+    Event = 32,
+    TypeReference = 64,
+}
+impl EntityCategory {
+    pub const ALL: u32 = 127;
+    pub const DEFAULT: u32 = Self::Type as u32 | Self::Method as u32 | Self::Constant as u32;
 }
 #[derive(Debug, serde::Serialize)]
 pub struct EntitySummary {
@@ -143,6 +159,17 @@ impl<'a> Declaration<'a> {
         };
         member & self.owner().map(raw_mask).unwrap_or(Architecture::ALL_MASK)
     }
+    pub fn category(&self) -> EntityCategory {
+        match self {
+            Self::Type(_) => EntityCategory::Type,
+            Self::Method(_) => EntityCategory::Method,
+            Self::Field(f) if f.constant().is_some() => EntityCategory::Constant,
+            Self::Field(_) => EntityCategory::Field,
+            Self::Property(_) => EntityCategory::Property,
+            Self::Event(_) => EntityCategory::Event,
+            Self::Reference(_) => EntityCategory::TypeReference,
+        }
+    }
 }
 impl Catalog {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
@@ -213,6 +240,7 @@ impl Catalog {
         let mut names = HashMap::new();
         let mut search_index = Vec::new();
         for file in 0..db.sources.len() {
+            search_index.extend(db.index.rows::<TypeRef>(file).map(|r| key(r, 1)));
             for t in db.index.rows::<TypeDef>(file) {
                 names.insert(key(t, 2), full(&db, t, &parents, 0)?);
                 search_index.push(key(t, 2));
@@ -278,12 +306,7 @@ impl Catalog {
                 "field"
             }
             .into(),
-            Declaration::Method(_) => if row.owner().unwrap().name() == "Apis" {
-                "function"
-            } else {
-                "method"
-            }
-            .into(),
+            Declaration::Method(_) => "method".into(),
             Declaration::Property(_) => "property".into(),
             Declaration::Event(_) => "event".into(),
             Declaration::Reference(_) => "type_reference".into(),
@@ -368,6 +391,12 @@ impl Catalog {
     }
     fn iter<'a>(&'a self, matcher: Matcher, options: SearchOptions<'a>) -> Result<Search<'a>> {
         ensure!(
+            options
+                .categories
+                .is_none_or(|mask| mask & !EntityCategory::ALL == 0),
+            "invalid search category mask"
+        );
+        ensure!(
             options.source.is_none_or(|i| i < self.sources().len()),
             "source index out of range"
         );
@@ -419,6 +448,13 @@ impl Search<'_> {
             let row = self.catalog.declaration(id, None)?;
             if self
                 .options
+                .categories
+                .is_some_and(|mask| mask & row.category() as u32 == 0)
+            {
+                continue;
+            }
+            if self
+                .options
                 .architecture
                 .is_some_and(|a| row.architecture_mask() & a.bit() == 0)
             {
@@ -455,7 +491,9 @@ impl Search<'_> {
                         == Some(g)
                 }
                 Matcher::References(target, arch) => {
-                    let owner = row.owner().unwrap();
+                    let Some(owner) = row.owner() else {
+                        continue;
+                    };
                     let mut check = |ty: &Type| {
                         uses(
                             &self.catalog.db,

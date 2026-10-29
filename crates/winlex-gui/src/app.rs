@@ -94,7 +94,7 @@ pub fn run(
     let system_version = crate::platform::WindowsVersion::query()?;
     let _apartment = crate::input::Apartment::initialize()?;
     let settings = settings::Settings::load(&config);
-    resources::initialize(settings.language)?;
+    resources::initialize(settings.preferences.language)?;
     let mut session = catalog::Session::new();
     let worker = crate::worker::Worker::new(crate::tasks::run)?;
     session.remember_sources = paths.is_empty();
@@ -183,7 +183,6 @@ unsafe fn run_windows(paths: Vec<std::path::PathBuf>) -> anyhow::Result<()> {
             return Err(error);
         }
         settings::restore_window(frame);
-        settings::update_language_menu();
         let accelerators = LoadAcceleratorsW(instance(), IDR_ACCELERATORS as usize as *const u16);
         if accelerators.is_null() {
             let failure = error("Load accelerators");

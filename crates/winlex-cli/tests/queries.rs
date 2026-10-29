@@ -8,6 +8,9 @@ use std::{
 use winlex_core::{Architecture, Catalog, SearchMode, SearchOptions};
 
 fn input() -> PathBuf {
+    if let Some(path) = std::env::var_os("WINLEX_TEST_WINMD") {
+        return path.into();
+    }
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../inputs/Windows.Win32.winmd")
 }
 fn entity_id(v: &Value) -> winlex_core::EntityId {
@@ -19,6 +22,92 @@ fn entity_id(v: &Value) -> winlex_core::EntityId {
 fn catalog() -> &'static Catalog {
     static DB: OnceLock<Catalog> = OnceLock::new();
     DB.get_or_init(|| Catalog::open(input()).expect("prepare pinned inputs/Windows.Win32.winmd"))
+}
+
+#[test]
+fn search_categories_partition_results_without_name_conventions() {
+    use winlex_core::EntityCategory;
+    let db = catalog();
+    let all: Vec<_> = db
+        .search("e", SearchOptions::default())
+        .unwrap()
+        .map(|item| item.unwrap().id)
+        .collect();
+    assert!(all.iter().any(|id| id.token >> 24 == 1));
+    for mask in [
+        0,
+        1,
+        2,
+        4,
+        8,
+        16,
+        32,
+        64,
+        EntityCategory::DEFAULT,
+        EntityCategory::ALL,
+    ] {
+        let expected: Vec<_> = all
+            .iter()
+            .copied()
+            .filter(|&id| db.declaration(id, None).unwrap().category() as u32 & mask != 0)
+            .collect();
+        let actual: Vec<_> = db
+            .search(
+                "e",
+                SearchOptions {
+                    categories: Some(mask),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .map(|item| item.unwrap().id)
+            .collect();
+        assert_eq!(actual, expected, "mask {mask}");
+    }
+    let methods: Vec<_> = db
+        .search(
+            "CreateFileW",
+            SearchOptions {
+                categories: Some(EntityCategory::Method as u32),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .map(|item| item.unwrap())
+        .collect();
+    assert!(!methods.is_empty());
+    assert!(methods.iter().all(|item| item.kind == "method"));
+}
+
+#[test]
+fn core_index_keeps_types_and_indexes_members_uniformly() {
+    use winlex_core::EntityCategory;
+    for (name, category) in [
+        (
+            "Windows.Win32.Storage.FileSystem.Apis",
+            EntityCategory::Type,
+        ),
+        (
+            "Windows.Win32.Storage.FileSystem.Apis.CreateFileW",
+            EntityCategory::Method,
+        ),
+        ("Windows.Win32.Foundation.POINT.x", EntityCategory::Field),
+    ] {
+        let results: Vec<_> = catalog()
+            .search(
+                name,
+                SearchOptions {
+                    mode: SearchMode::Exact,
+                    categories: Some(category as u32),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .map(|item| item.unwrap())
+            .collect();
+        assert!(!results.is_empty(), "{name}");
+        assert!(results.iter().all(|item| item.full_name == name));
+    }
 }
 
 #[test]
@@ -113,7 +202,7 @@ fn streaming_search_is_complete_deterministic_and_cancellable() {
 #[test]
 fn source_paths_preserve_native_utf16_without_changing_json() {
     use std::os::windows::ffi::OsStringExt;
-    let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tmp/native-path-test");
+    let directory = std::env::temp_dir().join(format!("winlex-native-path-{}", std::process::id()));
     std::fs::create_dir_all(&directory).unwrap();
     let path = directory.join(OsString::from_wide(&[
         0xd800, 0x2e, 0x77, 0x69, 0x6e, 0x6d, 0x64,
@@ -140,6 +229,7 @@ fn source_paths_preserve_native_utf16_without_changing_json() {
     assert!(err.is_empty());
     assert!(serde_json::from_slice::<Value>(&out).is_ok());
     std::fs::remove_file(path).unwrap();
+    std::fs::remove_dir(directory).unwrap();
 }
 fn cli(args: &[&str]) -> (u8, Value, String) {
     let mut argv = vec![input().into_os_string(), OsString::from("--json")];
@@ -174,7 +264,8 @@ fn cli_errors_are_machine_readable() {
 fn architecture_ambiguity_and_pagination_are_preserved() {
     let (c, v, _) = cli(&["search", "OPENFILENAMEW", "--exact", "--limit", "1"]);
     assert_eq!(c, 0);
-    assert_eq!(v["result"]["total"], 2);
+    assert_eq!(v["result"]["total"], 3);
+    assert_eq!(v["result"]["matches"][0]["kind"], "type_reference");
     assert_eq!(v["result"]["matches"].as_array().unwrap().len(), 1);
     let (_, next, _) = cli(&[
         "search",
@@ -190,7 +281,7 @@ fn architecture_ambiguity_and_pagination_are_preserved() {
         next["result"]["matches"][0]["id"]
     );
     let (_, v, _) = cli(&["search", "OPENFILENAMEW", "--exact", "--arch", "x64"]);
-    assert_eq!(v["result"]["total"], 1);
+    assert_eq!(v["result"]["total"], 2);
 }
 
 #[test]
@@ -242,7 +333,7 @@ fn api_has_import_and_parameter_semantics() {
     let (code, response, _) = cli(&["show", "CreateFileW", "--arch", "x64"]);
     assert_eq!(code, 0);
     let d = &response["result"];
-    assert_eq!(d["entity"]["kind"], "function");
+    assert_eq!(d["entity"]["kind"], "method");
     assert_eq!(
         d["import"]["dll"].as_str().unwrap().to_lowercase(),
         "kernel32.dll"
@@ -258,7 +349,7 @@ fn values_guids_and_source_identity() {
     let (_, decimal, _) = cli(&["value", "2147483648"]);
     let (_, hex, _) = cli(&["value", "0x80000000"]);
     assert_eq!(decimal["result"], hex["result"]);
-    assert_eq!(decimal["schema"], "winlex-cli-4");
+    assert_eq!(decimal["schema"], "winlex-cli-5");
     assert_eq!(decimal["sources"][0]["id"], 0);
     let (code, response, _) = cli(&["show", "GENERIC_READ", "--arch", "x64"]);
     assert_eq!(code, 0);

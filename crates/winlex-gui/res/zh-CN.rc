@@ -4,30 +4,53 @@ BEGIN
     POPUP "文件(&F)"
     BEGIN
         MENUITEM "打开文件(&O)...\tCtrl+O", LOAD_METADATA
-        MENUITEM "打开选定结果(&R)\tEnter", OPEN_RESULT
-        MENUITEM "在新文档中打开(&N)\tCtrl+Enter", OPEN_NEW
-        MENUITEM "关闭文档(&C)\tCtrl+F4", CLOSE
+        MENUITEM SEPARATOR
+        MENUITEM "设置(&S)...", SETTINGS
+        MENUITEM SEPARATOR
         MENUITEM "退出(&E)", EXIT
     END
     POPUP "窗口(&W)"
     BEGIN
+        MENUITEM "关闭文档(&C)\tCtrl+F4", CLOSE
+        MENUITEM SEPARATOR
         MENUITEM "左右平铺(&S)", COLUMNS
         MENUITEM "上下平铺(&T)", ROWS
         MENUITEM "自由排列(&F)", FREE
         MENUITEM "最大化文档(&M)", MAXIMIZE
     END
-    POPUP "设置(&O)"
-    BEGIN
-        POPUP "语言(&L)"
-        BEGIN
-            MENUITEM "跟随系统(&S)", LANGUAGE_AUTO
-            MENUITEM "English(&E)", LANGUAGE_ENGLISH
-            MENUITEM "简体中文(&C)", LANGUAGE_CHINESE
-        END
-    END
+END
+IDD_SETTINGS_GENERAL DIALOGEX 0, 0, 240, 150
+STYLE 0x40000448
+EXSTYLE 0x00010000
+FONT 8, "MS Shell Dlg"
+BEGIN
+    LTEXT "界面语言(&L)：", -1, 10, 12, 90, 10
+    COMBOBOX SETTINGS_LANGUAGE, 104, 9, 126, 70, 0x50210003
+    LTEXT "更改语言将在重新启动 Winlex 后生效。", -1, 10, 35, 220, 26
+END
+IDD_SETTINGS_SEARCH DIALOGEX 0, 0, 240, 150
+STYLE 0x40000448
+EXSTYLE 0x00010000
+FONT 8, "MS Shell Dlg"
+BEGIN
+    LTEXT "选择搜索结果中显示的条目：", -1, 10, 10, 220, 12
+    CONTROL "类型(&T)", FILTER_TYPE, "Button", 0x50010003, 10, 30, 220, 12
+    CONTROL "函数/方法(&M)", FILTER_METHOD, "Button", 0x50010003, 10, 46, 220, 12
+    CONTROL "常量(&C)", FILTER_CONSTANT, "Button", 0x50010003, 10, 62, 220, 12
+    CONTROL "字段(&F)", FILTER_FIELD, "Button", 0x50010003, 10, 78, 220, 12
+    CONTROL "属性(&P)", FILTER_PROPERTY, "Button", 0x50010003, 10, 94, 220, 12
+    CONTROL "事件(&E)", FILTER_EVENT, "Button", 0x50010003, 10, 110, 220, 12
+    CONTROL "类型引用(&R)", FILTER_REFERENCE, "Button", 0x50010003, 10, 126, 220, 12
 END
 STRINGTABLE
 BEGIN
+    IDS_SETTINGS "设置"
+    IDS_GENERAL "常规"
+    IDS_LANGUAGE_AUTO "跟随系统"
+    IDS_LANGUAGE_ENGLISH "English"
+    IDS_LANGUAGE_CHINESE "简体中文"
+    IDS_SETTINGS_OK "确定"
+    IDS_SETTINGS_CANCEL "取消"
     IDS_ARCHITECTURE "架构"
     IDS_PREVIEW "预览"
     IDS_WORKER_STOPPED "后台工作线程已停止"
@@ -42,7 +65,6 @@ BEGIN
     IDS_OLD_VERSION "先前的目录快照"
     IDS_RELOAD "重新加载"
     IDS_UNLOAD "关闭来源"
-    IDS_LANGUAGE_RESTART "语言已保存，重新启动 Winlex 后生效。"
     IDS_UNSUPPORTED_ARCH "此声明不支持 x86 或 x64。"
     IDS_APP_TITLE "Winlex"
     IDS_EMPTY_CATALOG "尚未加载元数据。打开文件即可开始。"

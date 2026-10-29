@@ -60,7 +60,7 @@ def set_text(hwnd, value):
 
 def key_message(hwnd, code):
     assert post(hwnd, win32con.WM_KEYDOWN, code, 1)
-    assert post(hwnd, win32con.WM_KEYUP, code, KEY_UP_LPARAM)
+    assert post(hwnd, win32con.WM_KEYUP, code, KEY_UP_LPARAM) or not is_window(hwnd)
 
 
 def windows(parent=None):

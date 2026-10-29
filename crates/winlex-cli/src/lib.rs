@@ -202,6 +202,7 @@ pub fn run(
         mode: o.mode,
         architecture: o.arch,
         types_only: false,
+        categories: None,
         cancel: None,
     };
     let result: winlex_core::Result<Query> = (|| {
@@ -249,7 +250,7 @@ pub fn run(
             Err(e) => return error(out, err, true, 3, "query_error", &e.to_string()),
         };
         let response = Response {
-            schema: "winlex-cli-4",
+            schema: "winlex-cli-5",
             ok: true,
             sources: db.sources(),
             command: &o.command,
@@ -410,6 +411,10 @@ pub fn select(
             case_sensitive: true,
             architecture: arch,
             types_only,
+            categories: Some(
+                winlex_core::EntityCategory::ALL
+                    & !(winlex_core::EntityCategory::TypeReference as u32),
+            ),
             ..Default::default()
         },
     )?;
@@ -434,7 +439,7 @@ fn error(
     let result = if json_mode {
         serde_json::to_writer(
             &mut *out,
-            &serde_json::json!({"schema":"winlex-cli-4","ok":false,"error":{"code":code,"message":message}}),
+            &serde_json::json!({"schema":"winlex-cli-5","ok":false,"error":{"code":code,"message":message}}),
         )
         .map_err(std::io::Error::other)
         .and_then(|_| writeln!(out))

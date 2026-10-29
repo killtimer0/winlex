@@ -1,32 +1,19 @@
 use super::*;
 
-/// Indexes metadata as raw types and as Win32 `Apis`-expanded items.
+/// Indexes metadata types.
 pub struct Index {
     files: Vec<File>,
     types: HashMap<String, HashMap<String, Vec<(usize, usize)>>>,
-    items: HashMap<String, HashMap<String, Vec<RawItem>>>,
     nested: HashMap<(usize, usize), Vec<usize>>,
     architecture: i32,
 }
 
-#[derive(Copy, Clone)]
-enum RawItem {
-    Type(usize, usize),  // (file_pos, typedef_pos)
-    Fn(usize, usize),    // (file_pos, methoddef_pos)
-    Const(usize, usize), // (file_pos, field_pos)
-}
-
-/// An individually-addressable item exposed by [`Index::iter_items`] and friends.
-#[derive(Copy, Clone, Debug)]
-pub enum Item<'a> {
-    Type(TypeDef<'a>),
-    Fn(MethodDef<'a>),
-    Const(Field<'a>),
-}
-
 impl Index {
     /// Enumerate raw rows, without namespace or architecture filtering.
-    pub fn rows<'a, R: AsRow<'a> + 'a>(&'a self, file: usize) -> impl ExactSizeIterator<Item = R> + 'a {
+    pub fn rows<'a, R: AsRow<'a> + 'a>(
+        &'a self,
+        file: usize,
+    ) -> impl ExactSizeIterator<Item = R> + 'a {
         RowIterator::new(self, file, 0..self.files(file).row_count::<R>())
     }
     /// Reads a single metadata file from disk and builds an `Index` for it.
@@ -45,7 +32,6 @@ impl Index {
     /// preserves all architecture-specific rows.
     #[must_use]
     pub fn new_for_architecture(files: Vec<File>, architecture: i32) -> Self {
-        // Build types first so `Apis` detection can inspect synthesized `TypeDef` values.
         let mut types: HashMap<String, HashMap<String, Vec<(usize, usize)>>> = HashMap::new();
         let mut nested: HashMap<(usize, usize), Vec<usize>> = HashMap::new();
 
@@ -74,57 +60,12 @@ impl Index {
             }
         }
 
-        let mut index = Self {
+        Self {
             files,
             types,
-            items: HashMap::new(),
             nested,
             architecture,
-        };
-
-        // Expand Win32 `Apis` into function/constant items.
-        let mut items: HashMap<String, HashMap<String, Vec<RawItem>>> = HashMap::new();
-
-        for (namespace, name, ty) in index.iter() {
-            let apis = !ty.flags().contains(TypeAttributes::WindowsRuntime)
-                && ty.category() == TypeCategory::Class
-                && name == "Apis";
-
-            if apis {
-                for method in ty
-                    .methods()
-                    .filter(|method| index.supports_architecture(*method))
-                {
-                    items
-                        .entry(namespace.to_string())
-                        .or_default()
-                        .entry(method.name().to_string())
-                        .or_default()
-                        .push(RawItem::Fn(ty.0.file, method.0.pos));
-                }
-                for field in ty
-                    .fields()
-                    .filter(|field| index.supports_architecture(*field))
-                {
-                    items
-                        .entry(namespace.to_string())
-                        .or_default()
-                        .entry(field.name().to_string())
-                        .or_default()
-                        .push(RawItem::Const(ty.0.file, field.0.pos));
-                }
-            } else {
-                items
-                    .entry(namespace.to_string())
-                    .or_default()
-                    .entry(name.to_string())
-                    .or_default()
-                    .push(RawItem::Type(ty.0.file, ty.0.pos));
-            }
         }
-
-        index.items = items;
-        index
     }
 
     /// Leaks `self` for consumers that need `'static` metadata rows.
@@ -260,83 +201,5 @@ impl Index {
     fn supports_architecture<'a, R: HasAttributes<'a>>(&self, row: R) -> bool {
         let arches = row.arches();
         self.architecture == 0 || arches == 0 || arches & self.architecture != 0
-    }
-
-    /// Iterates every namespace that contains at least one item.
-    pub fn namespaces(&self) -> impl Iterator<Item = &str> + '_ {
-        self.items.keys().map(String::as_str)
-    }
-
-    /// Iterates `(namespace, name, Item)` triples over every item in the index.
-    pub fn iter_items(&self) -> impl Iterator<Item = (&str, &str, Item<'_>)> + '_ {
-        self.items
-            .iter()
-            .flat_map(|(namespace, items)| {
-                items
-                    .iter()
-                    .map(move |(name, items)| (namespace.as_str(), name.as_str(), items))
-            })
-            .flat_map(move |(namespace, name, items)| {
-                items
-                    .iter()
-                    .map(move |raw| (namespace, name, self.item(*raw)))
-            })
-    }
-
-    /// Iterates every `Item` in the index.
-    pub fn items(&self) -> impl Iterator<Item = Item<'_>> + '_ {
-        self.items
-            .values()
-            .flat_map(|items| items.values())
-            .flatten()
-            .map(move |raw| self.item(*raw))
-    }
-
-    /// Iterates `(name, Item)` pairs in `namespace`.
-    pub fn namespace_items(&self, namespace: &str) -> impl Iterator<Item = (&str, Item<'_>)> + '_ {
-        self.items
-            .get(namespace)
-            .into_iter()
-            .flatten()
-            .flat_map(move |(name, items)| {
-                items
-                    .iter()
-                    .map(move |raw| (name.as_str(), self.item(*raw)))
-            })
-    }
-
-    /// Iterates the `Item`s matching `(namespace, name)`.
-    pub fn get_item(&self, namespace: &str, name: &str) -> impl Iterator<Item = Item<'_>> + '_ {
-        self.items
-            .get(namespace)
-            .and_then(|items| items.get(name))
-            .into_iter()
-            .flatten()
-            .map(move |raw| self.item(*raw))
-    }
-
-    /// Returns the single `Item` matching `(namespace, name)`, panicking if there are zero
-    /// or more than one.
-    #[track_caller]
-    pub fn expect_item(&self, namespace: &str, name: &str) -> Item<'_> {
-        let mut iter = self.get_item(namespace, name);
-
-        if let Some(item) = iter.next() {
-            if iter.next().is_none() {
-                item
-            } else {
-                panic!("more than one item found: {namespace}.{name}");
-            }
-        } else {
-            panic!("item not found: {namespace}.{name}")
-        }
-    }
-
-    fn item(&self, raw: RawItem) -> Item<'_> {
-        match raw {
-            RawItem::Type(file, pos) => Item::Type(TypeDef(Row::new(self, file, pos))),
-            RawItem::Fn(file, pos) => Item::Fn(MethodDef(Row::new(self, file, pos))),
-            RawItem::Const(file, pos) => Item::Const(Field(Row::new(self, file, pos))),
-        }
     }
 }

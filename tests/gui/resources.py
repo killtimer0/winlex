@@ -6,7 +6,6 @@ import json
 from pathlib import Path
 import re
 import struct
-import tomllib
 import xml.etree.ElementTree as ET
 
 
@@ -69,6 +68,14 @@ def main():
             assert en and zh, f"untranslated resource {name}"
             assert sorted(re.findall(r"\{\w+\}", en)) == sorted(re.findall(r"\{\w+\}", zh)), name
         assert languages(4, ids["IDR_MAIN_MENU"]) == [0x409, 0x804]
+        for name, count in (("IDD_SETTINGS_GENERAL", 3), ("IDD_SETTINGS_SEARCH", 8)):
+            assert languages(5, ids[name]) == [0x409, 0x804]
+            for language in (0x409, 0x804):
+                data = resource(5, ids[name], language)
+                assert struct.unpack_from("<HH", data) == (1, 0xffff)
+                style, controls = struct.unpack_from("<IH", data, 12)
+                assert style & 0x40000448 == 0x40000448
+                assert controls == count
         assert languages(9, ids["IDR_ACCELERATORS"]) == [0]
         accelerators = list(struct.iter_unpack("<4H", resource(9, ids["IDR_ACCELERATORS"], 0)))
         assert {(flags & 0x7f, key, command) for flags, key, command, _ in accelerators} == {
@@ -87,7 +94,8 @@ def main():
         signature = version.index(struct.pack("<I", 0xFEEF04BD))
         fields = struct.unpack_from("<13I", version, signature)
         actual = [fields[2] >> 16, fields[2] & 0xFFFF, fields[3] >> 16, fields[3] & 0xFFFF]
-        expected = list(map(int, tomllib.loads((root / "Cargo.toml").read_text())["package"]["version"].split("."))) + [0]
+        package = (root / "Cargo.toml").read_text(encoding="utf-8").split("[package]", 1)[1].split("\n[", 1)[0]
+        expected = list(map(int, re.search(r'^version\s*=\s*"(\d+\.\d+\.\d+)"', package, re.M)[1].split("."))) + [0]
         assert actual == expected and fields[4:6] == fields[2:4]
         args.artifacts.mkdir(parents=True, exist_ok=True)
         (args.artifacts / "resources.json").write_text(json.dumps({"exe": str(args.exe), "strings_per_language": len(strings), "languages": ["en-US", "zh-CN"], "version": actual}, indent=2), encoding="utf-8")

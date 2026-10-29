@@ -59,11 +59,8 @@ pub(super) fn layout_frame() {
     place_with_flags(mdi, area, SWP_NOCOPYBITS);
 }
 pub(super) fn command(id: u16) -> bool {
-    if let Some(language) = Language::from_command(id) {
-        super::settings::language(language);
-        return true;
-    }
     match id {
+        SETTINGS => super::settings::open(),
         FOCUS_NEXT_REGION => {
             let h = unsafe { GetFocus() };
             let d = active();

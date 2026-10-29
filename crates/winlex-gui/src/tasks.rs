@@ -13,6 +13,7 @@ pub enum Job {
     Search {
         catalog: Arc<Catalog>,
         query: String,
+        categories: u32,
     },
     Describe {
         document: u64,
@@ -95,12 +96,17 @@ fn execute(
                 inputs,
             )?))))
         }
-        Job::Search { catalog, query } => {
+        Job::Search {
+            catalog,
+            query,
+            categories,
+        } => {
             let mut batch = Vec::with_capacity(128);
             for item in catalog.search(
                 &query,
                 SearchOptions {
                     cancel: Some(&ticket.cancel),
+                    categories: Some(categories),
                     ..Default::default()
                 },
             )? {
@@ -155,7 +161,8 @@ mod tests {
     #[test]
     fn load_error_retains_io_source_across_worker_completion() {
         let worker = crate::worker::Worker::new(run).unwrap();
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Winlex.Test.Missing.winmd");
+        let path =
+            std::env::temp_dir().join(format!("Winlex.Test.Missing.{}.winmd", std::process::id()));
         assert!(!path.exists());
         worker
             .replace(

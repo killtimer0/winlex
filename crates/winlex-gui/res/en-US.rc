@@ -4,30 +4,53 @@ BEGIN
     POPUP "&File"
     BEGIN
         MENUITEM "&Open files...\tCtrl+O", LOAD_METADATA
-        MENUITEM "Open selected &result\tEnter", OPEN_RESULT
-        MENUITEM "Open in &new document\tCtrl+Enter", OPEN_NEW
-        MENUITEM "&Close document\tCtrl+F4", CLOSE
+        MENUITEM SEPARATOR
+        MENUITEM "&Settings...", SETTINGS
+        MENUITEM SEPARATOR
         MENUITEM "E&xit", EXIT
     END
     POPUP "&Window"
     BEGIN
+        MENUITEM "&Close document\tCtrl+F4", CLOSE
+        MENUITEM SEPARATOR
         MENUITEM "Tile &side by side", COLUMNS
         MENUITEM "Tile &top and bottom", ROWS
         MENUITEM "&Free arrangement", FREE
         MENUITEM "&Maximize document", MAXIMIZE
     END
-    POPUP "&Options"
-    BEGIN
-        POPUP "&Language"
-        BEGIN
-            MENUITEM "&System default", LANGUAGE_AUTO
-            MENUITEM "&English", LANGUAGE_ENGLISH
-            MENUITEM "简体中文(&C)", LANGUAGE_CHINESE
-        END
-    END
+END
+IDD_SETTINGS_GENERAL DIALOGEX 0, 0, 240, 150
+STYLE 0x40000448
+EXSTYLE 0x00010000
+FONT 8, "MS Shell Dlg"
+BEGIN
+    LTEXT "Interface &language:", -1, 10, 12, 90, 10
+    COMBOBOX SETTINGS_LANGUAGE, 104, 9, 126, 70, 0x50210003
+    LTEXT "Language changes take effect after restarting Winlex.", -1, 10, 35, 220, 26
+END
+IDD_SETTINGS_SEARCH DIALOGEX 0, 0, 240, 150
+STYLE 0x40000448
+EXSTYLE 0x00010000
+FONT 8, "MS Shell Dlg"
+BEGIN
+    LTEXT "Show these entries in search results:", -1, 10, 10, 220, 12
+    CONTROL "&Types", FILTER_TYPE, "Button", 0x50010003, 10, 30, 220, 12
+    CONTROL "Functions/&Methods", FILTER_METHOD, "Button", 0x50010003, 10, 46, 220, 12
+    CONTROL "&Constants", FILTER_CONSTANT, "Button", 0x50010003, 10, 62, 220, 12
+    CONTROL "&Fields", FILTER_FIELD, "Button", 0x50010003, 10, 78, 220, 12
+    CONTROL "&Properties", FILTER_PROPERTY, "Button", 0x50010003, 10, 94, 220, 12
+    CONTROL "&Events", FILTER_EVENT, "Button", 0x50010003, 10, 110, 220, 12
+    CONTROL "Type &references", FILTER_REFERENCE, "Button", 0x50010003, 10, 126, 220, 12
 END
 STRINGTABLE
 BEGIN
+    IDS_SETTINGS "Settings"
+    IDS_GENERAL "General"
+    IDS_LANGUAGE_AUTO "System default"
+    IDS_LANGUAGE_ENGLISH "English"
+    IDS_LANGUAGE_CHINESE "简体中文"
+    IDS_SETTINGS_OK "OK"
+    IDS_SETTINGS_CANCEL "Cancel"
     IDS_ARCHITECTURE "Architecture"
     IDS_PREVIEW "Preview"
     IDS_WORKER_STOPPED "Background worker stopped"
@@ -42,7 +65,6 @@ BEGIN
     IDS_OLD_VERSION "Earlier catalog snapshot"
     IDS_RELOAD "Reload"
     IDS_UNLOAD "Close source"
-    IDS_LANGUAGE_RESTART "Language saved. The change takes effect after restarting Winlex."
     IDS_UNSUPPORTED_ARCH "This declaration does not support x86 or x64."
     IDS_APP_TITLE "Winlex"
     IDS_EMPTY_CATALOG "No metadata loaded. Open files to begin."

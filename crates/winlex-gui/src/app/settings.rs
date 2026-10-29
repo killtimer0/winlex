@@ -1,13 +1,57 @@
 //! Window placement and settings commands, using the single process configuration root.
 use super::{catalog, dpi, read, write};
-use crate::{
-    config::Config,
-    layout,
-    native::*,
-    resources::{self, *},
-};
+use crate::{config::Config, layout, native::*, resources::Language};
 use std::ptr;
-use winlex_core::Architecture;
+use winlex_core::{Architecture, EntityCategory};
+
+mod dialog;
+pub(super) use dialog::open;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Preferences {
+    pub language: Language,
+    pub categories: u32,
+}
+impl Preferences {
+    fn parse(value: &str) -> Option<Self> {
+        let (language, categories) = value.split_once(':')?;
+        let categories: u32 = categories.parse().ok()?;
+        (categories & !EntityCategory::ALL == 0).then_some(Self {
+            language: Language::from_name(language)?,
+            categories,
+        })
+    }
+    fn save(self, config: &Config) -> anyhow::Result<()> {
+        config.write_key()?.set_text(
+            "Preferences",
+            &format!("{}:{}", self.language.name(), self.categories),
+        )
+    }
+}
+
+#[cfg(test)]
+mod preference_tests {
+    use super::*;
+
+    #[test]
+    fn preferences_validate_language_and_category_bits() {
+        for language in crate::resources::LANGUAGES {
+            for categories in [0, EntityCategory::DEFAULT, EntityCategory::ALL] {
+                let value = format!("{}:{categories}", language.value.name());
+                assert_eq!(
+                    Preferences::parse(&value),
+                    Some(Preferences {
+                        language: language.value,
+                        categories
+                    })
+                );
+            }
+        }
+        for value in ["auto", "auto:-1", "auto:128", "other:7", "en-US:1:2"] {
+            assert_eq!(Preferences::parse(value), None);
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Window {
@@ -19,7 +63,7 @@ pub(super) struct Window {
     pub maximized: bool,
 }
 pub(super) struct Settings {
-    pub language: Language,
+    pub preferences: Preferences,
     pub window: Option<Window>,
     pub preferred_architecture: Option<Architecture>,
 }
@@ -30,6 +74,13 @@ impl Settings {
             .and_then(|k| k.text("Language"))
             .and_then(|name| Language::from_name(&name))
             .unwrap_or_default();
+        let preferences = key
+            .and_then(|k| k.text("Preferences"))
+            .and_then(|value| Preferences::parse(&value))
+            .unwrap_or(Preferences {
+                language,
+                categories: EntityCategory::DEFAULT,
+            });
         let preferred_architecture = key
             .and_then(|k| k.text("PreferredArchitecture"))
             .and_then(|value| value.parse::<Architecture>().ok());
@@ -61,7 +112,7 @@ impl Settings {
             })
         });
         Self {
-            language,
+            preferences,
             window,
             preferred_architecture,
         }
@@ -75,11 +126,6 @@ impl Settings {
         config
             .write_key()?
             .set_text("PreferredArchitecture", architecture.name())
-    }
-    fn set_language(&mut self, config: &Config, language: Language) -> anyhow::Result<()> {
-        config.write_key()?.set_text("Language", language.name())?;
-        self.language = language;
-        Ok(())
     }
 }
 
@@ -171,28 +217,5 @@ pub(super) fn save_window(hwnd: HWND) -> anyhow::Result<()> {
             key.set_bytes("Window", &bytes)?;
             a.sidebar.save(&key)
         })
-    }
-}
-
-pub(super) fn update_language_menu() {
-    let (hwnd, language) = read(|a| (a.frame, a.settings.language));
-    let selected = language.command();
-    unsafe {
-        CheckMenuRadioItem(
-            GetMenu(hwnd),
-            LANGUAGE_AUTO as u32,
-            LANGUAGE_CHINESE as u32,
-            selected as u32,
-            MF_BYCOMMAND,
-        );
-    }
-}
-pub(super) fn language(language: Language) {
-    match write(|a| a.settings.set_language(&a.config, language)) {
-        Ok(()) => {
-            update_language_menu();
-            catalog::set_status(resources::text(IDS_LANGUAGE_RESTART));
-        }
-        Err(error) => catalog::set_status(format!("{error:#}")),
     }
 }

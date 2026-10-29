@@ -13,29 +13,29 @@ pub enum Language {
     English,
     Chinese,
 }
-struct LanguageOption {
-    value: Language,
+pub struct LanguageOption {
+    pub value: Language,
     name: &'static str,
-    command: u16,
+    pub label: u16,
     langid: Option<u16>,
 }
-const LANGUAGES: &[LanguageOption] = &[
+pub const LANGUAGES: &[LanguageOption] = &[
     LanguageOption {
         value: Language::Auto,
         name: "auto",
-        command: LANGUAGE_AUTO,
+        label: IDS_LANGUAGE_AUTO,
         langid: None,
     },
     LanguageOption {
         value: Language::English,
         name: "en-US",
-        command: LANGUAGE_ENGLISH,
+        label: IDS_LANGUAGE_ENGLISH,
         langid: Some(ENGLISH),
     },
     LanguageOption {
         value: Language::Chinese,
         name: "zh-CN",
-        command: LANGUAGE_CHINESE,
+        label: IDS_LANGUAGE_CHINESE,
         langid: Some(CHINESE),
     },
 ];
@@ -49,19 +49,10 @@ impl Language {
     pub fn name(self) -> &'static str {
         self.option().name
     }
-    pub fn command(self) -> u16 {
-        self.option().command
-    }
     pub fn from_name(name: &str) -> Option<Self> {
         LANGUAGES
             .iter()
             .find(|option| option.name == name)
-            .map(|option| option.value)
-    }
-    pub fn from_command(command: u16) -> Option<Self> {
-        LANGUAGES
-            .iter()
-            .find(|option| option.command == command)
             .map(|option| option.value)
     }
     fn langid(self) -> u16 {
@@ -163,22 +154,20 @@ pub fn menu() -> anyhow::Result<HMENU> {
         Ok(menu)
     }
 }
+pub fn dialog(id: u16) -> anyhow::Result<&'static [u8]> {
+    data(5usize as *const u16, id)
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn language_names_and_commands_round_trip() {
+    fn language_names_round_trip() {
         for option in LANGUAGES {
             assert_eq!(Language::from_name(option.value.name()), Some(option.value));
-            assert_eq!(
-                Language::from_command(option.value.command()),
-                Some(option.value)
-            );
         }
         assert_eq!(Language::from_name("unknown"), None);
-        assert_eq!(Language::from_command(0), None);
         assert_eq!(Language::English.langid(), 0x0409);
         assert_eq!(Language::Chinese.langid(), 0x0804);
     }

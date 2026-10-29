@@ -60,6 +60,22 @@ class Session:
     def command(self, command, target=None, code=0):
         n.send(target or self.frame, win32con.WM_COMMAND, (code << 16) | command)
 
+    def settings(self):
+        assert n.post(self.frame, win32con.WM_COMMAND, 1051, 0)
+        owner = n.api(n.user, "GetWindow", w.HWND, w.HWND, w.UINT)
+        return n.wait(lambda: next((h for h in n.windows()
+            if n.class_name(h) == "#32770" and owner(h, win32con.GW_OWNER) == self.frame
+            and n.is_visible(h) and n.get_item(h, 1)), None), "settings property sheet")
+
+    def settings_page(self, sheet, index):
+        assert n.send(sheet, 0x400 + 101, index, 0)  # PSM_SETCURSEL
+        return n.wait(lambda: n.send(sheet, 0x400 + 118), "settings page")
+
+    def close_settings(self, sheet, accept=True):
+        assert n.post(sheet, win32con.WM_COMMAND, 1 if accept else 2, 0)
+        n.wait(lambda: not n.is_window(sheet), "settings closed")
+        n.send(self.frame, win32con.WM_NULL)
+
     def choices(self, control):
         count = n.send(control, win32con.CB_GETCOUNT)
         assert 0 <= count < 32
@@ -149,7 +165,7 @@ class Session:
 
     def open_row(self, row=0):
         self.select(row)
-        self.command(1050)  # File > Open selected result
+        self.command(1050)
         return n.wait(
             lambda: (lambda doc: doc if doc in self.documents() else None)(self.active_document()),
             "document opened",
@@ -160,7 +176,7 @@ class Session:
 
     def open_new(self, row=0):
         self.select(row)
-        self.command(1049)  # File > Open in new document
+        self.command(1049)
         return n.wait(
             lambda: (lambda doc: doc if doc in self.documents() else None)(self.active_document()),
             "new document",
