@@ -158,7 +158,13 @@ fn streaming_search_is_complete_deterministic_and_cancellable() {
     let ids = collect();
     assert!(ids.len() > 100);
     assert_eq!(ids, collect());
-    assert!(ids.windows(2).all(|p| p[0] < p[1]));
+    let mut ranked = db
+        .search("file", SearchOptions::default())
+        .unwrap()
+        .collect::<winlex_core::Result<Vec<_>>>()
+        .unwrap();
+    ranked.sort_unstable_by(winlex_core::SearchMatch::compare);
+    let ids: Vec<_> = ranked.iter().map(|m| m.id).collect();
     let (_, page, _) = cli(&["search", "file", "--offset", "17", "--limit", "25"]);
     assert_eq!(
         page["result"]["total"].as_u64().unwrap() as usize,
@@ -196,6 +202,114 @@ fn streaming_search_is_complete_deterministic_and_cancellable() {
         .unwrap();
     assert!(no_matches.next().unwrap().is_err());
     assert!(no_matches.next().is_none());
+}
+
+#[test]
+fn fuzzy_search_ranks_before_paging_and_rejects_prefix_option() {
+    let (code, result, _) = cli(&["search", "CreateFileW", "--limit", "1000"]);
+    assert_eq!(code, 0);
+    let matches = result["result"]["matches"].as_array().unwrap();
+    assert_eq!(matches[0]["name"], "CreateFileW");
+    let (code, result, _) = cli(&["search", "CrtFlW", "--limit", "1000"]);
+    assert_eq!(code, 0);
+    assert!(
+        result["result"]["matches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["name"] == "CreateFileW")
+    );
+    assert_eq!(cli(&["search", "file", "--prefix"]).0, 2);
+    let (_, exact, _) = cli(&["search", "createfilew", "--exact"]);
+    assert!(
+        exact["result"]["matches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|m| m["name"]
+                .as_str()
+                .unwrap()
+                .eq_ignore_ascii_case("CreateFileW"))
+    );
+}
+
+#[test]
+fn fuzzy_scope_is_selected_by_the_query_and_exact_selectors_remain_independent() {
+    use winlex_core::{MatchField, SearchStep};
+    let db = catalog();
+    let collect = |query: &str| {
+        db.search(query, SearchOptions::default())
+            .unwrap()
+            .collect::<winlex_core::Result<Vec<_>>>()
+            .unwrap()
+    };
+    assert!(collect("WindowsWin32").is_empty());
+    let short = collect("CrtFlW");
+    assert!(short.iter().any(|m| m.name == "CreateFileW"));
+    assert!(short.iter().all(|m| m.field == MatchField::Name));
+    let qualified = collect("Storage.FileSystem.CrtFlW");
+    assert!(qualified.iter().any(|m| m.name == "CreateFileW"));
+    assert!(qualified.iter().all(|m| m.field == MatchField::FullName));
+    let mut search = db.search("CrtFlW", SearchOptions::default()).unwrap();
+    let mut stepped = vec![];
+    let mut skipped = 0;
+    loop {
+        match search.step().unwrap() {
+            SearchStep::Match(m) => stepped.push(m.id),
+            SearchStep::Skipped => skipped += 1,
+            SearchStep::Done => break,
+        }
+    }
+    assert!(skipped > 0);
+    assert_eq!(stepped, short.iter().map(|m| m.id).collect::<Vec<_>>());
+    assert!(matches!(search.step().unwrap(), SearchStep::Done));
+    assert!(search.next().is_none());
+    let mut mixed = db.search("CrtFlW", SearchOptions::default()).unwrap();
+    let first = loop {
+        match mixed.step().unwrap() {
+            SearchStep::Match(m) => break m.id,
+            SearchStep::Skipped => {}
+            SearchStep::Done => panic!("missing fuzzy match"),
+        }
+    };
+    assert_eq!(first, short[0].id);
+    assert_eq!(
+        mixed.map(|m| m.unwrap().id).collect::<Vec<_>>(),
+        stepped[1..]
+    );
+    let cancel = AtomicBool::new(false);
+    let mut cancelled = db
+        .search(
+            "CrtFlW",
+            SearchOptions {
+                cancel: Some(&cancel),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert!(!matches!(cancelled.step().unwrap(), SearchStep::Done));
+    cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+    assert!(
+        cancelled
+            .step()
+            .unwrap_err()
+            .to_string()
+            .contains("cancelled")
+    );
+    assert!(matches!(cancelled.step().unwrap(), SearchStep::Done));
+    assert!(cancelled.next().is_none());
+    let name = "Windows.Win32.Storage.FileSystem.Apis.CreateFileW";
+    let id = winlex_cli::select(db, name, Some(Architecture::X64), false).unwrap();
+    assert_eq!(db.entity(id).unwrap().name, "CreateFileW");
+    let (code, exact, _) = cli(&["search", name, "--exact"]);
+    assert_eq!(code, 0);
+    assert!(
+        exact["result"]["matches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|m| m["full_name"] == name)
+    );
 }
 
 #[cfg(windows)]
@@ -478,7 +592,7 @@ fn qualified_name_and_token_select_the_same_declaration() {
         .search(
             "OPENFILE",
             SearchOptions {
-                mode: SearchMode::Prefix,
+                mode: SearchMode::Fuzzy,
                 ..Default::default()
             },
         )

@@ -1,6 +1,7 @@
 use crate::{
     metadata::{Db, key, supports},
     model::*,
+    search::{MatchField, NameMatcher, SearchMatch},
     source::{EntityId, Source},
 };
 use anyhow::{Result, bail, ensure};
@@ -53,9 +54,8 @@ impl std::str::FromStr for Architecture {
 #[derive(Clone, Copy, Debug, Default)]
 pub enum SearchMode {
     Exact,
-    Prefix,
     #[default]
-    Contains,
+    Fuzzy,
     Integer,
     Guid,
 }
@@ -345,19 +345,24 @@ impl Catalog {
     }
     pub fn search<'a>(&'a self, query: &str, options: SearchOptions<'a>) -> Result<Search<'a>> {
         ensure!(!query.is_empty(), "empty search query");
-        let query = if options.case_sensitive {
-            query.into()
-        } else {
-            query.to_lowercase()
-        };
         let matcher = match options.mode {
-            SearchMode::Integer => Matcher::Integer(if let Some(h) = query.strip_prefix("0x") {
-                i128::from_str_radix(h, 16)?
+            SearchMode::Exact => Matcher::Exact(if options.case_sensitive {
+                query.to_owned()
             } else {
-                query.parse()?
+                query.to_lowercase()
             }),
+            SearchMode::Integer => Matcher::Integer(
+                if let Some(h) = query
+                    .strip_prefix("0x")
+                    .or_else(|| query.strip_prefix("0X"))
+                {
+                    i128::from_str_radix(h, 16)?
+                } else {
+                    query.parse()?
+                },
+            ),
             SearchMode::Guid => {
-                let g = query.trim_matches(['{', '}']).to_owned();
+                let g = query.trim_matches(['{', '}']).to_ascii_lowercase();
                 ensure!(
                     g.len() == 36
                         && [8, 13, 18, 23].iter().all(|i| g.as_bytes()[*i] == b'-')
@@ -368,7 +373,7 @@ impl Catalog {
                 );
                 Matcher::Guid(g)
             }
-            _ => Matcher::Name(query),
+            _ => Matcher::Name(Box::new(NameMatcher::new(query, options.case_sensitive))),
         };
         self.iter(matcher, options)
     }
@@ -411,12 +416,13 @@ impl Catalog {
     }
 }
 enum Matcher {
-    Name(String),
+    Exact(String),
+    Name(Box<NameMatcher>),
     Integer(i128),
     Guid(String),
     References(EntityId, Architecture),
 }
-/// Lazy, source/token-ordered results. Errors terminate iteration; dropping stops the query.
+/// Lazy scan order, not relevance order. Errors terminate iteration; dropping stops the query.
 pub struct Search<'a> {
     catalog: &'a Catalog,
     options: SearchOptions<'a>,
@@ -425,13 +431,30 @@ pub struct Search<'a> {
     done: bool,
     unresolved: usize,
 }
+#[derive(Debug)]
+pub enum SearchStep {
+    Match(SearchMatch),
+    Skipped,
+    Done,
+}
 impl Search<'_> {
     /// Unresolved type uses encountered so far by a reference query.
     pub fn unresolved_type_uses(&self) -> usize {
         self.unresolved
     }
-    fn scan(&mut self) -> Result<Option<EntitySummary>> {
-        while let Some(&id) = self.catalog.search_index.get(self.position) {
+    /// Scan at most one candidate. Completion and errors fuse both this method and the iterator.
+    pub fn step(&mut self) -> Result<SearchStep> {
+        if self.done {
+            return Ok(SearchStep::Done);
+        }
+        let result = self.scan_one();
+        if matches!(&result, Ok(SearchStep::Done) | Err(_)) {
+            self.done = true;
+        }
+        result
+    }
+    fn scan_one(&mut self) -> Result<SearchStep> {
+        if let Some(&id) = self.catalog.search_index.get(self.position) {
             ensure!(
                 !self
                     .options
@@ -443,7 +466,7 @@ impl Search<'_> {
             if self.options.source.is_some_and(|s| s != id.source_id)
                 || self.options.types_only && id.token >> 24 != 2
             {
-                continue;
+                return Ok(SearchStep::Skipped);
             }
             let row = self.catalog.declaration(id, None)?;
             if self
@@ -451,32 +474,43 @@ impl Search<'_> {
                 .categories
                 .is_some_and(|mask| mask & row.category() as u32 == 0)
             {
-                continue;
+                return Ok(SearchStep::Skipped);
             }
             if self
                 .options
                 .architecture
                 .is_some_and(|a| row.architecture_mask() & a.bit() == 0)
             {
-                continue;
+                return Ok(SearchStep::Skipped);
             }
-            let matches = match &self.matcher {
-                Matcher::Name(query) => {
+            let mut quality = (0, MatchField::Name);
+            let matches = match &mut self.matcher {
+                Matcher::Exact(query) => {
                     let full = self.catalog.full_name(&row);
-                    [row.name(), &full].iter().any(|name| {
-                        let normalized;
-                        let name = if self.options.case_sensitive {
-                            *name
+                    let equal = |text: &str| {
+                        if self.options.case_sensitive {
+                            text == query
                         } else {
-                            normalized = name.to_lowercase();
-                            &normalized
-                        };
-                        match self.options.mode {
-                            SearchMode::Exact => name == query,
-                            SearchMode::Prefix => name.starts_with(query),
-                            _ => name.contains(query),
+                            text.to_lowercase() == *query
                         }
-                    })
+                    };
+                    if equal(row.name()) {
+                        true
+                    } else if equal(&full) {
+                        quality.1 = MatchField::FullName;
+                        true
+                    } else {
+                        false
+                    }
+                }
+                Matcher::Name(matcher) => {
+                    let full = self.catalog.full_name(&row);
+                    if let Some(hit) = matcher.score(row.name(), &full) {
+                        quality = hit;
+                        true
+                    } else {
+                        false
+                    }
                 }
                 Matcher::Integer(n) => {
                     matches!(&row,Declaration::Field(f) if f.constant().and_then(|c|integer(&c.value()))==Some(*n))
@@ -492,7 +526,7 @@ impl Search<'_> {
                 }
                 Matcher::References(target, arch) => {
                     let Some(owner) = row.owner() else {
-                        continue;
+                        return Ok(SearchStep::Skipped);
                     };
                     let mut check = |ty: &Type| {
                         uses(
@@ -527,8 +561,13 @@ impl Search<'_> {
                 }
             };
             if matches {
-                return Ok(Some(self.catalog.summarize(id, &row)));
+                return Ok(SearchStep::Match(SearchMatch {
+                    entity: self.catalog.summarize(id, &row),
+                    score: quality.0,
+                    field: quality.1,
+                }));
             }
+            return Ok(SearchStep::Skipped);
         }
         ensure!(
             !self
@@ -537,24 +576,18 @@ impl Search<'_> {
                 .is_some_and(|c| c.load(Ordering::Relaxed)),
             "query cancelled"
         );
-        Ok(None)
+        Ok(SearchStep::Done)
     }
 }
 impl Iterator for Search<'_> {
-    type Item = Result<EntitySummary>;
+    type Item = Result<SearchMatch>;
     fn next(&mut self) -> Option<Self::Item> {
-        if self.done {
-            return None;
-        }
-        match self.scan() {
-            Ok(Some(item)) => Some(Ok(item)),
-            Ok(None) => {
-                self.done = true;
-                None
-            }
-            Err(e) => {
-                self.done = true;
-                Some(Err(e))
+        loop {
+            match self.step() {
+                Ok(SearchStep::Match(item)) => return Some(Ok(item)),
+                Ok(SearchStep::Skipped) => {}
+                Ok(SearchStep::Done) => return None,
+                Err(e) => return Some(Err(e)),
             }
         }
     }

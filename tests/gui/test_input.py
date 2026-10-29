@@ -1,9 +1,7 @@
 """Actual mouse/keyboard delivery, deliberately separate from message checks."""
 import pytest
-import win32api
 import win32con
 import win32gui
-import win32service
 from support import native as n
 from support.input_state import InputState
 
@@ -11,12 +9,6 @@ from support.input_state import InputState
 def test_real_search_keyboard(request, launch, settings):
     if not request.config.getoption("--real-input"):
         pytest.skip("actual input not requested")
-    current = win32service.GetThreadDesktop(win32api.GetCurrentThreadId())
-    active = win32service.OpenInputDesktop(0, False, win32con.DESKTOP_READOBJECTS)
-    try:
-        assert win32service.GetUserObjectInformation(current, win32con.UOI_NAME) == win32service.GetUserObjectInformation(active, win32con.UOI_NAME), "actual input requires the input desktop"
-    finally:
-        active.CloseDesktop()
     with InputState() as input_state:
         app = launch([settings[1]])
         n.wait(lambda: app.status_text().startswith(("Ready.", "已就绪")), "loaded", 45)

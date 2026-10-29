@@ -11,7 +11,7 @@ use crate::{
     worker::Ticket,
 };
 use std::{path::PathBuf, sync::Arc};
-use winlex_core::{Catalog, EntitySummary, SourceData};
+use winlex_core::{Catalog, SearchMatch, SourceData};
 
 struct Load {
     ticket: Ticket,
@@ -31,7 +31,9 @@ pub(super) struct Session {
     load: Option<Load>,
     load_error: Option<String>,
     search: Search,
-    pub results: Vec<EntitySummary>,
+    pub results: Vec<SearchMatch>,
+    pending_results: Vec<SearchMatch>,
+    merge_buffer: Vec<SearchMatch>,
     pub remember_sources: bool,
     notice: Option<String>,
 }
@@ -47,6 +49,8 @@ impl Session {
             load_error: None,
             search: Search::Idle,
             results: vec![],
+            pending_results: vec![],
+            merge_buffer: vec![],
             remember_sources: true,
             notice: None,
         }
@@ -68,7 +72,7 @@ impl Session {
             return false;
         }
         match completion.result {
-            Ok(Output::Matches(batch)) => self.results.extend(batch),
+            Ok(Output::Matches(batch)) => self.pending_results.extend(batch),
             Ok(Output::SearchDone) => self.search = Search::Done,
             Err(e) => self.search = Search::Failed(e),
             _ => unreachable!(),
@@ -178,6 +182,7 @@ pub(super) fn input_changed() {
         a.session.notice = None;
         a.session.load_error = None;
         a.session.results.clear();
+        a.session.pending_results.clear();
     });
     update_results(false);
     if !composing && !text(input).trim().is_empty() {
@@ -202,6 +207,7 @@ pub(super) fn search() {
             _ => None,
         };
         s.results.clear();
+        s.pending_results.clear();
         let Some(catalog) = s.catalog.clone().filter(|_| !query.is_empty()) else {
             if let Some(ticket) = previous {
                 a.worker.cancel(ticket.id);
@@ -243,10 +249,140 @@ fn update_results(append: bool) {
             0
         },
     );
+    if !append {
+        super::panel::fit(hwnd);
+    }
+    unsafe {
+        InvalidateRect(hwnd, std::ptr::null(), 0);
+    }
+}
+
+fn merge_results(
+    results: &mut Vec<SearchMatch>,
+    batch: &mut Vec<SearchMatch>,
+    buffer: &mut Vec<SearchMatch>,
+    tracked: &mut [isize; 4],
+) {
+    batch.sort_unstable_by(SearchMatch::compare);
+    buffer.clear();
+    buffer.reserve(results.len() + batch.len());
+    let mut old = results.drain(..).enumerate().peekable();
+    let mut new = batch.drain(..).peekable();
+    let original = *tracked;
+    while old.peek().is_some() || new.peek().is_some() {
+        if new
+            .peek()
+            .is_some_and(|n| old.peek().is_none_or(|(_, o)| n.compare(o).is_lt()))
+        {
+            buffer.push(new.next().unwrap());
+        } else {
+            let (index, item) = old.next().unwrap();
+            for (current, &previous) in tracked.iter_mut().zip(&original) {
+                if previous == index as isize {
+                    *current = buffer.len() as isize;
+                }
+            }
+            buffer.push(item);
+        }
+    }
+    drop(old);
+    drop(new);
+    std::mem::swap(results, buffer);
+}
+
+pub(super) fn flush_results() {
+    if !read(|a| !a.session.pending_results.is_empty()) {
+        refresh_status();
+        return;
+    }
+    let hwnd = read(|a| unsafe { GetDlgItem(a.frame, RESULTS as i32) });
+    let top = send(hwnd, LVM_GETTOPINDEX, 0, 0);
+    let mut rect = RECT {
+        left: LVIR_BOUNDS as i32,
+        ..unsafe { std::mem::zeroed() }
+    };
+    let has_top = send(
+        hwnd,
+        LVM_GETITEMRECT,
+        top as usize,
+        &mut rect as *mut RECT as isize,
+    ) != 0;
+    let mut tracked = [
+        send(hwnd, LVM_GETNEXTITEM, usize::MAX, LVNI_SELECTED as isize),
+        send(hwnd, LVM_GETNEXTITEM, usize::MAX, LVNI_FOCUSED as isize),
+        send(hwnd, LVM_GETSELECTIONMARK, 0, 0),
+        if has_top && top > 0 { top } else { -1 },
+    ];
+    let previous = [tracked[0], tracked[1]];
+    write(|a| {
+        let s = &mut a.session;
+        merge_results(
+            &mut s.results,
+            &mut s.pending_results,
+            &mut s.merge_buffer,
+            &mut tracked,
+        );
+    });
+    let visible = unsafe { IsWindowVisible(hwnd) != 0 };
+    if visible {
+        send(hwnd, WM_SETREDRAW, 0, 0);
+    }
+    let state = LVITEMW {
+        stateMask: LVIS_SELECTED | LVIS_FOCUSED,
+        ..unsafe { std::mem::zeroed() }
+    };
+    for index in previous {
+        if index >= 0 {
+            send(
+                hwnd,
+                LVM_SETITEMSTATE,
+                index as usize,
+                &state as *const LVITEMW as isize,
+            );
+        }
+    }
+    update_results(true);
+    for (index, flag) in [(tracked[0], LVIS_SELECTED), (tracked[1], LVIS_FOCUSED)] {
+        if index >= 0 {
+            let state = LVITEMW {
+                stateMask: flag,
+                state: flag,
+                ..unsafe { std::mem::zeroed() }
+            };
+            send(
+                hwnd,
+                LVM_SETITEMSTATE,
+                index as usize,
+                &state as *const LVITEMW as isize,
+            );
+        }
+    }
+    send(hwnd, LVM_SETSELECTIONMARK, 0, tracked[2]);
+    if tracked[3] >= 0 {
+        let mut now = RECT {
+            left: LVIR_BOUNDS as i32,
+            ..unsafe { std::mem::zeroed() }
+        };
+        if send(
+            hwnd,
+            LVM_GETITEMRECT,
+            tracked[3] as usize,
+            &mut now as *mut RECT as isize,
+        ) != 0
+        {
+            send(hwnd, LVM_SCROLL, 0, (now.top - rect.top) as isize);
+        }
+    } else if top == 0 {
+        send(hwnd, LVM_ENSUREVISIBLE, 0, 0);
+    }
+    if visible {
+        send(hwnd, WM_SETREDRAW, 1, 0);
+    }
     super::panel::fit(hwnd);
     unsafe {
         InvalidateRect(hwnd, std::ptr::null(), 0);
     }
+    refresh_status();
 }
 pub(super) fn cell(row: usize, detail: bool) -> String {
     read(|a| {
@@ -427,10 +563,7 @@ pub(super) fn apply(c: Completion) {
             refresh_status();
         }
         Target::Search => {
-            if write(|a| a.session.accept_search(c)) {
-                update_results(true);
-                refresh_status();
-            }
+            write(|a| a.session.accept_search(c));
         }
         _ => unreachable!(),
     }
@@ -439,6 +572,63 @@ pub(super) fn apply(c: Completion) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn hit(token: u32, score: u16) -> SearchMatch {
+        SearchMatch {
+            entity: winlex_core::EntitySummary {
+                id: winlex_core::EntityId {
+                    source_id: 0,
+                    token,
+                },
+                name: format!("symbol{token}"),
+                full_name: format!("Fixture.symbol{token}"),
+                kind: "type".into(),
+                architecture_mask: 7,
+            },
+            score,
+            field: winlex_core::MatchField::Name,
+        }
+    }
+    #[test]
+    fn incremental_merge_matches_global_ranking_for_every_batch_size() {
+        for size in 1..=80 {
+            let mut results = vec![];
+            let mut buffer = vec![];
+            let mut tracked = [-1; 4];
+            for chunk in (1..=200).collect::<Vec<u32>>().chunks(size) {
+                let mut batch = chunk
+                    .iter()
+                    .map(|&id| hit(id, (id * 71 % 23) as u16))
+                    .collect();
+                merge_results(&mut results, &mut batch, &mut buffer, &mut tracked);
+                assert!(results.windows(2).all(|p| !p[0].compare(&p[1]).is_gt()));
+                assert!(batch.is_empty());
+            }
+            let mut expected: Vec<_> = (1..=200).map(|id| hit(id, (id * 71 % 23) as u16)).collect();
+            expected.sort_unstable_by(SearchMatch::compare);
+            assert_eq!(
+                results.iter().map(|m| m.id).collect::<Vec<_>>(),
+                expected.iter().map(|m| m.id).collect::<Vec<_>>()
+            );
+        }
+    }
+    #[test]
+    fn merge_migrates_selection_focus_mark_and_scroll_without_identity_lookup() {
+        let mut results = vec![hit(10, 100), hit(20, 80), hit(30, 60)];
+        let mut batch = vec![hit(1, 100), hit(2, 70), hit(3, 120)];
+        let mut tracked = [1, 2, 1, 0];
+        merge_results(&mut results, &mut batch, &mut vec![], &mut tracked);
+        assert_eq!(tracked, [3, 5, 3, 2]);
+        assert_eq!(results[tracked[0] as usize].id.token, 20);
+        assert_eq!(results[tracked[3] as usize].id.token, 10);
+        let mut missing = [-1; 4];
+        merge_results(
+            &mut results,
+            &mut vec![hit(99, 200)],
+            &mut vec![],
+            &mut missing,
+        );
+        assert_eq!(missing, [-1; 4]);
+    }
     #[test]
     fn late_search_results_cannot_overwrite_new_search_or_load_failure() {
         let mut session = Session::new();

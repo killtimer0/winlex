@@ -77,6 +77,7 @@ python tests/gui/resources.py --exe target/i686-pc-windows-msvc/release/winlex-g
 Runner 管理测试进程和隔离资源，退出及清理结果记录在 `run.json`。
 消息测试通过发送窗口消息验证控件行为。实际键鼠专项使用 `--desktop current --real-input -k real_search`，要求解锁的活动输入桌面并取得前台；无法满足条件时报告失败。字母输入专项会临时关闭搜索框的 IME，并在清理时恢复原状态。
 执行端使用与目标系统兼容的 Python 3.8+ 和 pywin32。直接依赖列在 `tests/gui/requirements.txt`，按 Python 版本选择 pywin32：Python 3.8 使用 228，更新版本使用 310。可选系统 API 按能力探测。
+`--real-input` 也使结果预览与双击测试使用真实鼠标输入，并在结束时恢复光标和前台窗口；这些测试须运行在活动输入桌面。
 被测 EXE 可为 x86 或 x64，控件数据结构按 EXE 位数处理。x64 EXE 需要 64 位执行端 Python；x86 EXE 可使用 32 位或 64 位执行端 Python。元数据查询的架构选项独立于执行端和 EXE 位数。
 
 ### 本机/SSH 调度

@@ -17,7 +17,7 @@ winlex Windows.Win32.winmd Windows.Wdk.winmd show Windows.Wdk.winmd::NtCancelIoF
 | 命令 | 用途 |
 |---|---|
 | `summary` | 来源、程序集身份及表行数 |
-| `search TEXT` | 名称子串搜索；支持 `--exact`、`--prefix` |
+| `search TEXT` | 名称模糊搜索，按匹配度排序；`--exact` 使用精确匹配 |
 | `value INTEGER` | 十进制或 `0x` 十六进制整数搜索 |
 | `guid GUID` | GUID 搜索，允许外层花括号 |
 | `show NAME或ID` | 类型、成员或类型引用详情 |
@@ -28,7 +28,9 @@ winlex Windows.Win32.winmd Windows.Wdk.winmd show Windows.Wdk.winmd::NtCancelIoF
 `ARCH` 可选 `x86`、`x64`、`arm64`。搜索分页使用 `--limit`（默认50，上限1000）和 `--offset`。
 `--help`、`--version` 单独调用。
 
-搜索不区分大小写，声明名称选择区分大小写。结果按来源编号、token 排序。
+搜索不区分大小写，声明名称选择区分大小写。名称搜索按匹配度排序，同分按来源编号、token 排序，再进行分页；数值、GUID 和反向引用结果按来源编号、token 排序。
+模糊搜索允许查询字符在名称中不连续，但须保持顺序；查询中的标点按字面匹配。
+查询不含 `.` 或 `+` 时仅匹配符号短名称；含任一限定符时，仅匹配完整限定名。`--exact` 可精确匹配短名称或完整限定名。
 存在多个候选时，使用架构、限定名或 token 消除歧义。限定名形如 `Namespace.Type.Field`，嵌套类型形如 `Namespace.Outer+Inner`。
 选择声明时支持 `SOURCE::NAME` 和 `SOURCE::0xTOKEN`，SOURCE 可用来源编号或唯一程序集名称（包括名称中的 `.winmd` 后缀）。裸 token 仅允许单来源。编号和 token 仅在所属 Catalog 内有效。
 `--source SOURCE` 在搜索时过滤来源，在 show/layout/vtable/references 时限定目标来源；反向引用仍查找所有已加载来源。独立来源中的同名声明不会自动合并。
@@ -71,6 +73,8 @@ winlex Windows.Win32.winmd Windows.Wdk.winmd show Windows.Wdk.winmd::NtCancelIoF
 
 `winlex_core::Catalog` 提供同步查询，可通过 `Arc` 跨线程共享，结果拥有独立数据。
 搜索和反向引用支持 `SearchOptions.cancel` 协作式取消；单次描述和布局查询不提供取消点。
+搜索迭代器逐条返回 `SearchMatch`，其中 `entity` 是实体信息；模糊搜索还提供 `score` 和命中字段 `field`。迭代顺序是扫描顺序，按相关性展示前使用 `SearchMatch::compare` 排序。
+需要在未命中候选之间处理进度或发送缓冲时，可调用 `Search::step`，每次最多扫描一项候选，返回命中、跳过或结束状态；它与迭代器共享扫描位置和终止状态。
 
 ```rust,ignore
 use winlex_core::{Architecture, Catalog, SearchOptions};

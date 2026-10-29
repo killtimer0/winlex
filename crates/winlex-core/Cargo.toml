@@ -9,3 +9,4 @@ windows-metadata.workspace = true
 repc.workspace = true
 sha1.workspace = true
 anyhow.workspace = true
+nucleo-matcher = { version = "0.3.1", default-features = false, features = ["unicode-casefold", "unicode-normalization"] }

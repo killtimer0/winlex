@@ -1,8 +1,16 @@
 //! Metadata operations executed by the application's background executor.
 use crate::worker::Ticket;
 use anyhow::{Context, bail};
-use std::{path::PathBuf, sync::Arc};
-use winlex_core::{Architecture, Catalog, EntityId, EntitySummary, SearchOptions, SourceData};
+use std::{
+    path::PathBuf,
+    sync::Arc,
+    time::{Duration, Instant},
+};
+use winlex_core::{
+    Architecture, Catalog, EntityId, SearchMatch, SearchOptions, SearchStep, SourceData,
+};
+
+const SEARCH_BATCH_INTERVAL: Duration = Duration::from_millis(100);
 
 pub enum Job {
     Load {
@@ -39,7 +47,7 @@ impl Job {
 }
 pub enum Output {
     Loaded(Option<Arc<Catalog>>),
-    Matches(Vec<EntitySummary>),
+    Matches(Vec<SearchMatch>),
     SearchDone,
     Description {
         body: winlex_format::declaration::Rendered,
@@ -101,27 +109,15 @@ fn execute(
             query,
             categories,
         } => {
-            let mut batch = Vec::with_capacity(128);
-            for item in catalog.search(
+            let mut search = catalog.search(
                 &query,
                 SearchOptions {
                     cancel: Some(&ticket.cancel),
                     categories: Some(categories),
                     ..Default::default()
                 },
-            )? {
-                batch.push(item?);
-                if batch.len() == 128 {
-                    publish(Ok(Output::Matches(std::mem::replace(
-                        &mut batch,
-                        Vec::with_capacity(128),
-                    ))))?;
-                }
-            }
-            if !batch.is_empty() {
-                publish(Ok(Output::Matches(batch)))?;
-            }
-            Ok(Output::SearchDone)
+            )?;
+            search_batches(ticket, || search.step(), publish, Instant::now)
         }
         Job::Describe {
             catalog,
@@ -154,9 +150,182 @@ fn execute(
     }
 }
 
+fn search_batches(
+    ticket: &Ticket,
+    mut next: impl FnMut() -> anyhow::Result<SearchStep>,
+    publish: &impl Fn(anyhow::Result<Output>) -> anyhow::Result<()>,
+    mut now: impl FnMut() -> Instant,
+) -> anyhow::Result<Output> {
+    let mut batch = Vec::new();
+    let mut sent = now();
+    let result = loop {
+        if ticket.cancelled() {
+            bail!("cancelled");
+        }
+        let step = next();
+        if ticket.cancelled() {
+            bail!("cancelled");
+        }
+        match step {
+            Ok(SearchStep::Match(item)) => batch.push(item),
+            Ok(SearchStep::Skipped) => {}
+            Ok(SearchStep::Done) => break Ok(Output::SearchDone),
+            Err(error) => break Err(error),
+        }
+        if !batch.is_empty() && now().duration_since(sent) >= SEARCH_BATCH_INTERVAL {
+            publish(Ok(Output::Matches(std::mem::take(&mut batch))))?;
+            sent = now();
+        }
+    };
+    if !batch.is_empty() {
+        publish(Ok(Output::Matches(batch)))?;
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        cell::{Cell, RefCell},
+        collections::VecDeque,
+    };
+
+    fn hit(token: u32) -> SearchStep {
+        SearchStep::Match(SearchMatch {
+            entity: winlex_core::EntitySummary {
+                id: EntityId {
+                    source_id: 0,
+                    token,
+                },
+                name: "File".into(),
+                full_name: "Fixture.File".into(),
+                kind: "type".into(),
+                architecture_mask: 7,
+            },
+            score: 1,
+            field: winlex_core::MatchField::Name,
+        })
+    }
+
+    type BatchLog = Vec<(u64, Vec<u32>)>;
+    fn collect_batches(
+        events: Vec<(u64, anyhow::Result<SearchStep>)>,
+        cancel_at: Option<usize>,
+    ) -> (anyhow::Result<Output>, BatchLog) {
+        let ticket = Ticket::new(1);
+        let base = Instant::now();
+        let time = Cell::new(base);
+        let mut events: VecDeque<_> = events.into();
+        let batches = RefCell::new(vec![]);
+        let mut index = 0;
+        let result = search_batches(
+            &ticket,
+            || {
+                if cancel_at == Some(index) {
+                    ticket.cancel();
+                }
+                index += 1;
+                let (millis, step) = events.pop_front().expect("scan after completion");
+                time.set(base + Duration::from_millis(millis));
+                step
+            },
+            &|output| {
+                let Ok(Output::Matches(batch)) = output else {
+                    panic!("unexpected output");
+                };
+                assert!(!batch.is_empty());
+                batches.borrow_mut().push((
+                    time.get().duration_since(base).as_millis() as u64,
+                    batch.iter().map(|item| item.id.token).collect(),
+                ));
+                Ok(())
+            },
+            || time.get(),
+        );
+        (result, batches.into_inner())
+    }
+
+    #[test]
+    fn search_batches_ignore_count_and_flush_short_queries_at_completion() {
+        let mut events: Vec<_> = (0..1000).map(|id| (id as u64 / 10, Ok(hit(id)))).collect();
+        events.push((100, Ok(SearchStep::Done)));
+        let (result, batches) = collect_batches(events, None);
+        assert!(matches!(result, Ok(Output::SearchDone)));
+        assert_eq!(batches, [(100, (0..1000).collect())]);
+    }
+
+    #[test]
+    fn search_batches_check_elapsed_time_even_when_candidates_do_not_match() {
+        let (result, batches) = collect_batches(
+            vec![
+                (0, Ok(hit(1))),
+                (99, Ok(SearchStep::Skipped)),
+                (100, Ok(SearchStep::Skipped)),
+                (101, Ok(hit(2))),
+                (199, Ok(SearchStep::Skipped)),
+                (200, Ok(SearchStep::Skipped)),
+                (201, Ok(hit(3))),
+                (202, Ok(SearchStep::Done)),
+            ],
+            None,
+        );
+        assert!(matches!(result, Ok(Output::SearchDone)));
+        assert_eq!(batches, [(100, vec![1]), (200, vec![2]), (202, vec![3])]);
+    }
+
+    #[test]
+    fn search_batches_do_not_emit_empty_batches_and_flush_before_error() {
+        let (result, batches) = collect_batches(
+            vec![
+                (100, Ok(SearchStep::Skipped)),
+                (200, Ok(SearchStep::Skipped)),
+                (240, Ok(hit(1))),
+                (250, Ok(hit(2))),
+                (260, Err(anyhow::anyhow!("scan failed"))),
+            ],
+            None,
+        );
+        assert_eq!(result.err().unwrap().to_string(), "scan failed");
+        assert_eq!(batches, [(240, vec![1]), (260, vec![2])]);
+        let (result, batches) = collect_batches(vec![(1000, Ok(SearchStep::Done))], None);
+        assert!(matches!(result, Ok(Output::SearchDone)));
+        assert!(batches.is_empty());
+    }
+
+    #[test]
+    fn search_batches_discard_unsent_results_on_cancellation() {
+        let (result, batches) = collect_batches(
+            vec![
+                (0, Ok(hit(1))),
+                (100, Ok(SearchStep::Skipped)),
+                (120, Ok(hit(2))),
+                (200, Ok(SearchStep::Done)),
+            ],
+            Some(3),
+        );
+        assert_eq!(result.err().unwrap().to_string(), "cancelled");
+        assert_eq!(batches, [(100, vec![1])]);
+    }
+
+    #[test]
+    fn search_batches_propagate_publish_failure_without_scanning_further() {
+        let mut count = 0;
+        let base = Instant::now();
+        let time = Cell::new(base);
+        let result = search_batches(
+            &Ticket::new(1),
+            || {
+                count += 1;
+                time.set(base + SEARCH_BATCH_INTERVAL);
+                Ok(hit(1))
+            },
+            &|_| Err(anyhow::anyhow!("queue closed")),
+            || time.get(),
+        );
+        assert_eq!(result.err().unwrap().to_string(), "queue closed");
+        assert_eq!(count, 1);
+    }
 
     #[test]
     fn load_error_retains_io_source_across_worker_completion() {

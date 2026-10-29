@@ -16,7 +16,7 @@
 在命令前指定输入文件：
 
 ```powershell
-winlex Windows.Win32.winmd search OPENFILE --prefix
+winlex Windows.Win32.winmd search OPENFILE
 winlex Windows.Win32.winmd value 0x80000000
 winlex Windows.Win32.winmd show CreateFileW --arch x64
 winlex Windows.Win32.winmd layout OVERLAPPED --arch x64

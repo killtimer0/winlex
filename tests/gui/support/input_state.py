@@ -5,6 +5,7 @@ from pathlib import Path
 import win32api
 import win32con
 import win32gui
+import win32service
 from . import native as n
 
 IMC_GETOPENSTATUS = 5
@@ -54,6 +55,12 @@ class InputState:
         temporary.replace(self.path)
 
     def __enter__(self):
+        current = win32service.GetThreadDesktop(win32api.GetCurrentThreadId())
+        active = win32service.OpenInputDesktop(0, False, win32con.DESKTOP_READOBJECTS)
+        try:
+            assert win32service.GetUserObjectInformation(int(current), win32con.UOI_NAME) == win32service.GetUserObjectInformation(int(active), win32con.UOI_NAME), "actual input requires the input desktop"
+        finally:
+            active.CloseDesktop()
         self.save()
         return self
 

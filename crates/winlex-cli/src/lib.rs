@@ -9,7 +9,7 @@ Usage: winlex FILE... COMMAND [QUERY] [options]
 
 Commands:
   summary                 Sources, assembly identities and row counts
-  search TEXT             Case-insensitive partial name search
+  search TEXT             Case-insensitive fuzzy name search, ranked by relevance
   value INTEGER           Decimal or 0x hexadecimal integer search
   guid GUID               GUID lookup (optional braces)
   show NAME|ID            Declaration, members and typed references
@@ -21,7 +21,7 @@ Options:
   --source SOURCE         Zero-based input index or unique assembly name
   --arch x86|x64|arm64     Required for layout/vtable/references
   --json                  Versioned machine-readable output
-  --exact | --prefix      Name search mode (default: contains)
+  --exact                 Exact name search (default: fuzzy)
   --limit N               Page size, 0..1000 (default: 50)
   --offset N              Matching rows to skip
   --help, --version       No input required
@@ -30,6 +30,7 @@ Input files precede the command. Use .\search for a file named search.
 Declaration selectors accept SOURCE::NAME or SOURCE::0xTOKEN.
 Bare tokens require a single input source. Names can be namespace-qualified.
 Source indices follow input order and belong to this catalog only.
+Fuzzy queries containing '.' or '+' match qualified names; otherwise short names.
 Numeric queries compare mathematical integers: -1 differs from 0xffffffff.
 "#;
 
@@ -49,7 +50,7 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
     let mut source = None;
     let mut arch = None;
     let mut json = false;
-    let mut mode = SearchMode::Contains;
+    let mut mode = SearchMode::Fuzzy;
     let mut selected_mode = false;
     let mut limit = 50;
     let mut offset = 0;
@@ -84,16 +85,12 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
                 }
             }
             "--json" => json = true,
-            "--exact" | "--prefix" => {
+            "--exact" => {
                 if selected_mode {
                     return Err("choose only one name search mode".into());
                 }
                 selected_mode = true;
-                mode = if a == "--exact" {
-                    SearchMode::Exact
-                } else {
-                    SearchMode::Prefix
-                };
+                mode = SearchMode::Exact;
             }
             _ if a.starts_with("--") => return Err(format!("unknown option {a}")),
             _ if positional.is_empty()
@@ -123,7 +120,7 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
         return Err(format!("{command} expects {} query argument(s)", count - 1));
     }
     if selected_mode && command != "search" {
-        return Err("--exact/--prefix apply only to search".into());
+        return Err("--exact applies only to search".into());
     }
     if ["layout", "vtable", "references"].contains(&command.as_str()) && arch.is_none() {
         return Err(format!("{command} requires --arch"));
@@ -221,7 +218,15 @@ pub fn run(
                 if o.command == "guid" {
                     opt.mode = SearchMode::Guid;
                 }
-                Query::Matches(page(db.search(q, opt)?, o.offset, o.limit)?)
+                let matches = db.search(q, opt)?;
+                let result = if o.command == "search" {
+                    let mut matches = matches.collect::<winlex_core::Result<Vec<_>>>()?;
+                    matches.sort_unstable_by(winlex_core::SearchMatch::compare);
+                    page(matches.into_iter().map(|m| Ok(m.entity)), o.offset, o.limit)?
+                } else {
+                    page(matches.map(|m| m.map(|m| m.entity)), o.offset, o.limit)?
+                };
+                Query::Matches(result)
             }
             "show" => Query::Show(select(&db, &selector, o.arch, false)?),
             "layout" => {
@@ -234,7 +239,11 @@ pub fn run(
                 let target = select(&db, &selector, o.arch, true)?;
                 let arch = o.arch.unwrap();
                 let mut results = db.references(target, arch, None)?;
-                let page = page(&mut results, o.offset, o.limit)?;
+                let page = page(
+                    results.by_ref().map(|m| m.map(|m| m.entity)),
+                    o.offset,
+                    o.limit,
+                )?;
                 Query::References(target, page, results.unresolved_type_uses())
             }
             _ => unreachable!(),

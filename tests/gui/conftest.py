@@ -63,7 +63,8 @@ def profile(request):
 def launch(request, settings, profile):
     sessions = []
     def start(arguments=(), dpi=None):
-        session = Session(settings[0], profile, arguments, dpi or request.config.getoption("--dpi"))
+        session = Session(settings[0], profile, arguments, dpi or request.config.getoption("--dpi"),
+                          real_input=request.config.getoption("--real-input"))
         sessions.append(session)
         return session
     yield start

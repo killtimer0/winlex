@@ -81,7 +81,7 @@ def test_multiple_positional_inputs_preserve_order(launch, profile, settings):
     assert str(second) in app.cell(1, app.sources)
     assert profile.get("AutoLoad") == [str(settings[1])]
     app.query("CreateFileW")
-    assert app.count() == 2
+    assert len(app.named_rows("CreateFileW")) == 2
 
 
 def test_long_unicode_input(launch, settings):

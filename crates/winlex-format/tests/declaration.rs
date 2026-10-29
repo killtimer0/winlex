@@ -13,6 +13,10 @@ fn declarations_cover_native_signatures_and_architecture_specific_types() {
                     name,
                     SearchOptions {
                         mode: SearchMode::Exact,
+                        categories: Some(
+                            winlex_core::EntityCategory::ALL
+                                & !(winlex_core::EntityCategory::TypeReference as u32),
+                        ),
                         architecture: Some(arch),
                         ..Default::default()
                     },
@@ -47,7 +51,7 @@ fn declarations_cover_native_signatures_and_architecture_specific_types() {
                 assert!(text.contains("optional"));
                 assert!(!text.contains("\"parameters\""));
             } else {
-                assert!(text.contains("struct RECT"));
+                assert!(text.contains("struct RECT"), "{text}");
                 assert!(text.contains("INT32 left;"));
                 assert!(text.contains("INT32 bottom;"));
                 assert!(text.contains("size: 16(0x10) bytes, alignment: 4(0x4) bytes"));
@@ -60,6 +64,10 @@ fn declarations_cover_native_signatures_and_architecture_specific_types() {
                     name,
                     SearchOptions {
                         mode: SearchMode::Exact,
+                        categories: Some(
+                            winlex_core::EntityCategory::ALL
+                                & !(winlex_core::EntityCategory::TypeReference as u32),
+                        ),
                         architecture: Some(arch),
                         ..Default::default()
                     },

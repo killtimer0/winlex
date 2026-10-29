@@ -2,8 +2,10 @@
 //! Search results own their data; declaration views borrow their Catalog.
 mod api;
 mod model;
+mod search;
 mod source;
 pub use model::*;
+pub use search::{MatchField, NameMatcher, SearchMatch};
 pub use source::{AssemblyIdentity, EntityId, Source, SourceData};
 // Low-level adapters for independent metadata verification.
 mod layout;
@@ -12,7 +14,7 @@ pub mod metadata;
 
 pub use anyhow::{Error, Result};
 pub use api::{
-    Architecture, Catalog, EntityCategory, EntitySummary, Search, SearchMode, SearchOptions, guid,
-    integer,
+    Architecture, Catalog, EntityCategory, EntitySummary, Search, SearchMode, SearchOptions,
+    SearchStep, guid, integer,
 };
 pub use windows_metadata;

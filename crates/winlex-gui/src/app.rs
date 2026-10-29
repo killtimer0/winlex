@@ -266,8 +266,12 @@ fn poll_completions() {
                     Target::Document(id) => workspace::complete(id, c),
                 }
             }
-            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                catalog::flush_results();
+                return;
+            }
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                catalog::flush_results();
                 catalog::worker_stopped();
                 for (hwnd, view) in workspace::views() {
                     view.worker_stopped(hwnd);
@@ -277,5 +281,6 @@ fn poll_completions() {
             }
         }
     }
+    catalog::flush_results();
     read(|a| a.worker.resignal());
 }

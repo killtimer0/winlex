@@ -1,5 +1,6 @@
 """Owned GUI process and remote memory; partial-start failures use the same cleanup."""
 import ctypes as c
+from contextlib import contextmanager
 from ctypes import wintypes as w
 import json
 from pathlib import Path
@@ -22,10 +23,11 @@ class ThreadInfo(c.Structure):
 
 
 class Session:
-    def __init__(self, exe, profile, arguments=(), dpi="auto"):
+    def __init__(self, exe, profile, arguments=(), dpi="auto", real_input=False):
         self.process = self.handle = self.memory = self.frame = None
         self.cleanup_complete = False
         self.actual_dpi = None
+        self.real_input = real_input
         try:
             self.process = subprocess.Popen([str(exe), *map(str, arguments)], env=profile.environment(dpi=dpi))
             self.frame = n.wait(self.find_frame, "main window")
@@ -53,7 +55,7 @@ class Session:
         for hwnd in n.windows():
             pid = w.DWORD()
             n.get_pid(hwnd, c.byref(pid))
-            if pid.value == self.process.pid and n.class_name(hwnd) == "Winlex.Frame":
+            if pid.value == self.process.pid and n.class_name(hwnd) == "Winlex.Frame" and n.is_visible(hwnd):
                 n.send(hwnd, win32con.WM_NULL)
                 return hwnd
 
@@ -143,6 +145,10 @@ class Session:
             assert n.write_memory(self.handle, self.memory, item, len(item), None)
             n.send(control, messages.LVM_SETITEMSTATE, c.c_size_t(index).value, self.memory)
 
+    def named_rows(self, name):
+        return [index for index in range(self.count())
+                if self.cell(index).splitlines()[0].rsplit(".", 1)[-1] == name]
+
     def selected_row(self, control=None):
         return n.send(control or self.results, messages.LVM_GETNEXTITEM,
                       c.c_size_t(-1).value, messages.LVNI_SELECTED)
@@ -182,36 +188,48 @@ class Session:
             "new document",
         )
 
-    def preview_row(self, row=0):
-        name = self.cell(row).splitlines()[0].rsplit(".", 1)[-1]
+    @contextmanager
+    def _click_row(self, row, double=False):
         self.select(row)
         left, top, right, bottom = self.item_rect(row)
         point = ((left + right) // 2, (top + bottom) // 2)
+        if self.real_input:
+            import win32gui
+            from .input_state import InputState
+            with InputState() as state:
+                with n.window_dpi_context(self.results):
+                    position = win32gui.ClientToScreen(self.results, point)
+                state.click(*position)
+                if double:
+                    state.click(*position)
+                yield
+            return
         lparam = (point[1] << 16) | (point[0] & 0xffff)
         # A list view starts an internal drag loop on button-down, so post clicks.
         n.post(self.results, win32con.WM_LBUTTONDOWN, win32con.MK_LBUTTON, lparam)
         n.post(self.results, win32con.WM_LBUTTONUP, 0, lparam)
-        return n.wait(
-            lambda: (lambda doc: doc if doc in self.documents()
-                     and n.window_text(doc).startswith(name + " —") else None)(self.active_document()),
-            "preview document",
-        )
+        if double:
+            n.post(self.results, win32con.WM_LBUTTONDBLCLK, win32con.MK_LBUTTON, lparam)
+            n.post(self.results, win32con.WM_LBUTTONUP, 0, lparam)
+        yield
+
+    def preview_row(self, row=0):
+        name = self.cell(row).splitlines()[0].rsplit(".", 1)[-1]
+        with self._click_row(row):
+            return n.wait(
+                lambda: (lambda doc: doc if doc in self.documents()
+                         and n.window_text(doc).startswith(name + " —") else None)(self.active_document()),
+                "preview document",
+            )
 
     def double_click_row(self, row=0):
         name = self.cell(row).splitlines()[0].rsplit(".", 1)[-1]
-        self.select(row)
-        left, top, right, bottom = self.item_rect(row)
-        point = ((left + right) // 2, (top + bottom) // 2)
-        lparam = (point[1] << 16) | (point[0] & 0xffff)
-        n.post(self.results, win32con.WM_LBUTTONDOWN, win32con.MK_LBUTTON, lparam)
-        n.post(self.results, win32con.WM_LBUTTONUP, 0, lparam)
-        n.post(self.results, win32con.WM_LBUTTONDBLCLK, win32con.MK_LBUTTON, lparam)
-        n.post(self.results, win32con.WM_LBUTTONUP, 0, lparam)
-        return n.wait(
-            lambda: (lambda doc: doc if doc in self.documents()
-                     and n.window_text(doc).startswith(name + " —") else None)(self.active_document()),
-            "opened document",
-        )
+        with self._click_row(row, double=True):
+            return n.wait(
+                lambda: (lambda doc: doc if doc in self.documents()
+                         and n.window_text(doc).startswith(name + " —") else None)(self.active_document()),
+                "opened document",
+            )
 
     def focus(self, control):
         attach = n.api(n.user, "AttachThreadInput", w.BOOL, w.DWORD, w.DWORD, w.BOOL)
