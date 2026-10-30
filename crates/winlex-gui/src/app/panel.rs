@@ -24,6 +24,7 @@ pub(super) struct Registration {
     pub id: u32,
     pub command: u16,
     pub label: u16,
+    pub icon: u16,
     pub create: fn(HWND) -> anyhow::Result<Rc<Panel>>,
 }
 pub(super) const SEARCH_PANEL: u32 = 0;
@@ -33,12 +34,14 @@ pub(super) static PANELS: &[Registration] = &[
         id: SEARCH_PANEL,
         command: PANEL_SEARCH,
         label: IDS_PANEL_SEARCH,
+        icon: IDR_SEARCH,
         create: Panel::search,
     },
     Registration {
         id: SOURCES_PANEL,
         command: MANAGE_SOURCES,
         label: IDS_PANEL_SOURCES,
+        icon: IDR_FILES,
         create: Panel::sources,
     },
 ];

@@ -1,4 +1,5 @@
 import shutil
+import struct
 import time
 import pytest
 import win32api
@@ -7,6 +8,35 @@ import win32gui
 from support import native as n
 from support.input_state import InputState
 from support.diagnostics import screenshot
+from support import messages
+
+
+def test_toolbar_names_on_hover(launch, settings):
+    app = launch()
+    if not app.real_input:
+        pytest.skip('requires --real-input')
+    toolbar = n.get_item(app.frame, 1113)
+    tooltip = n.send(toolbar, win32con.WM_USER + 35)
+    with InputState() as inputs, n.window_dpi_context(app.frame):
+        foreground = n.api(n.user, 'SetForegroundWindow', n.w.BOOL, n.w.HWND)
+        n.wait(lambda: win32gui.GetForegroundWindow() == app.frame or foreground(app.frame),
+               'toolbar foreground')
+        for index, names in enumerate((('Search', '搜索'), ('Metadata', '元数据'))):
+            win32api.SetCursorPos(win32gui.ClientToScreen(app.search, (8, 8)))
+            n.wait(lambda: not n.is_visible(tooltip), 'toolbar tooltip hidden')
+            time.sleep(.1)
+            assert n.send(toolbar, messages.TB_GETITEMRECT, index, app.memory)
+            buffer = n.c.create_string_buffer(16)
+            assert n.read_memory(app.handle, app.memory, buffer, 16, None)
+            left, top, right, bottom = struct.unpack('<4i', buffer.raw)
+            win32api.SetCursorPos(win32gui.ClientToScreen(toolbar,
+                ((left + right) // 2, (top + bottom) // 2)))
+            n.wait(lambda: n.is_visible(tooltip), 'toolbar tooltip')
+            assert n.window_text(tooltip) in names
+            screenshot(app.frame, settings[2] / ('toolbar-%d.bmp' % index))
+        inputs.click(*win32gui.ClientToScreen(toolbar,
+            ((left + right) // 2, (top + bottom) // 2)))
+        n.wait(lambda: n.is_visible(app.sources), 'toolbar opens metadata')
 
 
 def infotip(app, control, row, image):

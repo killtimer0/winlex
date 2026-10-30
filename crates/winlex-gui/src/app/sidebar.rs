@@ -6,6 +6,7 @@ use super::{
 };
 use crate::{
     config::Config,
+    icons::Images,
     layout,
     native::*,
     resources::{self, *},
@@ -14,6 +15,7 @@ use std::{ptr, rc::Rc};
 
 pub(super) struct Sidebar {
     toolbar: HWND,
+    images: Option<Images>,
     splitter: HWND,
     panels: Vec<(&'static Registration, Rc<Panel>)>,
     pub active: u32,
@@ -31,6 +33,7 @@ impl Sidebar {
             .id;
         Self {
             toolbar: ptr::null_mut(),
+            images: None,
             splitter: ptr::null_mut(),
             panels: vec![],
             active,
@@ -81,7 +84,6 @@ pub(super) fn create(frame: HWND) -> anyhow::Result<()> {
         &[0],
         WS_TABSTOP
             | TBSTYLE_FLAT
-            | TBSTYLE_LIST
             | TBSTYLE_TOOLTIPS
             | TBSTYLE_WRAPABLE
             | (CCS_NORESIZE | CCS_NOPARENTALIGN | CCS_NODIVIDER) as u32,
@@ -98,9 +100,8 @@ pub(super) fn create(frame: HWND) -> anyhow::Result<()> {
         std::mem::size_of::<TBBUTTON>(),
         0,
     );
-    send(toolbar, TB_SETMAXTEXTROWS, 1, 0);
-    send(toolbar, TB_SETBITMAPSIZE, 0, 0);
-    for registration in PANELS {
+    send(toolbar, TB_SETMAXTEXTROWS, 0, 0);
+    for (image, registration) in PANELS.iter().enumerate() {
         let mut text = resources::wide_text(registration.label).to_vec();
         text.push(0);
         let index = send(toolbar, TB_ADDSTRINGW, 0, text.as_ptr() as isize);
@@ -108,10 +109,10 @@ pub(super) fn create(frame: HWND) -> anyhow::Result<()> {
             anyhow::bail!("Add panel toolbar string failed");
         }
         let button = TBBUTTON {
-            iBitmap: I_IMAGENONE,
+            iBitmap: image as i32,
             idCommand: registration.command as i32,
             fsState: TBSTATE_ENABLED as u8,
-            fsStyle: BTNS_CHECK as u8 | BTNS_SHOWTEXT as u8,
+            fsStyle: BTNS_CHECK as u8,
             iString: index,
             ..unsafe { std::mem::zeroed() }
         };
@@ -163,12 +164,30 @@ pub(super) fn prepare() {
     let (frame, toolbar, panels) = read(|a| (a.frame, a.sidebar.toolbar, a.sidebar.panels.clone()));
     let m = super::metrics(frame);
     bind(toolbar, m.font);
-    let width = m.label_width(PANELS.iter().map(|r| resources::wide_text(r.label)), 66) as u32;
-    let row = m.row() as u32;
-    send(toolbar, TB_SETBUTTONSIZE, 0, (width | (row << 16)) as isize);
+    match Images::toolbar(m.px(24), PANELS.iter().map(|r| r.icon)) {
+        Ok(images) => {
+            send(toolbar, TB_SETIMAGELIST, 0, images.handle());
+            write(|a| a.sidebar.images = Some(images));
+        }
+        Err(error) => write(|a| a.failure = Some(error)),
+    }
+    let padding = m.px(12) as u32;
+    send(
+        toolbar,
+        TB_SETPADDING,
+        0,
+        (padding | (padding << 16)) as isize,
+    );
+    let width = m.px(36) as u32;
     send(
         toolbar,
         TB_SETBUTTONWIDTH,
+        0,
+        (width | (width << 16)) as isize,
+    );
+    send(
+        toolbar,
+        TB_SETBUTTONSIZE,
         0,
         (width | (width << 16)) as isize,
     );
@@ -189,9 +208,9 @@ pub(super) fn layout(bottom: i32) -> i32 {
     });
     let m = super::metrics(frame);
     let s = |n| m.px(n);
-    let x = (send(toolbar, TB_GETBUTTONSIZE, 0, 0) & 0xffff) as i32 + s(6);
+    let x = (send(toolbar, TB_GETBUTTONSIZE, 0, 0) & 0xffff) as i32 + s(8);
     let width = s(width).min((client(frame).right - x - s(160)).max(0));
-    place(toolbar, layout::rect(s(3), s(4), x - s(6), bottom - s(8)));
+    place(toolbar, layout::rect(s(4), s(4), x - s(8), bottom - s(8)));
     let Some(panel) = panel else {
         return x;
     };
@@ -239,7 +258,7 @@ pub(super) unsafe extern "system" fn splitter_proc(
                 };
                 let (frame, toolbar) = read(|a| (a.frame, a.sidebar.toolbar));
                 MapWindowPoints(hwnd, frame, &mut p, 1);
-                let x = bounds(toolbar, frame).right + layout::scale(3, dpi().window(frame));
+                let x = bounds(toolbar, frame).right + layout::scale(4, dpi().window(frame));
                 let width = MulDiv(
                     p.x - x,
                     USER_DEFAULT_SCREEN_DPI as i32,

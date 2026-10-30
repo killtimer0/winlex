@@ -15,6 +15,12 @@ public static class CodiconMetafile {
     public static void Convert(string input, string output) {
         var svg = new XmlDocument();
         svg.Load(input);
+        var viewBox = svg.DocumentElement.GetAttribute("viewBox").Split(' ');
+        float x = float.Parse(viewBox[0], CultureInfo.InvariantCulture);
+        float y = float.Parse(viewBox[1], CultureInfo.InvariantCulture);
+        float width = float.Parse(viewBox[2], CultureInfo.InvariantCulture);
+        float height = float.Parse(viewBox[3], CultureInfo.InvariantCulture);
+        float scale = (16 * 22f / 24) / Math.Max(width, height);
         using (var reference = Graphics.FromHwnd(IntPtr.Zero)) {
             var dc = reference.GetHdc();
             try {
@@ -23,6 +29,9 @@ public static class CodiconMetafile {
                 using (var graphics = Graphics.FromImage(file)) {
                     graphics.PageUnit = GraphicsUnit.Pixel;
                     graphics.SmoothingMode = SmoothingMode.AntiAlias;
+                    graphics.TranslateTransform((16 - width * scale) / 2, (16 - height * scale) / 2);
+                    graphics.ScaleTransform(scale, scale);
+                    graphics.TranslateTransform(-x, -y);
                     foreach (XmlElement element in svg.GetElementsByTagName("path")) {
                         using (var path = Parse(element.GetAttribute("d"))) {
                             path.FillMode = element.GetAttribute("fill-rule") == "evenodd"

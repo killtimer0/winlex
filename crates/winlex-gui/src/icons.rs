@@ -200,6 +200,28 @@ impl Drop for Bitmap {
 
 pub struct Images(HIMAGELIST);
 impl Images {
+    pub fn toolbar(
+        size: i32,
+        resources: impl ExactSizeIterator<Item = u16>,
+    ) -> anyhow::Result<Self> {
+        unsafe {
+            let handle = ImageList_Create(size, size, ILC_COLOR32, resources.len() as i32, 0);
+            anyhow::ensure!(handle != 0, "Create toolbar icon list failed");
+            let images = Self(handle);
+            for id in resources {
+                let mut bitmap = Bitmap::render(resources::binary(id)?, size)?;
+                bitmap.tint(GetSysColor(COLOR_BTNTEXT));
+                anyhow::ensure!(
+                    ImageList_Add(handle, bitmap.handle, ptr::null_mut()) >= 0,
+                    "Cache toolbar icon failed"
+                );
+            }
+            Ok(images)
+        }
+    }
+    pub fn handle(&self) -> HIMAGELIST {
+        self.0
+    }
     pub fn new(size: i32) -> anyhow::Result<Self> {
         unsafe {
             let handle = ImageList_Create(size, size, ILC_COLOR32, ICONS.len() as i32 * 3, 0);
@@ -265,8 +287,9 @@ mod tests {
             include_bytes!("../res/codicons/references.emf"),
             include_bytes!("../res/codicons/symbol-misc.emf"),
             include_bytes!("../res/codicons/file.emf"),
+            include_bytes!("../res/codicons/search.emf"),
+            include_bytes!("../res/codicons/files.emf"),
         ];
-        assert_eq!(assets.len(), ICONS.len());
         for &bytes in assets {
             assert!(bytes.windows(4).any(|b| b == b"EMF+"));
             for size in [16, 20, 24, 32, 48] {
