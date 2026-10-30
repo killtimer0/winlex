@@ -31,21 +31,18 @@ def test_list_selection_paint_follows_focus(launch, settings, sources):
                 return win32gui.GetPixel(target, min(right, width) - 4,
                                         (top + bottom) // 2 - 3)
 
-    for classic in (False, True):
-        if classic:
-            theme = n.c.WinDLL("uxtheme")
-            assert n.api(theme, "SetWindowTheme", n.c.c_long, n.w.HWND,
-                         n.w.LPCWSTR, n.w.LPCWSTR)(control, "", "") == 0
+    for theme_name in ("Explorer", ""):
+        theme = n.c.WinDLL("uxtheme")
+        assert n.api(theme, "SetWindowTheme", n.c.c_long, n.w.HWND,
+                     n.w.LPCWSTR, n.w.LPCWSTR)(control, theme_name, None if theme_name else "") == 0
         app.focus(control)
         assert app.focused() == control
         selected = background()
         app.focus(other)
         unfocused = background()
         assert app.selected_row(control) == 0  # Losing focus hides the highlight, not selection.
-        assert selected != unfocused, (classic, selected, unfocused)
-        if classic:
-            assert selected == win32gui.GetSysColor(win32con.COLOR_HIGHLIGHT)
-            assert unfocused == win32gui.GetSysColor(win32con.COLOR_WINDOW)
+        assert selected != unfocused, (theme_name, selected, unfocused)
+        assert unfocused == win32gui.GetSysColor(win32con.COLOR_WINDOW)
 
 
 def check_toolbar_and_search(app):

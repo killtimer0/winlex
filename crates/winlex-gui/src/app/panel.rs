@@ -115,6 +115,7 @@ impl Panel {
             catalog::row,
             catalog::row_text,
             Some(catalog::activate),
+            read(|a| a.system_version),
         )?;
         Ok(Rc::new(Self {
             controls: vec![input, list.hwnd, mode],
@@ -129,7 +130,14 @@ impl Panel {
         }))
     }
     fn sources(frame: HWND) -> anyhow::Result<Rc<Self>> {
-        let list = List::new(frame, SOURCE_LIST, sources::row, sources::row_text, None)?;
+        let list = List::new(
+            frame,
+            SOURCE_LIST,
+            sources::row,
+            sources::row_text,
+            None,
+            read(|a| a.system_version),
+        )?;
         let mut controls = vec![list.hwnd];
         for (id, label) in [
             (LOAD_METADATA, IDS_LOAD_METADATA),

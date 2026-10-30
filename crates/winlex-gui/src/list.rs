@@ -3,9 +3,11 @@ use crate::{
     icons::{Icon, Images},
     layout,
     native::*,
+    platform::WindowsVersion,
 };
 use std::{cell::RefCell, ops::Range, ptr};
 use windows_sys::Win32::UI::Accessibility::{HCF_HIGHCONTRASTON, HIGHCONTRASTW};
+use windows_sys::Win32::UI::Shell::GetWindowSubclass;
 
 #[derive(Default)]
 pub struct Display {
@@ -25,6 +27,7 @@ pub struct List {
     row: ReadRow,
     text: fn(usize) -> Vec<u16>,
     open: Option<fn(isize, bool)>,
+    native_background: bool,
 }
 impl List {
     pub fn new(
@@ -33,6 +36,7 @@ impl List {
         row: ReadRow,
         text: fn(usize) -> Vec<u16>,
         open: Option<fn(isize, bool)>,
+        version: WindowsVersion,
     ) -> anyhow::Result<Self> {
         let hwnd = child(
             frame,
@@ -41,7 +45,10 @@ impl List {
             WS_TABSTOP | LVS_REPORT | LVS_OWNERDATA | LVS_SINGLESEL | LVS_NOCOLUMNHEADER,
             id,
         )?;
-        if unsafe { set_subclass(hwnd, Some(list_proc), 1, 0) } == 0 {
+        unsafe {
+            SetWindowTheme(hwnd, w!("Explorer"), ptr::null());
+        }
+        if unsafe { set_subclass(hwnd, Some(list_proc), 1, themed_items(hwnd) as usize) } == 0 {
             anyhow::bail!("Subclass list control {id} failed");
         }
         list_column(hwnd, 0, "", 100);
@@ -57,6 +64,7 @@ impl List {
             row,
             text,
             open,
+            native_background: version.at_least(WindowsVersion::VISTA),
         })
     }
     pub fn prepare(&self, m: &layout::Metrics) -> anyhow::Result<()> {
@@ -130,23 +138,42 @@ impl List {
                     Some(0)
                 }
                 NM_CUSTOMDRAW => {
-                    let d = &mut *(l as *mut NMLVCUSTOMDRAW);
+                    let d = &*(l as *const NMLVCUSTOMDRAW);
                     match d.nmcd.dwDrawStage {
                         CDDS_PREPAINT => Some(CDRF_NOTIFYITEMDRAW as isize),
-                        CDDS_ITEMPREPAINT => {
+                        CDDS_ITEMPREPAINT if self.native_background => {
+                            Some(CDRF_NOTIFYSUBITEMDRAW as isize)
+                        }
+                        stage if stage == CDDS_ITEMPREPAINT | CDDS_SUBITEM => {
+                            let area = d.nmcd.rc;
+                            if area.left == 0
+                                && area.top == 0
+                                && area.right == 0
+                                && area.bottom == 0
+                            {
+                                return Some(CDRF_DODEFAULT as isize);
+                            }
+                            Some((CDRF_DOERASE | CDRF_NOTIFYPOSTPAINT) as isize)
+                        }
+                        stage
+                            if stage == CDDS_ITEMPREPAINT
+                                || stage == CDDS_ITEMPOSTPAINT | CDDS_SUBITEM =>
+                        {
                             // XP custom-draw notifications do not supply usable item bounds.
-                            d.nmcd.rc.left = LVIR_BOUNDS as i32;
+                            let mut area = RECT {
+                                left: LVIR_BOUNDS as i32,
+                                ..std::mem::zeroed()
+                            };
                             if send(
                                 self.hwnd,
                                 LVM_GETITEMRECT,
                                 d.nmcd.dwItemSpec,
-                                &mut d.nmcd.rc as *mut RECT as isize,
+                                &mut area as *mut RECT as isize,
                             ) == 0
                             {
                                 return Some(CDRF_DODEFAULT as isize);
                             }
                             let saved = SaveDC(d.nmcd.hdc);
-                            let area = d.nmcd.rc;
                             IntersectClipRect(
                                 d.nmcd.hdc,
                                 area.left,
@@ -154,14 +181,23 @@ impl List {
                                 area.right,
                                 area.bottom,
                             );
-                            let selected = background(self.hwnd, d);
+                            let visuals = self.visuals.borrow();
+                            let selected = selected(self.hwnd, d.nmcd.dwItemSpec);
+                            if !self.native_background {
+                                background(self.hwnd, d.nmcd.hdc, &area, selected);
+                            }
                             SetBkMode(d.nmcd.hdc, TRANSPARENT as i32);
-                            if let Some(visuals) = self.visuals.borrow().as_ref() {
+                            if let Some(visuals) = visuals.as_ref() {
+                                let mut themed = 0;
+                                GetWindowSubclass(self.hwnd, Some(list_proc), 1, &mut themed);
+                                let system = visuals.high_contrast
+                                    || selected && (!self.native_background || themed == 0);
                                 (self.row)(d.nmcd.dwItemSpec, &mut |row| {
-                                    visuals.draw(d.nmcd.hdc, area, row, selected);
+                                    visuals.draw(d.nmcd.hdc, area, row, system);
                                 });
                             }
-                            if d.nmcd.uItemState & CDIS_FOCUS != 0
+                            if !self.native_background
+                                && d.nmcd.uItemState & CDIS_FOCUS != 0
                                 && GetFocus() == self.hwnd
                                 && send(self.hwnd, WM_QUERYUISTATE, 0, 0) & UISF_HIDEFOCUS as isize
                                     == 0
@@ -169,7 +205,11 @@ impl List {
                                 DrawFocusRect(d.nmcd.hdc, &area);
                             }
                             RestoreDC(d.nmcd.hdc, saved);
-                            Some(CDRF_SKIPDEFAULT as isize)
+                            Some(if self.native_background {
+                                CDRF_DODEFAULT as isize
+                            } else {
+                                CDRF_SKIPDEFAULT as isize
+                            })
                         }
                         _ => Some(CDRF_DODEFAULT as isize),
                     }
@@ -290,49 +330,33 @@ impl State {
         }
     }
 }
-unsafe fn background(hwnd: HWND, draw: &NMLVCUSTOMDRAW) -> bool {
+fn selected(hwnd: HWND, item: usize) -> bool {
+    send(hwnd, LVM_GETITEMSTATE, item, LVIS_SELECTED as isize) != 0
+        && unsafe {
+            GetFocus() == hwnd || GetWindowLongPtrW(hwnd, GWL_STYLE) as u32 & LVS_SHOWSELALWAYS != 0
+        }
+}
+unsafe fn background(hwnd: HWND, dc: HDC, area: &RECT, selected: bool) {
     unsafe {
         let focused = GetFocus() == hwnd;
-        let selected = send(
-            hwnd,
-            LVM_GETITEMSTATE,
-            draw.nmcd.dwItemSpec,
-            LVIS_SELECTED as isize,
-        ) != 0
-            && (focused || GetWindowLongPtrW(hwnd, GWL_STYLE) as u32 & LVS_SHOWSELALWAYS != 0);
-        let hot = draw.nmcd.uItemState & CDIS_HOT != 0;
-        let state = match (selected, focused, hot) {
-            (true, false, _) => LISS_SELECTEDNOTFOCUS,
-            (true, true, true) => LISS_HOTSELECTED,
-            (true, true, false) => LISS_SELECTED,
-            (false, _, true) => LISS_HOT,
-            _ => LISS_NORMAL,
-        };
         let (background, foreground) = match (selected, focused) {
             (true, true) => (COLOR_HIGHLIGHT, COLOR_HIGHLIGHTTEXT),
             (true, false) => (COLOR_BTNFACE, COLOR_WINDOWTEXT),
             _ => (COLOR_WINDOW, COLOR_WINDOWTEXT),
         };
-        let mut color = GetSysColor(foreground);
-        let theme = GetWindowTheme(hwnd);
-        // The control owns this theme handle and refreshes it on theme changes.
-        FillRect(draw.nmcd.hdc, &draw.nmcd.rc, GetSysColorBrush(COLOR_WINDOW));
-        if theme == 0
-            || DrawThemeBackground(
-                theme,
-                draw.nmcd.hdc,
-                LVP_LISTITEM,
-                state,
-                &draw.nmcd.rc,
-                ptr::null(),
-            ) < 0
-        {
-            FillRect(draw.nmcd.hdc, &draw.nmcd.rc, GetSysColorBrush(background));
-        } else {
-            GetThemeColor(theme, LVP_LISTITEM, state, TMT_TEXTCOLOR as i32, &mut color);
+        FillRect(dc, area, GetSysColorBrush(background));
+        SetTextColor(dc, GetSysColor(foreground));
+    }
+}
+fn themed_items(hwnd: HWND) -> bool {
+    unsafe {
+        let theme = OpenThemeData(hwnd, w!("ListView"));
+        if theme == 0 {
+            return false;
         }
-        SetTextColor(draw.nmcd.hdc, color);
-        selected
+        let supported = IsThemePartDefined(theme, LVP_LISTITEM, 0) != 0;
+        CloseThemeData(theme);
+        supported
     }
 }
 unsafe extern "system" fn list_proc(
@@ -344,6 +368,12 @@ unsafe extern "system" fn list_proc(
     _data: usize,
 ) -> isize {
     unsafe {
+        if matches!(msg, WM_THEMECHANGED | WM_SETTINGCHANGE | WM_SYSCOLORCHANGE) {
+            let result = default_subclass(h, msg, w, l);
+            set_subclass(h, Some(list_proc), 1, themed_items(h) as usize);
+            InvalidateRect(h, ptr::null(), 0);
+            return result;
+        }
         if msg == WM_CONTEXTMENU {
             return send(GetParent(h), msg, h as usize, l);
         }
@@ -405,10 +435,13 @@ impl Visuals {
     fn row_height(&self) -> i32 {
         self.heading.height.max(self.icon_size) + self.body_height + self.gap + self.padding * 2
     }
-    fn draw(&self, dc: HDC, mut area: RECT, display: &Display, selected: bool) {
+    fn draw(&self, dc: HDC, mut area: RECT, display: &Display, system: bool) {
         unsafe {
-            let text = GetTextColor(dc);
-            let system = selected || self.high_contrast;
+            let text = if system {
+                GetTextColor(dc)
+            } else {
+                GetSysColor(COLOR_WINDOWTEXT)
+            };
             let accent = if system {
                 text
             } else {
@@ -560,6 +593,50 @@ unsafe fn draw_text(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selection_palette_tracks_control_theme_changes() {
+        unsafe {
+            let frame = CreateWindowExW(
+                0,
+                w!("STATIC"),
+                w!(""),
+                0,
+                0,
+                0,
+                320,
+                200,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                instance(),
+                ptr::null(),
+            );
+            assert!(!frame.is_null());
+            let list = List::new(
+                frame,
+                1,
+                |_, _| {},
+                |_| Vec::new(),
+                None,
+                WindowsVersion::VISTA,
+            )
+            .unwrap();
+            let cached = || {
+                let mut value = 0;
+                assert_ne!(
+                    GetWindowSubclass(list.hwnd, Some(list_proc), 1, &mut value),
+                    0
+                );
+                value
+            };
+            let original = cached();
+            assert_eq!(SetWindowTheme(list.hwnd, w!(""), w!("")), 0);
+            assert_eq!(cached(), 0);
+            assert_eq!(SetWindowTheme(list.hwnd, w!("Explorer"), ptr::null()), 0);
+            assert_eq!(cached(), original);
+            DestroyWindow(frame);
+        }
+    }
 
     #[test]
     fn heading_font_is_larger_and_bold_at_each_scale() {
