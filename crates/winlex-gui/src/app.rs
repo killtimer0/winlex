@@ -34,7 +34,7 @@ struct App {
     dpi: Dpi,
     system_version: crate::platform::WindowsVersion,
     frame: HWND,
-    icons: Option<crate::icons::ApplicationIcons>,
+    icons: Option<crate::icons::WindowIcons>,
     status: HWND,
     session: catalog::Session,
     worker: crate::worker::Worker<crate::tasks::Job, crate::tasks::Completion>,

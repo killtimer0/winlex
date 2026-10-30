@@ -143,8 +143,10 @@ pub(super) unsafe extern "system" fn document_proc(
                 }
             }
             WM_NCDESTROY => {
+                let content = workspace::view(hwnd);
                 workspace::unregister_document(hwnd);
                 let result = DefMDIChildProcW(hwnd, msg, w, l);
+                drop(content);
                 workspace::refresh_document_tabs();
                 return result;
             }

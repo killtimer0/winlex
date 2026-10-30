@@ -2,7 +2,10 @@ use crate::{
     native::*,
     resources::{self, *},
 };
-use std::ptr;
+use std::{
+    ptr,
+    rc::{Rc, Weak},
+};
 use windows_sys::Win32::Graphics::GdiPlus::{
     GdipCreateBitmapFromScan0, GdipCreateMetafileFromEmf, GdipDeleteGraphics, GdipDisposeImage,
     GdipDrawImageRectRectI, GdipGetImageGraphicsContext, GdipGraphicsClear, GdipSetSmoothingMode,
@@ -18,11 +21,11 @@ impl Drop for WindowIcon {
     }
 }
 
-pub struct ApplicationIcons {
+pub struct WindowIcons {
     small: WindowIcon,
     large: WindowIcon,
 }
-impl ApplicationIcons {
+impl WindowIcons {
     pub fn load(dpi: u32) -> anyhow::Result<Self> {
         let load = |x, y| unsafe {
             let icon = LoadImageW(
@@ -47,6 +50,44 @@ impl ApplicationIcons {
     pub fn apply(&self, hwnd: HWND) {
         send(hwnd, WM_SETICON, ICON_SMALL as usize, self.small.0 as isize);
         send(hwnd, WM_SETICON, ICON_BIG as usize, self.large.0 as isize);
+    }
+}
+
+#[derive(Default)]
+pub struct DocumentIcons(Vec<(Icon, i32, i32, Weak<WindowIcons>)>);
+impl DocumentIcons {
+    pub fn get(&mut self, icon: Icon, dpi: u32) -> anyhow::Result<Rc<WindowIcons>> {
+        let small = unsafe { GetSystemMetricsForDpi(SM_CXSMICON, dpi) };
+        let large = unsafe { GetSystemMetricsForDpi(SM_CXICON, dpi) };
+        self.0.retain(|(_, _, _, value)| value.strong_count() != 0);
+        for (kind, s, l, value) in &self.0 {
+            if (*kind, *s, *l) == (icon, small, large)
+                && let Some(value) = value.upgrade()
+            {
+                return Ok(value);
+            }
+        }
+        let render = |size| unsafe {
+            let (id, color) = ICONS[icon as usize];
+            let mut bitmap = Bitmap::render(resources::binary(id)?, size)?;
+            bitmap.tint(color);
+            let handle = ImageList_Create(size, size, ILC_COLOR32, 1, 0);
+            anyhow::ensure!(handle != 0, "Create document icon list failed");
+            let images = Images(handle);
+            anyhow::ensure!(
+                ImageList_Add(images.0, bitmap.handle, ptr::null_mut()) >= 0,
+                "Cache document icon failed"
+            );
+            let handle = ImageList_GetIcon(images.0, 0, ILD_TRANSPARENT);
+            anyhow::ensure!(!handle.is_null(), "Create document icon failed");
+            Ok(WindowIcon(handle))
+        };
+        let value = Rc::new(WindowIcons {
+            small: render(small)?,
+            large: render(large)?,
+        });
+        self.0.push((icon, small, large, Rc::downgrade(&value)));
+        Ok(value)
     }
 }
 

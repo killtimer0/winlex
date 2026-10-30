@@ -10,6 +10,7 @@ pub(super) struct Workspace {
     pub mdi: HWND,
     pub tabs: HWND,
     pub documents: Vec<DocumentHost>,
+    pub icons: crate::icons::DocumentIcons,
     maximized: bool,
     serial: u64,
 }
@@ -19,6 +20,7 @@ impl Default for Workspace {
             mdi: std::ptr::null_mut(),
             tabs: std::ptr::null_mut(),
             documents: vec![],
+            icons: crate::icons::DocumentIcons::default(),
             maximized: true,
             serial: 0,
         }

@@ -27,6 +27,7 @@ struct State {
 }
 struct MetadataView {
     state: RefCell<State>,
+    icons: RefCell<Option<Rc<crate::icons::WindowIcons>>>,
     editor: HWND,
     header: HWND,
     architecture_label: HWND,
@@ -56,6 +57,7 @@ pub(super) fn open(name: &str, binding: Binding, preview: bool) -> anyhow::Resul
     let hwnd = workspace::create_document(
         &title,
         Box::new(MetadataView {
+            icons: RefCell::new(None),
             state: RefCell::new(State {
                 binding,
                 name: name.into(),
@@ -87,6 +89,29 @@ pub(super) fn rebind(hwnd: HWND, name: &str, binding: Binding) -> bool {
     true
 }
 impl MetadataView {
+    fn update_icons(&self, hwnd: HWND) -> anyhow::Result<()> {
+        let icon = {
+            let state = self.state.borrow();
+            let entity = state.binding.catalog.entity(state.binding.id)?;
+            crate::icons::Icon::for_kind(&entity.kind)
+        };
+        let value = dpi().window(hwnd);
+        let icons = write(|a| a.workspace.icons.get(icon, value))?;
+        if self
+            .icons
+            .borrow()
+            .as_ref()
+            .is_some_and(|old| Rc::ptr_eq(old, &icons))
+        {
+            return Ok(());
+        }
+        icons.apply(hwnd);
+        self.icons.replace(Some(icons));
+        if unsafe { IsZoomed(hwnd) } != 0 && workspace::active() == hwnd {
+            unsafe { DrawMenuBar(read(|a| a.frame)) };
+        }
+        Ok(())
+    }
     fn fill_architectures(&self) {
         let binding = self.state.borrow().binding.clone();
         send(self.architecture_select, CB_RESETCONTENT, 0, 0);
@@ -103,6 +128,9 @@ impl MetadataView {
         }
     }
     fn request(&self, hwnd: HWND) {
+        if let Err(error) = self.update_icons(hwnd) {
+            write(|a| a.failure = Some(error));
+        }
         let Some(id) = workspace::document(hwnd, |d| d.id) else {
             return;
         };
@@ -246,9 +274,13 @@ impl document::View for MetadataView {
             SELECT_ARCH,
         )?;
         self.fill_architectures();
+        self.update_icons(hwnd)?;
         Ok(())
     }
     fn prepare(&self, hwnd: HWND) {
+        if let Err(error) = self.update_icons(hwnd) {
+            write(|a| a.failure = Some(error));
+        }
         let (font, _) = font_for(dpi().window(hwnd));
         for h in [
             self.editor,

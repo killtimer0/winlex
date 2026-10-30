@@ -17,7 +17,7 @@ fn update_environment(suggested: Option<(RECT, u32)>, invalidate_fonts: bool) {
     let (frame, tabs, status) = read(|a| (a.frame, a.workspace.tabs, a.status));
     let docs = workspace::views();
     let value = suggested.map_or_else(|| dpi().window(frame), |(_, dpi)| dpi);
-    match crate::icons::ApplicationIcons::load(value) {
+    match crate::icons::WindowIcons::load(value) {
         Ok(icons) => {
             icons.apply(frame);
             write(|a| a.icons = Some(icons));
