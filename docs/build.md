@@ -36,6 +36,20 @@ GUI 菜单、字符串、版本信息和清单从 `crates/winlex-gui/res/gui.rc`
 `winlex.exe` 为命令行程序，`winlex-gui.exe` 为图形界面程序。
 各自的 `.build.json` 记录构建版本和哈希。CLI 查询另需所需 WinMD。
 
+## 更新图标资源
+
+在项目根目录使用 Node.js 和 Windows PowerShell 运行：
+
+```powershell
+npm ci
+npm run svg2ico
+npm run svg2emf
+```
+
+程序图标源文件为 `crates/winlex-gui/res/appicon.svg`，ICO 输出到同目录。
+Codicon SVG 与生成的 EMF+ 位于 `crates/winlex-gui/res/codicons/`。
+生成资源随源文件一并提交，常规构建直接使用已生成的资源。
+
 ## 系统兼容性
 
 | 程序架构 | 最低系统 | Rust target |

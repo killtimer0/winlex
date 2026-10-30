@@ -9,5 +9,5 @@ The SVG paths are unchanged. EMF+ resources use white fills for runtime tinting.
 Regenerate them with Windows PowerShell:
 
 ```powershell
-powershell.exe -NoProfile -File scripts/build-icons.ps1
+npm run svg2emf
 ```

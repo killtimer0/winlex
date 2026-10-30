@@ -1,0 +1,12 @@
+{
+  "name": "winlex-tools",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "svg2ico": "node scripts/svg2ico.mjs",
+    "svg2emf": "powershell.exe -NoProfile -File scripts/svg2emf.ps1"
+  },
+  "devDependencies": {
+    "@resvg/resvg-js": "2.6.2"
+  }
+}

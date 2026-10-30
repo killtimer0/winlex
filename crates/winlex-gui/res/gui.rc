@@ -3,6 +3,7 @@
 #include "version.h"
 
 LANGUAGE 0, 0
+IDI_APP ICON "appicon.ico"
 IDR_SYMBOL_CLASS 10 "codicons/symbol-class.emf"
 IDR_SYMBOL_INTERFACE 10 "codicons/symbol-interface.emf"
 IDR_SYMBOL_STRUCT 10 "codicons/symbol-structure.emf"

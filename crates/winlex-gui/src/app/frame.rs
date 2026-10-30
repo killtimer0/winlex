@@ -16,7 +16,15 @@ fn update_environment(suggested: Option<(RECT, u32)>, invalidate_fonts: bool) {
     };
     let (frame, tabs, status) = read(|a| (a.frame, a.workspace.tabs, a.status));
     let docs = workspace::views();
-    let (font, _) = super::font_for(suggested.map_or_else(|| dpi().window(frame), |(_, dpi)| dpi));
+    let value = suggested.map_or_else(|| dpi().window(frame), |(_, dpi)| dpi);
+    match crate::icons::ApplicationIcons::load(value) {
+        Ok(icons) => {
+            icons.apply(frame);
+            write(|a| a.icons = Some(icons));
+        }
+        Err(error) => write(|a| a.failure = Some(error)),
+    }
+    let (font, _) = super::font_for(value);
     super::bind(tabs, font);
     super::bind(status, font);
     sidebar::prepare();

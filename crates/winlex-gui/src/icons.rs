@@ -9,6 +9,46 @@ use windows_sys::Win32::Graphics::GdiPlus::{
     GdiplusShutdown, GdiplusStartup, GdiplusStartupInput, GpGraphics, GpImage,
     SmoothingModeAntiAlias, Status, UnitPixel,
 };
+use windows_sys::Win32::UI::HiDpi::GetSystemMetricsForDpi;
+
+struct WindowIcon(HICON);
+impl Drop for WindowIcon {
+    fn drop(&mut self) {
+        unsafe { DestroyIcon(self.0) };
+    }
+}
+
+pub struct ApplicationIcons {
+    small: WindowIcon,
+    large: WindowIcon,
+}
+impl ApplicationIcons {
+    pub fn load(dpi: u32) -> anyhow::Result<Self> {
+        let load = |x, y| unsafe {
+            let icon = LoadImageW(
+                instance(),
+                IDI_APP as usize as *const u16,
+                IMAGE_ICON,
+                GetSystemMetricsForDpi(x, dpi),
+                GetSystemMetricsForDpi(y, dpi),
+                0,
+            );
+            if icon.is_null() {
+                Err(error("Load application icon"))
+            } else {
+                Ok(WindowIcon(icon))
+            }
+        };
+        Ok(Self {
+            small: load(SM_CXSMICON, SM_CYSMICON)?,
+            large: load(SM_CXICON, SM_CYICON)?,
+        })
+    }
+    pub fn apply(&self, hwnd: HWND) {
+        send(hwnd, WM_SETICON, ICON_SMALL as usize, self.small.0 as isize);
+        send(hwnd, WM_SETICON, ICON_BIG as usize, self.large.0 as isize);
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(usize)]

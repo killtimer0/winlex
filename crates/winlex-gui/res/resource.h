@@ -1,4 +1,5 @@
 // Shared by RC and the Rust ID generator. Keep numeric definitions decimal.
+#define IDI_APP 1
 #define IDR_MAIN_MENU 101
 #define IDR_ACCELERATORS 102
 #define IDD_SETTINGS_GENERAL 103
