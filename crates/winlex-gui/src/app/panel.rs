@@ -161,6 +161,9 @@ impl Panel {
     pub fn controls(&self) -> &[HWND] {
         &self.controls
     }
+    pub fn refresh_tooltip(&self) {
+        self.list.refresh_tooltip();
+    }
     pub fn focus(&self) {
         focus(self.controls[0]);
     }

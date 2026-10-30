@@ -3,7 +3,7 @@ use super::{catalog, read, write};
 use crate::{
     icons::Icon,
     input,
-    list::Display,
+    list::{Display, tooltip_field},
     native::*,
     resources::{self, *},
 };
@@ -62,6 +62,17 @@ fn rows() -> Vec<Row> {
                 if let Some(error) = failure {
                     info.extend(format!("\r\n{error}").encode_utf16());
                 }
+                let mut tooltip: Vec<u16> =
+                    path.file_name().unwrap_or_default().encode_wide().collect();
+                tooltip.extend("\r\n".encode_utf16());
+                tooltip_field(&mut tooltip, IDS_TIP_STATUS, status.encode_utf16());
+                tooltip_field(&mut tooltip, IDS_TIP_SIZE, exact.encode_utf16());
+                tooltip_field(&mut tooltip, IDS_TIP_PATH, path.as_os_str().encode_wide());
+                if let Some(error) = failure {
+                    tooltip_field(&mut tooltip, IDS_TIP_ERROR, error.encode_utf16());
+                    tooltip.extend("\r\n".encode_utf16());
+                    tooltip.extend(resources::text(IDS_TIP_PREVIOUS_DATA).encode_utf16());
+                }
                 Row {
                     path: path.to_path_buf(),
                     display: Display {
@@ -69,6 +80,7 @@ fn rows() -> Vec<Row> {
                         detail,
                         icon: Some(Icon::File),
                         path_start,
+                        tooltip,
                         ..Default::default()
                     },
                     text: info,
@@ -213,6 +225,7 @@ pub(super) fn refresh() {
         a.session.updating_sources = true;
     });
     state.apply(list, count);
+    read(|a| a.sidebar.panel(super::panel::SOURCES_PANEL)).refresh_tooltip();
     write(|a| a.session.updating_sources = false);
     update_actions();
 }

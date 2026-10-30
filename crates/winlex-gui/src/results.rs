@@ -1,6 +1,10 @@
 //! Search presentation is prepared on the worker, never during list painting.
-use crate::{icons::Icon, list::Display};
-use std::{ops::Deref, ops::Range};
+use crate::{
+    icons::Icon,
+    list::{Display, tooltip_field},
+    resources::*,
+};
+use std::{ops::Deref, ops::Range, os::windows::ffi::OsStrExt};
 use winlex_core::{
     Architecture, Catalog, EntityContext, MatchField, MatchQuality, NameMatcher, SearchMatch,
 };
@@ -45,7 +49,16 @@ impl Builder {
         matched: SearchMatch,
     ) -> anyhow::Result<Box<ResultItem>> {
         let context = catalog.entity_context(matched.id)?;
-        Ok(Box::new(self.present(matched, context)))
+        let source = &catalog.sources()[matched.id.source_id];
+        let tip = tooltip(&matched, &context);
+        let mut item = self.present(matched, context);
+        item.display.tooltip = tip;
+        tooltip_field(
+            &mut item.display.tooltip,
+            IDS_TIP_PATH,
+            source.path.as_os_str().encode_wide(),
+        );
+        Ok(Box::new(item))
     }
     fn present(&mut self, matched: SearchMatch, context: EntityContext) -> ResultItem {
         self.indices.clear();
@@ -112,16 +125,7 @@ impl Builder {
             }
             display.detail.extend(owner.encode_utf16());
         }
-        let arches = if matched.architecture_mask == Architecture::ALL_MASK {
-            String::new()
-        } else {
-            [Architecture::X86, Architecture::X64, Architecture::Arm64]
-                .into_iter()
-                .filter(|arch| arch.supports(matched.architecture_mask))
-                .map(Architecture::name)
-                .collect::<Vec<_>>()
-                .join(" ")
-        };
+        let arches = architectures(matched.architecture_mask);
         append(&mut display.detail, &arches);
         if !context.namespace.is_empty() {
             let start = display.detail.len() + usize::from(!display.detail.is_empty()) * 3;
@@ -136,6 +140,50 @@ impl Builder {
         }
         ResultItem { matched, display }
     }
+}
+
+fn architectures(mask: i32) -> String {
+    if mask == Architecture::ALL_MASK {
+        String::new()
+    } else {
+        [Architecture::X86, Architecture::X64, Architecture::Arm64]
+            .into_iter()
+            .filter(|arch| arch.supports(mask))
+            .map(Architecture::name)
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+}
+
+fn tooltip(matched: &SearchMatch, context: &EntityContext) -> Vec<u16> {
+    let mut text: Vec<u16> = matched.full_name.encode_utf16().collect();
+    text.extend("\r\n".encode_utf16());
+    tooltip_field(&mut text, IDS_TIP_KIND, matched.kind.encode_utf16());
+    if !context.namespace.is_empty() {
+        tooltip_field(
+            &mut text,
+            IDS_TIP_NAMESPACE,
+            context.namespace.encode_utf16(),
+        );
+    }
+    if let Some(owner) = &context.owner {
+        tooltip_field(&mut text, IDS_TIP_OWNER, owner.encode_utf16());
+    }
+    if let Some(value) = &context.constant {
+        tooltip_field(
+            &mut text,
+            IDS_TIP_VALUE,
+            winlex_format::constant(value).encode_utf16(),
+        );
+    }
+    if let Some(guid) = &context.guid {
+        tooltip_field(&mut text, IDS_TIP_GUID, guid.encode_utf16());
+    }
+    let arches = architectures(matched.architecture_mask);
+    if !arches.is_empty() {
+        tooltip_field(&mut text, IDS_TIP_ARCHITECTURE, arches.encode_utf16());
+    }
+    text
 }
 
 fn append(line: &mut Vec<u16>, text: &str) {

@@ -329,6 +329,7 @@ pub(super) fn flush_results() {
         );
     });
     state.apply(hwnd, read(|a| a.session.results.len()));
+    read(|a| a.sidebar.panel(super::panel::SEARCH_PANEL)).refresh_tooltip();
     refresh_status();
 }
 pub(super) fn row(index: usize, visit: &mut dyn FnMut(&crate::list::Display)) {

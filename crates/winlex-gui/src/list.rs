@@ -5,7 +5,11 @@ use crate::{
     native::*,
     platform::WindowsVersion,
 };
-use std::{cell::RefCell, ops::Range, ptr};
+use std::{
+    cell::{Cell, RefCell},
+    ops::Range,
+    ptr,
+};
 use windows_sys::Win32::UI::Accessibility::{HCF_HIGHCONTRASTON, HIGHCONTRASTW};
 use windows_sys::Win32::UI::Shell::GetWindowSubclass;
 
@@ -17,6 +21,13 @@ pub struct Display {
     pub detail_matches: Vec<Range<usize>>,
     pub icon: Option<Icon>,
     pub path_start: u32,
+    pub tooltip: Vec<u16>,
+}
+
+pub fn tooltip_field(text: &mut Vec<u16>, label: u16, value: impl IntoIterator<Item = u16>) {
+    text.extend("\r\n".encode_utf16());
+    text.extend(crate::resources::text(label).encode_utf16());
+    text.extend(value);
 }
 
 type ReadRow = fn(usize, &mut dyn FnMut(&Display));
@@ -28,6 +39,7 @@ pub struct List {
     text: fn(usize) -> Vec<u16>,
     open: Option<fn(isize, bool)>,
     native_background: bool,
+    tooltip_item: Cell<i32>,
 }
 impl List {
     pub fn new(
@@ -65,6 +77,7 @@ impl List {
             text,
             open,
             native_background: version.at_least(WindowsVersion::VISTA),
+            tooltip_item: Cell::new(-1),
         })
     }
     pub fn prepare(&self, m: &layout::Metrics) -> anyhow::Result<()> {
@@ -91,6 +104,28 @@ impl List {
         place(self.hwnd, area);
         fit(self.hwnd);
     }
+    pub fn refresh_tooltip(&self) {
+        let item = self.tooltip_item.get();
+        if item < 0 {
+            return;
+        }
+        let mut text = Vec::new();
+        (self.row)(item as usize, &mut |row| {
+            text.extend_from_slice(&row.tooltip)
+        });
+        text.push(0);
+        let info = LVSETINFOTIP {
+            cbSize: std::mem::size_of::<LVSETINFOTIP>() as u32,
+            pszText: text.as_mut_ptr(),
+            iItem: item,
+            ..unsafe { std::mem::zeroed() }
+        };
+        send(self.hwnd, LVM_SETINFOTIP, 0, &info as *const _ as isize);
+        let tooltip = send(self.hwnd, LVM_GETTOOLTIPS, 0, 0) as HWND;
+        if !tooltip.is_null() {
+            send(tooltip, TTM_POP, 0, 0);
+        }
+    }
     pub unsafe fn notify(&self, l: isize) -> Option<isize> {
         unsafe {
             let hdr = &*(l as *const NMHDR);
@@ -107,13 +142,28 @@ impl List {
                         (i.iItem, i.pszText, i.cchTextMax)
                     } else {
                         let i = &mut *(l as *mut NMLVGETINFOTIPW);
+                        self.tooltip_item.set(i.iItem);
                         (i.iItem, i.pszText, i.cchTextMax)
                     };
                     if !buffer.is_null() && capacity > 0 {
-                        let text = (self.text)(row as usize);
-                        let count = text.len().min(capacity as usize - 1);
-                        ptr::copy_nonoverlapping(text.as_ptr(), buffer, count);
-                        *buffer.add(count) = 0;
+                        *buffer = 0;
+                        let copy = |text: &[u16]| {
+                            let mut count = text.len().min(capacity as usize - 1);
+                            if count < text.len()
+                                && count > 0
+                                && (0xD800..=0xDBFF).contains(&text[count - 1])
+                                && (0xDC00..=0xDFFF).contains(&text[count])
+                            {
+                                count -= 1;
+                            }
+                            ptr::copy_nonoverlapping(text.as_ptr(), buffer, count);
+                            *buffer.add(count) = 0;
+                        };
+                        if hdr.code == LVN_GETINFOTIPW {
+                            (self.row)(row as usize, &mut |display| copy(&display.tooltip));
+                        } else {
+                            copy(&(self.text)(row as usize));
+                        }
                     }
                     Some(0)
                 }
@@ -593,6 +643,50 @@ unsafe fn draw_text(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn infotip_text_is_separate_and_respects_utf16_buffer_boundaries() {
+        let list = List {
+            hwnd: ptr::null_mut(),
+            visuals: RefCell::new(None),
+            row: |_, visit| {
+                visit(&Display {
+                    tooltip: vec![65, 0xD83D, 0xDE00, 0xD800, 66],
+                    ..Default::default()
+                })
+            },
+            text: |_| vec![90],
+            open: None,
+            native_background: true,
+            tooltip_item: Cell::new(-1),
+        };
+        for (capacity, expected) in [
+            (1, vec![0]),
+            (3, vec![65, 0]),
+            (4, vec![65, 0xD83D, 0xDE00, 0]),
+            (6, vec![65, 0xD83D, 0xDE00, 0xD800, 66, 0]),
+        ] {
+            let mut buffer = [0xFFFF; 8];
+            let mut info = NMLVGETINFOTIPW {
+                hdr: NMHDR {
+                    code: LVN_GETINFOTIPW,
+                    ..unsafe { std::mem::zeroed() }
+                },
+                pszText: buffer.as_mut_ptr(),
+                cchTextMax: capacity,
+                ..unsafe { std::mem::zeroed() }
+            };
+            unsafe {
+                list.notify(&mut info as *mut _ as isize);
+            }
+            assert_eq!(&buffer[..expected.len()], &expected);
+            assert!(
+                buffer[expected.len()..]
+                    .iter()
+                    .all(|&value| value == 0xFFFF)
+            );
+        }
+    }
 
     #[test]
     fn selection_palette_tracks_control_theme_changes() {
