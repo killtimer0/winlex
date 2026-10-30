@@ -25,6 +25,7 @@ pub enum Icon {
     Reference,
     #[default]
     Misc,
+    File,
 }
 impl Icon {
     pub fn for_kind(kind: &str) -> Self {
@@ -56,6 +57,7 @@ const ICONS: &[(u16, u32)] = &[
     (IDR_SYMBOL_EVENT, 0x007399),
     (IDR_SYMBOL_REFERENCE, 0x666666),
     (IDR_SYMBOL_MISC, 0x666666),
+    (IDR_FILE, 0x666666),
 ];
 
 fn check(status: Status) -> anyhow::Result<()> {
@@ -262,6 +264,7 @@ mod tests {
             include_bytes!("../res/codicons/symbol-event.emf"),
             include_bytes!("../res/codicons/references.emf"),
             include_bytes!("../res/codicons/symbol-misc.emf"),
+            include_bytes!("../res/codicons/file.emf"),
         ];
         assert_eq!(assets.len(), ICONS.len());
         for &bytes in assets {

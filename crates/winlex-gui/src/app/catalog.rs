@@ -11,7 +11,7 @@ use crate::{
     tasks::{Completion, Job, Output, Target},
     worker::Ticket,
 };
-use std::{os::windows::ffi::OsStrExt, path::PathBuf, sync::Arc};
+use std::{collections::BTreeMap, os::windows::ffi::OsStrExt, path::PathBuf, sync::Arc};
 use winlex_core::{Catalog, SourceData};
 
 struct Load {
@@ -34,6 +34,8 @@ pub(super) struct Session {
     search: Search,
     pub results: Items,
     pub source_rows: Vec<super::sources::Row>,
+    pub updating_sources: bool,
+    source_errors: BTreeMap<PathBuf, String>,
     pending_results: Items,
     merge_buffer: Items,
     pub remember_sources: bool,
@@ -52,6 +54,8 @@ impl Session {
             search: Search::Idle,
             results: vec![],
             source_rows: vec![],
+            updating_sources: false,
+            source_errors: BTreeMap::new(),
             pending_results: vec![],
             merge_buffer: vec![],
             remember_sources: true,
@@ -100,6 +104,19 @@ impl Session {
         self.load
             .as_ref()
             .is_some_and(|load| load.pending.iter().any(|p| p == path))
+    }
+    pub fn source_error(&self, path: &std::path::Path) -> Option<&str> {
+        self.source_errors.get(path).map(String::as_str)
+    }
+    fn fail_load(&mut self, error: String) {
+        if let Some(load) = self.load.take() {
+            for path in load.pending {
+                if self.inputs().iter().any(|source| source.path() == path) {
+                    self.source_errors.insert(path, error.clone());
+                }
+            }
+        }
+        self.load_error = Some(error);
     }
     fn status(&self) -> String {
         if let Some(message) = self.notice.as_ref().or(self.load_error.as_ref()) {
@@ -159,17 +176,18 @@ pub(super) fn reload(paths: Vec<PathBuf>, mut reload: Vec<PathBuf>) {
         s.notice = None;
         s.load_error = None;
         let ticket = s.ticket();
-        let pending = paths
+        let pending: Vec<PathBuf> = paths
             .iter()
             .filter(|p| reload.contains(p) || !s.inputs().iter().any(|i| i.path() == p.as_path()))
             .cloned()
             .collect();
+        s.source_errors.retain(|path, _| !pending.contains(path));
         s.load = Some(Load {
             ticket: ticket.clone(),
             paths: paths.clone(),
             pending,
         });
-        let result = a.worker.replace(
+        a.worker.replace(
             previous,
             ticket,
             Job::Load {
@@ -177,17 +195,13 @@ pub(super) fn reload(paths: Vec<PathBuf>, mut reload: Vec<PathBuf>) {
                 previous: s.catalog.clone(),
                 reload,
             },
-        );
-        if result.is_err() {
-            s.load = None;
-        }
-        result
+        )
     });
     if let Err(e) = result {
-        write(|a| a.session.load_error = Some(format!("{e:#}")));
+        write(|a| a.session.fail_load(format!("{e:#}")));
     }
     refresh_status();
-    super::sources::refresh(false);
+    super::sources::refresh();
 }
 
 pub(super) fn input_changed() {
@@ -201,7 +215,7 @@ pub(super) fn input_changed() {
         a.session.results.clear();
         a.session.pending_results.clear();
     });
-    update_results(false);
+    update_results();
     if !composing && !text(input).trim().is_empty() {
         let state = match super::panel::debounce(input) {
             Ok(()) => Search::Waiting,
@@ -245,32 +259,21 @@ pub(super) fn search() {
             },
         )
     });
-    update_results(false);
+    update_results();
     if let Err(e) = sent {
         write(|a| a.session.search = Search::Failed(e));
     }
     refresh_status();
 }
-fn update_results(append: bool) {
+fn update_results() {
     let (hwnd, count) = read(|a| {
         (
             unsafe { GetDlgItem(a.frame, RESULTS as i32) },
             a.session.results.len(),
         )
     });
-    send(
-        hwnd,
-        LVM_SETITEMCOUNT,
-        count,
-        if append {
-            (LVSICF_NOSCROLL | LVSICF_NOINVALIDATEALL) as isize
-        } else {
-            0
-        },
-    );
-    if !append {
-        crate::list::fit(hwnd);
-    }
+    send(hwnd, LVM_SETITEMCOUNT, count, 0);
+    crate::list::fit(hwnd);
     unsafe {
         InvalidateRect(hwnd, std::ptr::null(), 0);
     }
@@ -315,93 +318,17 @@ pub(super) fn flush_results() {
         return;
     }
     let hwnd = read(|a| unsafe { GetDlgItem(a.frame, RESULTS as i32) });
-    let top = send(hwnd, LVM_GETTOPINDEX, 0, 0);
-    let mut rect = RECT {
-        left: LVIR_BOUNDS as i32,
-        ..unsafe { std::mem::zeroed() }
-    };
-    let has_top = send(
-        hwnd,
-        LVM_GETITEMRECT,
-        top as usize,
-        &mut rect as *mut RECT as isize,
-    ) != 0;
-    let mut tracked = [
-        send(hwnd, LVM_GETNEXTITEM, usize::MAX, LVNI_SELECTED as isize),
-        send(hwnd, LVM_GETNEXTITEM, usize::MAX, LVNI_FOCUSED as isize),
-        send(hwnd, LVM_GETSELECTIONMARK, 0, 0),
-        if has_top && top > 0 { top } else { -1 },
-    ];
-    let previous = [tracked[0], tracked[1]];
+    let mut state = crate::list::State::capture(hwnd);
     write(|a| {
         let s = &mut a.session;
         merge_results(
             &mut s.results,
             &mut s.pending_results,
             &mut s.merge_buffer,
-            &mut tracked,
+            &mut state.indices,
         );
     });
-    let visible = unsafe { IsWindowVisible(hwnd) != 0 };
-    if visible {
-        send(hwnd, WM_SETREDRAW, 0, 0);
-    }
-    let state = LVITEMW {
-        stateMask: LVIS_SELECTED | LVIS_FOCUSED,
-        ..unsafe { std::mem::zeroed() }
-    };
-    for index in previous {
-        if index >= 0 {
-            send(
-                hwnd,
-                LVM_SETITEMSTATE,
-                index as usize,
-                &state as *const LVITEMW as isize,
-            );
-        }
-    }
-    update_results(true);
-    for (index, flag) in [(tracked[0], LVIS_SELECTED), (tracked[1], LVIS_FOCUSED)] {
-        if index >= 0 {
-            let state = LVITEMW {
-                stateMask: flag,
-                state: flag,
-                ..unsafe { std::mem::zeroed() }
-            };
-            send(
-                hwnd,
-                LVM_SETITEMSTATE,
-                index as usize,
-                &state as *const LVITEMW as isize,
-            );
-        }
-    }
-    send(hwnd, LVM_SETSELECTIONMARK, 0, tracked[2]);
-    if tracked[3] >= 0 {
-        send(hwnd, LVM_ENSUREVISIBLE, tracked[3] as usize, 0);
-        let mut now = RECT {
-            left: LVIR_BOUNDS as i32,
-            ..unsafe { std::mem::zeroed() }
-        };
-        if send(
-            hwnd,
-            LVM_GETITEMRECT,
-            tracked[3] as usize,
-            &mut now as *mut RECT as isize,
-        ) != 0
-        {
-            send(hwnd, LVM_SCROLL, 0, (now.top - rect.top) as isize);
-        }
-    } else if top == 0 {
-        send(hwnd, LVM_ENSUREVISIBLE, 0, 0);
-    }
-    if visible {
-        send(hwnd, WM_SETREDRAW, 1, 0);
-    }
-    crate::list::fit(hwnd);
-    unsafe {
-        InvalidateRect(hwnd, std::ptr::null(), 0);
-    }
+    state.apply(hwnd, read(|a| a.session.results.len()));
     refresh_status();
 }
 pub(super) fn row(index: usize, visit: &mut dyn FnMut(&crate::list::Display)) {
@@ -523,11 +450,11 @@ fn open_now(row: isize, mode: Open) -> Option<HWND> {
 }
 pub(super) fn worker_stopped() {
     write(|a| {
-        a.session.load = None;
+        a.session.fail_load(resources::text(IDS_WORKER_STOPPED));
         a.session.cancel_search();
     });
     set_status(resources::text(IDS_WORKER_STOPPED));
-    super::sources::refresh(false);
+    super::sources::refresh();
 }
 pub(super) fn apply(c: Completion) {
     match c.target {
@@ -540,11 +467,16 @@ pub(super) fn apply(c: Completion) {
             }) {
                 return;
             }
-            write(|a| a.session.load = None);
-            let committed = match c.result {
+            match c.result {
                 Ok(Output::Loaded(snapshot)) => {
                     write(|a| {
                         let s = &mut a.session;
+                        s.load = None;
+                        s.source_errors.retain(|path, _| {
+                            snapshot
+                                .as_ref()
+                                .is_some_and(|c| c.inputs().iter().any(|i| i.path() == path))
+                        });
                         s.catalog = snapshot;
                     });
                     search();
@@ -565,19 +497,17 @@ pub(super) fn apply(c: Completion) {
                     for (hwnd, view) in workspace::views() {
                         view.catalog_changed(hwnd);
                     }
-                    true
                 }
                 Err(e) => {
                     write(|a| {
-                        a.session.load_error = Some(
+                        a.session.fail_load(
                             resources::text(IDS_LOAD_FAILED).replace("{error}", &format!("{e:#}")),
                         )
                     });
-                    false
                 }
                 _ => unreachable!(),
             };
-            super::sources::refresh(committed);
+            super::sources::refresh();
             refresh_status();
         }
         Target::Search => {

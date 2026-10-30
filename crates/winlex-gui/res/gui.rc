@@ -14,6 +14,7 @@ IDR_SYMBOL_PROPERTY 10 "codicons/symbol-property.emf"
 IDR_SYMBOL_EVENT 10 "codicons/symbol-event.emf"
 IDR_SYMBOL_REFERENCE 10 "codicons/references.emf"
 IDR_SYMBOL_MISC 10 "codicons/symbol-misc.emf"
+IDR_FILE 10 "codicons/file.emf"
 IDR_ACCELERATORS ACCELERATORS
 BEGIN
     "O", LOAD_METADATA, VIRTKEY, CONTROL

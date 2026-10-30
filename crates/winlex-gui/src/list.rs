@@ -14,6 +14,7 @@ pub struct Display {
     pub title_matches: Vec<Range<usize>>,
     pub detail_matches: Vec<Range<usize>>,
     pub icon: Option<Icon>,
+    pub path_start: u32,
 }
 
 type ReadRow = fn(usize, &mut dyn FnMut(&Display));
@@ -108,6 +109,17 @@ impl List {
                     }
                     Some(0)
                 }
+                NM_RCLICK => {
+                    let mut point = (*(l as *const NMITEMACTIVATE)).ptAction;
+                    ClientToScreen(self.hwnd, &mut point);
+                    send(
+                        GetParent(self.hwnd),
+                        WM_CONTEXTMENU,
+                        self.hwnd as usize,
+                        ((point.x as u16 as u32) | ((point.y as u16 as u32) << 16)) as isize,
+                    );
+                    Some(1)
+                }
                 NM_CLICK | NM_DBLCLK => {
                     let i = &*(l as *const NMITEMACTIVATE);
                     if i.iItem >= 0
@@ -178,6 +190,106 @@ pub fn fit(hwnd: HWND) {
         ShowScrollBar(hwnd, SB_HORZ, 0);
     }
 }
+pub struct State {
+    pub indices: [isize; 4],
+    previous: [isize; 2],
+    top: isize,
+    offset: i32,
+}
+impl State {
+    pub fn capture(hwnd: HWND) -> Self {
+        let top = send(hwnd, LVM_GETTOPINDEX, 0, 0);
+        let mut rect = RECT {
+            left: LVIR_BOUNDS as i32,
+            ..unsafe { std::mem::zeroed() }
+        };
+        let has_top = send(
+            hwnd,
+            LVM_GETITEMRECT,
+            top as usize,
+            &mut rect as *mut _ as isize,
+        ) != 0;
+        let indices = [
+            send(hwnd, LVM_GETNEXTITEM, usize::MAX, LVNI_SELECTED as isize),
+            send(hwnd, LVM_GETNEXTITEM, usize::MAX, LVNI_FOCUSED as isize),
+            send(hwnd, LVM_GETSELECTIONMARK, 0, 0),
+            if has_top && top > 0 { top } else { -1 },
+        ];
+        Self {
+            indices,
+            previous: [indices[0], indices[1]],
+            top,
+            offset: rect.top,
+        }
+    }
+    pub fn apply(&self, hwnd: HWND, count: usize) {
+        let visible = unsafe { IsWindowVisible(hwnd) != 0 };
+        if visible {
+            send(hwnd, WM_SETREDRAW, 0, 0);
+        }
+        let mut state = LVITEMW {
+            stateMask: LVIS_SELECTED | LVIS_FOCUSED,
+            ..unsafe { std::mem::zeroed() }
+        };
+        for index in self.previous {
+            if index >= 0 {
+                send(
+                    hwnd,
+                    LVM_SETITEMSTATE,
+                    index as usize,
+                    &state as *const _ as isize,
+                );
+            }
+        }
+        send(
+            hwnd,
+            LVM_SETITEMCOUNT,
+            count,
+            (LVSICF_NOSCROLL | LVSICF_NOINVALIDATEALL) as isize,
+        );
+        for (index, flag) in [
+            (self.indices[0], LVIS_SELECTED),
+            (self.indices[1], LVIS_FOCUSED),
+        ] {
+            if index >= 0 {
+                state.stateMask = flag;
+                state.state = flag;
+                send(
+                    hwnd,
+                    LVM_SETITEMSTATE,
+                    index as usize,
+                    &state as *const _ as isize,
+                );
+            }
+        }
+        send(hwnd, LVM_SETSELECTIONMARK, 0, self.indices[2]);
+        if self.indices[3] >= 0 {
+            send(hwnd, LVM_ENSUREVISIBLE, self.indices[3] as usize, 0);
+            let mut now = RECT {
+                left: LVIR_BOUNDS as i32,
+                ..unsafe { std::mem::zeroed() }
+            };
+            if send(
+                hwnd,
+                LVM_GETITEMRECT,
+                self.indices[3] as usize,
+                &mut now as *mut _ as isize,
+            ) != 0
+            {
+                send(hwnd, LVM_SCROLL, 0, (now.top - self.offset) as isize);
+            }
+        } else if self.top == 0 && count != 0 {
+            send(hwnd, LVM_ENSUREVISIBLE, 0, 0);
+        }
+        if visible {
+            send(hwnd, WM_SETREDRAW, 1, 0);
+        }
+        fit(hwnd);
+        unsafe {
+            InvalidateRect(hwnd, std::ptr::null(), 0);
+        }
+    }
+}
 unsafe fn background(hwnd: HWND, draw: &NMLVCUSTOMDRAW) -> bool {
     unsafe {
         let focused = GetFocus() == hwnd;
@@ -232,6 +344,18 @@ unsafe extern "system" fn list_proc(
     _data: usize,
 ) -> isize {
     unsafe {
+        if msg == WM_CONTEXTMENU {
+            return send(GetParent(h), msg, h as usize, l);
+        }
+        if (msg == WM_KEYDOWN || msg == WM_KEYUP)
+            && (w == VK_APPS as usize || w == VK_F10 as usize && GetKeyState(VK_SHIFT as i32) < 0)
+        {
+            return if msg == WM_KEYDOWN {
+                send(GetParent(h), WM_CONTEXTMENU, h as usize, -1)
+            } else {
+                0
+            };
+        }
         if msg == WM_NCDESTROY {
             let image = send(h, LVM_SETIMAGELIST, LVSIL_SMALL as usize, 0);
             if image != 0 {
@@ -324,7 +448,26 @@ impl Visuals {
                 };
                 area.bottom = area.top + height;
                 SelectObject(dc, font);
-                draw_text(dc, area, value, matches, color, accent, system);
+                let path = display.path_start as usize;
+                if index == 1 && path > 0 && path < value.len() {
+                    let mut size: SIZE = std::mem::zeroed();
+                    GetTextExtentPoint32W(dc, value.as_ptr(), path as i32, &mut size);
+                    let mut prefix = area;
+                    prefix.right = area.left + size.cx.min((area.right - area.left).max(0) * 2 / 3);
+                    draw_text(dc, prefix, &value[..path], &[], color, accent, system);
+                    let mut suffix = area;
+                    suffix.left = prefix.right;
+                    SetTextColor(dc, color);
+                    DrawTextW(
+                        dc,
+                        value[path..].as_ptr(),
+                        (value.len() - path) as i32,
+                        &mut suffix,
+                        DT_SINGLELINE | DT_PATH_ELLIPSIS | DT_NOPREFIX | DT_VCENTER,
+                    );
+                } else {
+                    draw_text(dc, area, value, matches, color, accent, system);
+                }
                 area.top = area.bottom + self.gap;
             }
         }

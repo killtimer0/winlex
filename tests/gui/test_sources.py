@@ -1,4 +1,5 @@
 import shutil
+import pytest
 import winreg
 import win32con
 import win32gui
@@ -29,11 +30,87 @@ def test_sources_share_two_line_paint_and_native_selection(launch, settings):
     assert app.selected_row(app.sources) == 0
     screenshot(app.sources, settings[2] / "source-row-selected.bmp")
     app.command(1044)
-    n.wait(lambda: n.c.c_int(app.selected_row(app.sources)).value == -1
-           and app.cell(0, app.sources).splitlines()[1].startswith(("Loaded", "已加载")),
+    n.wait(lambda: app.cell(0, app.sources).splitlines()[1].startswith(("Loaded", "已加载"))
+           and win32gui.IsWindowEnabled(n.get_item(app.frame, 1044)),
            "source reloaded", 45)
+    assert app.selected_row(app.sources) == 0
     assert app.count(app.sources) == 1
     assert str(settings[1]) in app.cell(0, app.sources)
+
+
+def test_source_actions_preserve_identity_and_recover_failed_reload(launch, settings):
+    paths = [settings[2] / name / "same.winmd" for name in ("first", "second", "third")]
+    for path in paths:
+        path.parent.mkdir(exist_ok=True)
+        shutil.copyfile(settings[1], path)
+    app = launch(paths)
+    n.wait(lambda: app.count(app.sources) == 3, "sources loaded", 45)
+    app.command(1021)
+    reload_button, remove_button = (n.get_item(app.frame, i) for i in (1044, 1022))
+    assert not win32gui.IsWindowEnabled(reload_button)
+    assert not win32gui.IsWindowEnabled(remove_button)
+    with n.window_dpi_context(app.frame):
+        left, top, right, bottom = app.item_rect(0, app.sources)
+        win32gui.SetWindowPos(app.sources, 0, 0, 0, right - left, bottom - top + 2,
+                             win32con.SWP_NOMOVE | win32con.SWP_NOZORDER | win32con.SWP_NOACTIVATE)
+        n.send(app.sources, 0x101E, 0, win32gui.GetClientRect(app.sources)[2])  # LVM_SETCOLUMNWIDTH
+        n.api(n.user, "ShowScrollBar", n.w.BOOL, n.w.HWND, n.c.c_int, n.w.BOOL)(app.sources, win32con.SB_HORZ, False)
+    app.select(1, app.sources)
+    n.send(app.sources, 0x1013, 2, 0)  # LVM_ENSUREVISIBLE
+    top_before = app.item_rect(2, app.sources)[1]
+    assert win32gui.IsWindowEnabled(reload_button) and win32gui.IsWindowEnabled(remove_button)
+    app.command(1022)
+    n.wait(lambda: app.count(app.sources) == 2, "middle source removed", 45)
+    assert app.selected_row(app.sources) == 1
+    assert app.item_rect(1, app.sources)[1] == top_before
+    assert app.cell(1, app.sources).splitlines()[0] == str(paths[2])
+    app.command(1022)
+    n.wait(lambda: app.count(app.sources) == 1, "last source removed", 45)
+    assert app.selected_row(app.sources) == 0
+    paths[0].unlink()
+    app.command(1044)
+    n.wait(lambda: app.cell(0, app.sources).splitlines()[1].startswith(("Reload failed", "重载失败")),
+           "reload failure on retained row", 45)
+    assert len(app.cell(0, app.sources).splitlines()) > 2
+    assert app.selected_row(app.sources) == 0
+    app.query("CreateFileW")
+    assert app.count() > 0
+    assert app.cell(0, app.sources).splitlines()[1].startswith(("Reload failed", "重载失败"))
+    shutil.copyfile(settings[1], paths[0])
+    app.command(1044)
+    n.wait(lambda: app.cell(0, app.sources).splitlines()[1].startswith(("Loaded", "已加载")), "reload recovered", 45)
+    assert len(app.cell(0, app.sources).splitlines()) == 2
+    assert app.selected_row(app.sources) == 0
+    app.command(1022)
+    n.wait(lambda: app.count(app.sources) == 0, "all removed", 45)
+    assert not win32gui.IsWindowEnabled(reload_button) and not win32gui.IsWindowEnabled(remove_button)
+
+
+@pytest.mark.parametrize("mouse", [False, True])
+def test_source_context_menu_copies_full_native_path(launch, settings, mouse):
+    from test_context import popup, wait_closed, clipboard_text, wait_clipboard_available
+    second = settings[2] / "右键来源.winmd"
+    shutil.copyfile(settings[1], second)
+    app = launch([settings[1], second])
+    n.wait(lambda: app.count(app.sources) == 2, "sources loaded", 45)
+    app.command(1021)
+    app.select(0, app.sources)
+    app.focus(app.sources)
+    wait_clipboard_available()
+    if mouse:
+        with n.window_dpi_context(app.frame):
+            left, top, right, bottom = app.item_rect(1, app.sources)
+            x, y = win32gui.ClientToScreen(app.sources, (left + 8, (top + bottom) // 2))
+            _, ids = popup(app, app.sources, location=(x & 0xffff) | ((y & 0xffff) << 16), mouse=True)
+    else:
+        _, ids = popup(app, app.sources, keyboard=True)
+    assert ids == [1044, 1022, 1052]
+    for _ in range(3):
+        n.key_message(app.sources, win32con.VK_DOWN)
+    n.key_message(app.sources, win32con.VK_RETURN)
+    wait_closed(app.sources)
+    n.wait(lambda: clipboard_text() == str(second if mouse else settings[1]), "source path copied")
+    assert app.selected_row(app.sources) == int(mouse)
 
 
 def test_open_loads_and_close_keeps_document_snapshot(launch, profile, settings):
@@ -134,6 +211,7 @@ def test_long_unicode_input(launch, settings):
 
 
 def test_list_text_preserves_native_utf16_path(launch, settings):
+    from test_context import clipboard_text, wait_clipboard_available
     path = settings[2] / "source-\ud800.winmd"
     shutil.copyfile(settings[1], path)
     app = launch([path])
@@ -143,6 +221,10 @@ def test_list_text_preserves_native_utf16_path(launch, settings):
         lines = app.cell(0).splitlines()
         assert lines[1].endswith(path.name)
         assert lines[3] == str(path)
+        app.select(0, app.sources)
+        wait_clipboard_available()
+        app.command(1052)
+        n.wait(lambda: clipboard_text() == str(path), "native UTF-16 path copied")
     finally:
         app.close()
         path.unlink()

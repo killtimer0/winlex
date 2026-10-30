@@ -122,6 +122,38 @@ pub fn set_status_text(hwnd: HWND, text: &str) {
     send(hwnd, SB_SETTEXTW, 0, text.as_ptr() as isize);
     send(hwnd, SB_SETTIPTEXTW, 0, text.as_ptr() as isize);
 }
+pub fn copy_unicode(hwnd: HWND, text: &[u16]) -> anyhow::Result<()> {
+    use windows_sys::Win32::System::{DataExchange::*, Memory::*};
+    unsafe {
+        if OpenClipboard(hwnd) == 0 {
+            return Err(error("Open clipboard"));
+        }
+        let result = (|| {
+            let memory = GlobalAlloc(GMEM_MOVEABLE, (text.len() + 1) * std::mem::size_of::<u16>());
+            if memory.is_null() {
+                return Err(error("Allocate clipboard text"));
+            }
+            let target = GlobalLock(memory).cast::<u16>();
+            if target.is_null() {
+                let failure = error("Lock clipboard text");
+                GlobalFree(memory);
+                return Err(failure);
+            }
+            std::ptr::copy_nonoverlapping(text.as_ptr(), target, text.len());
+            *target.add(text.len()) = 0;
+            GlobalUnlock(memory);
+            // CF_UNICODETEXT = 13. Successful SetClipboardData transfers ownership.
+            if EmptyClipboard() == 0 || SetClipboardData(13, memory).is_null() {
+                let failure = error("Copy Unicode text");
+                GlobalFree(memory);
+                return Err(failure);
+            }
+            Ok(())
+        })();
+        CloseClipboard();
+        result
+    }
+}
 pub fn send(hwnd: HWND, msg: u32, w: usize, l: isize) -> isize {
     unsafe { SendMessageW(hwnd, msg, w, l) }
 }

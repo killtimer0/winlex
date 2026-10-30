@@ -118,41 +118,13 @@ pub fn context_menu(hwnd: HWND, location: isize, numbers: &[NumberRegion]) -> an
 }
 
 fn copy_text(hwnd: HWND, value: &str) -> anyhow::Result<()> {
-    use windows_sys::Win32::System::{DataExchange::*, Memory::*};
     let text = wide(
         &value
             .replace("\r\n", "\n")
             .replace('\r', "\n")
             .replace('\n', "\r\n"),
     );
-    unsafe {
-        if OpenClipboard(hwnd) == 0 {
-            return Err(error("Open clipboard"));
-        }
-        let result = (|| {
-            let memory = GlobalAlloc(GMEM_MOVEABLE, text.len() * size_of::<u16>());
-            if memory.is_null() {
-                return Err(error("Allocate clipboard text"));
-            }
-            let target = GlobalLock(memory).cast::<u16>();
-            if target.is_null() {
-                let failure = error("Lock clipboard text");
-                GlobalFree(memory);
-                return Err(failure);
-            }
-            std::ptr::copy_nonoverlapping(text.as_ptr(), target, text.len());
-            GlobalUnlock(memory);
-            // CF_UNICODETEXT = 13. Successful SetClipboardData transfers ownership.
-            if EmptyClipboard() == 0 || SetClipboardData(13, memory).is_null() {
-                let failure = error("Copy Unicode text");
-                GlobalFree(memory);
-                return Err(failure);
-            }
-            Ok(())
-        })();
-        CloseClipboard();
-        result
-    }
+    copy_unicode(hwnd, &text[..text.len() - 1])
 }
 
 pub fn create(parent: HWND, id: u16) -> anyhow::Result<HWND> {

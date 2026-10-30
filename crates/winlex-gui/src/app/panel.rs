@@ -163,9 +163,22 @@ impl Panel {
         if let Err(error) = self.list.prepare(m) {
             super::write(|a| a.failure = Some(error));
         }
+        if self.search.is_none() {
+            sources::update_actions();
+        }
     }
     pub unsafe fn notify(&self, l: isize) -> Option<isize> {
-        unsafe { self.list.notify(l) }
+        unsafe {
+            let hdr = &*(l as *const NMHDR);
+            if hdr.hwndFrom == self.list.hwnd
+                && self.search.is_none()
+                && hdr.code == LVN_ITEMCHANGED
+            {
+                sources::update_actions();
+                return Some(0);
+            }
+            self.list.notify(l)
+        }
     }
     pub fn layout(&self, area: RECT, m: &layout::Metrics) {
         let mut area = layout::inset(area, m.px(4));
@@ -224,7 +237,7 @@ pub(super) fn command(id: u16, code: u32) -> bool {
             });
         }
         LOAD_METADATA => sources::choose_add(),
-        RELOAD_SOURCE | REMOVE_SOURCE => sources::action(id),
+        RELOAD_SOURCE | REMOVE_SOURCE | COPY_SOURCE_PATH => sources::action(id),
         _ => return false,
     }
     true

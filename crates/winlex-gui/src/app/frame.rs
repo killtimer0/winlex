@@ -191,6 +191,12 @@ pub(super) unsafe extern "system" fn frame_proc(hwnd: HWND, msg: u32, w: usize, 
                     return result;
                 }
             }
+            WM_CONTEXTMENU if w as HWND == GetDlgItem(hwnd, SOURCE_LIST as i32) => {
+                if let Err(error) = super::sources::context_menu(w as HWND, l) {
+                    super::catalog::set_status(format!("{error:#}"));
+                }
+                return 0;
+            }
             // A top-level WM_GETMINMAXINFO minimum can block a DPI downscale.
             // Use WM_SIZING for interactive limits; retain child minmax for layouts.
             WM_SIZING => {

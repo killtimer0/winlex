@@ -1,6 +1,7 @@
 //! The source panel projects the committed catalog; opening files is a load transaction.
 use super::{catalog, read, write};
 use crate::{
+    icons::Icon,
     input,
     list::Display,
     native::*,
@@ -9,6 +10,7 @@ use crate::{
 use std::{os::windows::ffi::OsStrExt, path::PathBuf};
 
 pub(super) struct Row {
+    pub path: PathBuf,
     pub display: Display,
     pub text: Vec<u16>,
 }
@@ -35,27 +37,38 @@ fn rows() -> Vec<Row> {
             .iter()
             .map(|source| {
                 let path = source.path();
-                let detail: Vec<u16> = format!(
-                    "{} · {} B",
-                    resources::text(if a.session.pending(path) {
-                        IDS_LOADING
-                    } else {
-                        IDS_LOADED
-                    }),
-                    source.len()
-                )
-                .encode_utf16()
-                .collect();
-                let info = path
+                let failure = a.session.source_error(path);
+                let status = resources::text(if a.session.pending(path) {
+                    IDS_RELOADING
+                } else if failure.is_some() {
+                    IDS_RELOAD_FAILED
+                } else {
+                    IDS_LOADED
+                });
+                let mut detail: Vec<u16> = format!("{status} · {} · ", size(source.len()))
+                    .encode_utf16()
+                    .collect();
+                let path_start = detail.len() as u32;
+                if let Some(parent) = path.parent() {
+                    detail.extend(parent.as_os_str().encode_wide());
+                }
+                let exact =
+                    resources::text(IDS_SIZE_BYTES).replace("{size}", &source.len().to_string());
+                let mut info: Vec<u16> = path
                     .as_os_str()
                     .encode_wide()
-                    .chain("\r\n".encode_utf16())
-                    .chain(detail.iter().copied())
+                    .chain(format!("\r\n{status} · {exact}").encode_utf16())
                     .collect();
+                if let Some(error) = failure {
+                    info.extend(format!("\r\n{error}").encode_utf16());
+                }
                 Row {
+                    path: path.to_path_buf(),
                     display: Display {
                         title: path.file_name().unwrap_or_default().encode_wide().collect(),
                         detail,
+                        icon: Some(Icon::File),
+                        path_start,
                         ..Default::default()
                     },
                     text: info,
@@ -63,6 +76,58 @@ fn rows() -> Vec<Row> {
             })
             .collect()
     })
+}
+
+fn size(bytes: usize) -> String {
+    let units = [
+        IDS_SIZE_BYTES,
+        IDS_SIZE_KB,
+        IDS_SIZE_MB,
+        IDS_SIZE_GB,
+        IDS_SIZE_TB,
+    ];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit + 1 < units.len() {
+        value /= 1024.0;
+        unit += 1;
+    }
+    let value = if unit == 0 {
+        bytes.to_string()
+    } else {
+        format!("{value:.1}")
+    };
+    resources::text(units[unit]).replace("{size}", &value)
+}
+
+fn list() -> HWND {
+    unsafe { GetDlgItem(read(|a| a.frame), SOURCE_LIST as i32) }
+}
+fn selected() -> Option<PathBuf> {
+    let index = send(list(), LVM_GETNEXTITEM, usize::MAX, LVNI_SELECTED as isize);
+    read(|a| {
+        a.session
+            .source_rows
+            .get(index as usize)
+            .map(|row| row.path.clone())
+    })
+}
+pub(super) fn update_actions() {
+    if read(|a| a.session.updating_sources) {
+        return;
+    }
+    let path = selected();
+    let reload = path
+        .as_ref()
+        .is_some_and(|p| !read(|a| a.session.pending(p)));
+    let frame = read(|a| a.frame);
+    unsafe {
+        EnableWindow(GetDlgItem(frame, RELOAD_SOURCE as i32), reload as i32);
+        EnableWindow(
+            GetDlgItem(frame, REMOVE_SOURCE as i32),
+            path.is_some() as i32,
+        );
+    }
 }
 
 pub(super) fn add(files: Vec<PathBuf>) {
@@ -93,50 +158,162 @@ pub(super) fn choose_add() {
 }
 
 pub(super) fn action(command: u16) {
-    let list = unsafe { GetDlgItem(read(|a| a.frame), SOURCE_LIST as i32) };
-    let row = send(list, LVM_GETNEXTITEM, usize::MAX, LVNI_SELECTED as isize);
-    let path = read(|a| {
-        a.session
-            .inputs()
-            .get(row as usize)
-            .map(|s| s.path().to_path_buf())
-    });
-    let Some(path) = path else {
+    let Some(path) = selected() else {
         return;
     };
+    action_path(command, path);
+}
+fn action_path(command: u16, path: PathBuf) {
+    if command == COPY_SOURCE_PATH {
+        if let Err(error) =
+            copy_unicode(list(), &path.as_os_str().encode_wide().collect::<Vec<_>>())
+        {
+            catalog::set_status(format!("{error:#}"));
+        }
+        return;
+    }
+    if !read(|a| a.session.inputs().iter().any(|s| s.path() == path)) {
+        return;
+    }
     let mut paths = catalog::paths();
     if command == REMOVE_SOURCE {
         paths.retain(|p| *p != path);
         catalog::reload(paths, vec![]);
-    } else {
+    } else if command == RELOAD_SOURCE && !read(|a| a.session.pending(&path)) {
         catalog::reload(paths, vec![path]);
     }
 }
 
-pub(super) fn refresh(committed: bool) {
+pub(super) fn refresh() {
+    let list = list();
+    let mut state = crate::list::State::capture(list);
     let rows = rows();
-    write(|a| a.session.source_rows = rows);
-    let list = unsafe { GetDlgItem(read(|a| a.frame), SOURCE_LIST as i32) };
-    if committed {
-        let item = LVITEMW {
-            stateMask: LVIS_SELECTED | LVIS_FOCUSED,
+    read(|a| {
+        for index in &mut state.indices {
+            if let Some(old) = a.session.source_rows.get(*index as usize) {
+                let occurrence = a.session.source_rows[..*index as usize]
+                    .iter()
+                    .filter(|row| row.path == old.path)
+                    .count();
+                *index = rows
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, row)| row.path == old.path)
+                    .nth(occurrence)
+                    .map_or_else(
+                        || (*index).min(rows.len() as isize - 1),
+                        |(n, _)| n as isize,
+                    );
+            }
+        }
+    });
+    let count = rows.len();
+    write(|a| {
+        a.session.source_rows = rows;
+        a.session.updating_sources = true;
+    });
+    state.apply(list, count);
+    write(|a| a.session.updating_sources = false);
+    update_actions();
+}
+
+pub(super) fn context_menu(hwnd: HWND, location: isize) -> anyhow::Result<()> {
+    let mut point = POINT {
+        x: location as i16 as i32,
+        y: (location >> 16) as i16 as i32,
+    };
+    if location == -1 {
+        let index = send(hwnd, LVM_GETNEXTITEM, usize::MAX, LVNI_SELECTED as isize);
+        if index < 0 {
+            return Ok(());
+        }
+        send(hwnd, LVM_ENSUREVISIBLE, index as usize, 0);
+        let mut rect = RECT {
+            left: LVIR_BOUNDS as i32,
             ..unsafe { std::mem::zeroed() }
         };
         send(
-            list,
+            hwnd,
+            LVM_GETITEMRECT,
+            index as usize,
+            &mut rect as *mut _ as isize,
+        );
+        point = POINT {
+            x: rect.left,
+            y: rect.bottom,
+        };
+        unsafe {
+            ClientToScreen(hwnd, &mut point);
+        }
+    } else {
+        let mut hit = LVHITTESTINFO {
+            pt: point,
+            ..unsafe { std::mem::zeroed() }
+        };
+        unsafe {
+            ScreenToClient(hwnd, &mut hit.pt);
+        }
+        let index = send(hwnd, LVM_HITTEST, 0, &mut hit as *mut _ as isize);
+        if index < 0 {
+            return Ok(());
+        }
+        let item = LVITEMW {
+            stateMask: LVIS_SELECTED | LVIS_FOCUSED,
+            state: LVIS_SELECTED | LVIS_FOCUSED,
+            ..unsafe { std::mem::zeroed() }
+        };
+        send(
+            hwnd,
             LVM_SETITEMSTATE,
-            usize::MAX,
+            index as usize,
             &item as *const _ as isize,
         );
+        send(hwnd, LVM_SETSELECTIONMARK, 0, index);
     }
-    send(
-        list,
-        LVM_SETITEMCOUNT,
-        read(|a| a.session.inputs().len()),
-        LVSICF_NOSCROLL as isize,
-    );
-    crate::list::fit(list);
+    let Some(path) = selected() else {
+        return Ok(());
+    };
+    let pending = read(|a| a.session.pending(&path));
     unsafe {
-        InvalidateRect(list, std::ptr::null(), 0);
+        let menu = CreatePopupMenu();
+        if menu.is_null() {
+            return Err(error("Create source menu"));
+        }
+        for (id, label) in [
+            (RELOAD_SOURCE, IDS_RELOAD),
+            (REMOVE_SOURCE, IDS_UNLOAD),
+            (COPY_SOURCE_PATH, IDS_COPY_SOURCE_PATH),
+        ] {
+            if AppendMenuW(
+                menu,
+                MF_STRING
+                    | if id == RELOAD_SOURCE && pending {
+                        MF_GRAYED
+                    } else {
+                        0
+                    },
+                id as usize,
+                resources::wide_text(label).as_ptr(),
+            ) == 0
+            {
+                let failure = error("Append source action");
+                DestroyMenu(menu);
+                return Err(failure);
+            }
+        }
+        let command = TrackPopupMenu(
+            menu,
+            TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
+            point.x,
+            point.y,
+            0,
+            hwnd,
+            std::ptr::null(),
+        );
+        DestroyMenu(menu);
+        if command != 0 && IsWindow(hwnd) != 0 {
+            action_path(command as u16, path);
+        }
     }
+    Ok(())
 }
