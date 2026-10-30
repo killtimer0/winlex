@@ -1,5 +1,5 @@
 //! Search presentation is prepared on the worker, never during list painting.
-use crate::icons::Icon;
+use crate::{icons::Icon, list::Display};
 use std::{ops::Deref, ops::Range};
 use winlex_core::{
     Architecture, Catalog, EntityContext, MatchField, MatchQuality, NameMatcher, SearchMatch,
@@ -24,15 +24,6 @@ impl ResultItem {
     pub fn compare(&self, other: &Self) -> std::cmp::Ordering {
         self.matched.compare(&other.matched)
     }
-}
-
-#[derive(Default)]
-pub struct Display {
-    pub title: Vec<u16>,
-    pub detail: Vec<u16>,
-    pub title_matches: Vec<Range<usize>>,
-    pub detail_matches: Vec<Range<usize>>,
-    pub icon: Icon,
 }
 
 pub struct Builder {
@@ -89,7 +80,7 @@ impl Builder {
         let mut display = Display {
             title: matched.name.encode_utf16().collect(),
             title_matches: project(&matched.name, title_offset, &self.indices),
-            icon: Icon::for_kind(&matched.kind),
+            icon: Some(Icon::for_kind(&matched.kind)),
             ..Default::default()
         };
         let guid_match = matches!(
@@ -226,7 +217,7 @@ mod tests {
         assert_eq!(result.display.title_matches, [0..2, 4..5]);
         assert!(result.display.detail_matches.is_empty());
         assert_eq!(text(&result.display.detail), "Outer+Inner · N");
-        assert_eq!(result.display.icon, Icon::Method);
+        assert_eq!(result.display.icon, Some(Icon::Method));
 
         let mut builder = Builder::new("N.O+I.W");
         let result = builder.present(
@@ -281,7 +272,7 @@ mod tests {
             std::slice::from_ref(&(2..3))
         );
         assert!(result.display.title_matches.is_empty());
-        assert_eq!(result.display.icon, Icon::Constant);
+        assert_eq!(result.display.icon, Some(Icon::Constant));
 
         let mut ctx = context();
         ctx.guid = Some("12345678-9abc-def0-1234-56789abcdef0".into());
@@ -294,7 +285,7 @@ mod tests {
             result.display.detail_matches.as_slice(),
             std::slice::from_ref(&(2..7))
         );
-        assert_eq!(result.display.icon, Icon::Interface);
+        assert_eq!(result.display.icon, Some(Icon::Interface));
 
         let mut builder = Builder::new("VALUE");
         let mut ctx = context();

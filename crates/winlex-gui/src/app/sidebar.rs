@@ -15,7 +15,7 @@ use std::{ptr, rc::Rc};
 pub(super) struct Sidebar {
     toolbar: HWND,
     splitter: HWND,
-    panels: Vec<(&'static Registration, Rc<dyn Panel>)>,
+    panels: Vec<(&'static Registration, Rc<Panel>)>,
     pub active: u32,
     pub collapsed: bool,
     pub width: i32,
@@ -46,7 +46,7 @@ impl Sidebar {
         key.set_number("ActivePanel", self.active)?;
         key.set_number("PanelCollapsed", u32::from(self.collapsed))
     }
-    pub fn panel(&self, id: u32) -> Rc<dyn Panel> {
+    pub fn panel(&self, id: u32) -> Rc<Panel> {
         self.panels
             .iter()
             .find(|(r, _)| r.id == id)
@@ -54,7 +54,7 @@ impl Sidebar {
             .1
             .clone()
     }
-    pub fn owner(&self, hwnd: HWND) -> Option<Rc<dyn Panel>> {
+    pub fn owner(&self, hwnd: HWND) -> Option<Rc<Panel>> {
         self.panels
             .iter()
             .find(|(_, p)| p.controls().contains(&hwnd))
@@ -205,8 +205,7 @@ pub(super) fn command(w: usize) -> bool {
         show(r.id, true);
         return true;
     }
-    let panels = read(|a| a.sidebar.panels.clone());
-    panels.iter().any(|(_, p)| p.command(id, (w >> 16) as u32))
+    super::panel::command(id, (w >> 16) as u32)
 }
 pub(super) unsafe fn notify(l: isize) -> Option<isize> {
     let hwnd = unsafe { (*(l as *const NMHDR)).hwndFrom };

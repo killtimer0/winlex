@@ -11,7 +11,7 @@ use crate::{
     tasks::{Completion, Job, Output, Target},
     worker::Ticket,
 };
-use std::{path::PathBuf, sync::Arc};
+use std::{os::windows::ffi::OsStrExt, path::PathBuf, sync::Arc};
 use winlex_core::{Catalog, SourceData};
 
 struct Load {
@@ -33,6 +33,7 @@ pub(super) struct Session {
     load_error: Option<String>,
     search: Search,
     pub results: Items,
+    pub source_rows: Vec<super::sources::Row>,
     pending_results: Items,
     merge_buffer: Items,
     pub remember_sources: bool,
@@ -50,6 +51,7 @@ impl Session {
             load_error: None,
             search: Search::Idle,
             results: vec![],
+            source_rows: vec![],
             pending_results: vec![],
             merge_buffer: vec![],
             remember_sources: true,
@@ -267,7 +269,7 @@ fn update_results(append: bool) {
         },
     );
     if !append {
-        super::panel::fit(hwnd);
+        crate::list::fit(hwnd);
     }
     unsafe {
         InvalidateRect(hwnd, std::ptr::null(), 0);
@@ -396,42 +398,37 @@ pub(super) fn flush_results() {
     if visible {
         send(hwnd, WM_SETREDRAW, 1, 0);
     }
-    super::panel::fit(hwnd);
+    crate::list::fit(hwnd);
     unsafe {
         InvalidateRect(hwnd, std::ptr::null(), 0);
     }
     refresh_status();
 }
-pub(super) fn cell(row: usize, detail: bool) -> String {
+pub(super) fn row(index: usize, visit: &mut dyn FnMut(&crate::list::Display)) {
+    read(|a| {
+        if let Some(item) = a.session.results.get(index) {
+            visit(&item.display);
+        }
+    });
+}
+pub(super) fn row_text(row: usize) -> Vec<u16> {
     read(|a| {
         let Some(e) = a.session.results.get(row) else {
-            return String::new();
+            return Vec::new();
         };
         // Results are cleared when the catalog changes; each ID belongs to this snapshot.
         let catalog = a.session.catalog.as_ref().expect("search result snapshot");
         let source = &catalog.sources()[e.id.source_id];
-        let label = source
-            .path
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy();
-        if detail {
-            format!(
-                "{}\r\n{} · {}\r\n{}\r\n{}\r\n{}",
-                e.full_name,
-                e.kind,
-                label,
-                String::from_utf16_lossy(&e.display.detail),
-                source.path.display(),
-                e.id
-            )
-        } else {
-            format!(
-                "{}\n{}",
-                e.name,
-                String::from_utf16_lossy(&e.display.detail)
-            )
-        }
+        let mut value: Vec<u16> = format!("{}\r\n{} · ", e.full_name, e.kind)
+            .encode_utf16()
+            .collect();
+        value.extend(source.path.file_name().unwrap_or_default().encode_wide());
+        value.extend("\r\n".encode_utf16());
+        value.extend(&e.display.detail);
+        value.extend("\r\n".encode_utf16());
+        value.extend(source.path.as_os_str().encode_wide());
+        value.extend(format!("\r\n{}", e.id).encode_utf16());
+        value
     })
 }
 /// How a result reaches a document: transient preview, pinned open, or forced duplicate.
@@ -440,6 +437,9 @@ pub(super) enum Open {
     Preview,
     Pin,
     New,
+}
+pub(super) fn activate(row: isize, double: bool) {
+    open(row, if double { Open::Pin } else { Open::Preview });
 }
 pub(super) fn open_selected(mode: Open) {
     let frame = read(|a| a.frame);

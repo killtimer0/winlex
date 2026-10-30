@@ -1,7 +1,39 @@
 import shutil
 import winreg
 import win32con
+import win32gui
+from support.diagnostics import capture, screenshot
 from support import native as n
+
+
+def test_sources_share_two_line_paint_and_native_selection(launch, settings):
+    app = launch([settings[1]])
+    app.query("CreateFileW")
+    with n.window_dpi_context(app.frame):
+        _, top, _, bottom = app.item_rect(0)
+        result_height = bottom - top
+    app.command(1021)
+    n.wait(lambda: win32gui.IsWindowVisible(app.sources), "sources visible")
+    with n.window_dpi_context(app.frame):
+        left, top, right, bottom = app.item_rect(0, app.sources)
+        assert bottom - top == result_height
+        with capture(app.sources, client=True) as (dc, _, _):
+            background = win32gui.GetSysColor(win32con.COLOR_WINDOW)
+            midpoint = (top + bottom) // 2
+            for start, end in [(top, midpoint), (midpoint, bottom)]:
+                assert any(win32gui.GetPixel(dc, x, y) != background
+                           for x in range(left, min(right, left + 200))
+                           for y in range(start, end)), "missing source line"
+    assert str(settings[1]) in app.cell(0, app.sources)
+    app.select(0, app.sources)
+    assert app.selected_row(app.sources) == 0
+    screenshot(app.sources, settings[2] / "source-row-selected.bmp")
+    app.command(1044)
+    n.wait(lambda: n.c.c_int(app.selected_row(app.sources)).value == -1
+           and app.cell(0, app.sources).splitlines()[1].startswith(("Loaded", "已加载")),
+           "source reloaded", 45)
+    assert app.count(app.sources) == 1
+    assert str(settings[1]) in app.cell(0, app.sources)
 
 
 def test_open_loads_and_close_keeps_document_snapshot(launch, profile, settings):
@@ -94,6 +126,23 @@ def test_long_unicode_input(launch, settings):
     app = launch([path])
     n.wait(lambda: app.status_text().startswith(("Ready.", "已就绪")), "long path loaded", 45)
     app.query("CreateFileW")
+    assert app.cell(0, app.sources).splitlines()[0] == str(path)
+    assert app.cell(0).splitlines()[3] == str(path)
     doc = app.open_row()
     n.wait(lambda: 'CreateFileW(' in app.content(doc), "declaration", 45)
     assert str(path) in app.content(doc)
+
+
+def test_list_text_preserves_native_utf16_path(launch, settings):
+    path = settings[2] / "source-\ud800.winmd"
+    shutil.copyfile(settings[1], path)
+    app = launch([path])
+    try:
+        app.query("CreateFileW")
+        assert app.cell(0, app.sources).splitlines()[0] == str(path)
+        lines = app.cell(0).splitlines()
+        assert lines[1].endswith(path.name)
+        assert lines[3] == str(path)
+    finally:
+        app.close()
+        path.unlink()
