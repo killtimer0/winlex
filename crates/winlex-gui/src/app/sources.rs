@@ -3,7 +3,7 @@ use super::{catalog, read, write};
 use crate::{
     icons::Icon,
     input,
-    list::{Display, tooltip_field},
+    list::{Display, Fold, FoldKind, tooltip_field},
     native::*,
     resources::{self, *},
 };
@@ -48,10 +48,14 @@ fn rows() -> Vec<Row> {
                 let mut detail: Vec<u16> = format!("{status} · {} · ", size(source.len()))
                     .encode_utf16()
                     .collect();
-                let path_start = detail.len() as u32;
+                let path_start = detail.len();
                 if let Some(parent) = path.parent() {
                     detail.extend(parent.as_os_str().encode_wide());
                 }
+                let detail_folds = vec![Fold {
+                    range: path_start..detail.len(),
+                    kind: FoldKind::Path,
+                }];
                 let exact =
                     resources::text(IDS_SIZE_BYTES).replace("{size}", &source.len().to_string());
                 let mut info: Vec<u16> = path
@@ -79,7 +83,7 @@ fn rows() -> Vec<Row> {
                         title: path.file_name().unwrap_or_default().encode_wide().collect(),
                         detail,
                         icon: Some(Icon::File),
-                        path_start,
+                        detail_folds,
                         tooltip,
                         ..Default::default()
                     },

@@ -20,8 +20,151 @@ pub struct Display {
     pub title_matches: Vec<Range<usize>>,
     pub detail_matches: Vec<Range<usize>>,
     pub icon: Option<Icon>,
-    pub path_start: u32,
+    pub detail_folds: Vec<Fold>,
     pub tooltip: Vec<u16>,
+}
+
+pub struct Fold {
+    pub range: Range<usize>,
+    pub kind: FoldKind,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum FoldKind {
+    Guid,
+    Path,
+    Text,
+}
+
+fn fold_text(
+    text: &[u16],
+    matches: &[Range<usize>],
+    folds: &[Fold],
+    width: i32,
+    measure: impl Fn(&[u16]) -> i32,
+) -> (Vec<u16>, Vec<Range<usize>>) {
+    let mut shown = text.to_vec();
+    let mut highlighted = matches.to_vec();
+    let mut replacements: Vec<(Range<usize>, usize)> = Vec::new();
+    let mut ordered: Vec<&Fold> = folds.iter().collect();
+    ordered.sort_by_key(|fold| fold.range.start);
+    let mut ordinary = Vec::new();
+    let mut start = 0;
+    for fold in &ordered {
+        if start < fold.range.start {
+            ordinary.push(Fold {
+                range: start..fold.range.start,
+                kind: FoldKind::Text,
+            });
+        }
+        start = fold.range.end;
+    }
+    if start < text.len() {
+        ordinary.push(Fold {
+            range: start..text.len(),
+            kind: FoldKind::Text,
+        });
+    }
+    for kind in [FoldKind::Guid, FoldKind::Path, FoldKind::Text] {
+        for fold in folds
+            .iter()
+            .chain(ordinary.iter().rev())
+            .filter(|fold| fold.kind == kind)
+        {
+            if measure(&shown) <= width {
+                return (shown, highlighted);
+            }
+            let shift: usize = replacements
+                .iter()
+                .filter(|(range, _)| range.end <= fold.range.start)
+                .map(|(range, length)| range.len() - length)
+                .sum();
+            let range = fold.range.start - shift..fold.range.end - shift;
+            let value = &shown[range.clone()];
+            let replacement = match kind {
+                FoldKind::Guid => "{…}".encode_utf16().collect::<Vec<_>>(),
+                FoldKind::Text => {
+                    let outside = measure(&shown[..range.start]) + measure(&shown[range.end..]);
+                    let mut end = value.len();
+                    loop {
+                        let candidate: Vec<u16> = value[..end]
+                            .iter()
+                            .copied()
+                            .chain("…".encode_utf16())
+                            .collect();
+                        if outside + measure(&candidate) <= width || end == 0 {
+                            break candidate;
+                        }
+                        end -= 1;
+                        if end > 0 && (0xDC00..=0xDFFF).contains(&value[end]) {
+                            end -= 1;
+                        }
+                    }
+                }
+                FoldKind::Path => {
+                    let separator = |ch: &u16| *ch == b'\\' as u16 || *ch == b'/' as u16;
+                    let Some(last) = value.iter().rposition(separator) else {
+                        continue;
+                    };
+                    let first = if value.starts_with(&[b'\\' as u16, b'\\' as u16]) {
+                        1
+                    } else {
+                        value.iter().position(separator).unwrap()
+                    };
+                    if first >= last {
+                        continue;
+                    }
+                    let outside = measure(&shown[..range.start]) + measure(&shown[range.end..]);
+                    let mut end = first + 1;
+                    loop {
+                        let candidate: Vec<u16> = value[..first + 1]
+                            .iter()
+                            .copied()
+                            .chain("…".encode_utf16())
+                            .chain(value[end..].iter().copied())
+                            .collect();
+                        if measure(&candidate) + outside <= width || end == last {
+                            break candidate;
+                        }
+                        end += 1;
+                        if end < last && (0xDC00..=0xDFFF).contains(&value[end]) {
+                            end += 1;
+                        }
+                    }
+                }
+            };
+            if replacement.len() >= range.len() {
+                continue;
+            }
+            let prefix = value
+                .iter()
+                .zip(&replacement)
+                .take_while(|(a, b)| a == b)
+                .count();
+            let suffix = value[prefix..]
+                .iter()
+                .rev()
+                .zip(replacement[prefix..].iter().rev())
+                .take_while(|(a, b)| a == b)
+                .count();
+            let changed = range.start + prefix..range.end - suffix;
+            let removed = range.len() - replacement.len();
+            highlighted = highlighted
+                .into_iter()
+                .flat_map(|matched| {
+                    let before = matched.start..matched.end.min(changed.start);
+                    let after = matched.start.max(changed.end) - removed
+                        ..matched.end.saturating_sub(removed);
+                    [before, after]
+                        .into_iter()
+                        .filter(|part| part.start < part.end)
+                })
+                .collect();
+            replacements.push((fold.range.clone(), replacement.len()));
+            shown.splice(range, replacement);
+        }
+    }
+    (shown, highlighted)
 }
 
 pub fn tooltip_field(text: &mut Vec<u16>, label: u16, value: impl IntoIterator<Item = u16>) {
@@ -531,23 +674,19 @@ impl Visuals {
                 };
                 area.bottom = area.top + height;
                 SelectObject(dc, font);
-                let path = display.path_start as usize;
-                if index == 1 && path > 0 && path < value.len() {
-                    let mut size: SIZE = std::mem::zeroed();
-                    GetTextExtentPoint32W(dc, value.as_ptr(), path as i32, &mut size);
-                    let mut prefix = area;
-                    prefix.right = area.left + size.cx.min((area.right - area.left).max(0) * 2 / 3);
-                    draw_text(dc, prefix, &value[..path], &[], color, accent, system);
-                    let mut suffix = area;
-                    suffix.left = prefix.right;
-                    SetTextColor(dc, color);
-                    DrawTextW(
-                        dc,
-                        value[path..].as_ptr(),
-                        (value.len() - path) as i32,
-                        &mut suffix,
-                        DT_SINGLELINE | DT_PATH_ELLIPSIS | DT_NOPREFIX | DT_VCENTER,
+                if index == 1 && !display.detail_folds.is_empty() {
+                    let (shown, matches) = fold_text(
+                        value,
+                        matches,
+                        &display.detail_folds,
+                        (area.right - area.left).max(0),
+                        |text| {
+                            let mut size: SIZE = std::mem::zeroed();
+                            GetTextExtentPoint32W(dc, text.as_ptr(), text.len() as i32, &mut size);
+                            size.cx
+                        },
                     );
+                    draw_text(dc, area, &shown, &matches, color, accent, system);
                 } else {
                     draw_text(dc, area, value, matches, color, accent, system);
                 }
@@ -643,6 +782,69 @@ unsafe fn draw_text(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn detail_folds_follow_priority_and_preserve_surviving_matches() {
+        let text: Vec<u16> = "label {12345678-9abc-def0-1234-56789abcdef0} C:\\long\\folder\\tail"
+            .encode_utf16()
+            .collect();
+        let folds = [
+            Fold {
+                range: 45..text.len(),
+                kind: FoldKind::Path,
+            },
+            Fold {
+                range: 6..44,
+                kind: FoldKind::Guid,
+            },
+        ];
+        let measure = |value: &[u16]| value.len() as i32;
+        let (wide, matches) = fold_text(&text, &[0..5, 6..44], &folds, 100, measure);
+        assert_eq!(wide, text);
+        assert_eq!(matches, [0..5, 6..44]);
+        let (medium, matches) = fold_text(&text, &[0..5, 6..44], &folds, 40, measure);
+        assert_eq!(
+            String::from_utf16(&medium).unwrap(),
+            "label {…} C:\\long\\folder\\tail"
+        );
+        assert_eq!(matches, [0..5, 6..7, 8..9]);
+        let (narrow, _) = fold_text(&text, &[], &folds, 20, measure);
+        assert!(String::from_utf16(&narrow).unwrap().ends_with("\\tail"));
+        assert!(narrow.len() <= 20);
+        let (small, _) = fold_text(&text, &[], &folds, 14, measure);
+        assert!(String::from_utf16(&small).unwrap().ends_with("\\tail"));
+        assert!(small.len() <= 14);
+        let (shown, matches) = fold_text(
+            &text,
+            &[0..5, text.len() - 4..text.len()],
+            &folds,
+            16,
+            measure,
+        );
+        assert_eq!(&shown[matches[0].clone()], &text[..matches[0].len()]);
+        assert_eq!(
+            String::from_utf16(&shown[matches.last().unwrap().clone()]).unwrap(),
+            "tail"
+        );
+    }
+
+    #[test]
+    fn folded_paths_preserve_unc_prefixes_and_utf16_boundaries() {
+        for path in [r"\\server\😀目录\文件.winmd", r"\\?\C:\😀目录\文件.winmd"] {
+            let text: Vec<u16> = path.encode_utf16().collect();
+            let folds = [Fold {
+                range: 0..text.len(),
+                kind: FoldKind::Path,
+            }];
+            for width in 0..text.len() {
+                let (shown, _) =
+                    fold_text(&text, &[], &folds, width as i32, |text| text.len() as i32);
+                let shown = String::from_utf16(&shown).unwrap();
+                assert!(shown.starts_with(r"\\"));
+                assert!(shown.ends_with(r"\文件.winmd"));
+            }
+        }
+    }
 
     #[test]
     fn infotip_text_is_separate_and_respects_utf16_buffer_boundaries() {

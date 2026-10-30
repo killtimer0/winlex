@@ -1,7 +1,7 @@
 //! Search presentation is prepared on the worker, never during list painting.
 use crate::{
     icons::Icon,
-    list::{Display, tooltip_field},
+    list::{Display, Fold, FoldKind, tooltip_field},
     resources::*,
 };
 use std::{ops::Deref, ops::Range, os::windows::ffi::OsStrExt};
@@ -100,15 +100,24 @@ impl Builder {
             matched.quality,
             MatchQuality::GuidExact | MatchQuality::GuidFragment
         );
-        let value = if guid_match || context.constant.is_none() && context.guid.is_some() {
-            Some("{...}".to_owned())
+        let show_guid = guid_match || context.constant.is_none() && context.guid.is_some();
+        let value = if show_guid {
+            context.guid.as_ref().map(|guid| format!("{{{guid}}}"))
         } else {
             context.constant.as_ref().map(winlex_format::constant)
         };
         if let Some(value) = value {
-            display.detail.extend("= ".encode_utf16());
+            if !show_guid {
+                display.detail.extend("= ".encode_utf16());
+            }
             let start = display.detail.len();
             display.detail.extend(value.encode_utf16());
+            if show_guid {
+                display.detail_folds.push(Fold {
+                    range: start..display.detail.len(),
+                    kind: FoldKind::Guid,
+                });
+            }
             if guid_match
                 || matches!(
                     matched.quality,
@@ -301,7 +310,7 @@ mod tests {
     }
 
     #[test]
-    fn values_and_guid_placeholders_only_highlight_the_winning_branch() {
+    fn values_and_guids_only_highlight_the_winning_branch() {
         let mut builder = Builder::new("5");
         let mut ctx = context();
         ctx.constant = Some(Value::I32(5));
@@ -328,10 +337,13 @@ mod tests {
             item("IXxx", "N.IXxx", "interface", MatchQuality::GuidFragment),
             ctx,
         );
-        assert_eq!(text(&result.display.detail), "= {...} · N");
+        assert_eq!(
+            text(&result.display.detail),
+            "{12345678-9abc-def0-1234-56789abcdef0} · N"
+        );
         assert_eq!(
             result.display.detail_matches.as_slice(),
-            std::slice::from_ref(&(2..7))
+            std::slice::from_ref(&(0..38))
         );
         assert_eq!(result.display.icon, Some(Icon::Interface));
 
