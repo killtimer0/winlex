@@ -1,28 +1,10 @@
 //! MDI document host. Content owns its controls, commands and asynchronous work.
 use super::{dpi, read, workspace};
 use crate::native::*;
-use std::{any::Any, rc::Rc};
-
-/// Calls run outside the app-state borrow: native controls can synchronously reenter.
-pub(super) trait View: Any {
-    fn create(&mut self, hwnd: HWND) -> anyhow::Result<()>;
-    fn prepare(&self, hwnd: HWND);
-    fn layout(&self, hwnd: HWND);
-    fn focus(&self);
-    fn command(&self, _hwnd: HWND, _id: u16, _code: u32) -> bool {
-        false
-    }
-    fn context_menu(&self, _control: HWND, _location: isize) -> bool {
-        false
-    }
-    fn cancel(&self) {}
-    fn complete(&self, _hwnd: HWND, _completion: crate::tasks::Completion) {}
-    fn catalog_changed(&self, _hwnd: HWND) {}
-    fn worker_stopped(&self, _hwnd: HWND) {}
-}
+use std::rc::Rc;
 
 pub(super) struct Init {
-    pub content: Option<Box<dyn View>>,
+    pub content: Option<super::metadata::MetadataView>,
     pub preview: bool,
     pub error: Option<anyhow::Error>,
 }
@@ -68,7 +50,7 @@ pub(super) unsafe extern "system" fn document_proc(
                     id: workspace::next_id(),
                     hwnd,
                     title: text(hwnd),
-                    content: Rc::from(content),
+                    content: Rc::new(content),
                     placement: None,
                     preview: init.preview,
                 });

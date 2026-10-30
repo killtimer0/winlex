@@ -53,8 +53,7 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
     let mut source = None;
     let mut arch = None;
     let mut json = false;
-    let mut mode = SearchMode::Combined;
-    let mut selected_mode = false;
+    let mut mode = None;
     let mut limit = 50;
     let mut offset = 0;
     let mut positional = vec![];
@@ -89,15 +88,14 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
             }
             "--json" => json = true,
             "--name" | "--value" | "--guid" => {
-                if selected_mode {
+                if mode.is_some() {
                     return Err("choose only one search mode".into());
                 }
-                selected_mode = true;
-                mode = match a {
+                mode = Some(match a {
                     "--name" => SearchMode::Name,
                     "--value" => SearchMode::Value,
                     _ => SearchMode::Guid,
-                };
+                });
             }
             _ if a.starts_with("--") => return Err(format!("unknown option {a}")),
             _ if positional.is_empty()
@@ -124,7 +122,7 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
     if positional.len() != count {
         return Err(format!("{command} expects {} query argument(s)", count - 1));
     }
-    if selected_mode && command != "search" {
+    if mode.is_some() && command != "search" {
         return Err("--name/--value/--guid apply only to search".into());
     }
     if ["layout", "vtable", "references"].contains(&command.as_str()) && arch.is_none() {
@@ -147,7 +145,7 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
         source,
         arch,
         json,
-        mode,
+        mode: mode.unwrap_or(SearchMode::Combined),
         limit,
         offset,
     })

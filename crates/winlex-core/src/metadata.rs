@@ -303,19 +303,10 @@ impl Db {
                 .filter(|m| supports(*m, bit) && (!delegate || m.name() == "Invoke"))
             {
                 ensure!(
-                    !m.flags().contains(MethodAttributes::Static),
-                    "static interface method unsupported"
-                );
-                ensure!(
                     m.generic_params().next().is_none(),
                     "generic method ABI unsupported"
                 );
-                slots.push(Slot {
-                    method: m.name().into(),
-                    declaring_type: t.name().into(),
-                    id: Some(crate::metadata::key(m, 6)),
-                    declaring_type_id: Some(key),
-                });
+                slots.push(method_slot(t, m)?);
             }
             ensure!(
                 !delegate || slots.len() == 4,
@@ -357,16 +348,7 @@ impl Db {
                 visit(db, db.resolve(&n, t, bit)?, bit, active, slots)?;
             }
             for m in t.methods().filter(|m| supports(*m, bit)) {
-                ensure!(
-                    !m.flags().contains(MethodAttributes::Static),
-                    "static interface method unsupported"
-                );
-                slots.push(Slot {
-                    method: m.name().into(),
-                    declaring_type: t.name().into(),
-                    id: Some(crate::metadata::key(m, 6)),
-                    declaring_type_id: Some(crate::metadata::key(t, 2)),
-                });
+                slots.push(method_slot(t, m)?);
             }
             active.remove(&crate::metadata::key(t, 2));
             Ok(())
@@ -380,4 +362,16 @@ impl Db {
             slots,
         })
     }
+}
+fn method_slot(t: TypeDef<'_>, m: MethodDef<'_>) -> Result<Slot> {
+    ensure!(
+        !m.flags().contains(MethodAttributes::Static),
+        "static interface method unsupported"
+    );
+    Ok(Slot {
+        method: m.name().into(),
+        declaring_type: t.name().into(),
+        id: Some(key(m, 6)),
+        declaring_type_id: Some(key(t, 2)),
+    })
 }

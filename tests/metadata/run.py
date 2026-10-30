@@ -11,11 +11,9 @@ OUT = ROOT / "tmp/verify"
 
 
 def run(command):
-    p = subprocess.run(list(map(str, command)), cwd=ROOT, capture_output=True)
+    p = subprocess.run(list(map(str, command)), cwd=ROOT)
     if p.returncode:
-        sys.stderr.buffer.write(p.stdout + p.stderr)
         raise SystemExit(p.returncode)
-    sys.stdout.buffer.write(p.stdout)
 
 
 def main():

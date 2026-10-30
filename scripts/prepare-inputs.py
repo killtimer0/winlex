@@ -32,9 +32,20 @@ def download(url, destination, sha256=None):
         if sha256:
             check(partial, sha256)
         partial.replace(destination)
-    if sha256:
+    elif sha256:
         check(destination, sha256)
     return destination
+
+
+def install(path, data, sha256):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    partial = path.with_suffix(path.suffix + ".partial")
+    try:
+        partial.write_bytes(data)
+        check(partial, sha256)
+        partial.replace(path)
+    finally:
+        partial.unlink(missing_ok=True)
 
 
 def main():
@@ -49,11 +60,9 @@ def main():
             names = [name for name in archive.namelist() if name.rsplit("/", 1)[-1] == source["file"]]
             if len(names) != 1:
                 raise ValueError(f"Expected one WinMD in {package}, found {names}")
-            data = archive.read(names[0])
-            if hashlib.sha256(data).hexdigest() != source["sha256"]:
-                raise ValueError("WinMD SHA256 mismatch")
-            winmd.write_bytes(data)
-    check(winmd, source["sha256"])
+            install(winmd, archive.read(names[0]), source["sha256"])
+    else:
+        check(winmd, source["sha256"])
     print(f"Verified {winmd}")
     if not args.build_deps:
         return
@@ -67,9 +76,7 @@ def main():
             if len(names) != 1:
                 raise ValueError(f"Expected one object for {arch}")
             path = directory / filename
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(package.read(names[0]))
-            check(path, sha)
+            install(path, package.read(names[0]), sha)
     ltl = manifest("vc-ltl-source.json")
     directory = DEPS / f"vc-ltl-{ltl['version']}"
     archive = download(ltl["url"], directory / "sdk.7z", ltl["archive_sha256"])

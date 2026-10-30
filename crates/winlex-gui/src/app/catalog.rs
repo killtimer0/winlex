@@ -8,21 +8,28 @@ use crate::results::Items;
 use crate::{
     native::*,
     resources::{self, *},
-    tasks::{Completion, Job, Output, Target},
+    tasks::{Completion, Job, LoadInput, Output, Target},
     worker::Ticket,
 };
 use std::{collections::BTreeMap, os::windows::ffi::OsStrExt, path::PathBuf, sync::Arc};
 use winlex_core::{Catalog, SourceData};
 
 struct Load {
-    ticket: Ticket,
-    paths: Vec<PathBuf>,
-    pending: Vec<PathBuf>,
+    id: u64,
+    inputs: Arc<[LoadInput]>,
+}
+impl Load {
+    fn pending(&self) -> impl Iterator<Item = &std::path::Path> {
+        self.inputs.iter().filter_map(|input| match input {
+            LoadInput::Read(path) => Some(path.as_path()),
+            LoadInput::Reuse(_) => None,
+        })
+    }
 }
 enum Search {
     Idle,
     Waiting,
-    Running(Ticket),
+    Running(u64),
     Done,
     Failed(anyhow::Error),
 }
@@ -33,8 +40,6 @@ pub(super) struct Session {
     load_error: Option<String>,
     search: Search,
     pub results: Items,
-    pub source_rows: Vec<super::sources::Row>,
-    pub updating_sources: bool,
     source_errors: BTreeMap<PathBuf, String>,
     pending_results: Items,
     merge_buffer: Items,
@@ -53,8 +58,6 @@ impl Session {
             load_error: None,
             search: Search::Idle,
             results: vec![],
-            source_rows: vec![],
-            updating_sources: false,
             source_errors: BTreeMap::new(),
             pending_results: vec![],
             merge_buffer: vec![],
@@ -66,16 +69,54 @@ impl Session {
         self.serial += 1;
         Ticket::new(self.serial)
     }
-    fn cancel_search(&mut self) -> Option<Ticket> {
-        if let Search::Running(t) = std::mem::replace(&mut self.search, Search::Idle) {
-            t.cancel();
-            Some(t)
+    fn begin_load(
+        &mut self,
+        paths: Vec<PathBuf>,
+        mut reload: Vec<PathBuf>,
+    ) -> (Option<u64>, Ticket, Job) {
+        let previous = self.load.take().map(|load| {
+            for path in load.pending() {
+                if !reload.iter().any(|p| p == path) {
+                    reload.push(path.to_path_buf());
+                }
+            }
+            load.id
+        });
+        self.notice = None;
+        self.load_error = None;
+        let inputs: Arc<[LoadInput]> = paths
+            .into_iter()
+            .map(|path| {
+                if !reload.contains(&path)
+                    && let Some(data) = self.inputs().iter().find(|data| data.path() == path)
+                {
+                    LoadInput::Reuse(data.clone())
+                } else {
+                    LoadInput::Read(path)
+                }
+            })
+            .collect();
+        let ticket = self.ticket();
+        let load = Load {
+            id: ticket.id,
+            inputs: inputs.clone(),
+        };
+        self.source_errors
+            .retain(|path, _| !load.pending().any(|p| p == path));
+        self.load = Some(load);
+        (previous, ticket, Job::Load { inputs })
+    }
+    fn reset_search(&mut self) -> Option<u64> {
+        self.results.clear();
+        self.pending_results.clear();
+        if let Search::Running(id) = std::mem::replace(&mut self.search, Search::Idle) {
+            Some(id)
         } else {
             None
         }
     }
     fn accept_search(&mut self, completion: Completion) -> bool {
-        if !matches!(&self.search, Search::Running(t) if t.id == completion.id) {
+        if !matches!(self.search, Search::Running(id) if id == completion.id) {
             return false;
         }
         match completion.result {
@@ -103,20 +144,38 @@ impl Session {
     pub fn pending(&self, path: &std::path::Path) -> bool {
         self.load
             .as_ref()
-            .is_some_and(|load| load.pending.iter().any(|p| p == path))
+            .is_some_and(|load| load.pending().any(|p| p == path))
     }
     pub fn source_error(&self, path: &std::path::Path) -> Option<&str> {
         self.source_errors.get(path).map(String::as_str)
     }
     fn fail_load(&mut self, error: String) {
         if let Some(load) = self.load.take() {
-            for path in load.pending {
+            for path in load.pending() {
                 if self.inputs().iter().any(|source| source.path() == path) {
-                    self.source_errors.insert(path, error.clone());
+                    self.source_errors.insert(path.to_path_buf(), error.clone());
                 }
             }
         }
         self.load_error = Some(error);
+    }
+    fn accept_load(&mut self, id: u64, result: Result<Option<Arc<Catalog>>, String>) -> bool {
+        if !self.load.as_ref().is_some_and(|load| load.id == id) {
+            return false;
+        }
+        match result {
+            Ok(snapshot) => {
+                self.load = None;
+                self.source_errors.retain(|path, _| {
+                    snapshot
+                        .as_ref()
+                        .is_some_and(|c| c.inputs().iter().any(|i| i.path() == path))
+                });
+                self.catalog = snapshot;
+            }
+            Err(error) => self.fail_load(error),
+        }
+        true
     }
     fn status(&self) -> String {
         if let Some(message) = self.notice.as_ref().or(self.load_error.as_ref()) {
@@ -158,44 +217,19 @@ pub(super) fn paths() -> Vec<PathBuf> {
                     .map(|i| i.path().to_path_buf())
                     .collect()
             },
-            |load| load.paths.clone(),
+            |load| {
+                load.inputs
+                    .iter()
+                    .map(|input| input.path().to_path_buf())
+                    .collect()
+            },
         )
     })
 }
-pub(super) fn reload(paths: Vec<PathBuf>, mut reload: Vec<PathBuf>) {
+pub(super) fn reload(paths: Vec<PathBuf>, reload: Vec<PathBuf>) {
     let result = write(|a| {
-        let s = &mut a.session;
-        let previous = s.load.take().map(|load| {
-            for path in load.pending {
-                if !reload.contains(&path) {
-                    reload.push(path);
-                }
-            }
-            load.ticket.id
-        });
-        s.notice = None;
-        s.load_error = None;
-        let ticket = s.ticket();
-        let pending: Vec<PathBuf> = paths
-            .iter()
-            .filter(|p| reload.contains(p) || !s.inputs().iter().any(|i| i.path() == p.as_path()))
-            .cloned()
-            .collect();
-        s.source_errors.retain(|path, _| !pending.contains(path));
-        s.load = Some(Load {
-            ticket: ticket.clone(),
-            paths: paths.clone(),
-            pending,
-        });
-        a.worker.replace(
-            previous,
-            ticket,
-            Job::Load {
-                paths,
-                previous: s.catalog.clone(),
-                reload,
-            },
-        )
+        let (previous, ticket, job) = a.session.begin_load(paths, reload);
+        a.worker.replace(previous, ticket, job)
     });
     if let Err(e) = result {
         write(|a| a.session.fail_load(format!("{e:#}")));
@@ -207,13 +241,11 @@ pub(super) fn reload(paths: Vec<PathBuf>, mut reload: Vec<PathBuf>) {
 pub(super) fn input_changed() {
     let (input, composing) = super::panel::cancel_debounce();
     write(|a| {
-        if let Some(ticket) = a.session.cancel_search() {
-            a.worker.cancel(ticket.id);
+        if let Some(id) = a.session.reset_search() {
+            a.worker.cancel(id);
         }
         a.session.notice = None;
         a.session.load_error = None;
-        a.session.results.clear();
-        a.session.pending_results.clear();
     });
     update_results();
     if !composing && !text(input).trim().is_empty() {
@@ -226,6 +258,13 @@ pub(super) fn input_changed() {
     refresh_status();
 }
 pub(super) fn search() {
+    write(|a| {
+        a.session.notice = None;
+        a.session.load_error = None;
+    });
+    submit_search();
+}
+fn submit_search() {
     let (input, composing) = super::panel::cancel_debounce();
     if composing {
         return;
@@ -234,22 +273,17 @@ pub(super) fn search() {
     let mode = super::panel::search_mode();
     let sent = write(|a| {
         let s = &mut a.session;
-        let previous = match std::mem::replace(&mut s.search, Search::Idle) {
-            Search::Running(ticket) => Some(ticket),
-            _ => None,
-        };
-        s.results.clear();
-        s.pending_results.clear();
+        let previous = s.reset_search();
         let Some(catalog) = s.catalog.clone().filter(|_| !query.is_empty()) else {
-            if let Some(ticket) = previous {
-                a.worker.cancel(ticket.id);
+            if let Some(id) = previous {
+                a.worker.cancel(id);
             }
             return Ok(());
         };
         let ticket = s.ticket();
-        s.search = Search::Running(ticket.clone());
+        s.search = Search::Running(ticket.id);
         a.worker.replace(
-            previous.map(|t| t.id),
+            previous,
             ticket,
             Job::Search {
                 catalog,
@@ -452,7 +486,7 @@ fn open_now(row: isize, mode: Open) -> Option<HWND> {
 pub(super) fn worker_stopped() {
     write(|a| {
         a.session.fail_load(resources::text(IDS_WORKER_STOPPED));
-        a.session.cancel_search();
+        a.session.search = Search::Idle;
     });
     set_status(resources::text(IDS_WORKER_STOPPED));
     super::sources::refresh();
@@ -460,54 +494,39 @@ pub(super) fn worker_stopped() {
 pub(super) fn apply(c: Completion) {
     match c.target {
         Target::Load => {
-            if !read(|a| {
-                a.session
-                    .load
-                    .as_ref()
-                    .is_some_and(|load| load.ticket.id == c.id)
-            }) {
+            let result = c
+                .result
+                .map(|output| match output {
+                    Output::Loaded(snapshot) => snapshot,
+                    _ => unreachable!(),
+                })
+                .map_err(|error| {
+                    resources::text(IDS_LOAD_FAILED).replace("{error}", &format!("{error:#}"))
+                });
+            let committed = result.is_ok();
+            if !write(|a| a.session.accept_load(c.id, result)) {
                 return;
             }
-            match c.result {
-                Ok(Output::Loaded(snapshot)) => {
-                    write(|a| {
-                        let s = &mut a.session;
-                        s.load = None;
-                        s.source_errors.retain(|path, _| {
-                            snapshot
-                                .as_ref()
-                                .is_some_and(|c| c.inputs().iter().any(|i| i.path() == path))
-                        });
-                        s.catalog = snapshot;
-                    });
-                    search();
-                    if let Err(error) = read(|a| {
-                        if a.session.remember_sources {
-                            let paths: Vec<_> = a
-                                .session
-                                .inputs()
-                                .iter()
-                                .map(|s| s.path().to_path_buf())
-                                .collect();
-                            a.config.write_key()?.set_paths("AutoLoad", &paths)?;
-                        }
-                        Ok::<_, anyhow::Error>(())
-                    }) {
-                        set_status(format!("{error:#}"));
+            if committed {
+                submit_search();
+                if let Err(error) = read(|a| {
+                    if a.session.remember_sources {
+                        let paths: Vec<_> = a
+                            .session
+                            .inputs()
+                            .iter()
+                            .map(|s| s.path().to_path_buf())
+                            .collect();
+                        a.config.write_key()?.set_paths("AutoLoad", &paths)?;
                     }
-                    for (hwnd, view) in workspace::views() {
-                        view.catalog_changed(hwnd);
-                    }
+                    Ok::<_, anyhow::Error>(())
+                }) {
+                    set_status(format!("{error:#}"));
                 }
-                Err(e) => {
-                    write(|a| {
-                        a.session.fail_load(
-                            resources::text(IDS_LOAD_FAILED).replace("{error}", &format!("{e:#}")),
-                        )
-                    });
+                for (hwnd, view) in workspace::views() {
+                    view.catalog_changed(hwnd);
                 }
-                _ => unreachable!(),
-            };
+            }
             super::sources::refresh();
             refresh_status();
         }
@@ -522,6 +541,66 @@ pub(super) fn apply(c: Completion) {
 mod tests {
     use super::*;
     use crate::results::ResultItem;
+    fn execute_load(ticket: &Ticket, job: Job) -> Result<Option<Arc<Catalog>>, String> {
+        let result = std::cell::RefCell::new(None);
+        crate::tasks::run(job, ticket, &|completion| {
+            result.replace(Some(
+                completion
+                    .result
+                    .map(|output| match output {
+                        Output::Loaded(catalog) => catalog,
+                        _ => panic!("unexpected load output"),
+                    })
+                    .map_err(|error| format!("{error:#}")),
+            ));
+            Ok(())
+        });
+        result.into_inner().unwrap()
+    }
+    #[test]
+    fn replacement_retains_reload_intent_and_failure_preserves_snapshot() {
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../inputs/Windows.Win32.winmd");
+        let path =
+            std::env::temp_dir().join(format!("Winlex.LoadPlan.{}.winmd", std::process::id()));
+        std::fs::copy(fixture, &path).unwrap();
+        let document = Arc::new(Catalog::open_many([&path]).unwrap());
+        std::fs::remove_file(&path).unwrap();
+        let mut session = Session::new();
+        session.catalog = Some(document.clone());
+        let (_, first, _) = session.begin_load(vec![path.clone()], vec![path.clone()]);
+        let (previous, second, job) = session.begin_load(vec![path.clone()], vec![]);
+        assert_eq!(previous, Some(first.id));
+        assert!(session.pending(&path));
+        assert!(!session.accept_load(first.id, Ok(None)));
+        let result = execute_load(&second, job);
+        assert!(
+            result.is_err(),
+            "replacement must still reread the deleted source"
+        );
+        assert!(session.accept_load(second.id, result));
+        assert!(Arc::ptr_eq(session.catalog.as_ref().unwrap(), &document));
+        assert!(session.source_error(&path).is_some());
+        assert!(!session.pending(&path));
+
+        let (_, retry, job) = session.begin_load(vec![path.clone()], vec![]);
+        assert!(!session.pending(&path));
+        let result = execute_load(&retry, job).expect("unchanged input reuses retained bytes");
+        assert!(session.accept_load(retry.id, Ok(result)));
+        assert!(!session.accept_load(second.id, Err("late failure".into())));
+        assert!(session.load_error.is_none());
+        let (_, unload, job) = session.begin_load(vec![], vec![]);
+        assert!(session.accept_load(unload.id, execute_load(&unload, job)));
+        assert!(session.catalog.is_none());
+        assert!(
+            document
+                .search("CreateFileW", Default::default())
+                .unwrap()
+                .next()
+                .unwrap()
+                .is_ok()
+        );
+    }
     fn hit(token: u32, score: u16) -> Box<ResultItem> {
         Box::new(ResultItem {
             display: Default::default(),
@@ -587,11 +666,9 @@ mod tests {
     #[test]
     fn late_search_results_cannot_overwrite_new_search_or_load_failure() {
         let mut session = Session::new();
-        let old = Ticket::new(1);
-        session.search = Search::Running(old.clone());
-        session.cancel_search();
-        assert!(old.cancel.load(std::sync::atomic::Ordering::Relaxed));
-        session.search = Search::Running(Ticket::new(2));
+        session.search = Search::Running(1);
+        assert_eq!(session.reset_search(), Some(1));
+        session.search = Search::Running(2);
         session.load_error = Some("load transaction failed".into());
         let completion = |id, result| Completion {
             id,

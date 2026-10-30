@@ -134,7 +134,7 @@ impl Rendered {
         self.number(index as u64, None, entity)?;
         write!(self, ", vtable +")?;
         self.number(
-            index as u64 * if arch == Architecture::X86 { 4 } else { 8 },
+            index as u64 * arch.pointer_bytes() as u64,
             Some("bytes"),
             entity,
         )

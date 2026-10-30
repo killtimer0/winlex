@@ -87,7 +87,8 @@ def main():
             vtables.append(vtable)
             for slot in vtable["slots"]:
                 check(f"offsetof({name}Vtbl, {slot['method']}) / sizeof(void*)", slot["index"])
-        source.append("const DCB wl_dcb_bits = {.fBinary=1, .fDtrControl=3, .fRtsControl=2, .fDummy2=0x15555};")
+        assignments = {"fBinary": 1, "fDtrControl": 3, "fRtsControl": 2, "fDummy2": 0x15555}
+        source.append("const DCB wl_dcb_bits = {" + ", ".join(f".{name}={value}" for name, value in assignments.items()) + "};")
         path = OUT / f"{arch}.c"
         path.write_text("\n".join(source) + "\n")
         cl = MSVC / "bin/Hostx64" / arch / "cl.exe"
@@ -108,7 +109,6 @@ def main():
             results[name] = {"command": command, "returncode": p.returncode}
             if name == "msvc" and p.returncode == 0:
                 dcb = next(l for l in layouts if l["name"] == "DCB")
-                assignments = {"fBinary": 1, "fDtrControl": 3, "fRtsControl": 2, "fDummy2": 0x15555}
                 expected = 0
                 for field in dcb["fields"]:
                     for bit in field.get("bitfields", []):

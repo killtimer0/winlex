@@ -35,17 +35,16 @@ if (-not $RcExe) {
 if (-not $RcExe) { throw 'Microsoft rc.exe was not found. Specify -RcExe from a Windows SDK.' }
 $rc = (Resolve-Path $RcExe).Path
 if ((Get-Item $rc).VersionInfo.CompanyName -notmatch 'Microsoft') { throw 'Use Microsoft rc.exe.' }
-$minimum = if ($Architecture -eq 'x86') { '5.1.2600.0' } else { '5.2.3790.0' }
-$ltlArch = if ($Architecture -eq 'x86') { 'Win32' } else { 'x64' }
-$ltlLib = Join-Path $ltlRoot "TargetPlatform/$minimum/lib/$ltlArch"
-foreach ($name in @('libucrt.lib', 'libvcruntime.lib')) {
-    if (-not (Test-Path "$ltlLib/$name")) { throw "Missing VC-LTL library: $ltlLib/$name" }
-}
 if ([IO.Path]::GetFileName($linker) -ine 'link.exe') {
     throw 'Use Microsoft MSVC link.exe. YY-Thunks uses a different integration for lld-link.'
 }
 if ((Get-Item $linker).VersionInfo.CompanyName -notmatch 'Microsoft') {
     throw 'The supplied link.exe is not identified as a Microsoft linker.'
+}
+$linkerDirectory = Split-Path $linker -Parent
+if ((Split-Path $linkerDirectory -Leaf) -ine $Architecture -or
+    (Split-Path (Split-Path $linkerDirectory -Parent) -Leaf) -ine 'Hostx64') {
+    throw "Use the Hostx64/$Architecture Microsoft linker for this target."
 }
 $target = if ($Architecture -eq 'x86') { 'i686-pc-windows-msvc' } else { 'x86_64-pc-windows-msvc' }
 $libdir = & rustc --print target-libdir --target $target
@@ -67,14 +66,26 @@ try {
     if ($Configuration -eq 'Release') { $arguments += '--release' }
     if ($TargetDir) { $arguments += @('--target-dir', $TargetDir) }
     $executables = @{}
+    $buildOutputs = @{}
+    $packageId = $null
     & cargo @arguments | ForEach-Object {
         $message = $_ | ConvertFrom-Json
+        if ($message.reason -eq 'build-script-executed') {
+            $buildOutputs[$message.package_id] = $message.out_dir
+        }
         if ($message.reason -eq 'compiler-artifact' -and $message.executable -and
             $message.target.kind -contains 'bin' -and $message.target.name -in @('winlex', 'winlex-gui')) {
             $executables[$message.target.name] = $message.executable
+            $packageId = $message.package_id
         }
     }
     if ($LASTEXITCODE -ne 0) { throw "Build failed ($LASTEXITCODE)" }
+    if (-not $packageId -or -not $buildOutputs.ContainsKey($packageId)) {
+        throw 'Cargo did not report the executable package build output.'
+    }
+    $compatibility = Get-Content (Join-Path $buildOutputs[$packageId] 'compatibility.json') -Raw | ConvertFrom-Json
+    if ($compatibility.target -ne $target) { throw 'Build compatibility metadata target mismatch.' }
+    $ltlLib = Join-Path $ltlRoot "TargetPlatform/$($compatibility.vc_ltl_platform)"
     foreach ($binary in @('winlex', 'winlex-gui')) {
         $exe = $executables[$binary]
         if (-not $exe) { throw "Cargo did not report an executable for $binary" }
@@ -88,7 +99,7 @@ try {
             resource_compiler_version = (Get-Item $rc).VersionInfo.FileVersion
             thunks_object = $object
             thunks_sha256 = (Get-FileHash $object -Algorithm SHA256).Hash.ToLowerInvariant()
-            minimum_windows = $minimum
+            minimum_windows = $compatibility.minimum_windows
             crt = 'VC-LTL5 system msvcrt'
             vc_ltl_root = $ltlRoot
             vc_ltl_libraries = @(Get-ChildItem "$ltlLib/*.lib" | ForEach-Object {

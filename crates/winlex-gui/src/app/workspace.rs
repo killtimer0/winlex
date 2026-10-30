@@ -30,7 +30,7 @@ pub(super) struct DocumentHost {
     pub id: u64,
     pub hwnd: HWND,
     pub title: String,
-    pub content: std::rc::Rc<dyn host::View>,
+    pub content: std::rc::Rc<super::metadata::MetadataView>,
     pub placement: Option<Placement>,
     /// A transient document that the next preview request may replace in place.
     pub preview: bool,
@@ -332,7 +332,7 @@ pub(super) fn next_id() -> u64 {
 }
 pub(super) fn create_document(
     title: &str,
-    content: Box<dyn host::View>,
+    content: super::metadata::MetadataView,
     preview: bool,
 ) -> anyhow::Result<HWND> {
     let (mdi, maximized) = read(|a| (a.workspace.mdi, a.workspace.maximized));
@@ -373,10 +373,10 @@ pub(super) fn create_document(
     }
     Ok(hwnd)
 }
-pub(super) fn view(hwnd: HWND) -> Option<std::rc::Rc<dyn host::View>> {
+pub(super) fn view(hwnd: HWND) -> Option<std::rc::Rc<super::metadata::MetadataView>> {
     document(hwnd, |d| d.content.clone())
 }
-pub(super) fn views() -> Vec<(HWND, std::rc::Rc<dyn host::View>)> {
+pub(super) fn views() -> Vec<(HWND, std::rc::Rc<super::metadata::MetadataView>)> {
     read(|a| {
         a.workspace
             .documents

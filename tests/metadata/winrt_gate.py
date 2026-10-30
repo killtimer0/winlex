@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import re
 import subprocess
+from reader_gate import compare
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "tmp/verify/winrt"
@@ -39,13 +40,7 @@ def oracle(file):
     subprocess.run(["dotnet", "run", "--project", ROOT / "tests/metadata/MetadataOracle", "-c", "Release", "--", file, dest], check=True, capture_output=True)
     expected = json.loads(dest.read_text())
     actual = json.loads(subprocess.run([ROOT / "target/release/examples/reader-facts.exe", file], check=True, capture_output=True).stdout)
-    for key in ("assembly", "references", "layouts", "scopes", "signature_type_tokens", "properties", "events"):
-        # Accessor order in MethodSemantics is not semantically significant.
-        if key in ("properties", "events"):
-            for rows in (actual[key], expected[key]):
-                for row in rows:
-                    row["accessors"].sort(key=lambda a: (a["method"], a["flags"]))
-        assert actual[key] == expected[key], (file, key)
+    compare(actual, expected)
 
 
 def main():
@@ -106,7 +101,11 @@ def main():
         assert "2 matching definitions" in overlap["resolution"]["unresolved"]
         for file in apps:
             oracle(file)
-    report = {"passed": True, "sdk": args.version, "contracts": len(contracts), "app_files": len(apps), "checks": ["generic declarations", "properties/events/accessors", "default interfaces", "WinRT namespace resolution", "missing/overlapping sources", "interface and delegate ABI slots", "reverse generic uses", "independent raw metadata"]}
+    checks = ["generic declarations", "properties/events/accessors", "default interfaces", "interface and delegate ABI slots", "reverse generic uses", "independent raw metadata"]
+    if apps:
+        checks.extend(["WinRT namespace resolution", "missing/overlapping sources"])
+    report = {"passed": True, "sdk": args.version, "contracts": len(contracts), "app_files": len(apps),
+              "checks": checks, "skipped": [] if apps else ["App SDK checks: no metadata inputs"]}
     (OUT / "report.json").write_text(json.dumps(report, indent=2))
     print(json.dumps(report, indent=2))
 

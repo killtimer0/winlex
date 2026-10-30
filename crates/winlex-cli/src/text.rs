@@ -2,10 +2,8 @@
 use super::{Page, Query};
 use std::fmt::Write;
 use winlex_core::windows_metadata::{reader::*, *};
-use winlex_core::{
-    Architecture, Catalog, Declaration, EntityId, Result, guid, integer, metadata::key,
-};
-use winlex_format::member_ids;
+use winlex_core::{Architecture, Catalog, Declaration, EntityId, Result, guid, metadata::key};
+use winlex_format::{attribute_value as value, member_ids};
 
 fn ty(t: &Type) -> String {
     match t {
@@ -36,26 +34,6 @@ fn ty(t: &Type) -> String {
         Type::RefConst(t) => format!("const {}", ty(t)),
         t => format!("{t:?}"),
     }
-}
-fn value(v: &Value) -> String {
-    if let Value::EnumValue(n, v) = v {
-        return format!("{}.{}({})", n.namespace, n.name, value(v));
-    }
-    if let Some(n) = integer(v) {
-        let bits = match v {
-            Value::U8(_) | Value::I8(_) => 8,
-            Value::U16(_) | Value::I16(_) => 16,
-            Value::U32(_) | Value::I32(_) => 32,
-            _ => 64,
-        };
-        return format!(
-            "{n} (0x{:0width$x}, {:?})",
-            n & ((1i128 << bits) - 1),
-            v.ty(),
-            width = bits / 4
-        );
-    }
-    format!("{v:?}")
 }
 fn attributes<'a>(out: &mut String, pad: &str, r: impl HasAttributes<'a>) -> Result<()> {
     for a in r.attributes() {
@@ -295,11 +273,7 @@ pub(super) fn render(q: &Query, c: &Catalog, arch: Option<Architecture>) -> Resu
                     s.method,
                     s.id.map(|id| id.to_string())
                         .unwrap_or_else(|| "[implicit ABI]".into()),
-                    i * if v.architecture == Architecture::X86 {
-                        4
-                    } else {
-                        8
-                    }
+                    i * v.architecture.pointer_bytes()
                 )?;
             }
         }

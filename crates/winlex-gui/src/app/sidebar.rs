@@ -164,13 +164,7 @@ pub(super) fn prepare() {
     let (frame, toolbar, panels) = read(|a| (a.frame, a.sidebar.toolbar, a.sidebar.panels.clone()));
     let m = super::metrics(frame);
     bind(toolbar, m.font);
-    match Images::toolbar(m.px(24), PANELS.iter().map(|r| r.icon)) {
-        Ok(images) => {
-            send(toolbar, TB_SETIMAGELIST, 0, images.handle());
-            write(|a| a.sidebar.images = Some(images));
-        }
-        Err(error) => write(|a| a.failure = Some(error)),
-    }
+    update_images(toolbar, m.px(24));
     let padding = m.px(12) as u32;
     send(
         toolbar,
@@ -193,6 +187,22 @@ pub(super) fn prepare() {
     );
     for (_, panel) in panels {
         panel.prepare(&m);
+    }
+}
+fn update_images(toolbar: HWND, size: i32) {
+    match Images::toolbar(size, PANELS.iter().map(|r| r.icon)) {
+        Ok(images) => {
+            send(toolbar, TB_SETIMAGELIST, 0, images.handle());
+            write(|a| a.sidebar.images = Some(images));
+        }
+        Err(error) => write(|a| a.failure = Some(error)),
+    }
+}
+pub(super) fn recolor() {
+    let (frame, toolbar, panels) = read(|a| (a.frame, a.sidebar.toolbar, a.sidebar.panels.clone()));
+    update_images(toolbar, layout::scale(24, dpi().window(frame)));
+    for (_, panel) in panels {
+        panel.recolor();
     }
 }
 pub(super) fn layout(bottom: i32) -> i32 {
@@ -218,13 +228,23 @@ pub(super) fn layout(bottom: i32) -> i32 {
     place(splitter, layout::rect(x + width, 0, s(5), bottom));
     x + width + s(5)
 }
-pub(super) fn command(w: usize) -> bool {
+pub(super) fn command(w: usize, control: HWND) -> bool {
     let id = w as u16;
     if let Some(r) = PANELS.iter().find(|r| r.command == id) {
         show(r.id, true);
         return true;
     }
-    super::panel::command(id, (w >> 16) as u32)
+    let code = (w >> 16) as u32;
+    if !control.is_null() {
+        let owner = read(|a| a.sidebar.owner(control));
+        return owner.is_some_and(|panel| panel.command(id, code));
+    }
+    let panels = read(|a| a.sidebar.panels.clone());
+    panels.iter().any(|(_, panel)| panel.command(id, code))
+}
+pub(super) fn context_menu(control: HWND, location: isize) -> bool {
+    let owner = read(|a| a.sidebar.owner(control));
+    owner.is_some_and(|panel| panel.context_menu(control, location))
 }
 pub(super) unsafe fn notify(l: isize) -> Option<isize> {
     let hwnd = unsafe { (*(l as *const NMHDR)).hwndFrom };

@@ -15,11 +15,21 @@ use winlex_core::{
 
 const SEARCH_BATCH_INTERVAL: Duration = Duration::from_millis(100);
 
+pub enum LoadInput {
+    Read(PathBuf),
+    Reuse(SourceData),
+}
+impl LoadInput {
+    pub fn path(&self) -> &std::path::Path {
+        match self {
+            Self::Read(path) => path,
+            Self::Reuse(data) => data.path(),
+        }
+    }
+}
 pub enum Job {
     Load {
-        paths: Vec<PathBuf>,
-        previous: Option<Arc<Catalog>>,
-        reload: Vec<PathBuf>,
+        inputs: Arc<[LoadInput]>,
     },
     Search {
         catalog: Arc<Catalog>,
@@ -80,32 +90,24 @@ fn execute(
     publish: &impl Fn(anyhow::Result<Output>) -> anyhow::Result<()>,
 ) -> anyhow::Result<Output> {
     match job {
-        Job::Load {
-            paths,
-            previous,
-            reload,
-        } => {
-            if paths.is_empty() {
+        Job::Load { inputs } => {
+            if inputs.is_empty() {
                 return Ok(Output::Loaded(None));
             }
-            let mut inputs = Vec::new();
-            for path in paths {
+            let mut loaded = Vec::new();
+            for input in inputs.iter() {
                 if ticket.cancelled() {
                     bail!("cancelled");
                 }
-                let data = if !reload.contains(&path)
-                    && let Some(data) = previous
-                        .as_ref()
-                        .and_then(|c| c.inputs().iter().find(|s| s.path() == path))
-                {
-                    data.clone()
-                } else {
-                    SourceData::read(&path).with_context(|| format!("Read {}", path.display()))?
+                let data = match input {
+                    LoadInput::Reuse(data) => data.clone(),
+                    LoadInput::Read(path) => SourceData::read(path)
+                        .with_context(|| format!("Read {}", path.display()))?,
                 };
-                inputs.push(data);
+                loaded.push(data);
             }
             Ok(Output::Loaded(Some(Arc::new(Catalog::from_inputs(
-                inputs,
+                loaded,
             )?))))
         }
         Job::Search {
@@ -365,9 +367,7 @@ mod tests {
                 None,
                 Ticket::new(1),
                 Job::Load {
-                    paths: vec![path.clone()],
-                    previous: None,
-                    reload: vec![],
+                    inputs: Arc::from([LoadInput::Read(path.clone())]),
                 },
             )
             .unwrap();

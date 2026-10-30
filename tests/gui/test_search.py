@@ -14,7 +14,7 @@ def test_result_rows_show_icons_context_and_match_emphasis(launch, settings):
     for index, query, prefix, name_match in [
         (0, "CrtFlW", "Apis · ", True),
         (2, "5", "= 5 · ", False),
-        (3, "0000000c00000000c000000000000046", "= {...} · ", False),
+        (3, "0000000c00000000c000000000000046", "{0000000c-0000-0000-c000-000000000046} · ", False),
     ]:
         n.send(mode, win32con.CB_SETCURSEL, index)
         app.command(1114, code=win32con.CBN_SELENDOK)

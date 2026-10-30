@@ -23,18 +23,35 @@ pub fn summary(c: &Catalog) -> Json {
     let (types, fields, methods) = c.row_counts();
     json!({"sources":c.sources(),"type_rows":types,"field_rows":fields,"method_rows":methods})
 }
+fn integer_text(v: &Value) -> Option<(String, String, usize)> {
+    let n = integer(v)?;
+    let bits = match v {
+        Value::U8(_) | Value::I8(_) => 8,
+        Value::U16(_) | Value::I16(_) => 16,
+        Value::U32(_) | Value::I32(_) => 32,
+        _ => 64,
+    };
+    Some((
+        n.to_string(),
+        format!("0x{:0width$x}", n & ((1i128 << bits) - 1), width = bits / 4),
+        bits,
+    ))
+}
+pub fn attribute_value(v: &Value) -> String {
+    if let Value::EnumValue(n, v) = v {
+        return format!("{}.{}({})", n.namespace, n.name, attribute_value(v));
+    }
+    if let Some((decimal, hex, _)) = integer_text(v) {
+        return format!("{decimal} ({hex}, {:?})", v.ty());
+    }
+    format!("{v:?}")
+}
 fn value(v: &Value) -> Json {
     if let Value::EnumValue(n, x) = v {
         return json!({"kind":"enum","name":n.name,"namespace":n.namespace,"value":value(x)});
     }
-    if let Some(n) = integer(v) {
-        let bits = match v {
-            Value::U8(_) | Value::I8(_) => 8,
-            Value::U16(_) | Value::I16(_) => 16,
-            Value::U32(_) | Value::I32(_) => 32,
-            _ => 64,
-        };
-        return json!({"kind":"integer","type":format!("{:?}",v.ty()),"decimal":n.to_string(),"hex":format!("0x{:0width$x}",n&((1i128<<bits)-1),width=bits/4),"bits":bits});
+    if let Some((decimal, hex, bits)) = integer_text(v) {
+        return json!({"kind":"integer","type":format!("{:?}",v.ty()),"decimal":decimal,"hex":hex,"bits":bits});
     }
     match v {
         Value::Bool(x) => json!({"kind":"boolean","value":x}),
@@ -156,14 +173,7 @@ pub fn vtable(v: &winlex_core::Vtable) -> Json {
         .enumerate()
     {
         value["index"] = json!(index);
-        value["byte_offset"] = json!(
-            index
-                * if v.architecture == Architecture::X86 {
-                    4
-                } else {
-                    8
-                }
-        );
+        value["byte_offset"] = json!(index * v.architecture.pointer_bytes());
         value["implicit"] = json!(s.id.is_none());
     }
     if v.windows_runtime {
@@ -172,4 +182,45 @@ pub fn vtable(v: &winlex_core::Vtable) -> Json {
             json!("method slots only; metadata signatures are not lowered ABI signatures");
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn integer_projections_preserve_signed_values_and_storage_widths() {
+        for (input, decimal, hex, bits) in [
+            (Value::I8(-1), "-1", "0xff", 8),
+            (Value::U8(255), "255", "0xff", 8),
+            (Value::I16(-32768), "-32768", "0x8000", 16),
+            (Value::U16(1), "1", "0x0001", 16),
+            (Value::I32(-1), "-1", "0xffffffff", 32),
+            (Value::U32(u32::MAX), "4294967295", "0xffffffff", 32),
+            (
+                Value::I64(i64::MIN),
+                "-9223372036854775808",
+                "0x8000000000000000",
+                64,
+            ),
+            (
+                Value::U64(u64::MAX),
+                "18446744073709551615",
+                "0xffffffffffffffff",
+                64,
+            ),
+            (Value::ISize(-1), "-1", "0xffffffffffffffff", 64),
+            (Value::USize(1), "1", "0x0000000000000001", 64),
+        ] {
+            let json = value(&input);
+            assert_eq!(json["decimal"], decimal);
+            assert_eq!(json["hex"], hex);
+            assert_eq!(json["bits"], bits);
+            assert_eq!(constant(&input), decimal);
+            assert_eq!(
+                attribute_value(&input),
+                format!("{decimal} ({hex}, {:?})", input.ty())
+            );
+        }
+    }
 }

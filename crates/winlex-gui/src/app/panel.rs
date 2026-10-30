@@ -48,7 +48,11 @@ pub(super) static PANELS: &[Registration] = &[
 pub(super) struct Panel {
     controls: Vec<HWND>,
     list: List,
-    search: Option<Search>,
+    content: Content,
+}
+enum Content {
+    Search(Search),
+    Sources,
 }
 struct Search {
     input: HWND,
@@ -59,7 +63,10 @@ struct Search {
 }
 fn search<T>(f: impl FnOnce(&Search) -> T) -> T {
     let panel = read(|a| a.sidebar.panel(SEARCH_PANEL));
-    f(panel.search.as_ref().expect("registered search panel"))
+    let Content::Search(search) = &panel.content else {
+        unreachable!("registered search panel")
+    };
+    f(search)
 }
 const SEARCH_TIMER: usize = 1;
 pub(super) fn cancel_debounce() -> (HWND, bool) {
@@ -122,7 +129,7 @@ impl Panel {
         )?;
         Ok(Rc::new(Self {
             controls: vec![input, list.hwnd, mode],
-            search: Some(Search {
+            content: Content::Search(Search {
                 input,
                 selector: mode,
                 mode: Cell::new(0),
@@ -155,10 +162,11 @@ impl Panel {
                 id,
             )?);
         }
+        sources::update_actions();
         Ok(Rc::new(Self {
             controls,
             list,
-            search: None,
+            content: Content::Sources,
         }))
     }
     pub fn controls(&self) -> &[HWND] {
@@ -177,16 +185,18 @@ impl Panel {
         if let Err(error) = self.list.prepare(m) {
             super::write(|a| a.failure = Some(error));
         }
-        if self.search.is_none() {
-            sources::update_actions();
+    }
+    pub fn recolor(&self) {
+        if let Err(error) = self.list.recolor() {
+            super::write(|a| a.failure = Some(error));
         }
     }
     pub unsafe fn notify(&self, l: isize) -> Option<isize> {
         unsafe {
             let hdr = &*(l as *const NMHDR);
             if hdr.hwndFrom == self.list.hwnd
-                && self.search.is_none()
                 && hdr.code == LVN_ITEMCHANGED
+                && matches!(self.content, Content::Sources)
             {
                 sources::update_actions();
                 return Some(0);
@@ -196,65 +206,79 @@ impl Panel {
     }
     pub fn layout(&self, area: RECT, m: &layout::Metrics) {
         let mut area = layout::inset(area, m.px(4));
-        if let Some(s) = &self.search {
-            let outer = dpi().child_outer(s.input, layout::rect(0, 0, 1, m.height + m.px(4)));
-            let mut row = layout::take_top(&mut area, outer.bottom - outer.top);
-            let width = m
-                .label_width(
-                    SEARCH_MODES
-                        .iter()
-                        .map(|&(label, _)| resources::wide_text(label)),
-                    60,
-                )
-                .min((row.right - row.left) / 2);
-            let right = row.right;
-            row.right = (right - width - m.px(4)).max(row.left);
-            place(s.input, row);
-            place(
-                s.selector,
-                layout::rect(right - width, row.top, width, m.row() * 6),
-            );
-            layout::take_top(&mut area, m.px(4));
-        } else {
-            m.buttons(&mut area, self.controls[1..].iter().copied());
+        match &self.content {
+            Content::Search(s) => {
+                let outer = dpi().child_outer(s.input, layout::rect(0, 0, 1, m.height + m.px(4)));
+                let mut row = layout::take_top(&mut area, outer.bottom - outer.top);
+                let width = m
+                    .label_width(
+                        SEARCH_MODES
+                            .iter()
+                            .map(|&(label, _)| resources::wide_text(label)),
+                        60,
+                    )
+                    .min((row.right - row.left) / 2);
+                let right = row.right;
+                row.right = (right - width - m.px(4)).max(row.left);
+                place(s.input, row);
+                place(
+                    s.selector,
+                    layout::rect(right - width, row.top, width, m.row() * 6),
+                );
+                layout::take_top(&mut area, m.px(4));
+            }
+            Content::Sources => m.buttons(&mut area, self.controls[1..].iter().copied()),
         }
         self.list.layout(area);
     }
     pub fn region(&self, hwnd: HWND) -> Option<keys::Region> {
-        let s = self.search.as_ref()?;
-        if hwnd == s.input {
-            Some(keys::Region::SearchEntry {
+        match &self.content {
+            Content::Search(s) if hwnd == s.input => Some(keys::Region::SearchEntry {
                 composing: s.composing.get(),
-            })
-        } else {
-            (hwnd == self.list.hwnd).then_some(keys::Region::Results)
+            }),
+            Content::Search(_) => (hwnd == self.list.hwnd).then_some(keys::Region::Results),
+            Content::Sources => None,
+        }
+    }
+    pub fn command(&self, id: u16, code: u32) -> bool {
+        match &self.content {
+            Content::Search(s) => s.command(id, code),
+            Content::Sources => sources::command(id),
+        }
+    }
+    pub fn context_menu(&self, hwnd: HWND, location: isize) -> bool {
+        match &self.content {
+            Content::Sources if hwnd == self.list.hwnd => {
+                if let Err(error) = sources::context_menu(hwnd, location) {
+                    catalog::set_status(format!("{error:#}"));
+                }
+                true
+            }
+            Content::Search(_) | Content::Sources => false,
         }
     }
 }
-pub(super) fn command(id: u16, code: u32) -> bool {
-    match id {
-        SEARCH if code == EN_CHANGE => catalog::input_changed(),
-        SEARCH_MODE if code == CBN_SELENDOK => search(|s| {
-            let index = send(s.selector, CB_GETCURSEL, 0, 0) as usize;
-            if index < SEARCH_MODES.len() && s.mode.replace(index) != index {
-                catalog::input_changed();
-                catalog::search();
+impl Search {
+    fn command(&self, id: u16, code: u32) -> bool {
+        match id {
+            SEARCH if code == EN_CHANGE => catalog::input_changed(),
+            SEARCH_MODE if code == CBN_SELENDOK => {
+                let index = send(self.selector, CB_GETCURSEL, 0, 0) as usize;
+                if index < SEARCH_MODES.len() && self.mode.replace(index) != index {
+                    catalog::search();
+                }
             }
-        }),
-        SEARCH_MODE if code == CBN_SELENDCANCEL => search(|s| {
-            send(s.selector, CB_SETCURSEL, s.mode.get(), 0);
-        }),
-        FOCUS_SEARCH => {
-            sidebar::show(SEARCH_PANEL, false);
-            search(|s| {
-                send(s.input, EM_SETSEL, 0, -1);
-            });
+            SEARCH_MODE if code == CBN_SELENDCANCEL => {
+                send(self.selector, CB_SETCURSEL, self.mode.get(), 0);
+            }
+            FOCUS_SEARCH => {
+                sidebar::show(SEARCH_PANEL, false);
+                send(self.input, EM_SETSEL, 0, -1);
+            }
+            _ => return false,
         }
-        LOAD_METADATA => sources::choose_add(),
-        RELOAD_SOURCE | REMOVE_SOURCE | COPY_SOURCE_PATH => sources::action(id),
-        _ => return false,
+        true
     }
-    true
 }
 unsafe extern "system" fn edit_proc(
     h: HWND,

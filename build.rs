@@ -5,9 +5,9 @@ fn main() {
     println!("cargo:rerun-if-env-changed=WINLEX_YY_THUNKS_OBJ");
     println!("cargo:rerun-if-env-changed=WINLEX_VC_LTL_ROOT");
     let target = env::var("TARGET").expect("TARGET");
-    let (machine, subsystem) = match target.as_str() {
-        "i686-pc-windows-msvc" => (0x014cu16, "5.01"),
-        "x86_64-pc-windows-msvc" => (0x8664u16, "5.02"),
+    let (machine, subsystem, minimum, ltl_arch) = match target.as_str() {
+        "i686-pc-windows-msvc" => (0x014cu16, "5.01", "5.1.2600.0", "Win32"),
+        "x86_64-pc-windows-msvc" => (0x8664u16, "5.02", "5.2.3790.0", "x64"),
         _ => panic!(
             "Winlex requires i686-pc-windows-msvc or x86_64-pc-windows-msvc and MSVC link.exe. Use scripts/build.ps1."
         ),
@@ -21,12 +21,8 @@ fn main() {
         env::var_os("WINLEX_VC_LTL_ROOT")
             .expect("Set WINLEX_VC_LTL_ROOT to the official VC-LTL5 SDK directory"),
     );
-    let platform = if machine == 0x014c {
-        "5.1.2600.0/lib/Win32"
-    } else {
-        "5.2.3790.0/lib/x64"
-    };
-    let libdir = fs::canonicalize(ltl_root.join("TargetPlatform").join(platform))
+    let platform = format!("{minimum}/lib/{ltl_arch}");
+    let libdir = fs::canonicalize(ltl_root.join("TargetPlatform").join(&platform))
         .expect("VC-LTL library directory for the minimum Windows version is missing");
     for name in ["libucrt.lib", "libvcruntime.lib"] {
         let path = libdir.join(name);
@@ -55,6 +51,14 @@ fn main() {
     println!("cargo:rustc-link-arg-bin=winlex-gui={}", object.display());
     println!("cargo:rustc-link-arg-bin=winlex-gui=/SUBSYSTEM:WINDOWS,{subsystem}");
     compile_gui_resources();
+    let out = PathBuf::from(env::var_os("OUT_DIR").unwrap());
+    fs::write(
+        out.join("compatibility.json"),
+        format!(
+            "{{\"target\":\"{target}\",\"minimum_windows\":\"{minimum}\",\"vc_ltl_platform\":\"{platform}\"}}\n"
+        ),
+    )
+    .expect("Write build compatibility metadata");
 }
 
 fn compile_gui_resources() {

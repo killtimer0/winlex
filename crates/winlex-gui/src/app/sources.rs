@@ -9,22 +9,27 @@ use crate::{
 };
 use std::{os::windows::ffi::OsStrExt, path::PathBuf};
 
-pub(super) struct Row {
+#[derive(Default)]
+pub(super) struct Sources {
+    rows: Vec<Row>,
+    updating: bool,
+}
+struct Row {
     pub path: PathBuf,
     pub display: Display,
     pub text: Vec<u16>,
 }
 pub(super) fn row(index: usize, visit: &mut dyn FnMut(&Display)) {
     read(|a| {
-        if let Some(row) = a.session.source_rows.get(index) {
+        if let Some(row) = a.sources.rows.get(index) {
             visit(&row.display);
         }
     });
 }
 pub(super) fn row_text(index: usize) -> Vec<u16> {
     read(|a| {
-        a.session
-            .source_rows
+        a.sources
+            .rows
             .get(index)
             .map(|r| r.text.clone())
             .unwrap_or_default()
@@ -122,14 +127,14 @@ fn list() -> HWND {
 fn selected() -> Option<PathBuf> {
     let index = send(list(), LVM_GETNEXTITEM, usize::MAX, LVNI_SELECTED as isize);
     read(|a| {
-        a.session
-            .source_rows
+        a.sources
+            .rows
             .get(index as usize)
             .map(|row| row.path.clone())
     })
 }
 pub(super) fn update_actions() {
-    if read(|a| a.session.updating_sources) {
+    if read(|a| a.sources.updating) {
         return;
     }
     let path = selected();
@@ -166,18 +171,24 @@ pub(super) fn add(files: Vec<PathBuf>) {
     catalog::reload(paths, vec![]);
 }
 
-pub(super) fn choose_add() {
+fn choose_add() {
     match input::choose_files(read(|a| a.frame), read(|a| a.system_version)) {
         Ok(paths) => add(paths),
         Err(error) => catalog::set_status(format!("{error:#}")),
     }
 }
 
-pub(super) fn action(command: u16) {
-    let Some(path) = selected() else {
-        return;
-    };
-    action_path(command, path);
+pub(super) fn command(id: u16) -> bool {
+    match id {
+        LOAD_METADATA => choose_add(),
+        RELOAD_SOURCE | REMOVE_SOURCE | COPY_SOURCE_PATH => {
+            if let Some(path) = selected() {
+                action_path(id, path);
+            }
+        }
+        _ => return false,
+    }
+    true
 }
 fn action_path(command: u16, path: PathBuf) {
     if command == COPY_SOURCE_PATH {
@@ -206,8 +217,8 @@ pub(super) fn refresh() {
     let rows = rows();
     read(|a| {
         for index in &mut state.indices {
-            if let Some(old) = a.session.source_rows.get(*index as usize) {
-                let occurrence = a.session.source_rows[..*index as usize]
+            if let Some(old) = a.sources.rows.get(*index as usize) {
+                let occurrence = a.sources.rows[..*index as usize]
                     .iter()
                     .filter(|row| row.path == old.path)
                     .count();
@@ -225,12 +236,12 @@ pub(super) fn refresh() {
     });
     let count = rows.len();
     write(|a| {
-        a.session.source_rows = rows;
-        a.session.updating_sources = true;
+        a.sources.rows = rows;
+        a.sources.updating = true;
     });
     state.apply(list, count);
     read(|a| a.sidebar.panel(super::panel::SOURCES_PANEL)).refresh_tooltip();
-    write(|a| a.session.updating_sources = false);
+    write(|a| a.sources.updating = false);
     update_actions();
 }
 

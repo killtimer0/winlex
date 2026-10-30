@@ -2,6 +2,7 @@
 import json
 from pathlib import Path
 import subprocess
+from reader_gate import compare
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "tmp/verify/multisource"
@@ -57,15 +58,18 @@ def main():
     assert [s["method"] for s in slots] == ["First", "Second"]
     assert slots[0]["id"]["source_id"] == source != slots[1]["id"]["source_id"]
     matches = query(files, "search", "Item", "--name")["result"]["matches"]
-    assert len(matches) == 2 and matches[0]["id"]["token"] == matches[1]["id"]["token"] and matches[0]["id"] != matches[1]["id"]
+    assert [m["kind"] for m in matches] == ["type_reference", "struct", "struct"]
+    definitions = matches[1:]
+    assert definitions[0]["id"]["token"] == definitions[1]["id"]["token"] and definitions[0]["id"] != definitions[1]["id"]
     query(files, "show", "Item", error="found 2")
-    query(files, "show", f'0x{matches[0]["id"]["token"]:08x}', error="requires SOURCE")
+    query(files, "show", f'0x{definitions[0]["id"]["token"]:08x}', error="requires SOURCE")
     assert query(files, "show", "Base::Shared.Item")["result"]["entity"]["id"]["source_id"] == source
     page = query(files, "search", "Item", "--name", "--source", "Base")["result"]
     assert len(page["matches"]) == 1
     reversed_matches = query(files[::-1], "search", "Item", "--name")["result"]["matches"]
-    assert [m["id"]["source_id"] for m in reversed_matches] == [0, 1]
-    assert query(files, "search", "Item", "--name", "--limit", "1", "--offset", "1")["result"]["matches"] == matches[1:]
+    assert [m["id"]["source_id"] for m in reversed_matches] == [0, 1, 2]
+    assert [m["kind"] for m in reversed_matches] == ["struct", "struct", "type_reference"]
+    assert query(files, "search", "Item", "--name", "--limit", "1", "--offset", "1")["result"]["matches"] == matches[1:2]
     assert len(query([base, base], "summary")["sources"]) == 2
     uses = query(files, "references", "Base::Shared.Item")["result"]["page"]["matches"]
     assert len(uses) == 1 and uses[0]["name"] == "A"
@@ -82,8 +86,7 @@ def main():
         subprocess.run(["dotnet", "run", "--project", ROOT / "tests/metadata/MetadataOracle", "-c", "Release", "--", file, oracle], check=True, capture_output=True)
         facts = json.loads(subprocess.run([ROOT / "target/release/examples/reader-facts.exe", file], check=True, capture_output=True).stdout)
         expected = json.loads(oracle.read_text())
-        for key in ("assembly", "references", "layouts", "scopes", "signature_type_tokens"):
-            assert facts[key] == expected[key], key
+        compare(facts, expected)
     print("Multi-source layouts, nested/global references, COM inheritance, identity conflicts and independent reader checks passed")
 
 

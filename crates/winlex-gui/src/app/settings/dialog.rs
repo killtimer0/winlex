@@ -28,7 +28,6 @@ struct Dialog {
     pages: Cell<[HWND; 2]>,
     scales: RefCell<Vec<scale::Scale>>,
     prepared: Cell<bool>,
-    committed: Cell<bool>,
     failure: RefCell<Option<anyhow::Error>>,
 }
 thread_local! { static CURRENT: Cell<*const Dialog> = const { Cell::new(ptr::null()) }; }
@@ -47,7 +46,6 @@ fn show() -> anyhow::Result<()> {
         pages: Cell::new([ptr::null_mut(); 2]),
         scales: RefCell::new(Vec::new()),
         prepared: Cell::new(false),
-        committed: Cell::new(false),
         failure: RefCell::new(None),
     };
     let mut pages: [PROPSHEETPAGEW; 2] = unsafe { std::mem::zeroed() };
@@ -85,10 +83,7 @@ fn show() -> anyhow::Result<()> {
     if let Some(error) = failure {
         return Err(error);
     }
-    if state.committed.get()
-        && state.initial.categories != read(|a| a.settings.preferences.categories)
-    {
-        catalog::input_changed();
+    if state.initial.categories != read(|a| a.settings.preferences.categories) {
         catalog::search();
     }
     Ok(())
@@ -206,7 +201,7 @@ unsafe extern "system" fn sheet_proc(
                 return 0;
             }
             WM_COMMAND if w as u16 == IDOK as u16 => match commit(state) {
-                Ok(()) => state.committed.set(true),
+                Ok(()) => {}
                 Err(error) => {
                     MessageBoxW(
                         hwnd,
@@ -327,9 +322,5 @@ fn commit(state: &Dialog) -> anyhow::Result<()> {
         language,
         categories,
     };
-    if preferences != state.initial {
-        read(|a| preferences.save(&a.config))?;
-        write(|a| a.settings.preferences = preferences);
-    }
-    Ok(())
+    write(|a| a.settings.set_preferences(&a.config, preferences))
 }

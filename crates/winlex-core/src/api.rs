@@ -32,6 +32,12 @@ impl Architecture {
     pub fn supports(self, mask: i32) -> bool {
         mask & self.bit() != 0
     }
+    pub const fn pointer_bytes(self) -> usize {
+        match self {
+            Self::X86 => 4,
+            Self::X64 | Self::Arm64 => 8,
+        }
+    }
     pub fn name(self) -> &'static str {
         match self {
             Self::X86 => "x86",
@@ -502,14 +508,14 @@ impl Search<'_> {
         result
     }
     fn scan_one(&mut self) -> Result<SearchStep> {
+        ensure!(
+            !self
+                .options
+                .cancel
+                .is_some_and(|c| c.load(Ordering::Relaxed)),
+            "query cancelled"
+        );
         if let Some(&id) = self.catalog.search_index.get(self.position) {
-            ensure!(
-                !self
-                    .options
-                    .cancel
-                    .is_some_and(|c| c.load(Ordering::Relaxed)),
-                "query cancelled"
-            );
             self.position += 1;
             if self.options.source.is_some_and(|s| s != id.source_id)
                 || self.options.types_only && id.token >> 24 != 2
@@ -572,9 +578,13 @@ impl Search<'_> {
                         )
                     };
                     let matches = match &row {
-                        Declaration::Type(t) => t
-                            .interface_impls()
-                            .any(|i| check(&i.interface(&t.generic_types()))),
+                        Declaration::Type(t) => {
+                            let mut hit = false;
+                            for interface in t.interface_impls() {
+                                hit |= check(&interface.interface(&t.generic_types()));
+                            }
+                            hit
+                        }
                         Declaration::Field(f) => check(&f.ty()),
                         Declaration::Event(e) => check(&e.ty()),
                         Declaration::Method(m) => {
@@ -602,13 +612,6 @@ impl Search<'_> {
             }
             return Ok(SearchStep::Skipped);
         }
-        ensure!(
-            !self
-                .options
-                .cancel
-                .is_some_and(|c| c.load(Ordering::Relaxed)),
-            "query cancelled"
-        );
         Ok(SearchStep::Done)
     }
 }

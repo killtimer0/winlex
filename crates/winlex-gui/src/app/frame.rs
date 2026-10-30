@@ -8,15 +8,10 @@ use crate::{
 };
 use std::ptr;
 
-fn update_environment(suggested: Option<(RECT, u32)>, invalidate_fonts: bool) {
-    let old = if invalidate_fonts {
-        write(|a| std::mem::take(&mut a.fonts))
-    } else {
-        Vec::new()
-    };
+fn prepare() {
     let (frame, tabs, status) = read(|a| (a.frame, a.workspace.tabs, a.status));
     let docs = workspace::views();
-    let value = suggested.map_or_else(|| dpi().window(frame), |(_, dpi)| dpi);
+    let value = dpi().window(frame);
     match crate::icons::WindowIcons::load(value) {
         Ok(icons) => {
             icons.apply(frame);
@@ -28,27 +23,16 @@ fn update_environment(suggested: Option<(RECT, u32)>, invalidate_fonts: bool) {
     super::bind(tabs, font);
     super::bind(status, font);
     sidebar::prepare();
-    if let Some((r, _)) = suggested {
-        unsafe {
-            SetWindowPos(
-                frame,
-                ptr::null_mut(),
-                r.left,
-                r.top,
-                r.right - r.left,
-                r.bottom - r.top,
-                SWP_NOZORDER | SWP_NOACTIVATE,
-            );
-        }
-    }
     layout_frame();
-    if suggested.is_some() {
-        workspace::scale_documents();
-    }
     for (hwnd, content) in docs {
         content.prepare(hwnd);
     }
-    drop(old);
+}
+fn recolor() {
+    sidebar::recolor();
+    for (_, content) in workspace::views() {
+        content.recolor();
+    }
 }
 pub(super) fn layout_frame() {
     let (frame, mdi, tabs, status) =
@@ -152,7 +136,7 @@ pub(super) unsafe extern "system" fn frame_proc(hwnd: HWND, msg: u32, w: usize, 
                     });
                     sidebar::create(hwnd)?;
                     windows_sys::Win32::UI::Shell::DragAcceptFiles(hwnd, 1);
-                    update_environment(None, false);
+                    prepare();
                     Ok(())
                 })();
                 if let Err(error) = result {
@@ -168,15 +152,31 @@ pub(super) unsafe extern "system" fn frame_proc(hwnd: HWND, msg: u32, w: usize, 
                 return 0;
             }
             WM_DPICHANGED if dpi().per_monitor() => {
-                update_environment(Some((*(l as *const RECT), (w & 0xffff) as u32)), false);
+                let r = &*(l as *const RECT);
+                SetWindowPos(
+                    hwnd,
+                    ptr::null_mut(),
+                    r.left,
+                    r.top,
+                    r.right - r.left,
+                    r.bottom - r.top,
+                    SWP_NOZORDER | SWP_NOACTIVATE,
+                );
+                prepare();
+                workspace::scale_documents();
                 return 0;
             }
             WM_SETTINGCHANGE => {
-                update_environment(None, w == 0 || w as u32 == SPI_SETNONCLIENTMETRICS);
+                if w == 0 || w as u32 == SPI_SETNONCLIENTMETRICS {
+                    let old = write(|a| std::mem::take(&mut a.fonts));
+                    prepare();
+                    drop(old);
+                }
+                recolor();
             }
-            WM_SYSCOLORCHANGE | WM_THEMECHANGED => update_environment(None, false),
+            WM_SYSCOLORCHANGE | WM_THEMECHANGED => recolor(),
             WM_COMMAND => {
-                if sidebar::command(w) || command(w as u16) {
+                if sidebar::command(w, l as HWND) || command(w as u16) {
                     return 0;
                 }
             }
@@ -199,10 +199,7 @@ pub(super) unsafe extern "system" fn frame_proc(hwnd: HWND, msg: u32, w: usize, 
                     return result;
                 }
             }
-            WM_CONTEXTMENU if w as HWND == GetDlgItem(hwnd, SOURCE_LIST as i32) => {
-                if let Err(error) = super::sources::context_menu(w as HWND, l) {
-                    super::catalog::set_status(format!("{error:#}"));
-                }
+            WM_CONTEXTMENU if sidebar::context_menu(w as HWND, l) => {
                 return 0;
             }
             // A top-level WM_GETMINMAXINFO minimum can block a DPI downscale.

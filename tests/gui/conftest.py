@@ -78,10 +78,13 @@ def launch(request, settings, profile):
                         screenshot(session.frame, settings[2] / (request.node.name + "-%d.bmp" % index))
                     except Exception as error:
                         (settings[2] / (request.node.name + "-capture-error.txt")).write_text(str(error), encoding="utf-8")
-            session.close()
         except Exception as error:
             errors.append(str(error))
         finally:
+            try:
+                session.close()
+            except Exception as error:
+                errors.append(str(error))
             (settings[2] / (request.node.name + "-%d-process.json" % index)).write_text(json.dumps({
                 "pid": session.process.pid, "exit_code": session.process.poll(),
                 "actual_dpi": session.actual_dpi, "cleanup_complete": session.cleanup_complete}), encoding="utf-8")

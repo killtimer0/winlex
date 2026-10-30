@@ -122,10 +122,24 @@ impl Settings {
         config: &Config,
         architecture: Architecture,
     ) -> anyhow::Result<()> {
-        self.preferred_architecture = Some(architecture);
-        config
-            .write_key()?
-            .set_text("PreferredArchitecture", architecture.name())
+        if self.preferred_architecture != Some(architecture) {
+            config
+                .write_key()?
+                .set_text("PreferredArchitecture", architecture.name())?;
+            self.preferred_architecture = Some(architecture);
+        }
+        Ok(())
+    }
+    pub fn set_preferences(
+        &mut self,
+        config: &Config,
+        preferences: Preferences,
+    ) -> anyhow::Result<()> {
+        if self.preferences != preferences {
+            preferences.save(config)?;
+            self.preferences = preferences;
+        }
+        Ok(())
     }
 }
 

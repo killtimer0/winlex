@@ -6,7 +6,6 @@ use windows::Win32::UI::Controls::RichEdit::{
     CFM_COLOR, CFM_FACE, CHARFORMATW, CHARRANGE, EM_EXGETSEL, EM_EXSETSEL, EM_GETSELTEXT,
     EM_SETBKGNDCOLOR, EM_SETCHARFORMAT, SCF_ALL, SCF_SELECTION,
 };
-use windows_sys::Win32::UI::Accessibility::{HCF_HIGHCONTRASTON, HIGHCONTRASTW};
 use winlex_format::declaration::NumberRegion;
 
 /// Capture context before TrackPopupMenu enters its nested message loop.
@@ -233,20 +232,7 @@ fn apply_colors(hwnd: HWND, body: &str, syntax: bool) {
     let first_line = send(hwnd, EM_GETFIRSTVISIBLELINE, 0, 0);
     send(hwnd, EM_SETBKGNDCOLOR, 1, 0);
     color(hwnd, 0, -1, unsafe { GetSysColor(COLOR_WINDOWTEXT) });
-    let mut contrast = HIGHCONTRASTW {
-        cbSize: size_of::<HIGHCONTRASTW>() as u32,
-        ..unsafe { std::mem::zeroed() }
-    };
-    let high_contrast = unsafe {
-        SystemParametersInfoW(
-            SPI_GETHIGHCONTRAST,
-            contrast.cbSize,
-            &mut contrast as *mut _ as _,
-            0,
-        ) == 0
-            || contrast.dwFlags & HCF_HIGHCONTRASTON != 0
-    };
-    if syntax && !high_contrast && unsafe { GetSysColor(COLOR_WINDOW) } == 0x00ffffff {
+    if syntax && !high_contrast() && unsafe { GetSysColor(COLOR_WINDOW) } == 0x00ffffff {
         let chars: Vec<u16> = body.encode_utf16().collect();
         for (start, end, value) in spans(&chars) {
             color(hwnd, start as i32, end as i32, value);

@@ -21,6 +21,22 @@ pub fn instance() -> HINSTANCE {
 pub fn error(action: &str) -> anyhow::Error {
     anyhow::Error::new(std::io::Error::last_os_error()).context(action.to_owned())
 }
+pub fn high_contrast() -> bool {
+    use windows_sys::Win32::UI::Accessibility::{HCF_HIGHCONTRASTON, HIGHCONTRASTW};
+    let mut contrast = HIGHCONTRASTW {
+        cbSize: std::mem::size_of::<HIGHCONTRASTW>() as u32,
+        ..unsafe { std::mem::zeroed() }
+    };
+    unsafe {
+        SystemParametersInfoW(
+            SPI_GETHIGHCONTRAST,
+            contrast.cbSize,
+            (&mut contrast as *mut HIGHCONTRASTW).cast(),
+            0,
+        ) == 0
+            || contrast.dwFlags & HCF_HIGHCONTRASTON != 0
+    }
+}
 
 pub fn child(
     parent: HWND,

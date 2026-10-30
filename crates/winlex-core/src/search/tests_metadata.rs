@@ -293,3 +293,65 @@ fn float_distance_guid_order_and_source_filters_use_shared_scan() {
     assert_eq!(filtered[0].id.source_id, 1);
     assert_eq!(filtered[0].name, "Guid257");
 }
+
+#[test]
+fn reference_counts_do_not_short_circuit_after_an_interface_hit() {
+    for target_first in [false, true] {
+        let mut file = writer::File::new("References");
+        let object = file.TypeRef("System", "Object");
+        file.TypeDef(
+            "Fixture",
+            "Target",
+            writer::TypeDefOrRef::TypeRef(object),
+            TypeAttributes::Public | TypeAttributes::Interface | TypeAttributes::Abstract,
+        );
+        let owner = file.TypeDef(
+            "Fixture",
+            "Owner",
+            writer::TypeDefOrRef::TypeRef(object),
+            TypeAttributes::Public,
+        );
+        let target = Type::ClassName(TypeName::named("Fixture", "Target"));
+        let missing = Type::ClassName(TypeName::named("Fixture", "Missing"));
+        let interfaces = if target_first {
+            [&target, &missing]
+        } else {
+            [&missing, &target]
+        };
+        for interface in interfaces {
+            file.InterfaceImpl(owner, interface);
+        }
+        let db = Catalog::from_inputs([SourceData {
+            path: "References.winmd".into(),
+            bytes: file.into_stream().into(),
+        }])
+        .unwrap();
+        let target = db
+            .search_exact(
+                "Target",
+                SearchOptions {
+                    types_only: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .id;
+        let mut query = db.references(target, Architecture::X64, None).unwrap();
+        let matches = query.by_ref().collect::<anyhow::Result<Vec<_>>>().unwrap();
+        assert_eq!(
+            matches
+                .iter()
+                .map(|hit| hit.name.as_str())
+                .collect::<Vec<_>>(),
+            ["Owner"]
+        );
+        assert_eq!(
+            query.unresolved_type_uses(),
+            1,
+            "target_first={target_first}"
+        );
+    }
+}

@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 import subprocess
+from reader_gate import compare
 
 ROOT = Path(__file__).resolve().parents[2]
 EXE = ROOT / "target/release/examples/host-cli.exe"
@@ -19,8 +20,7 @@ def main():
     facts = subprocess.run([ROOT / "target/release/examples/reader-facts.exe", source], capture_output=True, check=True)
     facts = json.loads(facts.stdout)
     oracle = json.loads((out / "oracle.json").read_text())
-    for key in ("assembly", "references", "layouts", "scopes", "signature_type_tokens", "properties", "events"):
-        assert facts[key] == oracle[key], key
+    compare(facts, oracle)
     assert any(r["offset"] == 8 for r in facts["layouts"])
     for name, reason in (("Nonzero", "nonzero/missing explicit offset"), ("SizedOverlay", "declared size"), ("External", "external ResolutionScope")):
         result = layout(source, name)

@@ -150,8 +150,8 @@ class Session:
                 if self.cell(index).splitlines()[0].rsplit(".", 1)[-1] == name]
 
     def selected_row(self, control=None):
-        return n.send(control or self.results, messages.LVM_GETNEXTITEM,
-                      c.c_size_t(-1).value, messages.LVNI_SELECTED)
+        return c.c_int32(n.send(control or self.results, messages.LVM_GETNEXTITEM,
+                               c.c_size_t(-1).value, messages.LVNI_SELECTED)).value
 
     def item_rect(self, row, control=None):
         raw = bytes(16)

@@ -10,7 +10,6 @@ use std::{
     ops::Range,
     ptr,
 };
-use windows_sys::Win32::UI::Accessibility::{HCF_HIGHCONTRASTON, HIGHCONTRASTW};
 use windows_sys::Win32::UI::Shell::GetWindowSubclass;
 
 #[derive(Default)]
@@ -203,7 +202,7 @@ impl List {
         unsafe {
             SetWindowTheme(hwnd, w!("Explorer"), ptr::null());
         }
-        if unsafe { set_subclass(hwnd, Some(list_proc), 1, themed_items(hwnd) as usize) } == 0 {
+        if unsafe { set_subclass(hwnd, Some(list_proc), 1, palette(hwnd)) } == 0 {
             anyhow::bail!("Subclass list control {id} failed");
         }
         list_column(hwnd, 0, "", 100);
@@ -246,6 +245,13 @@ impl List {
     pub fn layout(&self, area: RECT) {
         place(self.hwnd, area);
         fit(self.hwnd);
+    }
+    pub fn recolor(&self) -> anyhow::Result<()> {
+        refresh_palette(self.hwnd);
+        if let Some(visuals) = self.visuals.borrow_mut().as_mut() {
+            visuals.images = Images::new(visuals.icon_size)?;
+        }
+        Ok(())
     }
     pub fn refresh_tooltip(&self) {
         let item = self.tooltip_item.get();
@@ -381,10 +387,11 @@ impl List {
                             }
                             SetBkMode(d.nmcd.hdc, TRANSPARENT as i32);
                             if let Some(visuals) = visuals.as_ref() {
-                                let mut themed = 0;
-                                GetWindowSubclass(self.hwnd, Some(list_proc), 1, &mut themed);
-                                let system = visuals.high_contrast
-                                    || selected && (!self.native_background || themed == 0);
+                                let mut palette = 0;
+                                GetWindowSubclass(self.hwnd, Some(list_proc), 1, &mut palette);
+                                let system = palette & HIGH_CONTRAST != 0
+                                    || selected
+                                        && (!self.native_background || palette & THEMED == 0);
                                 (self.row)(d.nmcd.dwItemSpec, &mut |row| {
                                     visuals.draw(d.nmcd.hdc, area, row, system);
                                 });
@@ -552,6 +559,17 @@ fn themed_items(hwnd: HWND) -> bool {
         supported
     }
 }
+const THEMED: usize = 1;
+const HIGH_CONTRAST: usize = 2;
+fn palette(hwnd: HWND) -> usize {
+    (usize::from(themed_items(hwnd)) * THEMED) | (usize::from(high_contrast()) * HIGH_CONTRAST)
+}
+fn refresh_palette(hwnd: HWND) {
+    unsafe {
+        set_subclass(hwnd, Some(list_proc), 1, palette(hwnd));
+        InvalidateRect(hwnd, ptr::null(), 0);
+    }
+}
 unsafe extern "system" fn list_proc(
     h: HWND,
     msg: u32,
@@ -563,8 +581,7 @@ unsafe extern "system" fn list_proc(
     unsafe {
         if matches!(msg, WM_THEMECHANGED | WM_SETTINGCHANGE | WM_SYSCOLORCHANGE) {
             let result = default_subclass(h, msg, w, l);
-            set_subclass(h, Some(list_proc), 1, themed_items(h) as usize);
-            InvalidateRect(h, ptr::null(), 0);
+            refresh_palette(h);
             return result;
         }
         if msg == WM_CONTEXTMENU {
@@ -598,22 +615,9 @@ struct Visuals {
     icon_size: i32,
     padding: i32,
     gap: i32,
-    high_contrast: bool,
 }
 impl Visuals {
     fn new(m: &layout::Metrics) -> anyhow::Result<Self> {
-        let mut contrast = HIGHCONTRASTW {
-            cbSize: std::mem::size_of::<HIGHCONTRASTW>() as u32,
-            ..unsafe { std::mem::zeroed() }
-        };
-        unsafe {
-            SystemParametersInfoW(
-                SPI_GETHIGHCONTRAST,
-                contrast.cbSize,
-                (&mut contrast as *mut HIGHCONTRASTW).cast(),
-                0,
-            );
-        }
         Ok(Self {
             heading: Font::heading(m.dpi, m.font)?,
             body: m.font,
@@ -622,7 +626,6 @@ impl Visuals {
             icon_size: m.px(16),
             padding: m.px(4),
             gap: m.px(2),
-            high_contrast: contrast.dwFlags & HCF_HIGHCONTRASTON != 0,
         })
     }
     fn row_height(&self) -> i32 {
@@ -927,7 +930,7 @@ mod tests {
             };
             let original = cached();
             assert_eq!(SetWindowTheme(list.hwnd, w!(""), w!("")), 0);
-            assert_eq!(cached(), 0);
+            assert_eq!(cached() & THEMED, 0);
             assert_eq!(SetWindowTheme(list.hwnd, w!("Explorer"), ptr::null()), 0);
             assert_eq!(cached(), original);
             DestroyWindow(frame);

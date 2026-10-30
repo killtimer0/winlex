@@ -20,6 +20,10 @@ struct Lower<'a> {
     active: HashSet<EntityId>,
     cache: HashMap<EntityId, l::Type<()>>,
 }
+fn instance_fields(t: TypeDef<'_>, arch: i32) -> impl Iterator<Item = Field<'_>> {
+    t.fields()
+        .filter(move |f| !f.flags().contains(FieldAttributes::Static) && supports(*f, arch))
+}
 impl Lower<'_> {
     fn sig(&mut self, ty: Type, owner: TypeDef<'_>) -> Result<l::Type<()>> {
         use l::BuiltinType as B;
@@ -89,11 +93,7 @@ impl Lower<'_> {
                 }
             }
             let mut fields = vec![];
-            let arch = self.arch;
-            for f in t
-                .fields()
-                .filter(|f| !f.flags().contains(FieldAttributes::Static) && supports(*f, arch))
-            {
+            for f in instance_fields(t, self.arch) {
                 if explicit {
                     ensure!(
                         f.explicit_offset() == Some(0),
@@ -164,11 +164,7 @@ pub(crate) fn derive_key(db: &Db, key: EntityId, arch: Architecture) -> Result<L
     ) -> Result<Vec<crate::FieldLayout>> {
         let mut fields = vec![];
         if let l::TypeVariant::Record(record) = &output.variant {
-            for (f, computed) in t
-                .fields()
-                .filter(|f| !f.flags().contains(FieldAttributes::Static) && supports(*f, bit))
-                .zip(&record.fields)
-            {
+            for (f, computed) in instance_fields(t, bit).zip(&record.fields) {
                 let position = computed
                     .layout
                     .ok_or_else(|| anyhow::anyhow!("missing field layout"))?;
