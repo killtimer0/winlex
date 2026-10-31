@@ -44,15 +44,3 @@ def test_same_name_sources_open_and_unload_independently_with_failed_load_rollba
     assert app.named_rows("CreateFileW") == [0]
     assert profile.get("AutoLoad") == [str(settings[1])]
     assert 'CreateFileW(' in app.content(second)
-    # Reload is transactional too: corrupting an open file must keep its old data.
-    shutil.copyfile(settings[1], alias)
-    app.pick([alias])
-    n.wait(lambda: app.count(app.sources) == 2, "alias opened again", 45)
-    alias.write_bytes(b"invalid replacement")
-    app.select(1, app.sources)
-    app.command(1044)
-    n.wait(lambda: "failed" in app.status_text() or "失败" in app.status_text(), "reload rollback", 45)
-    assert app.count(app.sources) == 2
-    assert profile.get("AutoLoad") == saved
-    app.query("CreateFileW")
-    assert app.named_rows("CreateFileW") == [0, 1]

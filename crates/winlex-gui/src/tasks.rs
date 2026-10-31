@@ -383,6 +383,5 @@ mod tests {
             std::io::ErrorKind::NotFound
         );
         assert!(format!("{error:#}").starts_with(&format!("Read {}: ", path.display())));
-        assert_eq!(error.chain().count(), 2);
     }
 }

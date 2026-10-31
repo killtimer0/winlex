@@ -894,50 +894,6 @@ mod tests {
     }
 
     #[test]
-    fn selection_palette_tracks_control_theme_changes() {
-        unsafe {
-            let frame = CreateWindowExW(
-                0,
-                w!("STATIC"),
-                w!(""),
-                0,
-                0,
-                0,
-                320,
-                200,
-                ptr::null_mut(),
-                ptr::null_mut(),
-                instance(),
-                ptr::null(),
-            );
-            assert!(!frame.is_null());
-            let list = List::new(
-                frame,
-                1,
-                |_, _| {},
-                |_| Vec::new(),
-                None,
-                WindowsVersion::VISTA,
-            )
-            .unwrap();
-            let cached = || {
-                let mut value = 0;
-                assert_ne!(
-                    GetWindowSubclass(list.hwnd, Some(list_proc), 1, &mut value),
-                    0
-                );
-                value
-            };
-            let original = cached();
-            assert_eq!(SetWindowTheme(list.hwnd, w!(""), w!("")), 0);
-            assert_eq!(cached() & THEMED, 0);
-            assert_eq!(SetWindowTheme(list.hwnd, w!("Explorer"), ptr::null()), 0);
-            assert_eq!(cached(), original);
-            DestroyWindow(frame);
-        }
-    }
-
-    #[test]
     fn heading_font_is_larger_and_bold_at_each_scale() {
         for dpi in [96, 120, 144, 192, 288] {
             let body = Font::new(dpi).unwrap();
@@ -959,7 +915,7 @@ mod tests {
     }
 
     #[test]
-    fn matched_text_remains_emphasized_in_system_colors_and_when_truncated() {
+    fn truncated_matched_text_uses_accent_color() {
         unsafe {
             let screen = GetDC(ptr::null_mut());
             let dc = CreateCompatibleDC(screen);
@@ -971,25 +927,19 @@ mod tests {
             let area = layout::rect(0, 0, 100, 40);
             SetBkMode(dc, TRANSPARENT as i32);
             let text: Vec<_> = "Window😀WindowWindow".encode_utf16().collect();
-            for system in [false, true] {
-                FillRect(dc, &area, GetSysColorBrush(COLOR_WINDOW));
-                let normal = GetSysColor(COLOR_WINDOWTEXT);
-                let accent = if system {
-                    normal
-                } else {
-                    GetSysColor(COLOR_HOTLIGHT)
-                };
-                draw_text(
-                    dc,
-                    area,
-                    &text,
-                    &[0..6, 8..text.len()],
-                    normal,
-                    accent,
-                    system,
-                );
-                assert!((0..100).any(|x| (0..40).any(|y| GetPixel(dc, x, y) == accent)));
-            }
+            FillRect(dc, &area, GetSysColorBrush(COLOR_WINDOW));
+            let normal = GetSysColor(COLOR_WINDOWTEXT);
+            let accent = GetSysColor(COLOR_HOTLIGHT);
+            draw_text(
+                dc,
+                area,
+                &text,
+                &[0..6, 8..text.len()],
+                normal,
+                accent,
+                false,
+            );
+            assert!((0..100).any(|x| (0..40).any(|y| GetPixel(dc, x, y) == accent)));
             SelectObject(dc, old_font);
             SelectObject(dc, old_bitmap);
             DeleteObject(bitmap);

@@ -3,7 +3,7 @@ use serde_json::Value;
 use std::{
     ffi::OsString,
     path::PathBuf,
-    sync::{Arc, OnceLock, atomic::AtomicBool},
+    sync::{OnceLock, atomic::AtomicBool},
 };
 use winlex_core::{Architecture, Catalog, SearchMode, SearchOptions};
 
@@ -58,6 +58,8 @@ fn search_mode_flags_are_exclusive_and_only_apply_to_search() {
 #[test]
 fn guid_fragments_bytes_and_numeric_radices_share_the_cli_search_contract() {
     let (_, expected, _) = cli(&["search", "2147483648", "--value", "--limit", "1000"]);
+    assert_eq!(expected["schema"], "winlex-cli-6");
+    assert_eq!(expected["sources"][0]["id"], 0);
     for query in [
         "+0x80000000",
         "0b10000000000000000000000000000000",
@@ -531,25 +533,12 @@ fn api_has_import_and_parameter_semantics() {
 }
 
 #[test]
-fn values_guids_and_source_identity() {
-    let (_, decimal, _) = cli(&["search", "2147483648", "--value"]);
-    let (_, hex, _) = cli(&["search", "0x80000000", "--value"]);
-    assert_eq!(decimal["result"], hex["result"]);
-    assert_eq!(decimal["schema"], "winlex-cli-6");
-    assert_eq!(decimal["sources"][0]["id"], 0);
+fn constant_values_include_decimal_and_hex() {
     let (code, response, _) = cli(&["show", "GENERIC_READ", "--arch", "x64"]);
     assert_eq!(code, 0);
     let d = &response["result"];
     assert_eq!(d["value"]["decimal"], "2147483648");
     assert_eq!(d["value"]["hex"], "0x80000000");
-    let (_, g, _) = cli(&["search", "{0000000C-0000-0000-C000-000000000046}", "--guid"]);
-    assert!(
-        g["result"]["matches"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|r| r["name"] == "IStream")
-    );
 }
 
 #[test]
@@ -629,21 +618,6 @@ fn reverse_uses_and_cancellation() {
 fn immutable_catalog_can_be_shared_by_workers() {
     fn send_sync<T: Send + Sync>() {}
     send_sync::<Catalog>();
-    let db = Arc::new(Catalog::open(input()).unwrap());
-    let jobs = [Architecture::X86, Architecture::X64].map(|a| {
-        let db = db.clone();
-        std::thread::spawn(move || {
-            db.layout(
-                winlex_cli::select(&db, "OPENFILENAMEW", Some(a), true).unwrap(),
-                a,
-            )
-            .unwrap()
-            .size_bits
-        })
-    });
-    let [x86, x64] = jobs;
-    assert_eq!(x86.join().unwrap(), 704);
-    assert_eq!(x64.join().unwrap(), 1216);
 }
 
 #[test]

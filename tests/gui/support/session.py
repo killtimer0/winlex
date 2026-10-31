@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import struct
 import subprocess
+import time
 import win32con
 
 from . import messages
@@ -65,13 +66,33 @@ class Session:
     def settings(self):
         assert n.post(self.frame, win32con.WM_COMMAND, 1051, 0)
         owner = n.api(n.user, "GetWindow", w.HWND, w.HWND, w.UINT)
-        return n.wait(lambda: next((h for h in n.windows()
+        sheet = n.wait(lambda: next((h for h in n.windows()
             if n.class_name(h) == "#32770" and owner(h, win32con.GW_OWNER) == self.frame
-            and n.is_visible(h) and n.get_item(h, 1)), None), "settings property sheet")
+             and n.is_visible(h) and n.get_item(h, 1)), None), "settings property sheet")
+        self.settings_page(sheet, 0)
+        return sheet
 
     def settings_page(self, sheet, index):
         assert n.send(sheet, 0x400 + 101, index, 0)  # PSM_SETCURSEL
-        return n.wait(lambda: n.send(sheet, 0x400 + 118), "settings page")
+        previous = None
+        since = time.monotonic()
+
+        def stable():
+            nonlocal previous, since
+            page = n.send(sheet, 0x400 + 118)  # PSM_GETCURRENTPAGEHWND
+            if not page or not n.is_visible(page):
+                previous = None
+                since = time.monotonic()
+                return None
+            with n.window_dpi_context(sheet):
+                snapshot = tuple((h, n.rectangle(h), n.send(h, win32con.WM_GETFONT))
+                                 for h in [sheet, page, *n.windows(page)])
+            if snapshot != previous:
+                previous = snapshot
+                since = time.monotonic()
+            return page if time.monotonic() - since >= .2 else None
+
+        return n.wait(stable, "stable settings page", 5)
 
     def close_settings(self, sheet, accept=True):
         assert n.post(sheet, win32con.WM_COMMAND, 1 if accept else 2, 0)

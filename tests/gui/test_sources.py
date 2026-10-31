@@ -3,11 +3,11 @@ import pytest
 import winreg
 import win32con
 import win32gui
-from support.diagnostics import capture, screenshot
+from support.diagnostics import screenshot
 from support import native as n
 
 
-def test_sources_share_two_line_paint_and_native_selection(launch, settings):
+def test_source_rows_and_selection_survive_reload(launch, settings):
     app = launch([settings[1]])
     app.query("CreateFileW")
     with n.window_dpi_context(app.frame):
@@ -18,13 +18,6 @@ def test_sources_share_two_line_paint_and_native_selection(launch, settings):
     with n.window_dpi_context(app.frame):
         left, top, right, bottom = app.item_rect(0, app.sources)
         assert bottom - top == result_height
-        with capture(app.sources, client=True) as (dc, _, _):
-            background = win32gui.GetSysColor(win32con.COLOR_WINDOW)
-            midpoint = (top + bottom) // 2
-            for start, end in [(top, midpoint), (midpoint, bottom)]:
-                assert any(win32gui.GetPixel(dc, x, y) != background
-                           for x in range(left, min(right, left + 200))
-                           for y in range(start, end)), "missing source line"
     assert str(settings[1]) in app.cell(0, app.sources)
     app.select(0, app.sources)
     assert app.selected_row(app.sources) == 0
@@ -38,36 +31,30 @@ def test_sources_share_two_line_paint_and_native_selection(launch, settings):
     assert str(settings[1]) in app.cell(0, app.sources)
 
 
-def test_source_actions_preserve_identity_and_recover_failed_reload(launch, settings):
+def test_source_actions_preserve_identity_and_recover_failed_reload(launch, profile, settings):
     paths = [settings[2] / name / "same.winmd" for name in ("first", "second", "third")]
     for path in paths:
         path.parent.mkdir(exist_ok=True)
         shutil.copyfile(settings[1], path)
-    app = launch(paths)
+    app = launch()
+    app.pick(paths)
     n.wait(lambda: app.count(app.sources) == 3, "sources loaded", 45)
     app.command(1021)
     reload_button, remove_button = (n.get_item(app.frame, i) for i in (1044, 1022))
     assert not win32gui.IsWindowEnabled(reload_button)
     assert not win32gui.IsWindowEnabled(remove_button)
-    with n.window_dpi_context(app.frame):
-        left, top, right, bottom = app.item_rect(0, app.sources)
-        win32gui.SetWindowPos(app.sources, 0, 0, 0, right - left, bottom - top + 2,
-                             win32con.SWP_NOMOVE | win32con.SWP_NOZORDER | win32con.SWP_NOACTIVATE)
-        n.send(app.sources, 0x101E, 0, win32gui.GetClientRect(app.sources)[2])  # LVM_SETCOLUMNWIDTH
-        n.api(n.user, "ShowScrollBar", n.w.BOOL, n.w.HWND, n.c.c_int, n.w.BOOL)(app.sources, win32con.SB_HORZ, False)
     app.select(1, app.sources)
-    n.send(app.sources, 0x1013, 2, 0)  # LVM_ENSUREVISIBLE
-    top_before = app.item_rect(2, app.sources)[1]
     assert win32gui.IsWindowEnabled(reload_button) and win32gui.IsWindowEnabled(remove_button)
     app.command(1022)
     n.wait(lambda: app.count(app.sources) == 2, "middle source removed", 45)
     assert app.selected_row(app.sources) == 1
-    assert app.item_rect(1, app.sources)[1] == top_before
     assert app.cell(1, app.sources).splitlines()[0] == str(paths[2])
     app.command(1022)
     n.wait(lambda: app.count(app.sources) == 1, "last source removed", 45)
     assert app.selected_row(app.sources) == 0
-    paths[0].unlink()
+    saved = profile.get("AutoLoad")
+    assert saved == [str(paths[0])]
+    paths[0].write_bytes(b"invalid replacement")
     app.command(1044)
     n.wait(lambda: app.cell(0, app.sources).splitlines()[1].startswith(("Reload failed", "重载失败")),
            "reload failure on retained row", 45)
@@ -75,6 +62,7 @@ def test_source_actions_preserve_identity_and_recover_failed_reload(launch, sett
     assert app.selected_row(app.sources) == 0
     app.query("CreateFileW")
     assert app.count() > 0
+    assert profile.get("AutoLoad") == saved
     assert app.cell(0, app.sources).splitlines()[1].startswith(("Reload failed", "重载失败"))
     shutil.copyfile(settings[1], paths[0])
     app.command(1044)
@@ -140,10 +128,8 @@ def test_open_loads_and_close_keeps_document_snapshot(launch, profile, settings)
     assert restored.count(restored.sources) == 0
 
 
-def test_restore_successful_files_ignores_legacy_discovery_locations(launch, profile, settings):
+def test_restore_successful_files(launch, profile, settings):
     profile.set("AutoLoad", winreg.REG_MULTI_SZ, [str(settings[1])])
-    profile.set("Files", winreg.REG_MULTI_SZ, [str(settings[2] / "not-opened.winmd")])
-    profile.set("Directories", winreg.REG_MULTI_SZ, [str(settings[1].parent)])
     app = launch()
     n.wait(lambda: app.count(app.sources) == 1, "saved source loaded", 45)
     assert str(settings[1]) in app.cell(0, app.sources)

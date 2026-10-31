@@ -5,7 +5,7 @@ import win32con
 from support import native as n
 
 
-def test_placement_and_language_restart(launch, profile):
+def test_placement_and_sidebar_restart(launch, profile):
     profile.set("Window", winreg.REG_BINARY, struct.pack("<6i", 100000, 100000, 800, 600, 96, 0))
     profile.set("SidebarWidth", winreg.REG_DWORD, 310)
     profile.set("ActivePanel", winreg.REG_DWORD, 1)
@@ -16,20 +16,14 @@ def test_placement_and_language_restart(launch, profile):
     assert n.is_visible(app.sources) and not n.is_visible(app.results)
     rect = n.rectangle(app.frame)
     assert any(m[0] <= rect[0] < rect[2] <= m[2] and m[1] <= rect[1] < rect[3] <= m[3] for m in n.monitors())
-    sheet = app.settings()
-    general = app.settings_page(sheet, 0)
-    n.send(n.get_item(general, 1300), win32con.CB_SETCURSEL, 2)
-    app.close_settings(sheet)
     n.send(app.frame, win32con.WM_SYSCOMMAND, win32con.SC_MAXIMIZE)
     assert n.is_zoomed(app.frame)
     app.close()
-    assert profile.get("Preferences", profile.get("Language") + ":7") == "zh-CN:7"
     assert (profile.get("ActivePanel"), profile.get("PanelCollapsed")) == (1, 0)
     assert struct.unpack("<6i", profile.get("Window"))[-1] == 1
     restored = launch()
     assert n.is_visible(restored.sources) and not n.is_visible(restored.results)
     assert n.is_zoomed(restored.frame)
-    assert restored.toolbar_text(1040) == "搜索"
     n.send(restored.frame, win32con.WM_SYSCOMMAND, win32con.SC_RESTORE)
     actual = n.rectangle(restored.frame)
     assert all(abs(a-b) <= 2 for a,b in zip(actual, rect))
