@@ -1,15 +1,18 @@
 //! RichEdit 2.0-compatible declaration presentation. Offsets are UTF-16 positions.
 use crate::native::*;
-use anyhow::Context;
+use anyhow::{Context, ensure};
 use std::{mem::size_of, sync::OnceLock};
 use windows::Win32::UI::Controls::RichEdit::{
-    CFM_COLOR, CFM_FACE, CHARFORMATW, CHARRANGE, EM_EXGETSEL, EM_EXSETSEL, EM_GETSELTEXT,
-    EM_SETBKGNDCOLOR, EM_SETCHARFORMAT, EM_SETPARAFORMAT, PARAFORMAT, PARAFORMAT2, PFM_LINESPACING,
-    PFM_RIGHTINDENT, PFM_STARTINDENT, SCF_ALL, SCF_SELECTION,
+    CFM_COLOR, CFM_FACE, CFM_SIZE, CHARFORMATW, CHARRANGE, EDITSTREAM, EM_EXGETSEL, EM_EXSETSEL,
+    EM_GETCHARFORMAT, EM_GETSELTEXT, EM_SETBKGNDCOLOR, EM_SETCHARFORMAT, EM_SETPARAFORMAT,
+    EM_STREAMIN, PARAFORMAT, PARAFORMAT2, PFM_LINESPACING, PFM_RIGHTINDENT, PFM_STARTINDENT,
+    SCF_ALL, SF_RTF,
 };
 use winlex_format::declaration::NumberRegion;
 
+mod rtf;
 mod word_break;
+pub use rtf::Content;
 
 /// Capture context before TrackPopupMenu enters its nested message loop.
 pub fn context_menu(hwnd: HWND, location: isize, numbers: &[NumberRegion]) -> anyhow::Result<()> {
@@ -199,44 +202,31 @@ pub fn font(hwnd: HWND) {
     send(hwnd, EM_EXSETSEL, 0, &selection as *const _ as isize);
 }
 
-fn color(hwnd: HWND, start: i32, end: i32, value: u32) {
-    let range = CHARRANGE {
-        cpMin: start,
-        cpMax: end,
-    };
-    send(hwnd, EM_EXSETSEL, 0, &range as *const _ as isize);
-    let format = CHARFORMATW {
-        cbSize: size_of::<CHARFORMATW>() as u32,
-        dwMask: CFM_COLOR,
-        crTextColor: windows::Win32::Foundation::COLORREF(value),
-        ..Default::default()
-    };
-    send(
-        hwnd,
-        EM_SETCHARFORMAT,
-        SCF_SELECTION as usize,
-        &format as *const _ as isize,
-    );
-}
-
-pub fn set_content(hwnd: HWND, body: &str, syntax: bool) {
-    // RichEdit stores paragraph separators as a single CR.
-    let body = body.replace("\r\n", "\n").replace('\n', "\r");
-    if text(hwnd).replace("\r\n", "\n").replace('\n', "\r") == body {
-        return;
+pub fn set_content(hwnd: HWND, content: &Content, syntax: bool) -> anyhow::Result<()> {
+    if text(hwnd).replace("\r\n", "\r") == content.text {
+        return Ok(());
     }
     send(hwnd, WM_SETREDRAW, 0, 0);
-    set_text(hwnd, &body);
-    font(hwnd);
-    apply_colors(hwnd, &body, syntax);
+    let result = replace(hwnd, content, syntax);
     redraw(hwnd);
+    result
 }
 
-pub fn recolor(hwnd: HWND, syntax: bool) {
-    let body = text(hwnd).replace("\r\n", "\n").replace('\n', "\r");
+pub fn recolor(hwnd: HWND, content: &Content, syntax: bool) -> anyhow::Result<()> {
+    let mut range = CHARRANGE::default();
+    send(hwnd, EM_EXGETSEL, 0, &mut range as *mut _ as isize);
+    let first_line = send(hwnd, EM_GETFIRSTVISIBLELINE, 0, 0);
     send(hwnd, WM_SETREDRAW, 0, 0);
-    apply_colors(hwnd, &body, syntax);
+    let result = replace(hwnd, content, syntax);
+    send(hwnd, EM_EXSETSEL, 0, &range as *const _ as isize);
+    send(
+        hwnd,
+        EM_LINESCROLL,
+        0,
+        first_line - send(hwnd, EM_GETFIRSTVISIBLELINE, 0, 0),
+    );
     redraw(hwnd);
+    result
 }
 
 fn redraw(hwnd: HWND) {
@@ -246,25 +236,80 @@ fn redraw(hwnd: HWND) {
     }
 }
 
-fn apply_colors(hwnd: HWND, body: &str, syntax: bool) {
-    let mut range = CHARRANGE::default();
-    send(hwnd, EM_EXGETSEL, 0, &mut range as *mut _ as isize);
-    let first_line = send(hwnd, EM_GETFIRSTVISIBLELINE, 0, 0);
+fn replace(hwnd: HWND, content: &Content, syntax: bool) -> anyhow::Result<()> {
+    let mut format = CHARFORMATW {
+        cbSize: size_of::<CHARFORMATW>() as u32,
+        ..Default::default()
+    };
+    send(hwnd, EM_GETCHARFORMAT, 0, &mut format as *mut _ as isize);
     send(hwnd, EM_SETBKGNDCOLOR, 1, 0);
-    color(hwnd, 0, -1, unsafe { GetSysColor(COLOR_WINDOWTEXT) });
-    if syntax && !high_contrast() && unsafe { GetSysColor(COLOR_WINDOW) } == 0x00ffffff {
-        let chars: Vec<u16> = body.encode_utf16().collect();
-        for (start, end, value) in spans(&chars) {
-            color(hwnd, start as i32, end as i32, value);
-        }
+    let colored = syntax && !high_contrast() && unsafe { GetSysColor(COLOR_WINDOW) } == 0x00ffffff;
+    let result = if colored {
+        stream_in(hwnd, &content.rtf)
+    } else {
+        Ok(())
+    };
+    if !colored || result.is_err() {
+        set_text(hwnd, &content.text);
+        let plain = CHARFORMATW {
+            cbSize: size_of::<CHARFORMATW>() as u32,
+            dwMask: CFM_COLOR,
+            crTextColor: windows::Win32::Foundation::COLORREF(unsafe {
+                GetSysColor(COLOR_WINDOWTEXT)
+            }),
+            ..Default::default()
+        };
+        send(
+            hwnd,
+            EM_SETCHARFORMAT,
+            SCF_ALL as usize,
+            &plain as *const _ as isize,
+        );
     }
-    send(hwnd, EM_EXSETSEL, 0, &range as *const _ as isize);
+    format.dwMask = CFM_SIZE;
     send(
         hwnd,
-        EM_LINESCROLL,
-        0,
-        first_line - send(hwnd, EM_GETFIRSTVISIBLELINE, 0, 0),
+        EM_SETCHARFORMAT,
+        SCF_ALL as usize,
+        &format as *const _ as isize,
     );
+    font(hwnd);
+    let range = CHARRANGE::default();
+    send(hwnd, EM_EXSETSEL, 0, &range as *const _ as isize);
+    result
+}
+
+fn stream_in(hwnd: HWND, data: &[u8]) -> anyhow::Result<()> {
+    unsafe extern "system" fn read(
+        cookie: usize,
+        buffer: *mut u8,
+        count: i32,
+        written: *mut i32,
+    ) -> u32 {
+        unsafe {
+            let remaining = &mut *(cookie as *mut &[u8]);
+            let count = (count.max(0) as usize).min(remaining.len());
+            std::ptr::copy_nonoverlapping(remaining.as_ptr(), buffer, count);
+            *written = count as i32;
+            *remaining = &remaining[count..];
+        }
+        0
+    }
+    let mut remaining = data;
+    let mut stream = EDITSTREAM {
+        dwCookie: &mut remaining as *mut &[u8] as usize,
+        dwError: 0,
+        pfnCallback: Some(read),
+    };
+    send(
+        hwnd,
+        EM_STREAMIN,
+        SF_RTF as usize,
+        &mut stream as *mut _ as isize,
+    );
+    let error = stream.dwError;
+    ensure!(error == 0, "Stream declaration into RichEdit: {error:#x}");
+    Ok(())
 }
 
 fn spans(text: &[u16]) -> Vec<(usize, usize, u32)> {
@@ -387,7 +432,7 @@ mod tests {
             let editor = create(parent, 1).unwrap();
             place(editor, crate::layout::rect(0, 0, 800, 400));
             let body = "ERROR_ACCESS_DENIED  next_value(x);";
-            set_content(editor, body, true);
+            set_content(editor, &Content::new(body.into()), true).unwrap();
             let selection = || {
                 let mut range = CHARRANGE::default();
                 send(editor, EM_EXGETSEL, 0, &mut range as *mut _ as isize);
@@ -443,6 +488,176 @@ mod tests {
     }
 
     #[test]
+    fn large_declaration_load_keeps_ui_pause_bounded() {
+        use std::time::{Duration, Instant};
+        use winlex_core::{Architecture, Catalog, EntityCategory, SearchMode, SearchOptions};
+
+        let catalog = Catalog::open(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../inputs/Windows.Win32.winmd"),
+        )
+        .unwrap();
+        let entity = catalog
+            .search(
+                "Windows.Win32.Graphics.Gdi.Apis",
+                SearchOptions {
+                    mode: SearchMode::Name,
+                    architecture: Some(Architecture::X64),
+                    categories: Some(EntityCategory::ALL & !(EntityCategory::TypeReference as u32)),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap();
+        let body = winlex_format::declaration::render(&catalog, entity.id, Architecture::X64)
+            .unwrap()
+            .text;
+        let content = Content::new(body.clone());
+        unsafe {
+            let parent = CreateWindowExW(
+                0,
+                w!("STATIC"),
+                std::ptr::null(),
+                WS_POPUP | WS_VISIBLE,
+                0,
+                0,
+                900,
+                600,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                instance(),
+                std::ptr::null(),
+            );
+            assert!(!parent.is_null());
+            let editor = create(parent, 1).unwrap();
+            place(editor, crate::layout::rect(0, 0, 750, 500));
+            focus(editor);
+            let start = Instant::now();
+            set_content(editor, &content, true).unwrap();
+            let elapsed = start.elapsed();
+            let start = Instant::now();
+            recolor(editor, &content, true).unwrap();
+            let recolor_elapsed = start.elapsed();
+            let actual = text(editor).replace("\r\n", "\n").replace('\r', "\n");
+            DestroyWindow(parent);
+            assert_eq!(actual, body);
+            assert!(
+                elapsed < Duration::from_secs(3),
+                "UI blocked for {elapsed:?}"
+            );
+            assert!(
+                recolor_elapsed < Duration::from_secs(3),
+                "UI blocked during recoloring for {recolor_elapsed:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn streamed_content_preserves_text_formats_and_reading_state() {
+        use windows::Win32::UI::Controls::RichEdit::SCF_SELECTION;
+
+        unsafe {
+            let parent = CreateWindowExW(
+                0,
+                w!("STATIC"),
+                std::ptr::null(),
+                WS_POPUP | WS_VISIBLE,
+                0,
+                0,
+                900,
+                600,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                instance(),
+                std::ptr::null(),
+            );
+            assert!(!parent.is_null());
+            let editor = create(parent, 1).unwrap();
+            place(editor, crate::layout::rect(0, 0, 750, 500));
+            focus(editor);
+            let size = CHARFORMATW {
+                cbSize: size_of::<CHARFORMATW>() as u32,
+                dwMask: CFM_SIZE,
+                yHeight: 210,
+                ..Default::default()
+            };
+            send(
+                editor,
+                EM_SETCHARFORMAT,
+                SCF_ALL as usize,
+                &size as *const _ as isize,
+            );
+            for body in [
+                "",
+                "const UINT32 n = 42;",
+                "// 中文😀 {\\}\nconst char16_t *s = \"中文😀\\\\{x}\";\n\tUINT32 n = 42;\n\n",
+                "one\r\ntwo\rthree\n",
+            ] {
+                let content = Content::new(body.into());
+                set_content(editor, &content, true).unwrap();
+                assert_eq!(text(editor).replace("\r\n", "\r"), content.text);
+                let units: Vec<_> = content.text.encode_utf16().collect();
+                for syntax in [false, true] {
+                    recolor(editor, &content, syntax).unwrap();
+                    assert_eq!(text(editor).replace("\r\n", "\r"), content.text);
+                    for (start, end, color) in spans(&units) {
+                        let range = CHARRANGE {
+                            cpMin: start as i32,
+                            cpMax: end as i32,
+                        };
+                        send(editor, EM_EXSETSEL, 0, &range as *const _ as isize);
+                        let mut selected = vec![0u16; end - start + 1];
+                        let count = send(editor, EM_GETSELTEXT, 0, selected.as_mut_ptr() as isize);
+                        assert_eq!(&selected[..count as usize], &units[start..end]);
+                        let mut format = CHARFORMATW {
+                            cbSize: size_of::<CHARFORMATW>() as u32,
+                            ..Default::default()
+                        };
+                        send(
+                            editor,
+                            EM_GETCHARFORMAT,
+                            SCF_SELECTION as usize,
+                            &mut format as *mut _ as isize,
+                        );
+                        let colored =
+                            syntax && !high_contrast() && GetSysColor(COLOR_WINDOW) == 0x00ffffff;
+                        assert_eq!(
+                            format.crTextColor.0,
+                            if colored {
+                                color
+                            } else {
+                                GetSysColor(COLOR_WINDOWTEXT)
+                            }
+                        );
+                        assert_eq!(format.yHeight, 210);
+                    }
+                }
+            }
+            let content = Content::new("const UINT32 value = 42;\n".repeat(500));
+            set_content(editor, &content, true).unwrap();
+            let range = CHARRANGE {
+                cpMin: 6000,
+                cpMax: 6005,
+            };
+            send(editor, EM_EXSETSEL, 0, &range as *const _ as isize);
+            send(editor, EM_LINESCROLL, 0, 30);
+            let first = send(editor, EM_GETFIRSTVISIBLELINE, 0, 0);
+            assert!(first > 0);
+            for syntax in [false, true] {
+                recolor(editor, &content, syntax).unwrap();
+                let mut actual = CHARRANGE::default();
+                send(editor, EM_EXGETSEL, 0, &mut actual as *mut _ as isize);
+                assert_eq!((actual.cpMin, actual.cpMax), (range.cpMin, range.cpMax));
+                assert_eq!(send(editor, EM_GETFIRSTVISIBLELINE, 0, 0), first);
+                assert_eq!(text(editor).replace("\r\n", "\r"), content.text);
+            }
+            DestroyWindow(parent);
+        }
+    }
+
+    #[test]
     fn visual_wrapping_preserves_declaration_and_paragraph_format() {
         unsafe {
             let parent = CreateWindowExW(
@@ -463,7 +678,7 @@ mod tests {
             let editor = create(parent, 1).unwrap();
             let body = "const UINT32 example = 123; // a long declaration with several words that wrap without changing the copied text 😀";
             place(editor, crate::layout::rect(0, 0, 800, 400));
-            set_content(editor, body, true);
+            set_content(editor, &Content::new(body.into()), true).unwrap();
             let wide_lines = send(editor, EM_GETLINECOUNT, 0, 0);
             place(editor, crate::layout::rect(0, 0, 180, 400));
             assert!(send(editor, EM_GETLINECOUNT, 0, 0) > wide_lines);
@@ -487,7 +702,12 @@ mod tests {
             assert_eq!(right, 120);
             assert_eq!(paragraph.bLineSpacingRule, 5);
             assert_eq!(paragraph.dyLineSpacing, 23);
-            set_content(editor, "struct Example {\n    UINT32 value;\n};", true);
+            set_content(
+                editor,
+                &Content::new("struct Example {\n    UINT32 value;\n};".into()),
+                true,
+            )
+            .unwrap();
             assert_eq!(
                 text(editor).replace("\r\n", "\n").replace('\r', "\n"),
                 "struct Example {\n    UINT32 value;\n};"

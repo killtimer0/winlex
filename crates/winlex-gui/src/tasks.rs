@@ -63,7 +63,8 @@ pub enum Output {
     Matches(Items),
     SearchDone,
     Description {
-        body: winlex_format::declaration::Rendered,
+        content: crate::rich_text::Content,
+        numbers: Vec<winlex_format::declaration::NumberRegion>,
     },
 }
 pub struct Completion {
@@ -138,7 +139,11 @@ fn execute(
             ..
         } => {
             let body = winlex_format::declaration::render(&catalog, entity, arch)?;
-            Ok(Output::Description { body })
+            let content = crate::rich_text::Content::new(body.text);
+            Ok(Output::Description {
+                content,
+                numbers: body.numbers,
+            })
         }
     }
 }

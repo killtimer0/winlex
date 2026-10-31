@@ -23,6 +23,7 @@ struct State {
     name: String,
     ticket: Option<u64>,
     numbers: Arc<[winlex_format::declaration::NumberRegion]>,
+    content: Option<Arc<crate::rich_text::Content>>,
     old_version: bool,
 }
 pub(super) struct MetadataView {
@@ -56,6 +57,7 @@ pub(super) fn open(name: &str, binding: Binding, preview: bool) -> anyhow::Resul
                 name: name.into(),
                 ticket: None,
                 numbers: Arc::from([]),
+                content: None,
                 old_version: false,
             }),
             editor: std::ptr::null_mut(),
@@ -156,7 +158,14 @@ impl MetadataView {
                 format!("{error:#}")
             }
         };
-        crate::rich_text::set_content(self.editor, &body, true);
+        self.set_content(crate::rich_text::Content::new(body));
+    }
+    fn set_content(&self, content: crate::rich_text::Content) {
+        let content = Arc::new(content);
+        if let Err(error) = crate::rich_text::set_content(self.editor, &content, true) {
+            catalog::set_status(format!("{error:#}"));
+        }
+        self.state.borrow_mut().content = Some(content);
     }
     fn select_architecture(&self, hwnd: HWND, code: u32) {
         let binding = self.state.borrow().binding.clone();
@@ -210,20 +219,22 @@ impl MetadataView {
             }
             state.ticket = None;
         }
-        let body = match completion.result {
-            Ok(Output::Description { body }) => {
-                self.state.borrow_mut().numbers = body.numbers.into();
-                body.text
+        let content = match completion.result {
+            Ok(Output::Description { content, numbers }) => {
+                self.state.borrow_mut().numbers = numbers.into();
+                content
             }
-            Err(error) => format!("{error:#}"),
+            Err(error) => crate::rich_text::Content::new(format!("{error:#}")),
             _ => unreachable!(),
         };
-        crate::rich_text::set_content(self.editor, &body, true);
+        self.set_content(content);
     }
     pub(super) fn worker_stopped(&self, _hwnd: HWND) {
         let pending = self.state.borrow_mut().ticket.take().is_some();
         if pending {
-            crate::rich_text::set_content(self.editor, &resources::text(IDS_WORKER_STOPPED), true);
+            self.set_content(crate::rich_text::Content::new(resources::text(
+                IDS_WORKER_STOPPED,
+            )));
         }
     }
     pub(super) fn catalog_changed(&self, hwnd: HWND) {
@@ -277,7 +288,12 @@ impl MetadataView {
         self.layout(hwnd);
     }
     pub(super) fn recolor(&self) {
-        crate::rich_text::recolor(self.editor, true);
+        let content = self.state.borrow().content.clone();
+        if let Some(content) = content
+            && let Err(error) = crate::rich_text::recolor(self.editor, &content, true)
+        {
+            catalog::set_status(format!("{error:#}"));
+        }
     }
     pub(super) fn layout(&self, hwnd: HWND) {
         let old = self.state.borrow().old_version;

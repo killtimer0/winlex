@@ -7,6 +7,30 @@ from support import native as n
 RESIZE_NO_MOVE = win32con.SWP_NOMOVE | win32con.SWP_NOZORDER | win32con.SWP_NOACTIVATE
 
 
+def test_large_api_document_stays_responsive(launch, settings):
+    app = launch([settings[1]])
+    app.query("Windows.Win32.Graphics.Gdi.Apis")
+    doc = app.open_row()
+    editor = n.get_item(doc, 1203)
+    n.wait(lambda: "EnumDisplayMonitors(" in app.content(doc), "complete Gdi declaration", 45)
+    app.focus(editor)
+    app.choose(doc, "x64" if app.choice(doc) == "x86" else "x86")
+    n.wait(lambda: "EnumDisplayMonitors(" in app.content(doc), "focused Gdi declaration reload", 45)
+    body = app.content(doc)
+    assert len(body) > 100_000
+    assert body.rstrip().endswith("};")
+    app.focus(editor)
+    n.send(editor, win32con.EM_SETSEL, 6000, 6005)
+    n.send(editor, win32con.EM_LINESCROLL, 0, 30)
+    first = n.send(editor, win32con.EM_GETFIRSTVISIBLELINE)
+    assert first > 0
+    # All cross-process messages have a bounded timeout, including recoloring.
+    n.send(app.frame, win32con.WM_SYSCOLORCHANGE)
+    assert app.content(doc) == body
+    assert n.send(editor, win32con.EM_GETSEL) == (6005 << 16) | 6000
+    assert n.send(editor, win32con.EM_GETFIRSTVISIBLELINE) == first
+
+
 def test_online_button_tracks_document_metadata(launch, settings):
     from support.accessibility import client
 
