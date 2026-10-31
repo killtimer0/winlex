@@ -245,7 +245,7 @@ impl Panel {
             self.list.notify(l)
         }
     }
-    pub fn layout(&self, area: RECT, m: &layout::Metrics) {
+    pub fn layout(&self, area: RECT, m: &layout::Metrics, positions: &mut Vec<(HWND, RECT)>) {
         let mut area = layout::inset(area, m.px(4));
         match &self.content {
             Content::Search(s) => {
@@ -261,16 +261,16 @@ impl Panel {
                     .min((row.right - row.left) / 2);
                 let right = row.right;
                 row.right = (right - width - m.px(4)).max(row.left);
-                place(s.input, row);
-                place(
+                positions.push((s.input, row));
+                positions.push((
                     s.selector,
                     layout::rect(right - width, row.top, width, m.row() * 6),
-                );
+                ));
                 layout::take_top(&mut area, m.px(4));
             }
-            Content::Sources => m.buttons(&mut area, self.controls[1..].iter().copied()),
+            Content::Sources => m.buttons(&mut area, self.controls[1..].iter().copied(), positions),
         }
-        self.list.layout(area);
+        positions.push((self.list.hwnd, area));
     }
     pub fn region(&self, hwnd: HWND) -> Option<keys::Region> {
         match &self.content {

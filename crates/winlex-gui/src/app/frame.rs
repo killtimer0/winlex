@@ -48,11 +48,14 @@ pub(super) fn layout_frame() {
     let m = super::metrics(frame);
     let mut area = client(frame);
     area.bottom = bounds(status, frame).top;
-    let sidebar = sidebar::layout(area.bottom);
+    let mut positions = Vec::new();
+    let sidebar = sidebar::layout(area.bottom, &mut positions);
     layout::take_left(&mut area, sidebar);
-    place(tabs, layout::take_top(&mut area, m.height + m.px(8)));
-    // Sidebar layout can overlap the old MDI bounds; do not preserve those pixels.
-    place_with_flags(mdi, area, SWP_NOCOPYBITS);
+    positions.push((tabs, layout::take_top(&mut area, m.height + m.px(8))));
+    positions.push((mdi, area));
+    if let Err(error) = place_all(&positions) {
+        super::write(|a| a.failure = Some(error));
+    }
 }
 pub(super) fn command(id: u16) -> bool {
     match id {

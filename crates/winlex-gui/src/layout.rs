@@ -76,7 +76,12 @@ impl Metrics {
         }
         width
     }
-    pub fn buttons(&self, area: &mut RECT, controls: impl IntoIterator<Item = HWND>) {
+    pub fn buttons(
+        &self,
+        area: &mut RECT,
+        controls: impl IntoIterator<Item = HWND>,
+        positions: &mut Vec<(HWND, RECT)>,
+    ) {
         let controls: Vec<_> = controls.into_iter().collect();
         if controls.is_empty() {
             return;
@@ -94,7 +99,7 @@ impl Metrics {
         for (i, h) in controls.into_iter().enumerate() {
             let i = i as i32;
             let y = (bounds.top + i / columns * (row + gap)).min(bounds.bottom);
-            place(
+            positions.push((
                 h,
                 rect(
                     bounds.left + i % columns * (width + gap),
@@ -102,7 +107,7 @@ impl Metrics {
                     width,
                     row.min(bounds.bottom - y),
                 ),
-            );
+            ));
         }
     }
 }

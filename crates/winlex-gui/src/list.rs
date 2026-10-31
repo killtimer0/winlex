@@ -242,10 +242,6 @@ impl List {
         self.visuals.replace(Some(visuals));
         Ok(())
     }
-    pub fn layout(&self, area: RECT) {
-        place(self.hwnd, area);
-        fit(self.hwnd);
-    }
     pub fn recolor(&self) -> anyhow::Result<()> {
         refresh_palette(self.hwnd);
         if let Some(visuals) = self.visuals.borrow_mut().as_mut() {
@@ -579,6 +575,11 @@ unsafe extern "system" fn list_proc(
     _data: usize,
 ) -> isize {
     unsafe {
+        if msg == WM_SIZE {
+            let result = default_subclass(h, msg, w, l);
+            fit(h);
+            return result;
+        }
         if matches!(msg, WM_THEMECHANGED | WM_SETTINGCHANGE | WM_SYSCOLORCHANGE) {
             let result = default_subclass(h, msg, w, l);
             refresh_palette(h);

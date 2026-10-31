@@ -205,7 +205,7 @@ pub(super) fn recolor() {
         panel.recolor();
     }
 }
-pub(super) fn layout(bottom: i32) -> i32 {
+pub(super) fn layout(bottom: i32, positions: &mut Vec<(HWND, RECT)>) -> i32 {
     let (frame, toolbar, splitter, width, panel) = read(|a| {
         let s = &a.sidebar;
         (
@@ -220,12 +220,12 @@ pub(super) fn layout(bottom: i32) -> i32 {
     let s = |n| m.px(n);
     let x = (send(toolbar, TB_GETBUTTONSIZE, 0, 0) & 0xffff) as i32 + s(8);
     let width = s(width).min((client(frame).right - x - s(160)).max(0));
-    place(toolbar, layout::rect(s(4), s(4), x - s(8), bottom - s(8)));
+    positions.push((toolbar, layout::rect(s(4), s(4), x - s(8), bottom - s(8))));
     let Some(panel) = panel else {
         return x;
     };
-    panel.layout(layout::rect(x, 0, width, bottom), &m);
-    place(splitter, layout::rect(x + width, 0, s(3), bottom));
+    panel.layout(layout::rect(x, 0, width, bottom), &m, positions);
+    positions.push((splitter, layout::rect(x + width, 0, s(3), bottom)));
     x + width + s(3)
 }
 pub(super) fn command(w: usize, control: HWND) -> bool {

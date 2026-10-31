@@ -94,9 +94,6 @@ pub fn bounds(hwnd: HWND, parent: HWND) -> RECT {
     r
 }
 pub fn place(hwnd: HWND, r: RECT) {
-    place_with_flags(hwnd, r, 0);
-}
-pub fn place_with_flags(hwnd: HWND, r: RECT, flags: SET_WINDOW_POS_FLAGS) {
     if hwnd.is_null() {
         return;
     }
@@ -112,9 +109,46 @@ pub fn place_with_flags(hwnd: HWND, r: RECT, flags: SET_WINDOW_POS_FLAGS) {
             r.top,
             (r.right - r.left).max(0),
             (r.bottom - r.top).max(0),
-            SWP_NOZORDER | SWP_NOACTIVATE | flags,
+            SWP_NOZORDER | SWP_NOACTIVATE,
         );
     }
+}
+pub fn place_all(positions: &[(HWND, RECT)]) -> anyhow::Result<()> {
+    let changed: Vec<_> = positions
+        .iter()
+        .filter(|(hwnd, r)| {
+            let old = bounds(*hwnd, unsafe { GetParent(*hwnd) });
+            (old.left, old.top, old.right, old.bottom) != (r.left, r.top, r.right, r.bottom)
+        })
+        .collect();
+    if changed.is_empty() {
+        return Ok(());
+    }
+    unsafe {
+        let mut batch = BeginDeferWindowPos(changed.len() as i32);
+        if batch.is_null() {
+            return Err(error("Begin layout"));
+        }
+        for &(hwnd, r) in changed {
+            batch = DeferWindowPos(
+                batch,
+                hwnd,
+                ptr::null_mut(),
+                r.left,
+                r.top,
+                (r.right - r.left).max(0),
+                (r.bottom - r.top).max(0),
+                SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+            if batch.is_null() {
+                return Err(error("Defer layout"));
+            }
+        }
+        if EndDeferWindowPos(batch) == 0 {
+            return Err(error("Commit layout"));
+        }
+    }
+    Ok(())
 }
 pub fn text(hwnd: HWND) -> String {
     let value = text_wide(hwnd);
@@ -200,6 +234,83 @@ pub fn list_column(hwnd: HWND, index: usize, title: &str, width: i32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sibling_layout_is_committed_before_resize_notifications() {
+        struct Observation {
+            sibling: HWND,
+            edges: Vec<(i32, i32)>,
+        }
+        unsafe extern "system" fn observe(
+            h: HWND,
+            msg: u32,
+            w: usize,
+            l: isize,
+            _: usize,
+            data: usize,
+        ) -> isize {
+            unsafe {
+                if msg == WM_SIZE {
+                    let observation = &mut *(data as *mut Observation);
+                    let parent = GetParent(h);
+                    observation.edges.push((
+                        bounds(h, parent).right,
+                        bounds(observation.sibling, parent).left,
+                    ));
+                }
+                default_subclass(h, msg, w, l)
+            }
+        }
+        unsafe {
+            let parent = CreateWindowExW(
+                0,
+                w!("STATIC"),
+                ptr::null(),
+                WS_POPUP,
+                0,
+                0,
+                700,
+                300,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                instance(),
+                ptr::null(),
+            );
+            assert!(!parent.is_null());
+            let edit = child(parent, w!("EDIT"), &[0], 0, 1).unwrap();
+            let sibling = child(parent, w!("STATIC"), &[0], 0, 2).unwrap();
+            place(edit, crate::layout::rect(10, 10, 200, 28));
+            place(sibling, crate::layout::rect(220, 10, 100, 28));
+            let mut observation = Observation {
+                sibling,
+                edges: vec![],
+            };
+            assert_ne!(
+                set_subclass(edit, Some(observe), 1, &mut observation as *mut _ as usize),
+                0
+            );
+            for width in [400, 150, 500, 200] {
+                let positions = [
+                    (edit, crate::layout::rect(10, 10, width, 28)),
+                    (sibling, crate::layout::rect(width + 20, 10, 100, 28)),
+                ];
+                place_all(&positions).unwrap();
+                let count = observation.edges.len();
+                place_all(&positions).unwrap();
+                assert_eq!(
+                    observation.edges.len(),
+                    count,
+                    "unchanged layout must not resize controls"
+                );
+            }
+            remove_subclass(edit, Some(observe), 1);
+            DestroyWindow(parent);
+            assert_eq!(
+                observation.edges,
+                [(410, 420), (160, 170), (510, 520), (210, 220)]
+            );
+        }
+    }
 
     #[test]
     fn child_creation_preserves_error_before_later_native_calls() {
