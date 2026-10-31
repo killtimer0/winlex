@@ -9,6 +9,8 @@ use crate::{
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 use winlex_core::{Architecture, Catalog, EntityId};
 
+mod info;
+
 #[derive(Clone)]
 pub(super) struct Binding {
     pub id: EntityId,
@@ -28,8 +30,7 @@ pub(super) struct MetadataView {
     icons: RefCell<Option<Rc<crate::icons::WindowIcons>>>,
     editor: HWND,
     header: HWND,
-    architecture_label: HWND,
-    architecture_select: HWND,
+    info: info::Info,
 }
 pub(super) fn binding(hwnd: HWND) -> Option<Binding> {
     Some(workspace::view(hwnd)?.state.borrow().binding.clone())
@@ -59,8 +60,7 @@ pub(super) fn open(name: &str, binding: Binding, preview: bool) -> anyhow::Resul
             }),
             editor: std::ptr::null_mut(),
             header: std::ptr::null_mut(),
-            architecture_label: std::ptr::null_mut(),
-            architecture_select: std::ptr::null_mut(),
+            info: info::Info::default(),
         },
         preview,
     )?;
@@ -77,6 +77,10 @@ pub(super) fn rebind(hwnd: HWND, name: &str, binding: Binding) -> bool {
         state.name = name.into();
     }
     view.fill_architectures();
+    let binding = view.state.borrow().binding.clone();
+    if let Err(error) = view.info.fill(&binding) {
+        write(|a| a.failure = Some(error));
+    }
     if let Err(error) = view.update_icons(hwnd) {
         write(|a| a.failure = Some(error));
     }
@@ -109,16 +113,16 @@ impl MetadataView {
     }
     fn fill_architectures(&self) {
         let binding = self.state.borrow().binding.clone();
-        send(self.architecture_select, CB_RESETCONTENT, 0, 0);
+        send(self.info.architecture, CB_RESETCONTENT, 0, 0);
         for arch in super::architecture::supported(binding.architecture_mask) {
             let index = send(
-                self.architecture_select,
+                self.info.architecture,
                 CB_ADDSTRING,
                 0,
                 wide(arch.name()).as_ptr() as isize,
             );
             if arch == binding.architecture {
-                send(self.architecture_select, CB_SETCURSEL, index as usize, 0);
+                send(self.info.architecture, CB_SETCURSEL, index as usize, 0);
             }
         }
     }
@@ -162,14 +166,14 @@ impl MetadataView {
                 .iter()
                 .position(|arch| *arch == binding.architecture)
             {
-                send(self.architecture_select, CB_SETCURSEL, index, 0);
+                send(self.info.architecture, CB_SETCURSEL, index, 0);
             }
             return;
         }
         if code != CBN_SELENDOK {
             return;
         }
-        let index = send(self.architecture_select, CB_GETCURSEL, 0, 0);
+        let index = send(self.info.architecture, CB_GETCURSEL, 0, 0);
         let Some(&arch) = supported.get(index as usize) else {
             return;
         };
@@ -251,21 +255,10 @@ impl MetadataView {
         )?;
         document::track_editor(hwnd, self.editor)?;
         show(self.header, false);
-        self.architecture_label = child(
-            hwnd,
-            w!("STATIC"),
-            resources::wide_text(IDS_ARCHITECTURE),
-            0,
-            0,
-        )?;
-        self.architecture_select = child(
-            hwnd,
-            w!("COMBOBOX"),
-            &[0],
-            WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST as u32,
-            SELECT_ARCH,
-        )?;
+        self.info.create(hwnd, self.editor)?;
         self.fill_architectures();
+        let binding = self.state.borrow().binding.clone();
+        self.info.fill(&binding)?;
         self.update_icons(hwnd)?;
         Ok(())
     }
@@ -274,13 +267,11 @@ impl MetadataView {
             write(|a| a.failure = Some(error));
         }
         let (font, _) = font_for(dpi().window(hwnd));
-        for h in [
-            self.editor,
-            self.header,
-            self.architecture_label,
-            self.architecture_select,
-        ] {
+        for h in [self.editor, self.header] {
             bind(h, font);
+        }
+        if let Err(error) = self.info.prepare(&super::metrics(hwnd)) {
+            write(|a| a.failure = Some(error));
         }
         crate::rich_text::font(self.editor);
         self.layout(hwnd);
@@ -292,29 +283,33 @@ impl MetadataView {
         let old = self.state.borrow().old_version;
         let m = super::metrics(hwnd);
         let mut area = layout::inset(client(hwnd), m.px(8));
+        let mut positions = Vec::new();
         if old {
-            place(self.header, layout::take_top(&mut area, m.height + m.px(8)));
+            positions.push((self.header, layout::take_top(&mut area, m.height + m.px(8))));
         }
-        let mut row = layout::take_top(&mut area, m.row() + m.px(4));
-        let width = m.label_width([resources::wide_text(IDS_ARCHITECTURE)].into_iter(), 70);
-        place(self.architecture_label, layout::take_left(&mut row, width));
-        place(
-            self.architecture_select,
-            layout::rect(
-                row.left,
-                row.top,
-                m.px(110).min(row.right - row.left),
-                m.row() * 6,
-            ),
-        );
-        place(self.editor, area);
+        self.info.layout(&mut area, &m, &mut positions);
+        positions.push((self.editor, area));
+        if let Err(error) = place_all(&positions) {
+            write(|a| a.failure = Some(error));
+        }
     }
     pub(super) fn command(&self, hwnd: HWND, id: u16, code: u32) -> bool {
         match id {
             SELECT_ARCH => self.select_architecture(hwnd, code),
+            DOCUMENT_MORE if code == BN_CLICKED => {
+                if let Err(error) = self.info.menu(hwnd) {
+                    catalog::set_status(format!("{error:#}"));
+                }
+            }
             _ => return false,
         }
         true
+    }
+    pub(super) fn color(&self, control: HWND, dc: HDC) -> Option<isize> {
+        self.info.color(control, dc)
+    }
+    pub(super) fn destroy(&self) {
+        self.info.clear_accessibility();
     }
 }
 fn old_version(binding: &Binding) -> bool {

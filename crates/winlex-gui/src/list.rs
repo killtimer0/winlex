@@ -35,7 +35,7 @@ pub enum FoldKind {
     Text,
 }
 
-fn fold_text(
+pub(crate) fn fold_text(
     text: &[u16],
     matches: &[Range<usize>],
     folds: &[Fold],

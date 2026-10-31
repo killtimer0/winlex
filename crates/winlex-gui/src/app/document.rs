@@ -124,6 +124,18 @@ pub(super) unsafe extern "system" fn document_proc(
                     return 0;
                 }
             }
+            WM_CTLCOLORSTATIC => {
+                if let Some(view) = workspace::view(hwnd)
+                    && let Some(brush) = view.color(l as HWND, w as HDC)
+                {
+                    return brush;
+                }
+            }
+            WM_DESTROY => {
+                if let Some(view) = workspace::view(hwnd) {
+                    view.destroy();
+                }
+            }
             WM_NCDESTROY => {
                 let content = workspace::view(hwnd);
                 workspace::unregister_document(hwnd);

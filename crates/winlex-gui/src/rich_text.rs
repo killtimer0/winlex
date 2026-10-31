@@ -4,7 +4,8 @@ use anyhow::Context;
 use std::{mem::size_of, sync::OnceLock};
 use windows::Win32::UI::Controls::RichEdit::{
     CFM_COLOR, CFM_FACE, CHARFORMATW, CHARRANGE, EM_EXGETSEL, EM_EXSETSEL, EM_GETSELTEXT,
-    EM_SETBKGNDCOLOR, EM_SETCHARFORMAT, SCF_ALL, SCF_SELECTION,
+    EM_SETBKGNDCOLOR, EM_SETCHARFORMAT, EM_SETPARAFORMAT, PARAFORMAT, PARAFORMAT2, PFM_LINESPACING,
+    PFM_RIGHTINDENT, PFM_STARTINDENT, SCF_ALL, SCF_SELECTION,
 };
 use winlex_format::declaration::NumberRegion;
 
@@ -134,13 +135,7 @@ pub fn create(parent: HWND, id: u16) -> anyhow::Result<HWND> {
         parent,
         w!("RichEdit20W"),
         &[0],
-        WS_TABSTOP
-            | WS_VSCROLL
-            | WS_HSCROLL
-            | ES_MULTILINE as u32
-            | ES_READONLY as u32
-            | ES_AUTOVSCROLL as u32
-            | ES_AUTOHSCROLL as u32,
+        WS_TABSTOP | WS_VSCROLL | ES_MULTILINE as u32 | ES_READONLY as u32 | ES_AUTOVSCROLL as u32,
         id,
     )?;
     send(hwnd, EM_SETLIMITTEXT, 0x7ffffffe, 0);
@@ -178,6 +173,27 @@ pub fn font(hwnd: HWND) {
         SCF_ALL as usize,
         &format as *const _ as isize,
     );
+    let mut selection = CHARRANGE::default();
+    send(hwnd, EM_EXGETSEL, 0, &mut selection as *mut _ as isize);
+    let all = CHARRANGE {
+        cpMin: 0,
+        cpMax: -1,
+    };
+    send(hwnd, EM_EXSETSEL, 0, &all as *const _ as isize);
+    let paragraph = PARAFORMAT2 {
+        Base: PARAFORMAT {
+            cbSize: size_of::<PARAFORMAT2>() as u32,
+            dwMask: PFM_LINESPACING | PFM_STARTINDENT | PFM_RIGHTINDENT,
+            dxStartIndent: 120,
+            dxRightIndent: 120,
+            ..Default::default()
+        },
+        bLineSpacingRule: 5,
+        dyLineSpacing: 23,
+        ..Default::default()
+    };
+    send(hwnd, EM_SETPARAFORMAT, 0, &paragraph as *const _ as isize);
+    send(hwnd, EM_EXSETSEL, 0, &selection as *const _ as isize);
 }
 
 fn color(hwnd: HWND, start: i32, end: i32, value: u32) {
@@ -208,6 +224,7 @@ pub fn set_content(hwnd: HWND, body: &str, syntax: bool) {
     }
     send(hwnd, WM_SETREDRAW, 0, 0);
     set_text(hwnd, &body);
+    font(hwnd);
     apply_colors(hwnd, &body, syntax);
     redraw(hwnd);
 }
@@ -317,6 +334,19 @@ fn spans(text: &[u16]) -> Vec<(usize, usize, u32)> {
                     | "double"
                     | "bool"
                     | "return"
+                    | "INT8"
+                    | "UINT8"
+                    | "INT16"
+                    | "UINT16"
+                    | "INT32"
+                    | "UINT32"
+                    | "INT64"
+                    | "UINT64"
+                    | "INT_PTR"
+                    | "UINT_PTR"
+                    | "char16_t"
+                    | "string"
+                    | "object"
             )
             .then_some(0x800000)
         } else {
@@ -331,6 +361,62 @@ fn spans(text: &[u16]) -> Vec<(usize, usize, u32)> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn visual_wrapping_preserves_declaration_and_paragraph_format() {
+        unsafe {
+            let parent = CreateWindowExW(
+                0,
+                w!("STATIC"),
+                std::ptr::null(),
+                WS_POPUP,
+                0,
+                0,
+                900,
+                600,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                instance(),
+                std::ptr::null(),
+            );
+            assert!(!parent.is_null());
+            let editor = create(parent, 1).unwrap();
+            let body = "const UINT32 example = 123; // a long declaration with several words that wrap without changing the copied text 😀";
+            place(editor, crate::layout::rect(0, 0, 800, 400));
+            set_content(editor, body, true);
+            let wide_lines = send(editor, EM_GETLINECOUNT, 0, 0);
+            place(editor, crate::layout::rect(0, 0, 180, 400));
+            assert!(send(editor, EM_GETLINECOUNT, 0, 0) > wide_lines);
+            assert_eq!(text(editor), body);
+            let mut paragraph = PARAFORMAT2 {
+                Base: PARAFORMAT {
+                    cbSize: size_of::<PARAFORMAT2>() as u32,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            send(
+                editor,
+                windows::Win32::UI::Controls::RichEdit::EM_GETPARAFORMAT,
+                0,
+                &mut paragraph as *mut _ as isize,
+            );
+            let left = paragraph.Base.dxStartIndent;
+            let right = paragraph.Base.dxRightIndent;
+            assert_eq!(left, 120);
+            assert_eq!(right, 120);
+            assert_eq!(paragraph.bLineSpacingRule, 5);
+            assert_eq!(paragraph.dyLineSpacing, 23);
+            set_content(editor, "struct Example {\n    UINT32 value;\n};", true);
+            assert_eq!(
+                text(editor).replace("\r\n", "\n").replace('\r', "\n"),
+                "struct Example {\n    UINT32 value;\n};"
+            );
+            DestroyWindow(parent);
+        }
+    }
+
     #[test]
     fn cached_module_failure_preserves_original_error_code() {
         use super::*;
@@ -358,9 +444,10 @@ mod tests {
 
     #[test]
     fn highlighting_uses_utf16_and_keeps_comments_and_strings_whole() {
-        let text: Vec<_> = "// 😀 struct 42\rconst char *s = \"a\\\"b\"; /* int 7 */ 123"
-            .encode_utf16()
-            .collect();
+        let text: Vec<_> =
+            "// 😀 struct 42\rconst char *s = \"a\\\"b\"; /* int 7 */ 123 UINT32 UINT_PTR char16_t"
+                .encode_utf16()
+                .collect();
         let tokens: Vec<_> = super::spans(&text)
             .into_iter()
             .map(|(start, end, _)| String::from_utf16(&text[start..end]).unwrap())
@@ -373,7 +460,10 @@ mod tests {
                 "char",
                 "\"a\\\"b\"",
                 "/* int 7 */",
-                "123"
+                "123",
+                "UINT32",
+                "UINT_PTR",
+                "char16_t"
             ]
         );
     }

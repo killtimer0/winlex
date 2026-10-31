@@ -1,4 +1,5 @@
 import shutil
+import win32con
 from support import native as n
 
 
@@ -23,7 +24,7 @@ def test_same_name_sources_open_and_unload_independently_with_failed_load_rollba
     n.wait(lambda: 'CreateFileW(' in app.content(second), "second declaration", 45)
     assert first != second
     assert n.window_text(first) == n.window_text(second)
-    assert str(alias) in app.content(second)
+    assert n.window_text(n.get_item(second, 1205)) == alias.name
     app.command(1021)
     assert app.count(app.sources) == 2
     saved = profile.get("AutoLoad")
@@ -44,3 +45,13 @@ def test_same_name_sources_open_and_unload_independently_with_failed_load_rollba
     assert app.named_rows("CreateFileW") == [0]
     assert profile.get("AutoLoad") == [str(settings[1])]
     assert 'CreateFileW(' in app.content(second)
+    from test_context import find_popup, wait_closed, clipboard_text, wait_clipboard_available
+    wait_clipboard_available()
+    button = n.get_item(second, 1206)
+    assert n.post(button, win32con.BM_CLICK, 0, 0)
+    find_popup(app)
+    n.key_message(button, win32con.VK_DOWN)
+    n.key_message(button, win32con.VK_RETURN)
+    wait_closed(button)
+    n.send(second, win32con.WM_NULL)
+    n.wait(lambda: clipboard_text() == str(alias), "unloaded snapshot retains its path")

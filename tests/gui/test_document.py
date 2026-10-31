@@ -1,5 +1,7 @@
 import time
+import shutil
 import win32con
+import win32gui
 from support import native as n
 
 RESIZE_NO_MOVE = win32con.SWP_NOMOVE | win32con.SWP_NOZORDER | win32con.SWP_NOACTIVATE
@@ -15,9 +17,10 @@ def test_document_controls_and_close_during_architecture_reload(launch, settings
     body = app.content(doc)
     n.send(editor, win32con.WM_CHAR, ord("X"))  # WM_CHAR: declaration stays read-only.
     assert app.content(doc) == body
-    assert str(settings[1]) in body
-    assert '"parameters"' in body
-    assert "Windows.Win32.Storage.FileSystem" in body
+    assert str(settings[1]) not in body
+    assert '"parameters"' not in body
+    assert "Windows.Win32.Storage.FileSystem" in n.window_text(n.get_item(doc, 1209))
+    assert n.window_text(n.get_item(doc, 1207)) == "CreateFileW"
 
     app.choose(doc, "x64")
     n.send(doc, win32con.WM_CLOSE)  # Close while a replacement may still be running.
@@ -142,7 +145,7 @@ def test_tab_traverses_document_controls(launch, settings):
     doc = app.open_row()
     n.wait(lambda: "CreateFileW(" in app.content(doc), "declaration", 45)
     editor = n.get_item(doc, 1203)
-    order = [app.architecture(doc), editor]
+    order = [app.architecture(doc), n.get_item(doc, 1206), editor]
     app.focus(editor)
     for target in order:
         current = app.focused() or editor
@@ -165,11 +168,120 @@ def test_narrow_document_keeps_complete_body_usable(launch, settings):
         dpi = n.api(n.user, "GetDpiForWindow", n.w.UINT, n.w.HWND)(doc) if hasattr(n.user, "GetDpiForWindow") else 96
         assert n.set_pos(doc, None, 0, 0, 340 * dpi // 96, 440 * dpi // 96, RESIZE_NO_MOVE)
         editor = n.get_item(doc, 1203)
-        assert "Windows.Win32.Storage.FileSystem" in app.content(doc)
-        assert '"parameters"' in app.content(doc)
+        assert "Windows.Win32.Storage.FileSystem" in n.window_text(n.get_item(doc, 1209))
+        assert '"parameters"' not in app.content(doc)
         n.send(editor, win32con.EM_SETSEL, 0, -1)
         assert n.send(editor, win32con.EM_GETSEL) != 0
         a, e = map(n.rectangle, (app.architecture(doc), editor))
         assert a[3] <= e[1] < e[3]
-        n.send(editor, win32con.EM_LINESCROLL, 0, 20)
-        assert n.send(editor, win32con.EM_GETFIRSTVISIBLELINE) > 0
+        n.send(editor, win32con.EM_SETSEL, -1, -1)
+        n.send(editor, win32con.EM_SCROLLCARET)
+
+
+def test_document_source_and_responsive_reading_layout(launch, settings):
+    path = settings[2] / ("来源😀" + "-metadata" * 12 + ".winmd")
+    shutil.copyfile(settings[1], path)
+    app = launch([path])
+    app.query("Windows.Win32.Storage.FileSystem.CreateFileW")
+    doc = app.open_row()
+    n.wait(lambda: "CreateFileW(" in app.content(doc), "declaration", 45)
+    body = app.content(doc)
+    editor = n.get_item(doc, 1203)
+    source = n.get_item(doc, 1205)
+    selector = n.get_item(doc, 1047)
+    assert path.name in n.window_text(source)
+    assert not win32gui.IsWindowVisible(n.get_item(doc, 1204))
+
+    with n.window_dpi_context(app.frame):
+        n.send(app.mdi, win32con.WM_MDIRESTORE, doc)
+        dpi = n.api(n.user, "GetDpiForWindow", n.w.UINT, n.w.HWND)(doc) if hasattr(n.user, "GetDpiForWindow") else 96
+        counts = []
+        for width in [850, 320, 850]:
+            win32gui.SetWindowPos(doc, 0, 0, 0, width * dpi // 96, 450 * dpi // 96,
+                                  win32con.SWP_NOZORDER | win32con.SWP_NOACTIVATE)
+            assert app.content(doc) == body
+            sr = n.rectangle(source)
+            ar = n.rectangle(selector)
+            er = n.rectangle(editor)
+            if width == 320:
+                assert sr[3] <= ar[1]
+            else:
+                assert sr[2] < ar[0]
+            assert er[1] >= sr[3]
+            left, top = win32gui.ClientToScreen(doc, (0, 0))
+            _, _, right, bottom = win32gui.GetClientRect(doc)
+            for control in [source, selector, editor]:
+                x1, y1, x2, y2 = n.rectangle(control)
+                assert left <= x1 <= x2 <= left + right
+                assert top <= y1 <= y2 <= top + bottom
+            counts.append(n.send(editor, win32con.EM_GETLINECOUNT))
+        assert counts[1] > counts[0]
+        assert counts[2] == counts[0]
+
+
+def test_constant_summary_pseudocode_and_information_copy(launch, settings):
+    from test_context import find_popup, wait_closed, wait_clipboard_available, clipboard_text
+    from support.accessibility import client
+    import win32clipboard as clipboard
+
+    path = settings[2] / "来源&😀.winmd"
+    shutil.copyfile(settings[1], path)
+    app = launch([path])
+    app.query("Windows.Win32.Foundation.WIN32_ERROR.ERROR_ACCESS_DENIED")
+    doc = app.open_row()
+    n.wait(lambda: "ERROR_ACCESS_DENIED = 5;" in app.content(doc), "constant", 45)
+    assert app.content(doc).strip() == "WIN32_ERROR ERROR_ACCESS_DENIED = 5;"
+    assert n.window_text(n.get_item(doc, 1207)) == "ERROR_ACCESS_DENIED"
+    assert n.window_text(n.get_item(doc, 1208)) in ("Constant", "常量")
+    assert n.window_text(n.get_item(doc, 1209)) == "Windows.Win32.Foundation · WIN32_ERROR"
+    for control, names in [(1207, ("Name", "名称")),
+                           (1209, ("Namespace and declaring type", "命名空间与所属类型")),
+                           (1205, ("Source:", "来源：")),
+                           (1203, ("Declaration", "声明"))]:
+        hwnd = n.get_item(doc, control)
+        with client(hwnd) as accessible:
+            assert accessible.name in names
+    button = n.get_item(doc, 1206)
+    expected = [str(path), "0::0x04002ffc", "ERROR_ACCESS_DENIED",
+                "Windows.Win32.Foundation.WIN32_ERROR.ERROR_ACCESS_DENIED", path.name]
+    for index, value in enumerate(expected):
+        app.focus(button)
+        assert app.focused() == button
+        wait_clipboard_available()
+        sequence = clipboard.GetClipboardSequenceNumber()
+        assert n.post(button, win32con.WM_KEYDOWN, win32con.VK_SPACE, 1)
+        n.wait(lambda: n.send(button, win32con.BM_GETSTATE) & 4, "button pressed")
+        assert n.post(button, win32con.WM_KEYUP, win32con.VK_SPACE, n.KEY_UP_LPARAM)
+        menu, items = find_popup(app)
+        assert items[2] == 0  # Separator between identity and convenient text copies.
+        assert len(items) == 6
+        for _ in range(index + 1):
+            n.key_message(button, win32con.VK_DOWN)
+        n.key_message(button, win32con.VK_RETURN)
+        wait_closed(button)
+        n.send(doc, win32con.WM_NULL)
+        n.wait(lambda: clipboard.GetClipboardSequenceNumber() != sequence, "information copied")
+        assert clipboard_text() == value
+        assert app.focused() == button
+    sequence = clipboard.GetClipboardSequenceNumber()
+    assert n.post(button, win32con.BM_CLICK, 0, 0)
+    find_popup(app)
+    n.key_message(button, win32con.VK_ESCAPE)
+    wait_closed(button)
+    n.send(doc, win32con.WM_NULL)
+    assert clipboard.GetClipboardSequenceNumber() == sequence
+    assert app.focused() == button
+
+
+def test_tiny_maximized_document_clips_summary_without_control_overlap(launch, settings):
+    app = launch([settings[1]])
+    app.query("CreateFileW")
+    doc = app.open_row()
+    n.wait(lambda: "CreateFileW(" in app.content(doc), "declaration", 45)
+    with n.window_dpi_context(app.frame):
+        dpi = n.api(n.user, "GetDpiForWindow", n.w.UINT, n.w.HWND)(doc) if hasattr(n.user, "GetDpiForWindow") else 96
+        n.send(app.mdi, win32con.WM_MDIMAXIMIZE, doc)
+        assert n.set_pos(app.frame, None, 0, 0, 650 * dpi // 96, 140 * dpi // 96, RESIZE_NO_MOVE)
+        for control in [1047, 1206]:
+            assert not n.is_visible(n.get_item(doc, control))
+        assert n.rectangle(n.get_item(doc, 1203), client=True)[3] == 0

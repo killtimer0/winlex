@@ -193,7 +193,8 @@ def test_long_unicode_input(launch, settings):
     assert app.cell(0).splitlines()[3] == str(path)
     doc = app.open_row()
     n.wait(lambda: 'CreateFileW(' in app.content(doc), "declaration", 45)
-    assert str(path) in app.content(doc)
+    assert str(path) not in app.content(doc)
+    assert path.name in n.window_text(n.get_item(doc, 1205))
 
 
 def test_list_text_preserves_native_utf16_path(launch, settings):
@@ -211,6 +212,9 @@ def test_list_text_preserves_native_utf16_path(launch, settings):
         wait_clipboard_available()
         app.command(1052)
         n.wait(lambda: clipboard_text() == str(path), "native UTF-16 path copied")
+        doc = app.open_row()
+        n.wait(lambda: "CreateFileW(" in app.content(doc), "declaration", 45)
+        assert path.name in n.window_text(n.get_item(doc, 1205))
     finally:
         app.close()
         path.unlink()

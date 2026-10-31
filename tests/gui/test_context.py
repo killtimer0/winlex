@@ -22,11 +22,15 @@ def popup(app, editor, location=-1, keyboard=False, mouse=False):
     else:
         assert n.post(editor, win32con.WM_CONTEXTMENU, editor, location)
 
+    return find_popup(app)
+
+
+def find_popup(app):
     def find():
         for hwnd in n.windows():
             pid = n.w.DWORD()
             n.get_pid(hwnd, n.c.byref(pid))
-            if pid.value == app.process.pid and n.class_name(hwnd) == "#32768":
+            if pid.value == app.process.pid and n.class_name(hwnd) == "#32768" and n.is_visible(hwnd):
                 return hwnd
     window = n.wait(find, "context menu")
     menu = n.send(window, messages.MN_GETHMENU)
@@ -167,6 +171,31 @@ def test_numeric_copy_formats(launch, settings):
         n.wait(lambda: clipboard.GetClipboardSequenceNumber() != sequence, "clipboard changed")
         assert clipboard_text() == expected
         assert n.send(editor, win32con.EM_GETSEL) == ((index + 2) << 16) | index
+
+
+def test_copy_wrapped_declaration_keeps_original_line_breaks(launch, settings):
+    app = launch([settings[1]])
+    app.query("Windows.Win32.Storage.FileSystem.CreateFileW")
+    doc = app.open_row()
+    n.wait(lambda: "CreateFileW(" in app.content(doc), "declaration", 45)
+    body = app.content(doc).replace("\r\n", "\n").replace("\r", "\n")
+    editor = n.get_item(doc, 1203)
+    n.send(app.mdi, win32con.WM_MDIRESTORE, doc)
+    with n.window_dpi_context(app.frame):
+        assert n.set_pos(doc, None, 0, 0, 340, 450,
+                         win32con.SWP_NOMOVE | win32con.SWP_NOZORDER | win32con.SWP_NOACTIVATE)
+    assert n.send(editor, win32con.EM_GETLINECOUNT) > len(body.splitlines())
+    n.send(editor, win32con.EM_SETSEL, 0, -1)
+    wait_clipboard_available()
+    sequence = clipboard.GetClipboardSequenceNumber()
+    _, items = popup(app, editor)
+    assert items == [2074]
+    n.key_message(editor, win32con.VK_DOWN)
+    n.key_message(editor, win32con.VK_RETURN)
+    wait_closed(editor)
+    n.send(editor, win32con.WM_NULL)
+    n.wait(lambda: clipboard.GetClipboardSequenceNumber() != sequence, "declaration copied")
+    assert clipboard_text() == body.replace("\n", "\r\n")
 
 
 def test_copy_contention_preserves_clipboard_and_allows_retry(launch, settings, tmp_path):
