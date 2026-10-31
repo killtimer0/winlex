@@ -98,7 +98,6 @@ fn item(id: u64, title: &str) -> Item {
         description: format!("source {id}"),
         italic: false,
         icon: ptr::null_mut(),
-        closable: true,
     }
 }
 fn children(root: &IAccessible) -> Vec<IAccessible> {
@@ -383,13 +382,6 @@ fn keyboard_mouse_and_accessible_geometry_share_the_same_tabs() {
         assert_eq!(requests(), vec![(SELECT, 8, 0)]);
         send(f.tabs, WM_MBUTTONUP, 0, position);
         assert_eq!(requests(), vec![(CLOSE, 8, 0)]);
-        let mut fixed = item(8, "Fixed");
-        fixed.closable = false;
-        set_items(f.tabs, vec![fixed]);
-        select(f.tabs, Some(8));
-        assert_eq!(pages[7].accChildCount().unwrap(), 0);
-        send(f.tabs, WM_MBUTTONUP, 0, (10 << 16) | 10);
-        assert!(requests().is_empty());
     }
 }
 

@@ -37,7 +37,7 @@ def test_result_rows_show_context_and_match_emphasis(launch, settings):
 
 
 def test_search_modes_match_cli_order(launch, settings):
-    cli = settings[0].with_name("winlex-fuzzy.exe")
+    cli = settings[0].with_name("winlex.exe")
     app = launch([settings[1]])
     mode = n.get_item(app.frame, 1114)
     for index, query, flag in [
@@ -159,7 +159,7 @@ def test_search_after_scrolling_keeps_new_results_in_view(launch, settings):
     app.query("file")
     assert app.count() > 100
     for query in ("CreateFileW", "file"):
-        n.send(app.results, 0x1013, app.count() // 2, 0)  # LVM_ENSUREVISIBLE
+        n.send(app.results, 0x1013, app.count() - 1, 0)  # LVM_ENSUREVISIBLE
         assert n.send(app.results, 0x1027) > 0  # LVM_GETTOPINDEX
         app.query(query)
         assert app.count() > 0

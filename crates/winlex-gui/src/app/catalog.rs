@@ -8,7 +8,7 @@ use crate::results::Items;
 use crate::{
     native::*,
     resources::{self, *},
-    tasks::{Completion, Job, LoadInput, Output, Target},
+    tasks::{Job, LoadInput},
     worker::Ticket,
 };
 use std::{collections::BTreeMap, os::windows::ffi::OsStrExt, path::PathBuf, sync::Arc};
@@ -115,18 +115,21 @@ impl Session {
             None
         }
     }
-    fn accept_search(&mut self, completion: Completion) -> bool {
-        if !matches!(self.search, Search::Running(id) if id == completion.id) {
+    fn accept_matches(&mut self, ticket: u64, items: Items) -> bool {
+        if !matches!(self.search, Search::Running(id) if id == ticket) {
             return false;
         }
-        match completion.result {
-            Ok(Output::Matches(batch)) => self.pending_results.extend(batch),
-            Ok(Output::SearchDone) => self.search = Search::Done,
-            Err(e) => {
-                self.search = Search::Failed(e);
-            }
-            _ => unreachable!(),
+        self.pending_results.extend(items);
+        true
+    }
+    fn finish_search(&mut self, ticket: u64, result: anyhow::Result<()>) -> bool {
+        if !matches!(self.search, Search::Running(id) if id == ticket) {
+            return false;
         }
+        self.search = match result {
+            Ok(()) => Search::Done,
+            Err(error) => Search::Failed(error),
+        };
         true
     }
     pub fn pending(&self, path: &std::path::Path) -> bool {
@@ -508,50 +511,42 @@ pub(super) fn worker_stopped() {
     set_status(resources::text(IDS_WORKER_STOPPED));
     super::sources::refresh();
 }
-pub(super) fn apply(c: Completion) {
-    match c.target {
-        Target::Load => {
-            let result = c
-                .result
-                .map(|output| match output {
-                    Output::Loaded(snapshot) => snapshot,
-                    _ => unreachable!(),
-                })
-                .map_err(|error| {
-                    resources::text(IDS_LOAD_FAILED).replace("{error}", &format!("{error:#}"))
-                });
-            let committed = result.is_ok();
-            if !write(|a| a.session.accept_load(c.id, result)) {
-                return;
-            }
-            if committed {
-                submit_search();
-                if let Err(error) = read(|a| {
-                    if a.session.remember_sources {
-                        let paths: Vec<_> = a
-                            .session
-                            .inputs()
-                            .iter()
-                            .map(|s| s.path().to_path_buf())
-                            .collect();
-                        a.config.write_key()?.set_paths("AutoLoad", &paths)?;
-                    }
-                    Ok::<_, anyhow::Error>(())
-                }) {
-                    set_status(format!("{error:#}"));
-                }
-                for (hwnd, view) in workspace::views() {
-                    view.catalog_changed(hwnd);
-                }
-            }
-            super::sources::refresh();
-            refresh_status();
-        }
-        Target::Search => {
-            write(|a| a.session.accept_search(c));
-        }
-        _ => unreachable!(),
+pub(super) fn loaded(id: u64, result: anyhow::Result<Option<Arc<Catalog>>>) {
+    let result = result.map_err(|error| {
+        resources::text(IDS_LOAD_FAILED).replace("{error}", &format!("{error:#}"))
+    });
+    let committed = result.is_ok();
+    if !write(|a| a.session.accept_load(id, result)) {
+        return;
     }
+    if committed {
+        submit_search();
+        if let Err(error) = read(|a| {
+            if a.session.remember_sources {
+                let paths: Vec<_> = a
+                    .session
+                    .inputs()
+                    .iter()
+                    .map(|s| s.path().to_path_buf())
+                    .collect();
+                a.config.write_key()?.set_paths("AutoLoad", &paths)?;
+            }
+            Ok::<_, anyhow::Error>(())
+        }) {
+            set_status(format!("{error:#}"));
+        }
+        for (hwnd, view) in workspace::views() {
+            view.layout(hwnd);
+        }
+    }
+    super::sources::refresh();
+    refresh_status();
+}
+pub(super) fn matches(id: u64, items: Items) {
+    write(|a| a.session.accept_matches(id, items));
+}
+pub(super) fn search_done(id: u64, result: anyhow::Result<()>) {
+    write(|a| a.session.finish_search(id, result));
 }
 
 #[cfg(test)]
@@ -561,15 +556,10 @@ mod tests {
     fn execute_load(ticket: &Ticket, job: Job) -> Result<Option<Arc<Catalog>>, String> {
         let result = std::cell::RefCell::new(None);
         crate::tasks::run(job, ticket, &|completion| {
-            result.replace(Some(
-                completion
-                    .result
-                    .map(|output| match output {
-                        Output::Loaded(catalog) => catalog,
-                        _ => panic!("unexpected load output"),
-                    })
-                    .map_err(|error| format!("{error:#}")),
-            ));
+            let crate::tasks::Completion::Loaded { result: loaded, .. } = completion else {
+                panic!("unexpected load completion");
+            };
+            result.replace(Some(loaded.map_err(|error| format!("{error:#}"))));
             Ok(())
         });
         result.into_inner().unwrap()
@@ -688,17 +678,12 @@ mod tests {
         assert_eq!(session.reset_search(), Some(1));
         session.search = Search::Running(2);
         session.load_error = Some("load transaction failed".into());
-        let completion = |id, result| Completion {
-            id,
-            target: Target::Search,
-            result,
-        };
-        assert!(!session.accept_search(completion(1, Ok(Output::SearchDone))));
-        assert!(session.accept_search(completion(2, Ok(Output::Matches(vec![])))));
+        assert!(!session.finish_search(1, Ok(())));
+        assert!(session.accept_matches(2, vec![]));
         assert_eq!(session.status(), "load transaction failed");
-        assert!(session.accept_search(completion(2, Ok(Output::SearchDone))));
+        assert!(session.finish_search(2, Ok(())));
         assert_eq!(session.status(), "load transaction failed");
-        assert!(!session.accept_search(completion(2, Err(anyhow::anyhow!("late failure")))));
+        assert!(!session.finish_search(2, Err(anyhow::anyhow!("late failure"))));
         assert!(matches!(session.search, Search::Done));
     }
 }

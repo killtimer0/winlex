@@ -34,7 +34,7 @@ mod snapshot_tests {
             name,
             crate::SearchOptions {
                 mode: crate::SearchMode::Name,
-                types_only: true,
+                categories: Some(crate::EntityCategory::Type as u32),
                 ..Default::default()
             },
         )

@@ -284,6 +284,31 @@ fn strings_special_floats_and_ranges_are_typed_conditions() {
 }
 
 #[test]
+fn condition_diagnostics_keep_field_operator_and_value_errors_distinct() {
+    use super::syntax::QueryErrorKind;
+    for (query, kind) in [
+        ("unknown = 5", QueryErrorKind::Field),
+        (r#"unknown = "text""#, QueryErrorKind::Field),
+        (r#"name > "text""#, QueryErrorKind::Operator),
+        ("name > 5", QueryErrorKind::Value),
+        ("value contains 5", QueryErrorKind::Operator),
+        (r#"source contains "text""#, QueryErrorKind::Operator),
+        (r#"source = "0""#, QueryErrorKind::Value),
+        (r#"category = "unknown""#, QueryErrorKind::Value),
+        ("architecture = 5", QueryErrorKind::Value),
+    ] {
+        let parsed = Query::parse(query).unwrap();
+        let error = SearchQuery::from_query(&parsed, false).err().unwrap();
+        let diagnostic = error.downcast_ref::<QueryError>().unwrap();
+        assert_eq!(diagnostic.kind, kind, "{query}");
+        let Query::Predicate(predicate) = parsed else {
+            panic!("expected predicate");
+        };
+        assert_eq!(diagnostic.span, predicate.span, "{query}");
+    }
+}
+
+#[test]
 fn condition_scopes_and_sources_intersect_external_filters() {
     let db = Catalog::from_inputs([fixture(), fixture()]).unwrap();
     let query = r#"namespace within "Fixture" and category = "type" and source = 1 and architecture = "x86""#;
@@ -359,6 +384,55 @@ fn combined_union_is_unique_and_uses_strongest_quality() {
         )
         .is_err()
     );
+}
+
+#[test]
+fn compiled_search_preserves_modes_filters_and_match_evidence() {
+    let db = Catalog::from_inputs([fixture(), fixture()]).unwrap();
+    for (query, mode) in [
+        ("257", SearchMode::Combined),
+        ("ValueOnly", SearchMode::Name),
+        ("257", SearchMode::Value),
+        ("12345678", SearchMode::Guid),
+        (
+            r#"value = 257 and name contains "value""#,
+            SearchMode::Condition,
+        ),
+    ] {
+        let options = || SearchOptions {
+            mode,
+            source: Some(1),
+            architecture: Some(crate::Architecture::X64),
+            categories: Some(EntityCategory::ALL),
+            ..Default::default()
+        };
+        let collect = |search: crate::Search<'_>| {
+            search
+                .map(|hit| {
+                    let hit = hit.unwrap();
+                    assert_eq!(hit.id.source_id, 1);
+                    (hit.id, hit.quality, hit.evidence)
+                })
+                .collect::<Vec<_>>()
+        };
+        let expected = collect(db.search(query, options()).unwrap());
+        assert!(!expected.is_empty(), "{query}");
+        let compiled = SearchQuery::compile(query, mode, false).unwrap();
+        assert_eq!(
+            collect(db.search_compiled(compiled, options()).unwrap()),
+            expected,
+            "{query}"
+        );
+        if mode == SearchMode::Condition {
+            assert_eq!(
+                collect(
+                    db.search_query(&Query::parse(query).unwrap(), options())
+                        .unwrap()
+                ),
+                expected,
+            );
+        }
+    }
 }
 
 #[test]
@@ -525,7 +599,7 @@ fn reference_counts_do_not_short_circuit_after_an_interface_hit() {
             .search_exact(
                 "Target",
                 SearchOptions {
-                    types_only: true,
+                    categories: Some(EntityCategory::Type as u32),
                     ..Default::default()
                 },
             )

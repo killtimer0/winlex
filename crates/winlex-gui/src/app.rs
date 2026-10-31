@@ -265,10 +265,16 @@ fn poll_completions() {
     for _ in 0..8 {
         match read(|a| a.worker.rx.try_recv()) {
             Ok(c) => {
-                use crate::tasks::Target;
-                match c.target {
-                    Target::Load | Target::Search => catalog::apply(c),
-                    Target::Document(id) => workspace::complete(id, c),
+                use crate::tasks::Completion;
+                match c {
+                    Completion::Loaded { id, result } => catalog::loaded(id, result),
+                    Completion::Matches { id, items } => catalog::matches(id, items),
+                    Completion::SearchDone { id, result } => catalog::search_done(id, result),
+                    Completion::Description {
+                        id,
+                        document,
+                        result,
+                    } => workspace::complete(document, id, result),
                 }
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => {
@@ -278,8 +284,8 @@ fn poll_completions() {
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 catalog::flush_results();
                 catalog::worker_stopped();
-                for (hwnd, view) in workspace::views() {
-                    view.worker_stopped(hwnd);
+                for (_, view) in workspace::views() {
+                    view.worker_stopped();
                 }
                 panel::cancel_debounce();
                 return;

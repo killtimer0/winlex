@@ -9,9 +9,17 @@ use crate::{
 use std::{cell::Cell, rc::Rc};
 use winlex_core::SearchMode;
 
-const SEARCH_MODES: &[(u16, SearchMode)] = &[
-    (IDS_MODE_COMBINED, SearchMode::Combined),
-    (IDS_MODE_CONDITION, SearchMode::Condition),
+const SEARCH_MODES: &[(u16, SearchMode, u16)] = &[
+    (
+        IDS_MODE_COMBINED,
+        SearchMode::Combined,
+        IDS_SEARCH_TIP_QUICK,
+    ),
+    (
+        IDS_MODE_CONDITION,
+        SearchMode::Condition,
+        IDS_SEARCH_TIP_CONDITION,
+    ),
 ];
 
 pub(super) fn search_mode() -> SearchMode {
@@ -119,7 +127,7 @@ impl Panel {
             WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST as u32,
             SEARCH_MODE,
         )?;
-        for &(label, _) in SEARCH_MODES {
+        for &(label, _, _) in SEARCH_MODES {
             send(
                 mode,
                 CB_ADDSTRING,
@@ -147,7 +155,7 @@ impl Panel {
         if tooltip.is_null() {
             return Err(error("Create search tooltip"));
         }
-        let tool = search_tool(input, IDS_SEARCH_TIP_QUICK);
+        let tool = search_tool(input, SEARCH_MODES[0].2);
         if send(tooltip, TTM_ADDTOOLW, 0, &tool as *const _ as isize) == 0 {
             unsafe {
                 DestroyWindow(tooltip);
@@ -255,7 +263,7 @@ impl Panel {
                     .label_width(
                         SEARCH_MODES
                             .iter()
-                            .map(|&(label, _)| resources::wide_text(label)),
+                            .map(|&(label, _, _)| resources::wide_text(label)),
                         60,
                     )
                     .min((row.right - row.left) / 2);
@@ -309,12 +317,7 @@ impl Search {
             SEARCH_MODE if code == CBN_SELENDOK => {
                 let index = send(self.selector, CB_GETCURSEL, 0, 0) as usize;
                 if index < SEARCH_MODES.len() && self.mode.replace(index) != index {
-                    let label = match SEARCH_MODES[index].1 {
-                        SearchMode::Combined => IDS_SEARCH_TIP_QUICK,
-                        SearchMode::Condition => IDS_SEARCH_TIP_CONDITION,
-                        _ => unreachable!(),
-                    };
-                    let tool = search_tool(self.input, label);
+                    let tool = search_tool(self.input, SEARCH_MODES[index].2);
                     send(self.tooltip, TTM_POP, 0, 0);
                     send(
                         self.tooltip,

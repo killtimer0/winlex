@@ -58,15 +58,20 @@ impl Hit {
     }
 }
 
-pub(super) struct TextQuery {
-    text: String,
-    op: Operator,
-    case_sensitive: bool,
-    matcher: Option<NameMatcher>,
+pub(super) enum TextQuery {
+    Fuzzy(NameMatcher),
+    Literal {
+        text: String,
+        op: Operator,
+        case_sensitive: bool,
+    },
 }
 impl TextQuery {
-    pub fn new(text: &str, op: Operator, case_sensitive: bool, field: MatchField) -> Self {
-        Self {
+    pub fn new(text: &str, op: Operator, case_sensitive: bool) -> Self {
+        if op == Operator::Fuzzy {
+            return Self::Fuzzy(NameMatcher::new(text, case_sensitive));
+        }
+        Self::Literal {
             text: if case_sensitive {
                 text.into()
             } else {
@@ -74,56 +79,60 @@ impl TextQuery {
             },
             op,
             case_sensitive,
-            matcher: (op == Operator::Fuzzy)
-                .then(|| NameMatcher::for_field(text, case_sensitive, field)),
         }
     }
     pub fn matches(&mut self, text: &str, field: EvidenceField) -> Option<Hit> {
-        if let Some(matcher) = &mut self.matcher {
-            let match_field = if field == EvidenceField::FullName {
-                MatchField::FullName
-            } else {
-                MatchField::Name
-            };
-            let (score, _) = matcher.score(text, text)?;
-            let mut indices = Vec::new();
-            matcher.indices(text, &mut indices);
-            return Some(Hit {
-                quality: MatchQuality::Fuzzy {
-                    score,
-                    field: match_field,
-                },
-                evidence: vec![MatchEvidence {
-                    field,
-                    indices: Some(indices),
-                }],
-            });
-        }
+        let (query, op, case_sensitive) = match self {
+            Self::Literal {
+                text,
+                op,
+                case_sensitive,
+            } => (text.as_str(), *op, *case_sensitive),
+            Self::Fuzzy(matcher) => {
+                let match_field = if field == EvidenceField::FullName {
+                    MatchField::FullName
+                } else {
+                    MatchField::Name
+                };
+                let mut indices = Vec::new();
+                let score = matcher.indices(text, &mut indices)?;
+                return Some(Hit {
+                    quality: MatchQuality::Fuzzy {
+                        score,
+                        field: match_field,
+                    },
+                    evidence: vec![MatchEvidence {
+                        field,
+                        indices: Some(indices),
+                    }],
+                });
+            }
+        };
         let normalized;
-        let value = if self.case_sensitive {
+        let value = if case_sensitive {
             text
         } else {
             normalized = text.to_lowercase();
             &normalized
         };
-        let start = match self.op {
-            Operator::Equal => (value == self.text).then_some(0),
-            Operator::Contains => value.find(&self.text),
-            Operator::StartsWith => value.starts_with(&self.text).then_some(0),
-            Operator::Within => (value == self.text
+        let start = match op {
+            Operator::Equal => (value == query).then_some(0),
+            Operator::Contains => value.find(query),
+            Operator::StartsWith => value.starts_with(query).then_some(0),
+            Operator::Within => (value == query
                 || value
-                    .strip_prefix(&self.text)
+                    .strip_prefix(query)
                     .is_some_and(|rest| rest.starts_with('.')))
             .then_some(0),
             _ => None,
         }?;
-        let end = start + self.text.len();
+        let end = start + query.len();
         let mut offset = 0;
         let indices = text
             .chars()
             .enumerate()
             .filter_map(|(index, ch)| {
-                let width = if self.case_sensitive {
+                let width = if case_sensitive {
                     ch.len_utf8()
                 } else {
                     ch.to_lowercase().map(char::len_utf8).sum()
@@ -134,11 +143,11 @@ impl TextQuery {
             })
             .collect();
         let quality = match field {
-            EvidenceField::Name if value == self.text => MatchQuality::NameExact(MatchField::Name),
-            EvidenceField::FullName if value == self.text => {
+            EvidenceField::Name if value == query => MatchQuality::NameExact(MatchField::Name),
+            EvidenceField::FullName if value == query => {
                 MatchQuality::NameExact(MatchField::FullName)
             }
-            EvidenceField::Value if value == self.text => MatchQuality::StringExact,
+            EvidenceField::Value if value == query => MatchQuality::StringExact,
             _ => MatchQuality::Text,
         };
         Some(Hit {
@@ -203,59 +212,47 @@ impl Condition {
                 let mut kind = QueryErrorKind::Value;
                 let result = (|| {
                     let op = p.operator;
-                    if !matches!(
-                        p.field.as_str(),
-                        "name"
-                            | "fullname"
-                            | "value"
-                            | "guid"
-                            | "namespace"
-                            | "category"
-                            | "source"
-                            | "architecture"
-                    ) {
-                        kind = QueryErrorKind::Field;
-                        anyhow::bail!("unknown field: {}", p.field);
-                    }
-                    if p.field == "value"
-                        && let Literal::Number(text) = &p.value
-                    {
-                        kind = QueryErrorKind::Operator;
-                        let comparison = match op {
-                            Operator::Equal => Comparison::Equal,
-                            Operator::Less => Comparison::Less,
-                            Operator::LessEqual => Comparison::LessEqual,
-                            Operator::Greater => Comparison::Greater,
-                            Operator::GreaterEqual => Comparison::GreaterEqual,
-                            _ => anyhow::bail!("number requires a comparison operator"),
-                        };
-                        kind = QueryErrorKind::Value;
-                        let number = NumberQuery::compile(text)?;
-                        number.validate_comparison(comparison)?;
-                        return Ok(Self::Number(number, comparison));
-                    }
-                    if p.field == "source" {
-                        kind = QueryErrorKind::Operator;
-                        anyhow::ensure!(op == Operator::Equal, "source requires =");
-                        kind = QueryErrorKind::Value;
-                        let Literal::Number(text) = &p.value else {
-                            anyhow::bail!("source requires a zero-based integer ID")
+                    let text = || -> anyhow::Result<&str> {
+                        let Literal::Text(text) = &p.value else {
+                            anyhow::bail!("field requires a quoted string")
                         };
                         anyhow::ensure!(
-                            text.bytes().all(|c| c.is_ascii_digit()),
-                            "invalid source ID"
+                            text.len() <= super::syntax::MAX_QUERY_BYTES,
+                            "text is too long"
                         );
-                        return Ok(Self::Source(text.parse()?));
-                    }
-                    let Literal::Text(text) = &p.value else {
-                        anyhow::bail!("field requires a quoted string")
+                        Ok(text)
                     };
-                    anyhow::ensure!(
-                        text.len() <= super::syntax::MAX_QUERY_BYTES,
-                        "text is too long"
-                    );
-                    match p.field.as_str() {
-                        "name" | "fullname" | "value" | "namespace" => {
+                    match (p.field.as_str(), &p.value) {
+                        ("value", Literal::Number(text)) => {
+                            kind = QueryErrorKind::Operator;
+                            let comparison = match op {
+                                Operator::Equal => Comparison::Equal,
+                                Operator::Less => Comparison::Less,
+                                Operator::LessEqual => Comparison::LessEqual,
+                                Operator::Greater => Comparison::Greater,
+                                Operator::GreaterEqual => Comparison::GreaterEqual,
+                                _ => anyhow::bail!("number requires a comparison operator"),
+                            };
+                            kind = QueryErrorKind::Value;
+                            let number = NumberQuery::compile(text)?;
+                            number.validate_comparison(comparison)?;
+                            Ok(Self::Number(number, comparison))
+                        }
+                        ("source", value) => {
+                            kind = QueryErrorKind::Operator;
+                            anyhow::ensure!(op == Operator::Equal, "source requires =");
+                            kind = QueryErrorKind::Value;
+                            let Literal::Number(text) = value else {
+                                anyhow::bail!("source requires a zero-based integer ID")
+                            };
+                            anyhow::ensure!(
+                                text.bytes().all(|c| c.is_ascii_digit()),
+                                "invalid source ID"
+                            );
+                            Ok(Self::Source(text.parse()?))
+                        }
+                        ("name" | "fullname" | "value" | "namespace", _) => {
+                            let text = text()?;
                             let field = match p.field.as_str() {
                                 "name" => EvidenceField::Name,
                                 "fullname" => EvidenceField::FullName,
@@ -280,21 +277,10 @@ impl Condition {
                             };
                             kind = QueryErrorKind::Operator;
                             anyhow::ensure!(valid, "operator is not supported for this field");
-                            Ok(Self::Text(
-                                field,
-                                TextQuery::new(
-                                    text,
-                                    op,
-                                    case_sensitive,
-                                    if field == EvidenceField::FullName {
-                                        MatchField::FullName
-                                    } else {
-                                        MatchField::Name
-                                    },
-                                ),
-                            ))
+                            Ok(Self::Text(field, TextQuery::new(text, op, case_sensitive)))
                         }
-                        "guid" => {
+                        ("guid", _) => {
+                            let text = text()?;
                             kind = QueryErrorKind::Operator;
                             anyhow::ensure!(
                                 matches!(op, Operator::Equal | Operator::Contains),
@@ -308,7 +294,8 @@ impl Condition {
                             );
                             Ok(Self::Guid(guid))
                         }
-                        "category" => {
+                        ("category", _) => {
+                            let text = text()?;
                             kind = QueryErrorKind::Operator;
                             anyhow::ensure!(op == Operator::Equal, "category requires =");
                             kind = QueryErrorKind::Value;
@@ -324,13 +311,17 @@ impl Condition {
                             };
                             Ok(Self::Category(category))
                         }
-                        "architecture" => {
+                        ("architecture", _) => {
+                            let text = text()?;
                             kind = QueryErrorKind::Operator;
                             anyhow::ensure!(op == Operator::Equal, "architecture requires =");
                             kind = QueryErrorKind::Value;
                             Ok(Self::Architecture(text.to_ascii_lowercase().parse()?))
                         }
-                        _ => anyhow::bail!("unknown field: {}", p.field),
+                        _ => {
+                            kind = QueryErrorKind::Field;
+                            anyhow::bail!("unknown field: {}", p.field)
+                        }
                     }
                 })();
                 result.map_err(|error: anyhow::Error| {

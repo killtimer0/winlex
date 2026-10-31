@@ -367,9 +367,9 @@ impl IAccessible_Impl for Accessible_Impl {
             return Ok(VARIANT::new());
         }
         match (self.node, hit) {
-            (Node::Root, Some(h)) => self.variant(Node::Tab(h.id)),
+            (Node::Root, Some(id)) => self.variant(Node::Tab(id)),
             (Node::Root, None) => Ok(0i32.into()),
-            (Node::Tab(id), Some(h)) if id == h.id => Ok(0i32.into()),
+            (Node::Tab(id), Some(hit)) if id == hit => Ok(0i32.into()),
             _ => Ok(VARIANT::new()),
         }
     }

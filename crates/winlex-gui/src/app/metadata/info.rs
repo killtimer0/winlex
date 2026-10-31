@@ -38,6 +38,7 @@ struct Snapshot {
     full_name: String,
     path: PathBuf,
     id: winlex_core::EntityId,
+    online_target: String,
 }
 impl Snapshot {
     fn copies(&self) -> Vec<(u16, Vec<u16>)> {
@@ -79,7 +80,6 @@ pub(super) struct Info {
     pub architecture: HWND,
     more: HWND,
     online: HWND,
-    online_target: RefCell<String>,
     line: HWND,
     heading: RefCell<Option<Font>>,
     snapshot: RefCell<Option<Snapshot>>,
@@ -199,7 +199,6 @@ impl Info {
             .documentation_url();
         let (label, target) = online_target(documentation.as_deref(), &entity.full_name);
         set_text(self.online, &resources::text(label));
-        self.online_target.replace(target);
         let path = binding.catalog.sources()[binding.id.source_id].path.clone();
         let filename: Vec<u16> = path
             .file_name()
@@ -213,6 +212,7 @@ impl Info {
             full_name: entity.full_name,
             path,
             id: binding.id,
+            online_target: target,
         }));
         Ok(())
     }
@@ -375,10 +375,14 @@ impl Info {
         positions.push((self.source, centered(*row, m.height)));
     }
     pub fn open_online(&self, owner: HWND) -> anyhow::Result<()> {
-        let target = self.online_target.borrow().clone();
-        if target.is_empty() {
+        let Some(target) = self
+            .snapshot
+            .borrow()
+            .as_ref()
+            .map(|s| s.online_target.clone())
+        else {
             return Ok(());
-        }
+        };
         let result = unsafe {
             windows_sys::Win32::UI::Shell::ShellExecuteW(
                 owner,
@@ -602,6 +606,7 @@ mod tests {
             let snapshot = Snapshot {
                 name: "A&B".into(),
                 full_name: "N.A&B".into(),
+                online_target: online_target(None, "N.A&B").1,
                 path: PathBuf::from(OsString::from_wide(&path)),
                 id: winlex_core::EntityId {
                     source_id: 2,

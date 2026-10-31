@@ -49,7 +49,6 @@ pub(super) unsafe extern "system" fn document_proc(
                 workspace::register_document(workspace::DocumentHost {
                     id: workspace::next_id(),
                     hwnd,
-                    title: text(hwnd),
                     content: Rc::new(content),
                     placement: None,
                     preview: init.preview,

@@ -140,6 +140,50 @@ def test_numeric_context_and_selection_survive_architecture_changes(launch, sett
     dismiss(editor)
 
 
+def test_preview_context_tracks_the_current_declaration(launch, settings):
+    app = launch([settings[1]])
+    doc = None
+    for query, marker, decimal in [
+        ("Windows.Win32.Security.SECURITY_ATTRIBUTES", "24 bytes", "24"),
+        ("Windows.Win32.Foundation.BOOL", "4 bytes", "4"),
+        ("Windows.Win32.Security.SECURITY_ATTRIBUTES", "24 bytes", "24"),
+    ]:
+        app.query(query)
+        app.focus(app.results)
+        app.select(0)
+        name = app.cell(0).splitlines()[0].rsplit(".", 1)[-1]
+        n.key_message(app.results, win32con.VK_SPACE)
+        current = n.wait(
+            lambda: (lambda current: current if current in app.documents()
+                     and n.window_text(current).startswith(name + " -") else None)(app.active_document()),
+            "current preview document",
+        )
+        if doc is not None:
+            assert current == doc
+        doc = current
+        app.choose(doc, "x64")
+        n.wait(lambda: marker in app.content(doc), "current preview layout", 45)
+        editor = n.get_item(doc, 1203)
+        prefix = app.content(doc).replace("\r\n", "\r").split(marker)[0]
+        index = len(prefix.encode("utf-16-le")) // 2
+        n.send(editor, win32con.EM_SETSEL, index, index + len(decimal))
+        menu, items = popup(app, editor)
+        assert items == [2071, 2072, 2073, 0, 2074]
+        get_label = n.api(n.user, "GetMenuStringW", n.c.c_int, n.w.HMENU, n.w.UINT,
+                          n.w.LPWSTR, n.c.c_int, n.w.UINT)
+        buffer = n.c.create_unicode_buffer(256)
+        get_label(menu, 2071, buffer, 256, 0)
+        assert buffer.value.endswith("\t" + decimal)
+        dismiss(editor)
+        n.send(editor, win32con.WM_NULL)
+        n.send(app.frame, win32con.WM_SYSCOLORCHANGE)
+        menu, items = popup(app, editor)
+        assert items == [2071, 2072, 2073, 0, 2074]
+        get_label(menu, 2071, buffer, 256, 0)
+        assert buffer.value.endswith("\t" + decimal)
+        dismiss(editor)
+
+
 def wait_clipboard_available():
     """Let any other clipboard owner finish before the app starts its copy."""
     def available():

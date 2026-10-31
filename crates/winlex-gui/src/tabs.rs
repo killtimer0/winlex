@@ -29,12 +29,6 @@ pub struct Item {
     pub description: String,
     pub italic: bool,
     pub icon: HICON,
-    pub closable: bool,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct Hit {
-    id: u64,
 }
 
 struct OwnedIcon(HICON);
@@ -86,8 +80,8 @@ struct State {
     unit: i32,
     rects: Vec<RECT>,
     offset: i32,
-    hot: Option<Hit>,
-    pressed: Option<Hit>,
+    hot: Option<u64>,
+    pressed: Option<u64>,
     origin: POINT,
     dragging: bool,
     tooltip: HWND,
@@ -111,14 +105,14 @@ impl State {
         let index = self.items.iter().position(|item| item.id == id)?;
         self.rects.get(index).copied()
     }
-    fn hit(&self, p: POINT) -> Option<Hit> {
+    fn hit(&self, p: POINT) -> Option<u64> {
         if !contains(client(self.hwnd), p) {
             return None;
         }
         self.items
             .iter()
             .zip(&self.rects)
-            .find_map(|(item, r)| contains(*r, p).then_some(Hit { id: item.id }))
+            .find_map(|(item, r)| contains(*r, p).then_some(item.id))
     }
 }
 fn contains(r: RECT, p: POINT) -> bool {
@@ -285,11 +279,6 @@ fn request(hwnd: HWND, code: u32, id: u64, index: usize, point: POINT) {
     if unsafe { IsWindowEnabled(hwnd) } == 0 {
         return;
     }
-    if code == CLOSE
-        && !state(hwnd).is_some_and(|s| s.borrow().items.iter().any(|i| i.id == id && i.closable))
-    {
-        return;
-    }
     let n = Notification {
         header: NMHDR {
             hwndFrom: hwnd,
@@ -443,7 +432,7 @@ fn paint(shared: &Rc<RefCell<State>>) {
         SetBkMode(dc, TRANSPARENT as i32);
         for ((item, rect), icon) in s.items.iter().zip(&s.rects).zip(&s.icons) {
             let selected = Some(item.id) == s.selected;
-            let hot = s.hot.is_some_and(|h| h.id == item.id);
+            let hot = s.hot == Some(item.id);
             FillRect(
                 dc,
                 rect,
@@ -491,8 +480,8 @@ fn paint(shared: &Rc<RefCell<State>>) {
         if s.dragging
             && let (Some(pressed), Some(hot)) = (s.pressed, s.hot)
         {
-            let from = s.items.iter().position(|i| i.id == pressed.id);
-            let to = s.items.iter().position(|i| i.id == hot.id);
+            let from = s.items.iter().position(|i| i.id == pressed);
+            let to = s.items.iter().position(|i| i.id == hot);
             if let (Some(from), Some(to)) = (from, to)
                 && from != to
             {
@@ -511,14 +500,14 @@ fn paint(shared: &Rc<RefCell<State>>) {
         EndPaint(s.hwnd, &ps);
     }
 }
-fn tooltip(shared: &Rc<RefCell<State>>, hit: Option<Hit>) {
+fn tooltip(shared: &Rc<RefCell<State>>, hit: Option<u64>) {
     let (hwnd, tip, text) = {
         let mut s = shared.borrow_mut();
         let text = hit
             .and_then(|hit| {
                 s.items
                     .iter()
-                    .find(|i| i.id == hit.id)
+                    .find(|i| i.id == hit)
                     .map(|i| i.title.clone())
             })
             .unwrap_or_default();
@@ -698,7 +687,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, w: usize, l: isize) 
                 focus(hwnd);
                 SetCapture(hwnd);
                 if let Some(hit) = hit {
-                    request(hwnd, SELECT, hit.id, 0, p);
+                    request(hwnd, SELECT, hit, 0, p);
                 }
                 return 0;
             }
@@ -707,7 +696,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, w: usize, l: isize) 
                     let mut s = shared.borrow_mut();
                     let hit = s.hit(p);
                     let index = hit
-                        .and_then(|h| s.items.iter().position(|i| i.id == h.id))
+                        .and_then(|id| s.items.iter().position(|i| i.id == id))
                         .unwrap_or(0);
                     (s.pressed.take(), hit, s.dragging, index)
                 };
@@ -716,7 +705,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, w: usize, l: isize) 
                     && dragging
                     && hit.is_some()
                 {
-                    request(hwnd, REORDER, pressed.id, index, p);
+                    request(hwnd, REORDER, pressed, index, p);
                 }
                 return 0;
             }
@@ -735,7 +724,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, w: usize, l: isize) 
                     request(
                         hwnd,
                         if msg == WM_MBUTTONUP { CLOSE } else { ACTIVATE },
-                        hit.id,
+                        hit,
                         0,
                         p,
                     );
@@ -767,7 +756,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, w: usize, l: isize) 
                 } else {
                     let mut point = p;
                     ScreenToClient(hwnd, &mut point);
-                    (shared.borrow().hit(point).map(|h| h.id), point)
+                    (shared.borrow().hit(point), point)
                 };
                 if let Some(id) = id {
                     let mut point = point;

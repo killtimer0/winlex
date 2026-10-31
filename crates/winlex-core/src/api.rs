@@ -80,7 +80,6 @@ pub struct SearchOptions<'a> {
     pub case_sensitive: bool,
     pub mode: SearchMode,
     pub architecture: Option<Architecture>,
-    pub types_only: bool,
     pub categories: Option<u32>,
     pub cancel: Option<&'a AtomicBool>,
 }
@@ -555,9 +554,7 @@ impl Search<'_> {
         );
         if let Some(&id) = self.catalog.search_index.get(self.position) {
             self.position += 1;
-            if self.options.source.is_some_and(|s| s != id.source_id)
-                || self.options.types_only && id.token >> 24 != 2
-            {
+            if self.options.source.is_some_and(|s| s != id.source_id) {
                 return Ok(SearchStep::Skipped);
             }
             let row = self.catalog.declaration(id, None)?;

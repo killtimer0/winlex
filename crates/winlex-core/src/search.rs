@@ -161,77 +161,71 @@ impl NameQuery {
 }
 
 pub struct SearchQuery {
-    name: Option<NameQuery>,
-    number: Option<number::NumberQuery>,
-    guid: Option<guid::GuidQuery>,
-    string: Option<TextQuery>,
-    condition: Option<Condition>,
+    matching: Matching,
     context_needed: bool,
     value_needed: bool,
     guid_needed: bool,
+}
+enum Matching {
+    Simple {
+        name: Option<NameQuery>,
+        number: Option<number::NumberQuery>,
+        guid: Option<guid::GuidQuery>,
+        string: Option<TextQuery>,
+    },
+    Condition(Condition),
 }
 impl SearchQuery {
     pub fn compile(text: &str, mode: SearchMode, case_sensitive: bool) -> anyhow::Result<Self> {
         anyhow::ensure!(!text.is_empty(), "empty search query");
         anyhow::ensure!(text.len() <= syntax::MAX_QUERY_BYTES, "query is too long");
-        if mode == SearchMode::Condition {
-            return Self::from_query(&Query::parse(text)?, case_sensitive);
-        }
-        let mut query = Self {
-            name: None,
-            number: None,
-            guid: None,
-            string: None,
-            condition: None,
-            context_needed: false,
-            value_needed: false,
-            guid_needed: false,
-        };
-        match mode {
-            SearchMode::Combined => {
-                query.string = Some(TextQuery::new(
-                    text,
-                    Operator::Contains,
-                    case_sensitive,
-                    MatchField::Name,
-                ));
-                query.name = Some(NameQuery::compile(text, true, case_sensitive));
-                query.number = number::NumberQuery::compile(text).ok();
-                query.guid = guid::GuidQuery::compile(text)
+        let (name, number, guid, string) = match mode {
+            SearchMode::Combined => (
+                Some(NameQuery::compile(text, true, case_sensitive)),
+                number::NumberQuery::compile(text).ok(),
+                guid::GuidQuery::compile(text)
                     .ok()
-                    .filter(|guid| guid.digit_count() >= 4);
-            }
+                    .filter(|guid| guid.digit_count() >= 4),
+                Some(TextQuery::new(text, Operator::Contains, case_sensitive)),
+            ),
             SearchMode::Name => {
                 anyhow::ensure!(
                     text != "." && text != "+",
                     "name scope requires a parent name"
                 );
-                query.name = Some(NameQuery::compile(text, false, case_sensitive));
+                (
+                    Some(NameQuery::compile(text, false, case_sensitive)),
+                    None,
+                    None,
+                    None,
+                )
             }
-            SearchMode::Value => query.number = Some(number::NumberQuery::compile(text)?),
-            SearchMode::Guid => query.guid = Some(guid::GuidQuery::compile(text)?),
-            SearchMode::Condition => unreachable!(),
-        }
-        query.context_needed = query
-            .name
-            .as_ref()
-            .is_some_and(|q| q.field == MatchField::FullName);
-        query.value_needed = query.number.is_some() || query.string.is_some();
-        query.guid_needed = query.guid.is_some();
-        Ok(query)
+            SearchMode::Value => (None, Some(number::NumberQuery::compile(text)?), None, None),
+            SearchMode::Guid => (None, None, Some(guid::GuidQuery::compile(text)?), None),
+            SearchMode::Condition => return Self::from_query(&Query::parse(text)?, case_sensitive),
+        };
+        Ok(Self {
+            context_needed: name
+                .as_ref()
+                .is_some_and(|q| q.field == MatchField::FullName),
+            value_needed: number.is_some() || string.is_some(),
+            guid_needed: guid.is_some(),
+            matching: Matching::Simple {
+                name,
+                number,
+                guid,
+                string,
+            },
+        })
     }
     pub fn from_query(query: &Query, case_sensitive: bool) -> anyhow::Result<Self> {
         let condition = Condition::compile(query, case_sensitive)?;
         Ok(Self {
-            name: None,
-            number: None,
-            guid: None,
-            string: None,
             context_needed: condition.needs(EvidenceField::FullName)
                 || condition.needs(EvidenceField::Namespace),
             value_needed: condition.needs(EvidenceField::Value),
             guid_needed: condition.needs(EvidenceField::Guid),
-            condition: Some(condition),
+            matching: Matching::Condition(condition),
         })
     }
     pub fn needs_full_name(&self) -> bool {
@@ -262,31 +256,38 @@ impl SearchQuery {
         } else {
             None
         };
-        if let Some(condition) = &mut self.condition {
-            let string = value.as_ref().and_then(condition::string_value);
-            let candidate = Candidate {
-                row,
-                full_name,
-                namespace,
-                source,
-                architecture,
-                value,
-                string,
+        let (name, number, guid_query, string) = match &mut self.matching {
+            Matching::Simple {
+                name,
+                number,
                 guid,
-            };
-            return condition.matches(&candidate).map(|mut hit| {
-                if !matches!(condition, Condition::Text(_, _)) {
-                    hit.quality = MatchQuality::Filter;
-                }
-                (hit.quality, hit.evidence)
-            });
-        }
-        let quality = self
-            .name
+                string,
+            } => (name, number, guid, string),
+            Matching::Condition(condition) => {
+                let string = value.as_ref().and_then(condition::string_value);
+                let candidate = Candidate {
+                    row,
+                    full_name,
+                    namespace,
+                    source,
+                    architecture,
+                    value,
+                    string,
+                    guid,
+                };
+                return condition.matches(&candidate).map(|mut hit| {
+                    if !matches!(condition, Condition::Text(_, _)) {
+                        hit.quality = MatchQuality::Filter;
+                    }
+                    (hit.quality, hit.evidence)
+                });
+            }
+        };
+        let quality = name
             .as_mut()
             .and_then(|query| query.matches(row.name(), full_name));
         let mut hit = quality.map(|quality| {
-            let query = self.name.as_mut().unwrap();
+            let query = name.as_mut().unwrap();
             let text = query.field.text(row.name(), full_name);
             let mut indices = Vec::new();
             match quality {
@@ -326,7 +327,7 @@ impl SearchQuery {
                 hit.get_or_insert_with(Hit::filter).merge(found);
             }
         };
-        if let Some(query) = &self.number
+        if let Some(query) = number
             && let Some(value) = &value
         {
             accept(
@@ -341,12 +342,12 @@ impl SearchQuery {
                     }),
             );
         }
-        if let Some(query) = &mut self.string
+        if let Some(query) = string
             && let Some(value) = value.as_ref().and_then(condition::string_value)
         {
             accept(query.matches(&value, EvidenceField::Value));
         }
-        if let Some(query) = &self.guid
+        if let Some(query) = guid_query
             && let Some(value) = &guid
         {
             accept(query.matches(value).map(|quality| Hit {
@@ -369,11 +370,8 @@ pub struct NameMatcher {
 }
 impl NameMatcher {
     pub fn new(query: &str, case_sensitive: bool) -> Self {
-        Self::for_field(query, case_sensitive, MatchField::for_query(query))
-    }
-    fn for_field(query: &str, case_sensitive: bool, field: MatchField) -> Self {
         Self {
-            field,
+            field: MatchField::for_query(query),
             atom: Atom::new(
                 query,
                 if case_sensitive {

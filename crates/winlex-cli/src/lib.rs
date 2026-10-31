@@ -225,7 +225,6 @@ pub fn run(
         case_sensitive: false,
         mode: o.mode,
         architecture: o.arch,
-        types_only: false,
         categories: None,
         cancel: None,
     };
@@ -441,11 +440,12 @@ pub fn select(
             source,
             case_sensitive: true,
             architecture: arch,
-            types_only,
-            categories: Some(
+            categories: Some(if types_only {
+                winlex_core::EntityCategory::Type as u32
+            } else {
                 winlex_core::EntityCategory::ALL
-                    & !(winlex_core::EntityCategory::TypeReference as u32),
-            ),
+                    & !(winlex_core::EntityCategory::TypeReference as u32)
+            }),
             ..Default::default()
         },
     )?;
@@ -494,4 +494,36 @@ fn error_detail(
         writeln!(err, "{code}: {message}")
     };
     if result.is_err() { 4 } else { exit }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn type_selection_uses_the_same_category_for_names_and_tokens() {
+        let db = Catalog::open(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../inputs/Windows.Win32.winmd"),
+        )
+        .unwrap();
+        let name = "Windows.Win32.Security.SECURITY_ATTRIBUTES";
+        let ty = select(&db, name, None, true).unwrap();
+        assert!(matches!(
+            db.declaration(ty, None).unwrap(),
+            winlex_core::Declaration::Type(_)
+        ));
+        assert_eq!(select(&db, name, None, false).unwrap(), ty);
+        assert_eq!(
+            select(&db, &format!("0x{:08X}", ty.token), None, true).unwrap(),
+            ty
+        );
+
+        let name = "Windows.Win32.Security.SECURITY_ATTRIBUTES.nLength";
+        let field = select(&db, name, None, false).unwrap();
+        let token = format!("0x{:08X}", field.token);
+        assert_eq!(select(&db, &token, None, false).unwrap(), field);
+        assert!(select(&db, &token, None, true).is_err());
+        assert!(select(&db, name, None, true).is_err());
+    }
 }

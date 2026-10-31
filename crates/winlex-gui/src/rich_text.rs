@@ -8,11 +8,35 @@ use windows::Win32::UI::Controls::RichEdit::{
     EM_STREAMIN, PARAFORMAT, PARAFORMAT2, PFM_LINESPACING, PFM_RIGHTINDENT, PFM_STARTINDENT,
     SCF_ALL, SF_RTF,
 };
-use winlex_format::declaration::NumberRegion;
+use winlex_format::declaration::{NumberRegion, Rendered};
 
 mod rtf;
 mod word_break;
-pub use rtf::Content;
+
+pub struct Content {
+    text: String,
+    rtf: Vec<u8>,
+    pub numbers: Vec<NumberRegion>,
+}
+
+impl Content {
+    pub fn new(text: String) -> Self {
+        let mut body = Rendered::default();
+        body.text = text;
+        body.into()
+    }
+}
+
+impl From<Rendered> for Content {
+    fn from(body: Rendered) -> Self {
+        let text = body.text.replace("\r\n", "\n").replace('\n', "\r");
+        Self {
+            rtf: rtf::render(&text),
+            text,
+            numbers: body.numbers,
+        }
+    }
+}
 
 /// Capture context before TrackPopupMenu enters its nested message loop.
 pub fn context_menu(hwnd: HWND, location: isize, numbers: &[NumberRegion]) -> anyhow::Result<()> {
@@ -202,22 +226,19 @@ pub fn font(hwnd: HWND) {
     send(hwnd, EM_EXSETSEL, 0, &selection as *const _ as isize);
 }
 
-pub fn set_content(hwnd: HWND, content: &Content, syntax: bool) -> anyhow::Result<()> {
-    if text(hwnd).replace("\r\n", "\r") == content.text {
-        return Ok(());
-    }
+pub fn set_content(hwnd: HWND, content: &Content) -> anyhow::Result<()> {
     send(hwnd, WM_SETREDRAW, 0, 0);
-    let result = replace(hwnd, content, syntax);
+    let result = replace(hwnd, content);
     redraw(hwnd);
     result
 }
 
-pub fn recolor(hwnd: HWND, content: &Content, syntax: bool) -> anyhow::Result<()> {
+pub fn recolor(hwnd: HWND, content: &Content) -> anyhow::Result<()> {
     let mut range = CHARRANGE::default();
     send(hwnd, EM_EXGETSEL, 0, &mut range as *mut _ as isize);
     let first_line = send(hwnd, EM_GETFIRSTVISIBLELINE, 0, 0);
     send(hwnd, WM_SETREDRAW, 0, 0);
-    let result = replace(hwnd, content, syntax);
+    let result = replace(hwnd, content);
     send(hwnd, EM_EXSETSEL, 0, &range as *const _ as isize);
     send(
         hwnd,
@@ -236,14 +257,14 @@ fn redraw(hwnd: HWND) {
     }
 }
 
-fn replace(hwnd: HWND, content: &Content, syntax: bool) -> anyhow::Result<()> {
+fn replace(hwnd: HWND, content: &Content) -> anyhow::Result<()> {
     let mut format = CHARFORMATW {
         cbSize: size_of::<CHARFORMATW>() as u32,
         ..Default::default()
     };
     send(hwnd, EM_GETCHARFORMAT, 0, &mut format as *mut _ as isize);
     send(hwnd, EM_SETBKGNDCOLOR, 1, 0);
-    let colored = syntax && !high_contrast() && unsafe { GetSysColor(COLOR_WINDOW) } == 0x00ffffff;
+    let colored = !high_contrast() && unsafe { GetSysColor(COLOR_WINDOW) } == 0x00ffffff;
     let result = if colored {
         stream_in(hwnd, &content.rtf)
     } else {
@@ -432,7 +453,7 @@ mod tests {
             let editor = create(parent, 1).unwrap();
             place(editor, crate::layout::rect(0, 0, 800, 400));
             let body = "ERROR_ACCESS_DENIED  next_value(x);";
-            set_content(editor, &Content::new(body.into()), true).unwrap();
+            set_content(editor, &Content::new(body.into())).unwrap();
             let selection = || {
                 let mut range = CHARRANGE::default();
                 send(editor, EM_EXGETSEL, 0, &mut range as *mut _ as isize);
@@ -535,10 +556,10 @@ mod tests {
             place(editor, crate::layout::rect(0, 0, 750, 500));
             focus(editor);
             let start = Instant::now();
-            set_content(editor, &content, true).unwrap();
+            set_content(editor, &content).unwrap();
             let elapsed = start.elapsed();
             let start = Instant::now();
-            recolor(editor, &content, true).unwrap();
+            recolor(editor, &content).unwrap();
             let recolor_elapsed = start.elapsed();
             let actual = text(editor).replace("\r\n", "\n").replace('\r', "\n");
             DestroyWindow(parent);
@@ -596,11 +617,11 @@ mod tests {
                 "one\r\ntwo\rthree\n",
             ] {
                 let content = Content::new(body.into());
-                set_content(editor, &content, true).unwrap();
+                set_content(editor, &content).unwrap();
                 assert_eq!(text(editor).replace("\r\n", "\r"), content.text);
                 let units: Vec<_> = content.text.encode_utf16().collect();
-                for syntax in [false, true] {
-                    recolor(editor, &content, syntax).unwrap();
+                for _ in 0..2 {
+                    recolor(editor, &content).unwrap();
                     assert_eq!(text(editor).replace("\r\n", "\r"), content.text);
                     for (start, end, color) in spans(&units) {
                         let range = CHARRANGE {
@@ -621,8 +642,7 @@ mod tests {
                             SCF_SELECTION as usize,
                             &mut format as *mut _ as isize,
                         );
-                        let colored =
-                            syntax && !high_contrast() && GetSysColor(COLOR_WINDOW) == 0x00ffffff;
+                        let colored = !high_contrast() && GetSysColor(COLOR_WINDOW) == 0x00ffffff;
                         assert_eq!(
                             format.crTextColor.0,
                             if colored {
@@ -636,7 +656,7 @@ mod tests {
                 }
             }
             let content = Content::new("const UINT32 value = 42;\n".repeat(500));
-            set_content(editor, &content, true).unwrap();
+            set_content(editor, &content).unwrap();
             let range = CHARRANGE {
                 cpMin: 6000,
                 cpMax: 6005,
@@ -645,8 +665,8 @@ mod tests {
             send(editor, EM_LINESCROLL, 0, 30);
             let first = send(editor, EM_GETFIRSTVISIBLELINE, 0, 0);
             assert!(first > 0);
-            for syntax in [false, true] {
-                recolor(editor, &content, syntax).unwrap();
+            for _ in 0..2 {
+                recolor(editor, &content).unwrap();
                 let mut actual = CHARRANGE::default();
                 send(editor, EM_EXGETSEL, 0, &mut actual as *mut _ as isize);
                 assert_eq!((actual.cpMin, actual.cpMax), (range.cpMin, range.cpMax));
@@ -678,7 +698,7 @@ mod tests {
             let editor = create(parent, 1).unwrap();
             let body = "const UINT32 example = 123; // a long declaration with several words that wrap without changing the copied text 😀";
             place(editor, crate::layout::rect(0, 0, 800, 400));
-            set_content(editor, &Content::new(body.into()), true).unwrap();
+            set_content(editor, &Content::new(body.into())).unwrap();
             let wide_lines = send(editor, EM_GETLINECOUNT, 0, 0);
             place(editor, crate::layout::rect(0, 0, 180, 400));
             assert!(send(editor, EM_GETLINECOUNT, 0, 0) > wide_lines);
@@ -705,7 +725,6 @@ mod tests {
             set_content(
                 editor,
                 &Content::new("struct Example {\n    UINT32 value;\n};".into()),
-                true,
             )
             .unwrap();
             assert_eq!(

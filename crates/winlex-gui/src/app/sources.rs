@@ -12,7 +12,6 @@ use std::{os::windows::ffi::OsStrExt, path::PathBuf};
 #[derive(Default)]
 pub(super) struct Sources {
     rows: Vec<Row>,
-    updating: bool,
 }
 struct Row {
     pub path: PathBuf,
@@ -134,9 +133,6 @@ fn selected() -> Option<PathBuf> {
     })
 }
 pub(super) fn update_actions() {
-    if read(|a| a.sources.updating) {
-        return;
-    }
     let path = selected();
     let reload = path
         .as_ref()
@@ -235,13 +231,9 @@ pub(super) fn refresh() {
         }
     });
     let count = rows.len();
-    write(|a| {
-        a.sources.rows = rows;
-        a.sources.updating = true;
-    });
+    write(|a| a.sources.rows = rows);
     state.apply(list, count);
     read(|a| a.sidebar.panel(super::panel::SOURCES_PANEL)).refresh_tooltip();
-    write(|a| a.sources.updating = false);
     update_actions();
 }
 

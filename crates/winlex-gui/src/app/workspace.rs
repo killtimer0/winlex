@@ -30,7 +30,6 @@ impl Default for Workspace {
 pub(super) struct DocumentHost {
     pub id: u64,
     pub hwnd: HWND,
-    pub title: String,
     pub content: std::rc::Rc<super::metadata::MetadataView>,
     pub placement: Option<Placement>,
     /// A transient document that the next preview request may replace in place.
@@ -168,15 +167,16 @@ pub(super) fn refresh_document_tabs() {
             a.workspace
                 .documents
                 .iter()
-                .map(|d| (d.id, d.hwnd, d.title.clone(), d.preview))
+                .map(|d| (d.id, d.hwnd, d.content.clone(), d.preview))
                 .collect::<Vec<_>>(),
         )
     });
     let mut ordinals = std::collections::HashMap::new();
     let items = docs
         .iter()
-        .map(|(id, hwnd, title, preview)| {
-            let ordinal = ordinals.entry(title).or_insert(0);
+        .map(|(id, hwnd, content, preview)| {
+            let title = content.title();
+            let ordinal = ordinals.entry(title.clone()).or_insert(0);
             *ordinal += 1;
             let suffix = if *ordinal > 1 {
                 format!(" ({ordinal})")
@@ -202,7 +202,6 @@ pub(super) fn refresh_document_tabs() {
                 title,
                 description,
                 icon: send(*hwnd, WM_GETICON, ICON_SMALL as usize, 0) as HICON,
-                closable: true,
             }
         })
         .collect();
@@ -402,15 +401,15 @@ pub(super) fn views() -> Vec<(HWND, std::rc::Rc<super::metadata::MetadataView>)>
             .collect()
     })
 }
-pub(super) fn complete(id: u64, completion: crate::tasks::Completion) {
+pub(super) fn complete(id: u64, ticket: u64, result: anyhow::Result<crate::rich_text::Content>) {
     let target = read(|a| {
         a.workspace
             .documents
             .iter()
             .find(|d| d.id == id)
-            .map(|d| (d.hwnd, d.content.clone()))
+            .map(|d| d.content.clone())
     });
-    if let Some((hwnd, view)) = target {
-        view.complete(hwnd, completion);
+    if let Some(view) = target {
+        view.complete(ticket, result);
     }
 }
