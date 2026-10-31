@@ -31,14 +31,11 @@ fn declarations_cover_native_signatures_and_architecture_specific_types() {
             for number in &rendered.numbers {
                 assert!(number.range.start >= end);
                 end = number.range.end;
-                let mut expected = format!("{}(0x{:X})", number.value, number.value);
-                if let Some(unit) = number.unit {
-                    expected.push(' ');
-                    expected.push_str(unit);
-                }
-                assert_eq!(
-                    String::from_utf16(&utf16[number.range.clone()]).unwrap(),
-                    expected
+                let region = String::from_utf16(&utf16[number.range.clone()]).unwrap();
+                assert!(
+                    region.contains(&number.value.to_string())
+                        || region.contains(&number.hexadecimal()),
+                    "{region}"
                 );
                 assert!(catalog.entity(number.entity).is_ok());
             }
@@ -54,8 +51,8 @@ fn declarations_cover_native_signatures_and_architecture_specific_types() {
                 assert!(text.contains("struct RECT"), "{text}");
                 assert!(text.contains("INT32 left;"));
                 assert!(text.contains("INT32 bottom;"));
-                assert!(text.contains("size: 16(0x10) bytes, alignment: 4(0x4) bytes"));
-                assert!(text.contains("offset: 12(0xC) bytes, size: 4(0x4) bytes"));
+                assert!(text.contains("size: 16 bytes, alignment: 4 bytes"));
+                assert!(text.contains("offset: 12 bytes, size: 4 bytes"));
             }
         }
         let render = |name| {
@@ -83,21 +80,17 @@ fn declarations_cover_native_signatures_and_architecture_specific_types() {
         let text = render("SECURITY_ATTRIBUTES");
         assert!(text.contains("UINT32 nLength;"), "{text}");
         assert!(text.contains("BOOL bInheritHandle;"), "{text}");
-        let pointer_offset = if arch == Architecture::X86 {
-            "4(0x4)"
-        } else {
-            "8(0x8)"
-        };
+        let pointer_offset = if arch == Architecture::X86 { "4" } else { "8" };
         assert!(text.contains(&format!("offset: {pointer_offset} bytes, size: {pointer_offset} bytes\n    void *lpSecurityDescriptor;")), "{text}");
         let text = render("IUnknown");
         let release_offset = if arch == Architecture::X86 {
-            "8(0x8)"
+            "0x8"
         } else {
-            "16(0x10)"
+            "0x10"
         };
         assert!(
             text.contains(&format!(
-                "slot 2(0x2), vtable +{release_offset} bytes\n    UINT32 Release("
+                "slot 2, vtable +{release_offset}\n    UINT32 Release("
             )),
             "{text}"
         );
@@ -217,4 +210,134 @@ fn generic_inheritance_and_delegate_signatures_are_preserved() {
     let text = render("IGeneric`1");
     assert!(text.contains("Vtable unavailable:"), "{text}");
     assert!(text.contains("interface IGeneric<T>"), "{text}");
+}
+
+#[test]
+fn enum_members_and_individual_constants_share_annotations() {
+    use winlex_core::windows_metadata::{writer, *};
+    let mut file = writer::File::new("ConstantDeclarations");
+    let base = file.TypeRef("System", "Enum");
+    file.TypeDef(
+        "Fixture",
+        "Status",
+        writer::TypeDefOrRef::TypeRef(base),
+        TypeAttributes::Public,
+    );
+    file.Field("value__", &Type::I32, FieldAttributes::Public);
+    let field = file.Field(
+        "Failure",
+        &Type::I32,
+        FieldAttributes::Public | FieldAttributes::Static | FieldAttributes::Literal,
+    );
+    file.Constant(writer::HasConstant::Field(field), &Value::I32(-1073741819));
+    let object = file.TypeRef("System", "Object");
+    file.TypeDef(
+        "Fixture",
+        "Constants",
+        writer::TypeDefOrRef::TypeRef(object),
+        TypeAttributes::Public,
+    );
+    let field = file.Field(
+        "Text",
+        &Type::String,
+        FieldAttributes::Public | FieldAttributes::Static | FieldAttributes::Literal,
+    );
+    file.Constant(
+        writer::HasConstant::Field(field),
+        &Value::Utf16("中😀\0\"\\\n".into()),
+    );
+    let field = file.Field(
+        "EmptyText",
+        &Type::String,
+        FieldAttributes::Public | FieldAttributes::Static | FieldAttributes::Literal,
+    );
+    file.Constant(
+        writer::HasConstant::Field(field),
+        &Value::Utf16(String::new()),
+    );
+    let field = file.Field(
+        "NullText",
+        &Type::String,
+        FieldAttributes::Public | FieldAttributes::Static | FieldAttributes::Literal,
+    );
+    file.Constant(writer::HasConstant::Field(field), &Value::U32(0));
+    let mut bytes = file.into_stream();
+    {
+        use winlex_core::windows_metadata::reader::*;
+        let index = Index::new(vec![File::new(bytes.clone()).unwrap()]);
+        let constant = index
+            .rows::<Field>(0)
+            .find(|f| f.name() == "NullText")
+            .unwrap()
+            .constant()
+            .unwrap();
+        // Small ECMA-335 Constant rows have three two-byte columns.
+        let row: Vec<_> = (0..3)
+            .flat_map(|column| (constant.usize(column) as u16).to_le_bytes())
+            .collect();
+        let positions: Vec<_> = bytes
+            .windows(row.len())
+            .enumerate()
+            .filter_map(|(offset, value)| (value == row).then_some(offset))
+            .collect();
+        assert_eq!(positions.len(), 1);
+        bytes[positions[0]] = 0x12;
+    }
+    let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tmp");
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join(format!(
+        "constant-declarations-{}.winmd",
+        std::process::id()
+    ));
+    std::fs::write(&path, bytes).unwrap();
+    let catalog = Catalog::open(&path).unwrap();
+    std::fs::remove_file(path).unwrap();
+    let render = |name| {
+        let entity = catalog
+            .search(
+                name,
+                SearchOptions {
+                    mode: SearchMode::Name,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap();
+        winlex_format::declaration::render(&catalog, entity.id, Architecture::X64).unwrap()
+    };
+    let parent = render("Status");
+    let member = render("Failure");
+    assert!(
+        parent.text.contains("Failure = -1073741819, // 0xC0000005"),
+        "{}",
+        parent.text
+    );
+    assert!(member.text.contains("Failure = -1073741819; // 0xC0000005"));
+    assert_eq!(parent.numbers.len(), 2);
+    for (a, b) in parent.numbers.iter().zip(&member.numbers) {
+        assert_eq!(a.entity, b.entity);
+        assert_eq!(a.value, b.value);
+        assert_eq!(a.hexadecimal(), b.hexadecimal());
+    }
+    let parent = render("Constants");
+    let member = render("Text");
+    assert!(
+        parent
+            .text
+            .contains("\"中😀\\u0000\\\"\\\\\\n\"; // length: 7 UTF-16 code units"),
+        "{}",
+        parent.text
+    );
+    assert!(member.text.contains("length: 7 UTF-16 code units"));
+    assert_eq!(parent.numbers[0].entity, member.numbers[0].entity);
+    assert!(
+        render("EmptyText")
+            .text
+            .contains("= \"\"; // length: 0 UTF-16 code units")
+    );
+    let null = render("NullText");
+    assert!(null.text.contains("= null;"), "{}", null.text);
+    assert!(null.numbers.is_empty());
 }

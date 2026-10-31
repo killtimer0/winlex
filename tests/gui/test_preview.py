@@ -55,9 +55,9 @@ def test_preview_rebinds_architecture_choices_and_body(launch, settings):
     assert app.preview_row() == doc
     assert app.choices(app.architecture(doc)) == ["x86", "x64", "arm64"]
     assert app.choice(doc) == "arm64"
-    n.wait(lambda: "// [arm64] size: 24(0x18) bytes" in app.content(doc), "inherited ARM64 preview", 45)
+    n.wait(lambda: "// [arm64] size: 24 bytes" in app.content(doc), "inherited ARM64 preview", 45)
     app.choose(doc, "x86")
-    n.wait(lambda: "// [x86] size: 12(0xC) bytes" in app.content(doc), "rebound selector", 45)
+    n.wait(lambda: "// [x86] size: 12 bytes" in app.content(doc), "rebound selector", 45)
 
 
 def test_preview_inherits_the_architecture_being_read(launch, profile, settings):

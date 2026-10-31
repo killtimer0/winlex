@@ -16,14 +16,11 @@ pub fn context_menu(hwnd: HWND, location: isize, numbers: &[NumberRegion]) -> an
     };
     let mut selection = CHARRANGE::default();
     send(hwnd, EM_EXGETSEL, 0, &mut selection as *mut _ as isize);
-    let mut buffer = vec![0u16; (selection.cpMax - selection.cpMin).max(0) as usize + 1];
-    let length = send(hwnd, EM_GETSELTEXT, 0, buffer.as_mut_ptr() as isize).max(0) as usize;
-    let selected = (length != 0).then(|| String::from_utf16_lossy(&buffer[..length]));
     let mut point = POINT {
         x: location as i16 as i32,
         y: (location >> 16) as i16 as i32,
     };
-    let index = if location == -1 {
+    if location == -1 {
         send(
             hwnd,
             EM_POSFROMCHAR,
@@ -36,35 +33,33 @@ pub fn context_menu(hwnd: HWND, location: isize, numbers: &[NumberRegion]) -> an
         unsafe {
             ClientToScreen(hwnd, &mut point);
         }
-        Some(selection.cpMin as usize)
     } else {
         let mut local = point;
         unsafe {
+            SetFocus(hwnd);
             ScreenToClient(hwnd, &mut local);
         }
-        let index = send(hwnd, EM_CHARFROMPOS, 0, &local as *const _ as isize);
-        let mut start = POINT { x: 0, y: 0 };
-        let mut end = POINT { x: 0, y: 0 };
-        send(hwnd, EM_POSFROMCHAR, &mut start as *mut _ as usize, index);
-        send(hwnd, EM_POSFROMCHAR, &mut end as *mut _ as usize, index + 1);
-        // EM_CHARFROMPOS returns the nearest character even in blank space.
-        (index >= 0
-            && unsafe { PtInRect(&client(hwnd), local) } != 0
-            && start.y == end.y
-            && local.x >= start.x
-            && local.x < end.x)
-            .then_some(index as usize)
-    };
-    let number = index.and_then(|index| numbers.iter().find(|n| n.range.contains(&index)));
+        let index = send(hwnd, EM_CHARFROMPOS, 0, &local as *const _ as isize) as i32;
+        if index >= 0 && !(selection.cpMin..selection.cpMax).contains(&index) {
+            selection = CHARRANGE {
+                cpMin: index,
+                cpMax: index,
+            };
+            send(hwnd, EM_EXSETSEL, 0, &selection as *const _ as isize);
+        }
+    }
+    let mut buffer = vec![0u16; (selection.cpMax - selection.cpMin).max(0) as usize + 1];
+    let length = send(hwnd, EM_GETSELTEXT, 0, buffer.as_mut_ptr() as isize).max(0) as usize;
+    let selected = (length != 0).then(|| String::from_utf16_lossy(&buffer[..length]));
+    let number = numbers.iter().find(|n| {
+        n.range.start <= selection.cpMin as usize && selection.cpMax as usize <= n.range.end
+    });
     let mut actions = Vec::new();
     if let Some(number) = number {
         actions.push((IDS_COPY_DECIMAL, Some(number.value.to_string())));
-        actions.push((IDS_COPY_HEX, Some(format!("0x{:X}", number.value))));
-        if let Some(unit) = number.unit {
-            actions.push((
-                IDS_COPY_VALUE,
-                Some(format!("{}(0x{:X}) {unit}", number.value, number.value)),
-            ));
+        actions.push((IDS_COPY_HEX, Some(number.hexadecimal())));
+        if number.unit.is_some() {
+            actions.push((IDS_COPY_VALUE, Some(number.with_unit())));
         }
     }
     actions.push((IDS_COPY_SELECTION, selected));

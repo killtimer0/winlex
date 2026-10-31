@@ -70,9 +70,28 @@ fn ty(t: &Type, name: &str) -> String {
 #[derive(Clone, Debug)]
 pub struct NumberRegion {
     pub range: std::ops::Range<usize>,
-    pub value: u64,
+    pub value: i128,
+    pub bits: Option<u32>,
     pub unit: Option<&'static str>,
     pub entity: EntityId,
+}
+
+impl NumberRegion {
+    pub fn hexadecimal(&self) -> String {
+        if let Some(bits) = self.bits {
+            let value = self.value & ((1i128 << bits) - 1);
+            format!("0x{value:0width$X}", width = (bits / 4) as usize)
+        } else {
+            format!("0x{:X}", self.value)
+        }
+    }
+
+    pub fn with_unit(&self) -> String {
+        self.unit.map_or_else(
+            || self.value.to_string(),
+            |unit| format!("{} {unit}", self.value),
+        )
+    }
 }
 
 #[derive(Default)]
@@ -103,13 +122,14 @@ impl Rendered {
         entity: EntityId,
     ) -> std::fmt::Result {
         let start = self.position;
-        write!(self, "{value}(0x{value:X})")?;
+        write!(self, "{value}")?;
         if let Some(unit) = unit {
             write!(self, " {unit}")?;
         }
         self.numbers.push(NumberRegion {
             range: start..self.position,
-            value,
+            value: value.into(),
+            bits: None,
             unit,
             entity,
         });
@@ -124,21 +144,118 @@ impl Rendered {
         }
     }
 
+    fn include_label(&mut self, start: usize) {
+        self.numbers.last_mut().unwrap().range.start = start;
+    }
+
     fn slot_position(
         &mut self,
         index: usize,
         arch: Architecture,
         entity: EntityId,
     ) -> std::fmt::Result {
+        let start = self.position;
         write!(self, "slot ")?;
         self.number(index as u64, None, entity)?;
-        write!(self, ", vtable +")?;
-        self.number(
-            index as u64 * arch.pointer_bytes() as u64,
-            Some("bytes"),
+        self.include_label(start);
+        write!(self, ", ")?;
+        let start = self.position;
+        let value = index as i128 * arch.pointer_bytes() as i128;
+        write!(self, "vtable +0x{value:X}")?;
+        self.numbers.push(NumberRegion {
+            range: start..self.position,
+            value,
+            bits: None,
+            unit: Some("bytes"),
             entity,
-        )
+        });
+        Ok(())
     }
+}
+
+fn integer_format(t: &Type, arch: Architecture) -> Option<(u32, bool)> {
+    Some(match t {
+        Type::I8 => (8, true),
+        Type::U8 => (8, false),
+        Type::I16 => (16, true),
+        Type::U16 => (16, false),
+        Type::I32 => (32, true),
+        Type::U32 => (32, false),
+        Type::I64 => (64, true),
+        Type::U64 => (64, false),
+        Type::ISize => (arch.pointer_bytes() as u32 * 8, true),
+        Type::USize => (arch.pointer_bytes() as u32 * 8, false),
+        _ => return None,
+    })
+}
+
+fn constant(
+    out: &mut Rendered,
+    value: &Value,
+    t: &Type,
+    arch: Architecture,
+    entity: EntityId,
+    suffix: &str,
+) -> Result<()> {
+    if let Some((bits, signed)) = integer_format(t, arch).or_else(|| {
+        matches!(t, Type::ValueName(_) | Type::ClassName(_))
+            .then(|| integer_format(&value.ty(), arch))
+            .flatten()
+    }) && let Some(raw) = integer(value)
+    {
+        let mask = (1i128 << bits) - 1;
+        let raw = raw & mask;
+        let value = if signed && raw & (1i128 << (bits - 1)) != 0 {
+            raw - (1i128 << bits)
+        } else {
+            raw
+        };
+        let start = out.position;
+        write!(out, "{value}")?;
+        let number = NumberRegion {
+            range: start..out.position,
+            value,
+            bits: Some(bits),
+            unit: None,
+            entity,
+        };
+        let hex = number.hexadecimal();
+        out.numbers.push(number.clone());
+        write!(out, "{suffix} // ")?;
+        let start = out.position;
+        write!(out, "{hex}")?;
+        out.numbers.push(NumberRegion {
+            range: start..out.position,
+            ..number
+        });
+    } else if let Value::Utf8(text) | Value::Utf16(text) = value {
+        write!(out, "\"")?;
+        for ch in text.chars() {
+            match ch {
+                '"' => write!(out, "\\\"")?,
+                '\\' => write!(out, "\\\\")?,
+                '\n' => write!(out, "\\n")?,
+                '\r' => write!(out, "\\r")?,
+                '\t' => write!(out, "\\t")?,
+                ch if ch.is_control() => write!(out, "\\u{:04X}", ch as u32)?,
+                ch => write!(out, "{ch}")?,
+            }
+        }
+        write!(out, "\"{suffix} // ")?;
+        let start = out.position;
+        write!(out, "length: ")?;
+        out.number(
+            text.encode_utf16().count() as u64,
+            Some("UTF-16 code units"),
+            entity,
+        )?;
+        out.include_label(start);
+    } else {
+        let value = integer(value).map_or_else(|| format!("{value:?}"), |value| value.to_string());
+        write!(out, "{value}{suffix}")?;
+    }
+    writeln!(out)?;
+    Ok(())
 }
 
 pub fn render(catalog: &Catalog, id: EntityId, arch: Architecture) -> Result<Rendered> {
@@ -240,10 +357,16 @@ fn append(
             let layout = if entity.kind == "struct" {
                 match c.layout(id, arch) {
                     Ok(layout) => {
-                        write!(out, "{pad}// [{}] size: ", arch.name())?;
+                        write!(out, "{pad}// [{}] ", arch.name())?;
+                        let start = out.position;
+                        write!(out, "size: ")?;
                         out.bit_position(layout.size_bits, id)?;
-                        write!(out, ", alignment: ")?;
+                        out.include_label(start);
+                        write!(out, ", ")?;
+                        let start = out.position;
+                        write!(out, "alignment: ")?;
                         out.bit_position(layout.alignment_bits, id)?;
+                        out.include_label(start);
                         writeln!(out)?;
                         Some(layout)
                     }
@@ -262,9 +385,12 @@ fn append(
             let vtable = if entity.kind == "interface" {
                 match c.vtable(id, arch) {
                     Ok(vtable) => {
-                        write!(out, "{pad}// [{}] vtable: ", arch.name())?;
-                        out.number(vtable.slots.len() as u64, None, id)?;
-                        writeln!(out, " slots")?;
+                        write!(out, "{pad}// [{}] ", arch.name())?;
+                        let start = out.position;
+                        write!(out, "vtable: ")?;
+                        out.number(vtable.slots.len() as u64, Some("slots"), id)?;
+                        out.include_label(start);
+                        writeln!(out)?;
                         Some(vtable)
                     }
                     Err(error) => {
@@ -344,13 +470,14 @@ fn append(
                 for f in t.fields().filter(|f| f.constant().is_some()) {
                     if winlex_core::metadata::supports(f, arch.bit()) {
                         let value = f.constant().unwrap().value();
-                        writeln!(
+                        write!(out, "{inner}{} = ", f.name())?;
+                        constant(
                             out,
-                            "{inner}{} = {},",
-                            f.name(),
-                            integer(&value)
-                                .map(|v| v.to_string())
-                                .unwrap_or_else(|| format!("{value:?}"))
+                            &value,
+                            &t.underlying_type().unwrap_or_else(|| value.ty()),
+                            arch,
+                            winlex_core::metadata::key(f, 4),
+                            ",",
                         )?;
                     }
                 }
@@ -366,20 +493,34 @@ fn append(
                     .as_ref()
                     .and_then(|layout| layout.fields.iter().find(|f| f.id == member))
                 {
-                    write!(out, "{inner}// offset: ")?;
+                    write!(out, "{inner}// ")?;
+                    let start = out.position;
+                    write!(out, "offset: ")?;
                     out.bit_position(field.offset_bits, member)?;
-                    write!(out, ", size: ")?;
+                    out.include_label(start);
+                    write!(out, ", ")?;
+                    let start = out.position;
+                    write!(out, "size: ")?;
                     out.bit_position(field.size_bits, member)?;
+                    out.include_label(start);
                     writeln!(out)?;
                     for bitfield in &field.bitfields {
-                        write!(out, "{inner}// {}: bit offset ", bitfield.name)?;
+                        write!(out, "{inner}// {}: ", bitfield.name)?;
+                        let start = out.position;
+                        write!(out, "bit offset ")?;
                         out.number(
                             field.offset_bits + bitfield.relative_offset_bits,
                             Some("bits"),
                             member,
                         )?;
-                        write!(out, " from struct start, width ")?;
+                        write!(out, " from struct start")?;
+                        out.numbers.last_mut().unwrap().range.end = out.position;
+                        out.include_label(start);
+                        write!(out, ", ")?;
+                        let start = out.position;
+                        write!(out, "width ")?;
                         out.number(bitfield.width_bits, Some("bits"), member)?;
+                        out.include_label(start);
                         writeln!(out)?;
                     }
                 }
@@ -401,20 +542,30 @@ fn append(
         }
         Declaration::Field(f) => {
             if let Some(offset) = f.explicit_offset() {
-                write!(out, "{pad}// Declared offset: ")?;
+                write!(out, "{pad}// ")?;
+                let start = out.position;
+                write!(out, "Declared offset: ")?;
                 out.number(offset.into(), Some("bytes"), id)?;
+                out.include_label(start);
                 writeln!(out)?;
             }
             write!(out, "{pad}{}", ty(&f.ty(), f.name()))?;
             if let Some(value) = f.constant() {
+                // ELEMENT_TYPE_CLASS represents a null reference constant.
+                if value.usize(0) == 0x12 {
+                    writeln!(out, " = null;")?;
+                    return Ok(());
+                }
                 let value = value.value();
-                write!(
-                    out,
-                    " = {}",
-                    integer(&value)
-                        .map(|v| v.to_string())
-                        .unwrap_or_else(|| format!("{value:?}"))
-                )?;
+                write!(out, " = ")?;
+                let parent: TypeDef<'_> = f.parent_row(4);
+                let t = if parent.category() == TypeCategory::Enum {
+                    parent.underlying_type().unwrap_or_else(|| f.ty())
+                } else {
+                    f.ty()
+                };
+                constant(out, &value, &t, arch, id, ";")?;
+                return Ok(());
             }
             writeln!(out, ";")?;
         }
@@ -455,6 +606,167 @@ fn append(
 mod tests {
     use super::*;
 
+    fn entity() -> EntityId {
+        EntityId {
+            source_id: 0,
+            token: 0x04000001,
+        }
+    }
+
+    #[test]
+    fn integer_annotations_preserve_signedness_and_width() {
+        let cases = [
+            (Value::I8(i8::MIN), "-128", "0x80"),
+            (Value::U8(u8::MAX), "255", "0xFF"),
+            (Value::I16(i16::MIN), "-32768", "0x8000"),
+            (Value::U16(u16::MAX), "65535", "0xFFFF"),
+            (Value::I32(-1073741819), "-1073741819", "0xC0000005"),
+            (Value::U32(u32::MAX), "4294967295", "0xFFFFFFFF"),
+            (
+                Value::I64(i64::MIN),
+                "-9223372036854775808",
+                "0x8000000000000000",
+            ),
+            (
+                Value::U64(u64::MAX),
+                "18446744073709551615",
+                "0xFFFFFFFFFFFFFFFF",
+            ),
+            (Value::U32(0), "0", "0x00000000"),
+            (Value::I32(i32::MAX), "2147483647", "0x7FFFFFFF"),
+        ];
+        for (value, decimal, hex) in cases {
+            let mut out = Rendered::default();
+            constant(
+                &mut out,
+                &value,
+                &value.ty(),
+                Architecture::X64,
+                entity(),
+                ";",
+            )
+            .unwrap();
+            assert_eq!(out.text, format!("{decimal}; // {hex}\n"));
+            let utf16: Vec<_> = out.text.encode_utf16().collect();
+            for (region, expected) in out.numbers.iter().zip([decimal, hex]) {
+                assert_eq!(
+                    String::from_utf16(&utf16[region.range.clone()]).unwrap(),
+                    expected
+                );
+                assert_eq!(region.value.to_string(), decimal);
+                assert_eq!(region.hexadecimal(), hex);
+            }
+        }
+        let mut out = Rendered::default();
+        constant(
+            &mut out,
+            &Value::U32(0xFFFF_FFFF),
+            &Type::I32,
+            Architecture::X64,
+            entity(),
+            ",",
+        )
+        .unwrap();
+        assert_eq!(out.text, "-1, // 0xFFFFFFFF\n");
+    }
+
+    #[test]
+    fn strings_escape_content_and_count_original_utf16_units() {
+        for text in ["", "Example", "中😀", "\"\\\r\n\t\0\u{1}A"] {
+            let mut out = Rendered::default();
+            write!(out, "// 文😀\r\n").unwrap();
+            constant(
+                &mut out,
+                &Value::Utf16(text.into()),
+                &Type::String,
+                Architecture::X64,
+                entity(),
+                ";",
+            )
+            .unwrap();
+            let number = &out.numbers[0];
+            assert_eq!(number.value, text.encode_utf16().count() as i128);
+            assert_eq!(
+                number.with_unit(),
+                format!("{} UTF-16 code units", text.encode_utf16().count())
+            );
+            let units: Vec<_> = out.text.encode_utf16().collect();
+            assert_eq!(
+                String::from_utf16(&units[number.range.clone()]).unwrap(),
+                format!("length: {}", number.with_unit())
+            );
+            assert_eq!(out.text.lines().count(), 2);
+            assert!(!out.text.contains('\0'));
+            if text.contains('\0') {
+                assert!(out.text.contains("\\\"\\\\\\r\\n\\t\\u0000\\u0001A"));
+            }
+        }
+    }
+
+    #[test]
+    fn pointer_sized_constants_follow_architecture_and_other_values_stay_unannotated() {
+        for (arch, expected) in [
+            (Architecture::X86, "-1; // 0xFFFFFFFF\n"),
+            (Architecture::X64, "-1; // 0xFFFFFFFFFFFFFFFF\n"),
+        ] {
+            let mut out = Rendered::default();
+            constant(
+                &mut out,
+                &Value::ISize(-1),
+                &Type::ISize,
+                arch,
+                entity(),
+                ";",
+            )
+            .unwrap();
+            assert_eq!(out.text, expected);
+        }
+        for (value, t, expected) in [
+            (Value::Bool(true), Type::Bool, "Bool(true);\n"),
+            (Value::F32(1.5), Type::F32, "F32(1.5);\n"),
+            (Value::U16(65), Type::Char, "65;\n"),
+        ] {
+            let mut out = Rendered::default();
+            constant(&mut out, &value, &t, Architecture::X64, entity(), ";").unwrap();
+            assert_eq!(out.text, expected);
+            assert!(out.numbers.is_empty());
+        }
+    }
+
+    #[test]
+    fn vtable_context_regions_cover_labels_but_not_separators() {
+        for (arch, hex) in [(Architecture::X86, "0xC"), (Architecture::X64, "0x18")] {
+            let mut out = Rendered::default();
+            out.slot_position(3, arch, entity()).unwrap();
+            assert_eq!(out.text, format!("slot 3, vtable +{hex}"));
+            let utf16: Vec<_> = out.text.encode_utf16().collect();
+            for (region, expected) in out
+                .numbers
+                .iter()
+                .zip(["slot 3".to_owned(), format!("vtable +{hex}")])
+            {
+                assert_eq!(
+                    String::from_utf16(&utf16[region.range.clone()]).unwrap(),
+                    expected
+                );
+                for index in region.range.clone() {
+                    assert_eq!(
+                        out.numbers
+                            .iter()
+                            .filter(|n| n.range.contains(&index))
+                            .count(),
+                        1
+                    );
+                }
+            }
+            assert!(
+                !out.numbers
+                    .iter()
+                    .any(|n| n.range.contains(&6) || n.range.contains(&7))
+            );
+        }
+    }
+
     #[test]
     fn numeric_regions_follow_utf16_and_normalized_newlines() {
         let mut out = Rendered::default();
@@ -464,8 +776,8 @@ mod tests {
             token: 0x04000001,
         };
         out.number(64, Some("bytes"), id).unwrap();
-        assert_eq!(out.text, "// 文😀\n64(0x40) bytes");
-        assert_eq!(out.numbers[0].range, 7..21);
+        assert_eq!(out.text, "// 文😀\n64 bytes");
+        assert_eq!(out.numbers[0].range, 7..15);
         assert_eq!(out.numbers[0].entity, id);
     }
 }

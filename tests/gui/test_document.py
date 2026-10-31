@@ -292,7 +292,7 @@ def test_constant_summary_pseudocode_and_information_copy(launch, settings):
     app.query("Windows.Win32.Foundation.WIN32_ERROR.ERROR_ACCESS_DENIED")
     doc = app.open_row()
     n.wait(lambda: "ERROR_ACCESS_DENIED = 5;" in app.content(doc), "constant", 45)
-    assert app.content(doc).strip() == "WIN32_ERROR ERROR_ACCESS_DENIED = 5;"
+    assert app.content(doc).strip() == "WIN32_ERROR ERROR_ACCESS_DENIED = 5; // 0x00000005"
     assert n.window_text(n.get_item(doc, 1207)) == "ERROR_ACCESS_DENIED"
     assert n.window_text(n.get_item(doc, 1208)) in ("Constant", "常量")
     assert n.window_text(n.get_item(doc, 1209)) == "Windows.Win32.Foundation · WIN32_ERROR"
