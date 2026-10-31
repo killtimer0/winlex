@@ -364,8 +364,15 @@ fn layout(shared: &Rc<RefCell<State>>, reveal: bool) {
                 GetTextExtentPoint32W(dc, text.as_ptr(), text.len() as i32 - 1, &mut size);
             }
             let overhang = title_overhang(dc, &text[..text.len() - 1]);
-            (size.cx + overhang + unit * if i.icon.is_null() { 2 } else { 5 })
-                .clamp(unit * 10, unit * 28)
+            (size.cx
+                + overhang
+                + unit * 2
+                + if i.icon.is_null() {
+                    0
+                } else {
+                    unit * 2 + unit / 2
+                })
+            .clamp(unit * 10, unit * 28)
         })
         .collect::<Vec<_>>();
     unsafe {
@@ -468,7 +475,7 @@ fn paint(shared: &Rc<RefCell<State>>) {
                     ptr::null_mut(),
                     DI_NORMAL,
                 );
-                text_rect.left += s.unit * 3;
+                text_rect.left += s.unit * 2 + s.unit / 2;
             }
             text_rect.right -= s.unit;
             let title = wide(&item.title);

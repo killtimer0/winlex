@@ -225,8 +225,8 @@ pub(super) fn layout(bottom: i32) -> i32 {
         return x;
     };
     panel.layout(layout::rect(x, 0, width, bottom), &m);
-    place(splitter, layout::rect(x + width, 0, s(5), bottom));
-    x + width + s(5)
+    place(splitter, layout::rect(x + width, 0, s(3), bottom));
+    x + width + s(3)
 }
 pub(super) fn command(w: usize, control: HWND) -> bool {
     let id = w as u16;
