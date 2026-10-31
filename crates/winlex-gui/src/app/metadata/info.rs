@@ -78,6 +78,8 @@ pub(super) struct Info {
     architecture_label: HWND,
     pub architecture: HWND,
     more: HWND,
+    online: HWND,
+    online_target: RefCell<String>,
     line: HWND,
     heading: RefCell<Option<Font>>,
     snapshot: RefCell<Option<Snapshot>>,
@@ -128,6 +130,13 @@ impl Info {
             DOCUMENT_MORE,
         )?;
         self.line = child(owner, w!("STATIC"), &[0], SS_ETCHEDHORZ, 0)?;
+        self.online = child(
+            owner,
+            w!("BUTTON"),
+            resources::wide_text(IDS_ONLINE_SEARCH),
+            WS_TABSTOP | BS_PUSHBUTTON as u32,
+            DOCUMENT_ONLINE,
+        )?;
         let services: IAccPropServices =
             unsafe { CoCreateInstance(&CLSID_AccPropServices, None, CLSCTX_INPROC_SERVER)? };
         self.accessibility.replace(Some(services.clone()));
@@ -184,6 +193,13 @@ impl Info {
         set_text(self.name, &entity.name);
         set_text(self.scope, &scope);
         set_text(self.kind, &resources::text(kind_label(&entity.kind)));
+        let documentation = binding
+            .catalog
+            .declaration(binding.id, Some(binding.architecture))?
+            .documentation_url();
+        let (label, target) = online_target(documentation.as_deref(), &entity.full_name);
+        set_text(self.online, &resources::text(label));
+        self.online_target.replace(target);
         let path = binding.catalog.sources()[binding.id.source_id].path.clone();
         let filename: Vec<u16> = path
             .file_name()
@@ -209,6 +225,7 @@ impl Info {
             self.architecture_label,
             self.architecture,
             self.more,
+            self.online,
         ] {
             super::super::bind(control, m.font);
         }
@@ -239,14 +256,16 @@ impl Info {
     }
     pub fn layout(&self, area: &mut RECT, m: &layout::Metrics, positions: &mut Vec<(HWND, RECT)>) {
         let button = m.button_size(self.more);
+        let online = m.button_size(self.online);
         let combo = bounds(self.architecture, ptr::null_mut());
         let combo_height = combo.bottom - combo.top;
-        let actions_width = self.actions_width(m, button.cx);
+        let actions_width = self.actions_width(m, button.cx + m.px(8) + online.cx);
         let wrap_button = actions_width > area.right - area.left;
-        let row_height = m
-            .height
-            .max(combo_height)
-            .max(if wrap_button { 0 } else { button.cy });
+        let row_height = m.height.max(combo_height).max(if wrap_button {
+            0
+        } else {
+            button.cy.max(online.cy)
+        });
         let heading_height = self
             .heading
             .borrow()
@@ -310,7 +329,7 @@ impl Info {
             ),
         ));
         if wrap_button {
-            row = layout::take_top(area, button.cy);
+            row = layout::take_top(area, button.cy.max(online.cy));
             layout::take_top(area, m.px(4));
         } else {
             layout::take_left(&mut row, m.px(8));
@@ -321,6 +340,19 @@ impl Info {
             more.bottom - more.top >= button.cy && more.right - more.left >= button.cx,
         );
         positions.push((self.more, more));
+        if row.right - row.left < m.px(8) + online.cx {
+            row = layout::take_top(area, online.cy);
+            layout::take_top(area, m.px(4));
+        } else {
+            layout::take_left(&mut row, m.px(8));
+        }
+        let online_bounds = centered(layout::take_left(&mut row, online.cx), online.cy);
+        show(
+            self.online,
+            online_bounds.right - online_bounds.left >= online.cx
+                && online_bounds.bottom - online_bounds.top >= online.cy,
+        );
+        positions.push((self.online, online_bounds));
         positions.push((self.line, layout::take_top(area, m.px(2))));
         layout::take_top(area, m.px(8));
     }
@@ -341,6 +373,24 @@ impl Info {
             centered(layout::take_left(row, label_width), m.height),
         ));
         positions.push((self.source, centered(*row, m.height)));
+    }
+    pub fn open_online(&self, owner: HWND) -> anyhow::Result<()> {
+        let target = self.online_target.borrow().clone();
+        if target.is_empty() {
+            return Ok(());
+        }
+        let result = unsafe {
+            windows_sys::Win32::UI::Shell::ShellExecuteW(
+                owner,
+                w!("open"),
+                wide(&target).as_ptr(),
+                ptr::null(),
+                ptr::null(),
+                SW_SHOWNORMAL,
+            )
+        } as isize;
+        anyhow::ensure!(result > 32, "Open online reference failed ({result})");
+        Ok(())
     }
     pub fn menu(&self, owner: HWND) -> anyhow::Result<()> {
         let Some(snapshot) = self.snapshot.borrow().clone() else {
@@ -434,6 +484,38 @@ impl Drop for Info {
         self.clear_accessibility();
     }
 }
+fn online_target(documentation: Option<&str>, name: &str) -> (u16, String) {
+    if let Some(url) = documentation.filter(|url| {
+        let Some(rest) = url
+            .get(..8)
+            .filter(|scheme| scheme.eq_ignore_ascii_case("https://"))
+            .and_then(|_| url.get(8..))
+        else {
+            return false;
+        };
+        let host = rest.split(['/', '?', '#']).next().unwrap_or_default();
+        !host.is_empty()
+            && host
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b':'))
+            && host.bytes().any(|b| b.is_ascii_alphanumeric())
+            && !url
+                .chars()
+                .any(|ch| ch.is_control() || ch.is_whitespace() || matches!(ch, '\\' | '"' | '\''))
+    }) {
+        return (IDS_OFFICIAL_DOCUMENTATION, url.to_owned());
+    }
+    let mut url = String::from("https://www.google.com/search?q=");
+    for byte in name.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            url.push(byte as char);
+        } else {
+            use std::fmt::Write;
+            write!(url, "%{byte:02X}").unwrap();
+        }
+    }
+    (IDS_ONLINE_SEARCH, url)
+}
 fn kind_label(kind: &str) -> u16 {
     KINDS
         .iter()
@@ -467,6 +549,34 @@ fn menu_label(label: &[u16], value: &[u16]) -> Vec<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn online_targets_use_https_documentation_or_encoded_search() {
+        let url = "https://learn.microsoft.com/windows/win32/api/test?a=1&b=2#member";
+        assert_eq!(
+            online_target(Some(url), "ignored"),
+            (IDS_OFFICIAL_DOCUMENTATION, url.into())
+        );
+        for invalid in [
+            None,
+            Some(""),
+            Some("http://example.com"),
+            Some("file:///test"),
+            Some("javascript:alert(1)"),
+            Some("https:///test"),
+            Some("https://example.com\0.exe"),
+            Some("https://example.com/a b"),
+            Some("https://example.com\\test"),
+            Some("https://user@example.com"),
+        ] {
+            assert_eq!(
+                online_target(invalid, "N.A&B 中"),
+                (
+                    IDS_ONLINE_SEARCH,
+                    "https://www.google.com/search?q=N.A%26B%20%E4%B8%AD".into()
+                )
+            );
+        }
+    }
     #[test]
     fn kind_labels_are_unique_and_round_trip() {
         for (kind, id) in KINDS {

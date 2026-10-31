@@ -153,6 +153,25 @@ pub fn guid<'a>(r: impl HasAttributes<'a>) -> Option<String> {
     ))
 }
 impl<'a> Declaration<'a> {
+    pub fn documentation_url(&self) -> Option<String> {
+        fn read<'a>(row: impl HasAttributes<'a>) -> Option<String> {
+            row.find_attribute("DocumentationAttribute")?
+                .value()
+                .into_iter()
+                .find_map(|(_, value)| match value {
+                    Value::Utf8(url) => Some(url.to_string()),
+                    _ => None,
+                })
+        }
+        match self {
+            Self::Type(row) => read(*row),
+            Self::Method(row) => read(*row),
+            Self::Field(row) => read(*row),
+            Self::Property(row) => read(*row),
+            Self::Event(row) => read(*row),
+            Self::Reference(_) => None,
+        }
+    }
     pub fn name(&self) -> &'a str {
         match self {
             Self::Type(r) => r.name(),
@@ -709,6 +728,93 @@ fn uses(
 #[cfg(test)]
 mod tests {
     use super::Architecture;
+
+    #[test]
+    fn documentation_links_are_read_from_each_declaration() {
+        use windows_metadata::{reader::*, writer, *};
+        let mut file = writer::File::new("DocumentationFixture");
+        let object = file.TypeRef("System", "Object");
+        let attribute = file.TypeRef(
+            "Windows.Win32.Foundation.Metadata",
+            "DocumentationAttribute",
+        );
+        let constructor = file.MemberRef(
+            ".ctor",
+            &Signature {
+                flags: MethodCallAttributes::HASTHIS,
+                return_type: Type::Void,
+                types: vec![Type::String],
+            },
+            writer::MemberRefParent::TypeRef(attribute),
+        );
+        let ty = file.TypeDef(
+            "Fixture",
+            "Documented",
+            writer::TypeDefOrRef::TypeRef(object),
+            TypeAttributes::Public,
+        );
+        let field = file.Field("Value", &Type::I32, FieldAttributes::Public);
+        let method = file.MethodDef(
+            "Call",
+            &Signature {
+                flags: MethodCallAttributes::default(),
+                return_type: Type::Void,
+                types: vec![],
+            },
+            MethodAttributes::Public,
+            MethodImplAttributes::default(),
+        );
+        for (owner, url) in [
+            (
+                writer::HasAttribute::TypeDef(ty),
+                "https://example.com/type",
+            ),
+            (
+                writer::HasAttribute::Field(field),
+                "https://example.com/field",
+            ),
+            (
+                writer::HasAttribute::MethodDef(method),
+                "https://example.com/method",
+            ),
+        ] {
+            file.Attribute(
+                owner,
+                writer::AttributeType::MemberRef(constructor),
+                &[(String::new(), Value::Utf8(url.into()))],
+            );
+        }
+        file.TypeDef(
+            "Fixture",
+            "Undocumented",
+            writer::TypeDefOrRef::TypeRef(object),
+            TypeAttributes::Public,
+        );
+        let index = Index::new(vec![File::new(file.into_stream()).unwrap()]);
+        let types: Vec<_> = index
+            .rows::<TypeDef>(0)
+            .filter(|ty| ty.namespace() == "Fixture")
+            .collect();
+        assert_eq!(
+            super::Declaration::Type(types[0])
+                .documentation_url()
+                .as_deref(),
+            Some("https://example.com/type")
+        );
+        assert_eq!(super::Declaration::Type(types[1]).documentation_url(), None);
+        assert_eq!(
+            super::Declaration::Field(index.rows::<Field>(0).next().unwrap())
+                .documentation_url()
+                .as_deref(),
+            Some("https://example.com/field")
+        );
+        assert_eq!(
+            super::Declaration::Method(index.rows::<MethodDef>(0).next().unwrap())
+                .documentation_url()
+                .as_deref(),
+            Some("https://example.com/method")
+        );
+    }
 
     #[test]
     fn architecture_masks_are_domain_values() {

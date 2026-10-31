@@ -7,6 +7,25 @@ from support import native as n
 RESIZE_NO_MOVE = win32con.SWP_NOMOVE | win32con.SWP_NOZORDER | win32con.SWP_NOACTIVATE
 
 
+def test_online_button_tracks_document_metadata(launch, settings):
+    from support.accessibility import client
+
+    app = launch([settings[1]])
+    for query, labels in [
+        ("CreateFileW", ("Official documentation", "官方文档")),
+        ("Windows.Win32.Foundation.WIN32_ERROR.ERROR_ACCESS_DENIED", ("Search online", "在线搜索")),
+        ("CreateFileW", ("Official documentation", "官方文档")),
+    ]:
+        app.query(query)
+        doc = app.open_row()
+        button = n.get_item(doc, 1211)
+        n.wait(lambda: n.window_text(button) in labels, "online action label")
+        assert n.is_visible(button)
+        assert win32gui.IsWindowEnabled(button)
+        with client(button) as accessible:
+            assert accessible.name == n.window_text(button)
+
+
 def test_document_controls_and_close_during_architecture_reload(launch, settings):
     app = launch([settings[1]])
     app.query("CreateFileW")
@@ -145,7 +164,7 @@ def test_tab_traverses_document_controls(launch, settings):
     doc = app.open_row()
     n.wait(lambda: "CreateFileW(" in app.content(doc), "declaration", 45)
     editor = n.get_item(doc, 1203)
-    order = [app.architecture(doc), n.get_item(doc, 1206), editor]
+    order = [app.architecture(doc), n.get_item(doc, 1206), n.get_item(doc, 1211), editor]
     app.focus(editor)
     for target in order:
         current = app.focused() or editor
@@ -249,8 +268,17 @@ def test_document_button_uses_native_ideal_size_and_row_centering(launch, settin
                     assert abs(br[1] + br[3] - cr[1] - cr[3]) <= 1
                 else:
                     assert br[1] >= cr[3]
+                online = n.get_item(doc, 1211)
+                assert n.is_visible(online)
+                assert n.write_memory(app.handle, app.memory, bytes(8), 8, None)
+                assert n.send(online, 0x1601, 0, app.memory)
+                assert n.read_memory(app.handle, app.memory, size, 8, None)
+                online_ideal = struct.unpack("<ii", size.raw)
+                online_rect = n.rectangle(online)
+                assert (online_rect[2] - online_rect[0], online_rect[3] - online_rect[1]) == online_ideal
+                assert online_rect[0] >= br[2] or online_rect[1] >= br[3]
                 er = n.rectangle(n.get_item(doc, 1203))
-                assert er[1] >= max(br[3], cr[3])
+                assert er[1] >= max(br[3], cr[3], online_rect[3])
 
 
 def test_constant_summary_pseudocode_and_information_copy(launch, settings):
@@ -316,6 +344,6 @@ def test_tiny_maximized_document_clips_summary_without_control_overlap(launch, s
         dpi = n.api(n.user, "GetDpiForWindow", n.w.UINT, n.w.HWND)(doc) if hasattr(n.user, "GetDpiForWindow") else 96
         n.send(app.mdi, win32con.WM_MDIMAXIMIZE, doc)
         assert n.set_pos(app.frame, None, 0, 0, 650 * dpi // 96, 140 * dpi // 96, RESIZE_NO_MOVE)
-        for control in [1047, 1206]:
+        for control in [1047, 1206, 1211]:
             assert not n.is_visible(n.get_item(doc, control))
         assert n.rectangle(n.get_item(doc, 1203), client=True)[3] == 0

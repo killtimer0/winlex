@@ -301,6 +301,11 @@ impl MetadataView {
                     catalog::set_status(format!("{error:#}"));
                 }
             }
+            DOCUMENT_ONLINE if code == BN_CLICKED => {
+                if let Err(error) = self.info.open_online(hwnd) {
+                    catalog::set_status(format!("{error:#}"));
+                }
+            }
             _ => return false,
         }
         true

@@ -72,6 +72,8 @@ BEGIN
     IDS_ARCHITECTURE "Architecture"
     IDS_DOCUMENT_SOURCE "Source:"
     IDS_DOCUMENT_MORE "More information…"
+    IDS_OFFICIAL_DOCUMENTATION "Official documentation"
+    IDS_ONLINE_SEARCH "Search online"
     IDS_DOCUMENT_NAME "Name"
     IDS_DOCUMENT_SCOPE "Namespace and declaring type"
     IDS_DOCUMENT_CODE "Declaration"
