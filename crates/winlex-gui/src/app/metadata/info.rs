@@ -238,13 +238,22 @@ impl Info {
         }
     }
     pub fn layout(&self, area: &mut RECT, m: &layout::Metrics, positions: &mut Vec<(HWND, RECT)>) {
+        let button = m.button_size(self.more);
+        let combo = bounds(self.architecture, ptr::null_mut());
+        let combo_height = combo.bottom - combo.top;
+        let actions_width = self.actions_width(m, button.cx);
+        let wrap_button = actions_width > area.right - area.left;
+        let row_height = m
+            .height
+            .max(combo_height)
+            .max(if wrap_button { 0 } else { button.cy });
         let heading_height = self
             .heading
             .borrow()
             .as_ref()
             .map_or(m.height, |font| font.height);
         let kind_width = m.label_width([text_wide(self.kind)].into_iter(), 0);
-        let wide = area.right - area.left >= m.px(520).max(self.actions_width(m) + m.px(180));
+        let wide = area.right - area.left >= m.px(520).max(actions_width + m.px(180));
         let mut title = layout::take_top(area, heading_height + m.px(4));
         if wide {
             let left = (title.right - kind_width).max(title.left);
@@ -263,11 +272,11 @@ impl Info {
         }
         positions.push((self.name, title));
         positions.push((self.scope, layout::take_top(area, m.height + m.px(8))));
-        let mut row = layout::take_top(area, m.row() + m.px(4));
+        let mut row = layout::take_top(area, if wide { row_height } else { m.height });
+        layout::take_top(area, m.px(4));
         let source_width =
             m.label_width([resources::wide_text(IDS_DOCUMENT_SOURCE)].into_iter(), 0) - m.px(16);
         if wide {
-            let actions_width = self.actions_width(m);
             let source_right = (row.right - actions_width - m.px(16)).max(row.left);
             let mut source_row = RECT {
                 right: source_right,
@@ -277,23 +286,19 @@ impl Info {
             row.left = (source_right + m.px(16)).min(row.right);
         } else {
             self.source_row(&mut row, source_width, m, positions);
-            row = layout::take_top(area, m.row() + m.px(4));
+            row = layout::take_top(area, row_height);
+            layout::take_top(area, m.px(4));
         }
-        let action_width = row.right - row.left;
         let label_width =
             m.label_width([resources::wide_text(IDS_ARCHITECTURE)].into_iter(), 0) - m.px(16);
         positions.push((
             self.architecture_label,
             centered(layout::take_left(&mut row, label_width), m.height),
         ));
-        let combo = bounds(self.architecture, ptr::null_mut());
-        let selector = centered(
-            layout::take_left(&mut row, m.px(70)),
-            combo.bottom - combo.top,
-        );
+        let selector = centered(layout::take_left(&mut row, m.px(70)), combo_height);
         show(
             self.architecture,
-            selector.bottom - selector.top >= combo.bottom - combo.top,
+            selector.bottom - selector.top >= combo_height,
         );
         positions.push((
             self.architecture,
@@ -304,22 +309,25 @@ impl Info {
                 m.row() * 6,
             ),
         ));
-        if self.actions_width(m) > action_width {
-            row = layout::take_top(area, m.row() + m.px(4));
+        if wrap_button {
+            row = layout::take_top(area, button.cy);
+            layout::take_top(area, m.px(4));
         } else {
             layout::take_left(&mut row, m.px(8));
         }
-        let button_width = m.label_width([resources::wide_text(IDS_DOCUMENT_MORE)].into_iter(), 0);
-        let more = centered(layout::take_left(&mut row, button_width), m.row());
-        show(self.more, more.bottom - more.top >= m.row());
+        let more = centered(layout::take_left(&mut row, button.cx), button.cy);
+        show(
+            self.more,
+            more.bottom - more.top >= button.cy && more.right - more.left >= button.cx,
+        );
         positions.push((self.more, more));
         positions.push((self.line, layout::take_top(area, m.px(2))));
         layout::take_top(area, m.px(8));
     }
-    fn actions_width(&self, m: &layout::Metrics) -> i32 {
+    fn actions_width(&self, m: &layout::Metrics, button_width: i32) -> i32 {
         m.label_width([resources::wide_text(IDS_ARCHITECTURE)].into_iter(), 0) - m.px(16)
             + m.px(70 + 8)
-            + m.label_width([resources::wide_text(IDS_DOCUMENT_MORE)].into_iter(), 0)
+            + button_width
     }
     fn source_row(
         &self,

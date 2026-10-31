@@ -3,8 +3,47 @@ import pytest
 import winreg
 import win32con
 import win32gui
+import struct
 from support.diagnostics import screenshot
 from support import native as n
+
+
+@pytest.mark.parametrize("sidebar_width", [140, 480])
+def test_source_buttons_share_native_group_size_and_wrap(launch, profile, sidebar_width):
+    profile.set("SidebarWidth", winreg.REG_DWORD, sidebar_width)
+    app = launch()
+    app.command(1021)
+    controls = [n.get_item(app.frame, ident) for ident in (1020, 1044, 1022)]
+    get_dpi = n.api(n.user, "GetDpiForWindow", n.w.UINT, n.w.HWND) if hasattr(n.user, "GetDpiForWindow") else None
+    with n.window_dpi_context(app.frame):
+        for left, top, _, _ in n.monitors():
+            assert n.set_pos(app.frame, None, left + 20, top + 20, 0, 0,
+                             win32con.SWP_NOSIZE | win32con.SWP_NOZORDER | win32con.SWP_NOACTIVATE)
+            n.send(app.frame, win32con.WM_NULL)
+            dpi = get_dpi(app.frame) if get_dpi else 96
+            ideals = []
+            for control in controls:
+                assert n.write_memory(app.handle, app.memory, bytes(8), 8, None)
+                assert n.send(control, 0x1601, 0, app.memory)
+                raw = n.c.create_string_buffer(8)
+                assert n.read_memory(app.handle, app.memory, raw, 8, None)
+                ideals.append(struct.unpack("<ii", raw.raw))
+            group_width = max((75 * dpi + 48) // 96, *(size[0] for size in ideals))
+            group_height = max(size[1] for size in ideals)
+            bounds = n.rectangle(app.sources)
+            available = bounds[2] - bounds[0]
+            gap = (4 * dpi + 48) // 96
+            columns = max((available + gap) // (group_width + gap), 1)
+            rectangles = [n.rectangle(control) for control in controls]
+            for index, rectangle in enumerate(rectangles):
+                x1, y1, x2, y2 = rectangle
+                assert n.is_visible(controls[index])
+                assert x2 - x1 == min(group_width, available)
+                assert y2 - y1 == group_height
+                assert x1 == bounds[0] + index % columns * (group_width + gap)
+                assert y1 == rectangles[0][1] + index // columns * (group_height + gap)
+                assert bounds[0] <= x1 < x2 <= bounds[2]
+                assert y2 < bounds[1]
 
 
 def test_source_rows_and_selection_survive_reload(launch, settings):

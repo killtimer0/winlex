@@ -219,6 +219,40 @@ def test_document_source_and_responsive_reading_layout(launch, settings):
         assert counts[2] == counts[0]
 
 
+def test_document_button_uses_native_ideal_size_and_row_centering(launch, settings):
+    import struct
+
+    app = launch([settings[1]])
+    app.query("CreateFileW")
+    doc = app.open_row()
+    n.wait(lambda: "CreateFileW(" in app.content(doc), "declaration", 45)
+    button = n.get_item(doc, 1206)
+    combo = app.architecture(doc)
+    get_dpi = n.api(n.user, "GetDpiForWindow", n.w.UINT, n.w.HWND) if hasattr(n.user, "GetDpiForWindow") else None
+    with n.window_dpi_context(app.frame):
+        n.send(app.mdi, win32con.WM_MDIRESTORE, doc)
+        for left, top, _, _ in n.monitors():
+            assert n.set_pos(app.frame, None, left + 20, top + 20, 0, 0,
+                             win32con.SWP_NOSIZE | win32con.SWP_NOZORDER | win32con.SWP_NOACTIVATE)
+            dpi = get_dpi(doc) if get_dpi else 96
+            for width in (850, 320, 200, 850):
+                assert n.set_pos(doc, None, 0, 0, width * dpi // 96, 450 * dpi // 96, RESIZE_NO_MOVE)
+                assert n.write_memory(app.handle, app.memory, bytes(8), 8, None)
+                assert n.send(button, 0x1601, 0, app.memory)
+                size = n.c.create_string_buffer(8)
+                assert n.read_memory(app.handle, app.memory, size, 8, None)
+                ideal = struct.unpack("<ii", size.raw)
+                assert n.is_visible(button)
+                br, cr = n.rectangle(button), n.rectangle(combo)
+                assert (br[2] - br[0], br[3] - br[1]) == ideal
+                if br[0] >= cr[2]:
+                    assert abs(br[1] + br[3] - cr[1] - cr[3]) <= 1
+                else:
+                    assert br[1] >= cr[3]
+                er = n.rectangle(n.get_item(doc, 1203))
+                assert er[1] >= max(br[3], cr[3])
+
+
 def test_constant_summary_pseudocode_and_information_copy(launch, settings):
     from test_context import find_popup, wait_closed, wait_clipboard_available, clipboard_text
     from support.accessibility import client
