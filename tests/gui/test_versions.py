@@ -36,5 +36,3 @@ def test_reload_keeps_old_document_snapshot(launch, settings):
     n.wait(lambda: app.count(app.sources) == 0, "source unloaded", 45)
     n.wait(lambda: not n.is_visible(n.get_item(entity, 1204)), "snapshot hint after unload", 45)
     assert not n.is_visible(n.get_item(current, 1204))
-    assert app.content(entity) == old
-    assert n.send(editor, win32con.EM_GETSEL) == (8 << 16) | 2

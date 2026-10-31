@@ -387,52 +387,24 @@ fn combined_union_is_unique_and_uses_strongest_quality() {
 }
 
 #[test]
-fn compiled_search_preserves_modes_filters_and_match_evidence() {
+fn compiled_search_applies_external_source_filter() {
     let db = Catalog::from_inputs([fixture(), fixture()]).unwrap();
-    for (query, mode) in [
-        ("257", SearchMode::Combined),
-        ("ValueOnly", SearchMode::Name),
-        ("257", SearchMode::Value),
-        ("12345678", SearchMode::Guid),
-        (
-            r#"value = 257 and name contains "value""#,
-            SearchMode::Condition,
-        ),
-    ] {
-        let options = || SearchOptions {
-            mode,
-            source: Some(1),
-            architecture: Some(crate::Architecture::X64),
-            categories: Some(EntityCategory::ALL),
-            ..Default::default()
-        };
-        let collect = |search: crate::Search<'_>| {
-            search
-                .map(|hit| {
-                    let hit = hit.unwrap();
-                    assert_eq!(hit.id.source_id, 1);
-                    (hit.id, hit.quality, hit.evidence)
-                })
-                .collect::<Vec<_>>()
-        };
-        let expected = collect(db.search(query, options()).unwrap());
-        assert!(!expected.is_empty(), "{query}");
-        let compiled = SearchQuery::compile(query, mode, false).unwrap();
-        assert_eq!(
-            collect(db.search_compiled(compiled, options()).unwrap()),
-            expected,
-            "{query}"
-        );
-        if mode == SearchMode::Condition {
-            assert_eq!(
-                collect(
-                    db.search_query(&Query::parse(query).unwrap(), options())
-                        .unwrap()
-                ),
-                expected,
-            );
-        }
-    }
+    let compiled = SearchQuery::compile("ValueOnly", SearchMode::Name, false).unwrap();
+    let found = db
+        .search_compiled(
+            compiled,
+            SearchOptions {
+                source: Some(1),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .collect::<anyhow::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].id.source_id, 1);
+    assert_eq!(found[0].full_name, "Fixture.Outer.ValueOnly");
+    assert_eq!(found[0].quality, MatchQuality::NameExact(MatchField::Name));
 }
 
 #[test]

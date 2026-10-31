@@ -659,9 +659,9 @@ mod tests {
         let mut batch = vec![hit(1, 100), hit(2, 70), hit(3, 120)];
         let mut tracked = [1, 2, 1, 0];
         merge_results(&mut results, &mut batch, &mut vec![], &mut tracked);
-        assert_eq!(tracked, [3, 5, 3, 2]);
-        assert_eq!(results[tracked[0] as usize].id.token, 20);
-        assert_eq!(results[tracked[3] as usize].id.token, 10);
+        for (index, token) in tracked.into_iter().zip([20, 30, 20, 10]) {
+            assert_eq!(results[index as usize].id.token, token);
+        }
         let mut missing = [-1; 4];
         merge_results(
             &mut results,

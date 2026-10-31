@@ -267,25 +267,24 @@ mod tests {
                 font: GetStockObject(SYSTEM_FONT),
                 height: 16,
             };
-            let width = m
-                .px(75)
-                .max(140)
-                .max(m.label_width(std::iter::once(text_wide(controls[2])), 0));
-            let height = 35.max(m.row());
-            let gap = m.px(4);
-            for columns in [3, 2, 1] {
-                let mut area = rect(0, 0, width * columns + gap * (columns - 1), 500);
+            for (width, rows) in [(500, 1), (300, 2), (150, 3)] {
+                let mut area = rect(0, 0, width, 500);
                 let mut positions = Vec::new();
                 m.buttons(&mut area, controls.iter().copied(), &mut positions);
                 assert_eq!(positions.len(), controls.len());
+                let mut tops = std::collections::HashSet::new();
                 for (index, (hwnd, bounds)) in positions.iter().enumerate() {
                     assert_eq!(*hwnd, controls[index]);
-                    assert_eq!(bounds.right - bounds.left, width);
-                    assert_eq!(bounds.bottom - bounds.top, height);
-                    assert_eq!(bounds.left, index as i32 % columns * (width + gap));
-                    assert_eq!(bounds.top, index as i32 / columns * (height + gap));
+                    assert_eq!(bounds.right - bounds.left, 140);
+                    assert_eq!(bounds.bottom - bounds.top, 35);
+                    assert!(bounds.left >= 0 && bounds.right <= width);
                     assert!(bounds.bottom <= area.top);
+                    tops.insert(bounds.top);
+                    for (_, other) in &positions[index + 1..] {
+                        assert!(bounds.right <= other.left || bounds.bottom <= other.top);
+                    }
                 }
+                assert_eq!(tops.len(), rows);
             }
             for hwnd in controls {
                 DestroyWindow(hwnd);

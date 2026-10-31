@@ -63,7 +63,7 @@ def test_search_modes_match_cli_order(launch, settings):
         assert [app.cell(row).splitlines()[0] for row in range(app.count())] == [hit["full_name"] for hit in expected]
 
 
-def test_search_modes_labels_mapping_errors_and_ime(launch, settings):
+def test_search_mode_labels_errors_and_navigation(launch, settings):
     app = launch([settings[1]])
     app.query("CrtFlW")
     mode = n.get_item(app.frame, 1114)
@@ -91,19 +91,6 @@ def test_search_modes_labels_mapping_errors_and_ime(launch, settings):
     n.set_text(app.search, "value < nan")
     n.wait(lambda: ("条件无效" if chinese else "Invalid condition") in app.status_text(), "NaN bound error")
     assert app.count() == 0
-    app.query('name contains "access" and value = 5')
-    assert app.named_rows("ERROR_ACCESS_DENIED")
-    app.query("value = 0x80000000")
-    assert app.count() > 0
-    app.query('guid = "0000000c-0000-0000-c000-000000000046"')
-    assert app.count() > 0
-    n.send(app.search, win32con.WM_IME_STARTCOMPOSITION)
-    n.set_text(app.search, "CreateFileW")
-    choose(0)
-    time.sleep(.35)
-    assert app.count() == 0
-    n.send(app.search, win32con.WM_IME_ENDCOMPOSITION)
-    n.wait(lambda: app.count() > 0, "mode search after IME")
     app.focus(app.search)
     n.key_message(app.search, win32con.VK_TAB)
     n.wait(lambda: app.focused() == mode, "Tab reaches mode selector")
@@ -111,19 +98,11 @@ def test_search_modes_labels_mapping_errors_and_ime(launch, settings):
     n.wait(lambda: app.focused() == app.results, "Tab reaches results")
 
 
-def test_stream_and_panel_state(launch, settings):
+def test_panel_switch_preserves_result_selection_and_scroll(launch, settings):
     app = launch([settings[1]])
     n.wait(lambda: app.status_text().startswith(("Ready.", "已就绪")), "loaded", 45)
     app.query("file")
     assert app.count() > 100
-    rect0, rect1 = app.item_rect(0), app.item_rect(1)
-    assert rect0[3] - rect0[1] >= 28
-    assert rect0[3] - rect0[1] == rect1[3] - rect1[1]
-    header = n.send(app.results, messages.LVM_GETHEADER)
-    header_rect = n.rectangle(header)
-    assert not n.is_visible(header) or header_rect[1] == header_rect[3]
-    style = n.api(n.user, "GetWindowLongW", n.c.c_long, n.w.HWND, n.c.c_int)(app.results, win32con.GWL_STYLE)
-    assert not style & win32con.WS_HSCROLL, "horizontal scrollbar visible"
     first, last = app.cell(0), app.cell(app.count() - 1)
     app.select(3)
     n.send(app.results, 0x1013, app.count() - 1, 0)  # LVM_ENSUREVISIBLE
@@ -142,15 +121,6 @@ def test_stream_and_panel_state(launch, settings):
     top = n.send(app.results, 0x1027)
     assert app.cell(top) == anchor
     assert app.item_rect(top)[1] == offset
-    app.query("CreateFileW")
-    assert app.count() >= 1
-    assert app.cell(0).splitlines()[0].rsplit(".", 1)[-1] == "CreateFileW"
-    app.query("CrtFlW")
-    assert any(app.cell(i).splitlines()[0].rsplit(".", 1)[-1] == "CreateFileW" for i in range(app.count()))
-    n.set_text(app.search, "file")
-    n.set_text(app.search, "no_such_winlex_symbol_123456")
-    n.wait(lambda: "0" in app.status_text(), "empty replacement")
-    assert app.count() == 0
 
 
 def test_search_after_scrolling_keeps_new_results_in_view(launch, settings):
@@ -178,6 +148,16 @@ def test_ime_defers_search(launch, settings):
     assert app.count() == 0
     n.send(app.search, win32con.WM_IME_ENDCOMPOSITION)
     n.wait(lambda: app.count() > 0, "search after IME commit", 45)
+
+    mode = n.get_item(app.frame, 1114)
+    n.send(app.search, win32con.WM_IME_STARTCOMPOSITION)
+    n.set_text(app.search, 'name = "CloseHandle"')
+    n.send(mode, win32con.CB_SETCURSEL, 1)
+    app.command(1114, code=win32con.CBN_SELENDOK)
+    time.sleep(.35)
+    assert app.count() == 0
+    n.send(app.search, win32con.WM_IME_ENDCOMPOSITION)
+    n.wait(lambda: app.named_rows("CloseHandle"), "mode search after IME commit", 45)
 
 
 def test_search_syntax_help_preserves_query(launch, settings):

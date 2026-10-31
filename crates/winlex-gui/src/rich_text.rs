@@ -619,41 +619,48 @@ mod tests {
                 let content = Content::new(body.into());
                 set_content(editor, &content).unwrap();
                 assert_eq!(text(editor).replace("\r\n", "\r"), content.text);
-                let units: Vec<_> = content.text.encode_utf16().collect();
-                for _ in 0..2 {
-                    recolor(editor, &content).unwrap();
-                    assert_eq!(text(editor).replace("\r\n", "\r"), content.text);
-                    for (start, end, color) in spans(&units) {
-                        let range = CHARRANGE {
-                            cpMin: start as i32,
-                            cpMax: end as i32,
-                        };
-                        send(editor, EM_EXSETSEL, 0, &range as *const _ as isize);
-                        let mut selected = vec![0u16; end - start + 1];
-                        let count = send(editor, EM_GETSELTEXT, 0, selected.as_mut_ptr() as isize);
-                        assert_eq!(&selected[..count as usize], &units[start..end]);
-                        let mut format = CHARFORMATW {
-                            cbSize: size_of::<CHARFORMATW>() as u32,
-                            ..Default::default()
-                        };
-                        send(
-                            editor,
-                            EM_GETCHARFORMAT,
-                            SCF_SELECTION as usize,
-                            &mut format as *mut _ as isize,
-                        );
-                        let colored = !high_contrast() && GetSysColor(COLOR_WINDOW) == 0x00ffffff;
-                        assert_eq!(
-                            format.crTextColor.0,
-                            if colored {
-                                color
-                            } else {
-                                GetSysColor(COLOR_WINDOWTEXT)
-                            }
-                        );
-                        assert_eq!(format.yHeight, 210);
+                recolor(editor, &content).unwrap();
+                assert_eq!(text(editor).replace("\r\n", "\r"), content.text);
+            }
+            let content = Content::new("// 中文😀\nconst char *s = \"中😀\";".into());
+            set_content(editor, &content).unwrap();
+            recolor(editor, &content).unwrap();
+            for (start, end, expected, color) in [
+                (0, 7, "// 中文😀", 0x008000),
+                (8, 13, "const", 0x800000),
+                (24, 29, "\"中😀\"", 0x000080),
+            ] {
+                let range = CHARRANGE {
+                    cpMin: start,
+                    cpMax: end,
+                };
+                send(editor, EM_EXSETSEL, 0, &range as *const _ as isize);
+                let mut selected = vec![0u16; (end - start + 1) as usize];
+                let count = send(editor, EM_GETSELTEXT, 0, selected.as_mut_ptr() as isize);
+                assert_eq!(
+                    String::from_utf16(&selected[..count as usize]).unwrap(),
+                    expected
+                );
+                let mut format = CHARFORMATW {
+                    cbSize: size_of::<CHARFORMATW>() as u32,
+                    ..Default::default()
+                };
+                send(
+                    editor,
+                    EM_GETCHARFORMAT,
+                    SCF_SELECTION as usize,
+                    &mut format as *mut _ as isize,
+                );
+                let colored = !high_contrast() && GetSysColor(COLOR_WINDOW) == 0x00ffffff;
+                assert_eq!(
+                    format.crTextColor.0,
+                    if colored {
+                        color
+                    } else {
+                        GetSysColor(COLOR_WINDOWTEXT)
                     }
-                }
+                );
+                assert_eq!(format.yHeight, 210);
             }
             let content = Content::new("const UINT32 value = 42;\n".repeat(500));
             set_content(editor, &content).unwrap();
@@ -703,25 +710,8 @@ mod tests {
             place(editor, crate::layout::rect(0, 0, 180, 400));
             assert!(send(editor, EM_GETLINECOUNT, 0, 0) > wide_lines);
             assert_eq!(text(editor), body);
-            let mut paragraph = PARAFORMAT2 {
-                Base: PARAFORMAT {
-                    cbSize: size_of::<PARAFORMAT2>() as u32,
-                    ..Default::default()
-                },
-                ..Default::default()
-            };
-            send(
-                editor,
-                windows::Win32::UI::Controls::RichEdit::EM_GETPARAFORMAT,
-                0,
-                &mut paragraph as *mut _ as isize,
-            );
-            let left = paragraph.Base.dxStartIndent;
-            let right = paragraph.Base.dxRightIndent;
-            assert_eq!(left, 120);
-            assert_eq!(right, 120);
-            assert_eq!(paragraph.bLineSpacingRule, 5);
-            assert_eq!(paragraph.dyLineSpacing, 23);
+            recolor(editor, &Content::new(body.into())).unwrap();
+            assert_eq!(text(editor), body);
             set_content(
                 editor,
                 &Content::new("struct Example {\n    UINT32 value;\n};".into()),

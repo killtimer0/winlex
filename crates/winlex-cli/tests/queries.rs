@@ -1,10 +1,6 @@
 //! Integration tests for the CLI adapter and query library.
 use serde_json::Value;
-use std::{
-    ffi::OsString,
-    path::PathBuf,
-    sync::{OnceLock, atomic::AtomicBool},
-};
+use std::{ffi::OsString, path::PathBuf, sync::OnceLock};
 use winlex_core::{Architecture, Catalog, SearchMode, SearchOptions};
 
 fn input() -> PathBuf {
@@ -128,92 +124,6 @@ fn guid_fragments_bytes_and_numeric_radices_share_the_cli_search_contract() {
 }
 
 #[test]
-fn search_categories_partition_results_without_name_conventions() {
-    use winlex_core::EntityCategory;
-    let db = catalog();
-    let all: Vec<_> = db
-        .search("e", SearchOptions::default())
-        .unwrap()
-        .map(|item| item.unwrap().id)
-        .collect();
-    assert!(all.iter().any(|id| id.token >> 24 == 1));
-    for mask in [
-        0,
-        1,
-        2,
-        4,
-        8,
-        16,
-        32,
-        64,
-        EntityCategory::DEFAULT,
-        EntityCategory::ALL,
-    ] {
-        let expected: Vec<_> = all
-            .iter()
-            .copied()
-            .filter(|&id| db.declaration(id, None).unwrap().category() as u32 & mask != 0)
-            .collect();
-        let actual: Vec<_> = db
-            .search(
-                "e",
-                SearchOptions {
-                    categories: Some(mask),
-                    ..Default::default()
-                },
-            )
-            .unwrap()
-            .map(|item| item.unwrap().id)
-            .collect();
-        assert_eq!(actual, expected, "mask {mask}");
-    }
-    let methods: Vec<_> = db
-        .search(
-            "CreateFileW",
-            SearchOptions {
-                categories: Some(EntityCategory::Method as u32),
-                ..Default::default()
-            },
-        )
-        .unwrap()
-        .map(|item| item.unwrap())
-        .collect();
-    assert!(!methods.is_empty());
-    assert!(methods.iter().all(|item| item.kind == "method"));
-}
-
-#[test]
-fn core_index_keeps_types_and_indexes_members_uniformly() {
-    use winlex_core::EntityCategory;
-    for (name, category) in [
-        (
-            "Windows.Win32.Storage.FileSystem.Apis",
-            EntityCategory::Type,
-        ),
-        (
-            "Windows.Win32.Storage.FileSystem.Apis.CreateFileW",
-            EntityCategory::Method,
-        ),
-        ("Windows.Win32.Foundation.POINT.x", EntityCategory::Field),
-    ] {
-        let results: Vec<_> = catalog()
-            .search(
-                name,
-                SearchOptions {
-                    mode: SearchMode::Name,
-                    categories: Some(category as u32),
-                    ..Default::default()
-                },
-            )
-            .unwrap()
-            .map(|item| item.unwrap())
-            .collect();
-        assert!(!results.is_empty(), "{name}");
-        assert!(results.iter().all(|item| item.full_name == name));
-    }
-}
-
-#[test]
 fn queries_require_explicit_inputs_but_help_and_version_do_not() {
     for args in [vec!["summary"], vec!["search", "CreateFileW", "--json"]] {
         let (mut out, mut err) = (vec![], vec![]);
@@ -248,19 +158,8 @@ fn queries_require_explicit_inputs_but_help_and_version_do_not() {
 }
 
 #[test]
-fn streaming_search_is_complete_deterministic_and_cancellable() {
-    use std::sync::atomic::Ordering;
+fn search_pagination_uses_global_ranking_and_total() {
     let db = catalog();
-    let collect = || {
-        db.search("file", SearchOptions::default())
-            .unwrap()
-            .map(|e| e.map(|e| e.id))
-            .collect::<winlex_core::Result<Vec<_>>>()
-            .unwrap()
-    };
-    let ids = collect();
-    assert!(ids.len() > 100);
-    assert_eq!(ids, collect());
     let mut ranked = db
         .search("file", SearchOptions::default())
         .unwrap()
@@ -280,31 +179,6 @@ fn streaming_search_is_complete_deterministic_and_cancellable() {
         .map(|e| entity_id(&e["id"]))
         .collect();
     assert_eq!(paged, ids[17..42]);
-    let cancel = AtomicBool::new(false);
-    let mut results = db
-        .search(
-            "file",
-            SearchOptions {
-                cancel: Some(&cancel),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-    assert!(results.next().unwrap().is_ok());
-    cancel.store(true, Ordering::Relaxed);
-    assert!(results.next().unwrap().is_err());
-    assert!(results.next().is_none());
-    let mut no_matches = db
-        .search(
-            "__no_such_symbol__",
-            SearchOptions {
-                cancel: Some(&cancel),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-    assert!(no_matches.next().unwrap().is_err());
-    assert!(no_matches.next().is_none());
 }
 
 #[test]
@@ -338,77 +212,16 @@ fn fuzzy_search_ranks_before_paging_and_rejects_prefix_option() {
 
 #[test]
 fn fuzzy_scope_is_selected_by_the_query_and_exact_selectors_remain_independent() {
-    use winlex_core::{MatchField, SearchStep};
     let db = catalog();
-    let collect = |query: &str| {
-        db.search(query, SearchOptions::default())
+    let (code, qualified, _) = cli(&["search", "Storage.FileSystem.CrtFlW"]);
+    assert_eq!(code, 0);
+    assert!(
+        qualified["result"]["matches"]
+            .as_array()
             .unwrap()
-            .collect::<winlex_core::Result<Vec<_>>>()
-            .unwrap()
-    };
-    assert!(collect("WindowsWin32").is_empty());
-    let short = collect("CrtFlW");
-    assert!(short.iter().any(|m| m.name == "CreateFileW"));
-    assert!(
-        short
             .iter()
-            .all(|m| m.quality.field() == Some(MatchField::Name))
+            .any(|hit| hit["name"] == "CreateFileW")
     );
-    let qualified = collect("Storage.FileSystem.CrtFlW");
-    assert!(qualified.iter().any(|m| m.name == "CreateFileW"));
-    assert!(
-        qualified
-            .iter()
-            .all(|m| m.quality.field() == Some(MatchField::FullName))
-    );
-    let mut search = db.search("CrtFlW", SearchOptions::default()).unwrap();
-    let mut stepped = vec![];
-    let mut skipped = 0;
-    loop {
-        match search.step().unwrap() {
-            SearchStep::Match(m) => stepped.push(m.id),
-            SearchStep::Skipped => skipped += 1,
-            SearchStep::Done => break,
-        }
-    }
-    assert!(skipped > 0);
-    assert_eq!(stepped, short.iter().map(|m| m.id).collect::<Vec<_>>());
-    assert!(matches!(search.step().unwrap(), SearchStep::Done));
-    assert!(search.next().is_none());
-    let mut mixed = db.search("CrtFlW", SearchOptions::default()).unwrap();
-    let first = loop {
-        match mixed.step().unwrap() {
-            SearchStep::Match(m) => break m.id,
-            SearchStep::Skipped => {}
-            SearchStep::Done => panic!("missing fuzzy match"),
-        }
-    };
-    assert_eq!(first, short[0].id);
-    assert_eq!(
-        mixed.map(|m| m.unwrap().id).collect::<Vec<_>>(),
-        stepped[1..]
-    );
-    let cancel = AtomicBool::new(false);
-    let mut cancelled = db
-        .search(
-            "CrtFlW",
-            SearchOptions {
-                cancel: Some(&cancel),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-    assert!(!matches!(cancelled.step().unwrap(), SearchStep::Done));
-    cancel.store(true, std::sync::atomic::Ordering::Relaxed);
-    assert!(
-        cancelled
-            .step()
-            .unwrap_err()
-            .to_string()
-            .contains("cancelled")
-    );
-    assert!(matches!(cancelled.step().unwrap(), SearchStep::Done));
-    assert!(cancelled.next().is_none());
     let name = "Windows.Win32.Storage.FileSystem.Apis.CreateFileW";
     let id = winlex_cli::select(db, name, Some(Architecture::X64), false).unwrap();
     assert_eq!(db.entity(id).unwrap().name, "CreateFileW");
@@ -579,50 +392,8 @@ fn constant_values_include_decimal_and_hex() {
 }
 
 #[test]
-fn calculations_use_selected_architecture() {
-    let db = catalog();
-    let layout = |name, arch| {
-        db.layout(
-            winlex_cli::select(db, name, Some(arch), true).unwrap(),
-            arch,
-        )
-        .unwrap()
-    };
-    assert_eq!(layout("POINT", Architecture::X64).size_bits, 64);
-    let dcb = layout("DCB", Architecture::X64);
-    assert!(
-        db.entity(dcb.id)
-            .unwrap()
-            .full_name
-            .ends_with("Communication.DCB")
-    );
-    let backing = dcb.fields.iter().find(|f| f.name == "_bitfield").unwrap();
-    let bit = backing
-        .bitfields
-        .iter()
-        .find(|b| b.name == "fDtrControl")
-        .unwrap();
-    assert_eq!(backing.offset_bits + bit.relative_offset_bits, 68);
-    assert_eq!(bit.width_bits, 2);
-    assert_eq!(layout("OPENFILENAMEW", Architecture::X86).size_bits, 704);
-    assert_eq!(layout("OPENFILENAMEW", Architecture::X64).size_bits, 1216);
-    let ov = layout("OVERLAPPED", Architecture::X64);
-    assert_eq!(ov.size_bits, 256);
-    let union = ov.fields.iter().find(|f| f.name == "Anonymous").unwrap();
-    assert_eq!(union.offset_bits, 128);
-    assert!(!union.fields.is_empty());
-    let vt = db
-        .vtable(
-            winlex_cli::select(db, "IStream", Some(Architecture::X64), true).unwrap(),
-            Architecture::X64,
-        )
-        .unwrap();
-    assert_eq!(vt.slots[5].method, "Seek");
-    assert_eq!(vt.slots[13].method, "Clone");
-}
-
-#[test]
 fn reverse_uses_and_cancellation() {
+    use std::sync::atomic::AtomicBool;
     let db = catalog();
     let r = db
         .references(

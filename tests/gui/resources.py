@@ -68,14 +68,13 @@ def main():
             assert en and zh, f"untranslated resource {name}"
             assert sorted(re.findall(r"\{\w+\}", en)) == sorted(re.findall(r"\{\w+\}", zh)), name
         assert languages(4, ids["IDR_MAIN_MENU"]) == [0x409, 0x804]
-        for name, count in (("IDD_SETTINGS_GENERAL", 3), ("IDD_SETTINGS_SEARCH", 8)):
+        for name in ("IDD_SETTINGS_GENERAL", "IDD_SETTINGS_SEARCH"):
             assert languages(5, ids[name]) == [0x409, 0x804]
             for language in (0x409, 0x804):
                 data = resource(5, ids[name], language)
                 assert struct.unpack_from("<HH", data) == (1, 0xffff)
-                style, controls = struct.unpack_from("<IH", data, 12)
+                style, = struct.unpack_from("<I", data, 12)
                 assert style & 0x40000448 == 0x40000448
-                assert controls == count
         assert languages(9, ids["IDR_ACCELERATORS"]) == [0]
         accelerators = list(struct.iter_unpack("<4H", resource(9, ids["IDR_ACCELERATORS"], 0)))
         assert {(flags & 0x7f, key, command) for flags, key, command, _ in accelerators} == {

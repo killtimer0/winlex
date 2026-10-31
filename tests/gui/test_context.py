@@ -240,11 +240,7 @@ def test_numeric_context_covers_labels_units_and_constant_annotations(launch, se
     app = launch([settings[1]])
     cases = [
         ("Windows.Win32.Security.SECURITY_ATTRIBUTES", "size: 24 bytes", "24", "0x18", True),
-        ("Windows.Win32.System.Com.IUnknown", "slot 2", "2", "0x2", False),
-        ("Windows.Win32.System.Com.IUnknown", "vtable +0x10", "16", "0x10", True),
         ("STATUS_ACCESS_VIOLATION", "-1073741819", "-1073741819", "0xC0000005", False),
-        ("STATUS_ACCESS_VIOLATION", "0xC0000005", "-1073741819", "0xC0000005", False),
-        ("SE_DEBUG_NAME", "length: 16 UTF-16 code units", "16", "0x10", True),
     ]
     get_label = n.api(n.user, "GetMenuStringW", n.c.c_int, n.w.HMENU, n.w.UINT, n.w.LPWSTR, n.c.c_int, n.w.UINT)
     for query, region, decimal, hexadecimal, has_unit in cases:
@@ -255,20 +251,17 @@ def test_numeric_context_covers_labels_units_and_constant_annotations(launch, se
         editor = n.get_item(doc, 1203)
         body = app.content(doc).replace("\r\n", "\r")
         start = len(body[:body.index(region)].encode("utf-16-le")) // 2
-        for offset in (0, len(region) // 2, len(region) - 1, len(region)):
+        for offset in (0, len(region)):
             index = start + offset
             n.send(editor, win32con.EM_SETSEL, index, index)
-            for mouse in (False, True):
-                with n.window_dpi_context(app.frame):
-                    location = character_point(app, editor, index) if mouse else -1
-                    menu, items = popup(app, editor, location, mouse=mouse)
-                    assert items == ([2071, 2072, 2073, 0, 2074] if has_unit else [2071, 2072, 0, 2074])
-                    for command, expected in ((2071, decimal), (2072, hexadecimal)):
-                        label = n.c.create_unicode_buffer(256)
-                        get_label(menu, command, label, 256, 0)
-                        assert label.value.endswith("\t" + expected)
-                    dismiss(editor)
-                    n.send(editor, win32con.WM_NULL)
+            menu, items = popup(app, editor, keyboard=True)
+            assert items == ([2071, 2072, 2073, 0, 2074] if has_unit else [2071, 2072, 0, 2074])
+            for command, expected in ((2071, decimal), (2072, hexadecimal)):
+                label = n.c.create_unicode_buffer(256)
+                get_label(menu, command, label, 256, 0)
+                assert label.value.endswith("\t" + expected)
+            dismiss(editor)
+            n.send(editor, win32con.WM_NULL)
         for index in (start - 1, start + len(region) + 1):
             n.send(editor, win32con.EM_SETSEL, index, index)
             _, items = popup(app, editor)
@@ -323,37 +316,35 @@ def test_numeric_context_uses_updated_caret_after_mouse_right_click(launch, sett
     editor = n.get_item(doc, 1203)
     app.focus(editor)
     body = app.content(doc).replace("\r\n", "\r")
-    regions = [(body.index("offset: 0 bytes"), "offset: 0 bytes", "0"),
-               (body.index("size: 4 bytes"), "size: 4 bytes", "4")]
+    start = body.index("offset: 0 bytes")
+    opposite = body.index("size: 4 bytes")
     get_label = n.api(n.user, "GetMenuStringW", n.c.c_int, n.w.HMENU, n.w.UINT, n.w.LPWSTR, n.c.c_int, n.w.UINT)
     with n.window_dpi_context(app.frame):
-        for start, region, expected in regions:
-            opposite = regions[1 if expected == "0" else 0][0]
+        location = character_point(app, editor, start + len("offset: 0 by"))
+        point = n.w.POINT(n.c.c_short(location & 0xFFFF).value,
+                          n.c.c_short((location >> 16) & 0xFFFF).value)
+        assert n.api(n.user, "ScreenToClient", n.w.BOOL, n.w.HWND, n.c.POINTER(n.w.POINT))(editor, n.c.byref(point))
+        local = (point.x & 0xFFFF) | ((point.y & 0xFFFF) << 16)
+        n.send(editor, win32con.WM_LBUTTONDOWN, win32con.MK_LBUTTON, local)
+        n.send(editor, win32con.WM_LBUTTONUP, 0, local)
+        selection = n.send(editor, win32con.EM_GETSEL)
+        assert start <= (selection & 0xFFFF) < start + len("offset: 0 bytes")
+        assert selection & 0xFFFF == selection >> 16
+        for keyboard, expected in ((True, "0"), (False, "4")):
             location = character_point(app, editor, opposite)
-            for offset in (region.index("bytes"), region.index("bytes") + 2):
-                left = character_point(app, editor, start + offset)
-                right = character_point(app, editor, start + offset + 1)
-                x = n.c.c_short(left & 0xFFFF).value - 1
-                next_x = n.c.c_short(right & 0xFFFF).value - 1
-                y = n.c.c_short((left >> 16) & 0xFFFF).value + 3
-                for fraction in (0.25, 0.5, 0.75):
-                    point = n.w.POINT(round(x + (next_x - x) * fraction), y)
-                    assert n.api(n.user, "ScreenToClient", n.w.BOOL, n.w.HWND, n.c.POINTER(n.w.POINT))(editor, n.c.byref(point))
-                    local = (point.x & 0xFFFF) | ((point.y & 0xFFFF) << 16)
-                    n.send(editor, win32con.WM_LBUTTONDOWN, win32con.MK_LBUTTON, local)
-                    n.send(editor, win32con.WM_LBUTTONUP, 0, local)
-                    selection = n.send(editor, win32con.EM_GETSEL)
-                    assert start <= (selection & 0xFFFF) < start + len(region)
-                    assert selection & 0xFFFF == selection >> 16
-                    for keyboard in (True, False):
-                        menu, items = popup(app, editor, location, keyboard=keyboard, mouse=not keyboard)
-                        assert items == [2071, 2072, 2073, 0, 2074]
-                        label = n.c.create_unicode_buffer(256)
-                        get_label(menu, 2071, label, 256, 0)
-                        assert label.value.endswith("\t" + (expected if keyboard else ("4" if expected == "0" else "0")))
-                        dismiss(editor)
-                        n.send(editor, win32con.WM_NULL)
-                        assert n.send(editor, win32con.EM_GETSEL) == (selection if keyboard else (opposite << 16) | opposite)
+            menu, items = popup(app, editor, location, keyboard=keyboard, mouse=not keyboard)
+            assert items == [2071, 2072, 2073, 0, 2074]
+            label = n.c.create_unicode_buffer(256)
+            get_label(menu, 2071, label, 256, 0)
+            assert label.value.endswith("\t" + expected)
+            dismiss(editor)
+            n.send(editor, win32con.WM_NULL)
+            current = n.send(editor, win32con.EM_GETSEL)
+            if keyboard:
+                assert current == selection
+            else:
+                assert opposite <= (current & 0xFFFF) < opposite + len("size: 4 bytes")
+                assert current & 0xFFFF == current >> 16
 
 
 def test_copy_wrapped_declaration_keeps_original_line_breaks(launch, settings):

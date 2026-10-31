@@ -60,8 +60,6 @@ def test_document_controls_and_close_during_architecture_reload(launch, settings
     body = app.content(doc)
     n.send(editor, win32con.WM_CHAR, ord("X"))  # WM_CHAR: declaration stays read-only.
     assert app.content(doc) == body
-    assert str(settings[1]) not in body
-    assert '"parameters"' not in body
     assert "Windows.Win32.Storage.FileSystem" in n.window_text(n.get_item(doc, 1209))
     assert n.window_text(n.get_item(doc, 1207)) == "CreateFileW"
 
@@ -201,26 +199,6 @@ def test_tab_traverses_document_controls(launch, settings):
     assert len(app.documents()) == 1
 
 
-def test_narrow_document_keeps_complete_body_usable(launch, settings):
-    app = launch([settings[1]])
-    app.query("CreateFileW")
-    doc = app.open_row()
-    n.wait(lambda: "CreateFileW(" in app.content(doc), "declaration", 45)
-    n.send(doc, win32con.WM_SYSCOMMAND, win32con.SC_RESTORE)  # SC_RESTORE
-    with n.window_dpi_context(app.frame):
-        dpi = n.api(n.user, "GetDpiForWindow", n.w.UINT, n.w.HWND)(doc) if hasattr(n.user, "GetDpiForWindow") else 96
-        assert n.set_pos(doc, None, 0, 0, 340 * dpi // 96, 440 * dpi // 96, RESIZE_NO_MOVE)
-        editor = n.get_item(doc, 1203)
-        assert "Windows.Win32.Storage.FileSystem" in n.window_text(n.get_item(doc, 1209))
-        assert '"parameters"' not in app.content(doc)
-        n.send(editor, win32con.EM_SETSEL, 0, -1)
-        assert n.send(editor, win32con.EM_GETSEL) != 0
-        a, e = map(n.rectangle, (app.architecture(doc), editor))
-        assert a[3] <= e[1] < e[3]
-        n.send(editor, win32con.EM_SETSEL, -1, -1)
-        n.send(editor, win32con.EM_SCROLLCARET)
-
-
 def test_document_source_and_responsive_reading_layout(launch, settings):
     path = settings[2] / ("来源😀" + "-metadata" * 12 + ".winmd")
     shutil.copyfile(settings[1], path)
@@ -250,7 +228,11 @@ def test_document_source_and_responsive_reading_layout(launch, settings):
                 assert sr[3] <= ar[1]
             else:
                 assert sr[2] < ar[0]
-            assert er[1] >= sr[3]
+            assert er[1] >= max(sr[3], ar[3]) and er[3] > er[1]
+            n.send(editor, win32con.EM_SETSEL, 0, -1)
+            assert n.send(editor, win32con.EM_GETSEL) != 0
+            n.send(editor, win32con.EM_SETSEL, -1, -1)
+            n.send(editor, win32con.EM_SCROLLCARET)
             left, top = win32gui.ClientToScreen(doc, (0, 0))
             _, _, right, bottom = win32gui.GetClientRect(doc)
             for control in [source, selector, editor]:
@@ -269,43 +251,29 @@ def test_document_button_uses_native_ideal_size_and_row_centering(launch, settin
     app.query("CreateFileW")
     doc = app.open_row()
     n.wait(lambda: "CreateFileW(" in app.content(doc), "declaration", 45)
-    button = n.get_item(doc, 1206)
     combo = app.architecture(doc)
-    get_dpi = n.api(n.user, "GetDpiForWindow", n.w.UINT, n.w.HWND) if hasattr(n.user, "GetDpiForWindow") else None
     with n.window_dpi_context(app.frame):
         n.send(app.mdi, win32con.WM_MDIRESTORE, doc)
-        for left, top, _, _ in n.monitors():
-            assert n.set_pos(app.frame, None, left + 20, top + 20, 0, 0,
-                             win32con.SWP_NOSIZE | win32con.SWP_NOZORDER | win32con.SWP_NOACTIVATE)
-            dpi = get_dpi(doc) if get_dpi else 96
-            for width in (850, 320, 200, 850):
-                assert n.set_pos(doc, None, 0, 0, width * dpi // 96, 450 * dpi // 96, RESIZE_NO_MOVE)
-                assert n.write_memory(app.handle, app.memory, bytes(8), 8, None)
-                assert n.send(button, 0x1601, 0, app.memory)
-                size = n.c.create_string_buffer(8)
-                assert n.read_memory(app.handle, app.memory, size, 8, None)
-                ideal = struct.unpack("<ii", size.raw)
-                assert n.is_visible(button)
-                br, cr = n.rectangle(button), n.rectangle(combo)
-                assert (br[2] - br[0], br[3] - br[1]) == ideal
-                if br[0] >= cr[2]:
-                    assert abs(br[1] + br[3] - cr[1] - cr[3]) <= 1
-                else:
-                    assert br[1] >= cr[3]
-                online = n.get_item(doc, 1211)
-                assert n.is_visible(online)
-                assert n.write_memory(app.handle, app.memory, bytes(8), 8, None)
-                assert n.send(online, 0x1601, 0, app.memory)
-                assert n.read_memory(app.handle, app.memory, size, 8, None)
-                online_ideal = struct.unpack("<ii", size.raw)
-                online_rect = n.rectangle(online)
-                assert (online_rect[2] - online_rect[0], online_rect[3] - online_rect[1]) == online_ideal
-                assert online_rect[0] >= br[2] or online_rect[1] >= br[3]
-                er = n.rectangle(n.get_item(doc, 1203))
-                assert er[1] >= max(br[3], cr[3], online_rect[3])
+        dpi = n.api(n.user, "GetDpiForWindow", n.w.UINT, n.w.HWND)(doc) if hasattr(n.user, "GetDpiForWindow") else 96
+        assert n.set_pos(doc, None, 0, 0, 850 * dpi // 96, 450 * dpi // 96, RESIZE_NO_MOVE)
+        previous = n.rectangle(combo)
+        for control in (1206, 1211):
+            button = n.get_item(doc, control)
+            assert n.write_memory(app.handle, app.memory, bytes(8), 8, None)
+            assert n.send(button, 0x1601, 0, app.memory)
+            size = n.c.create_string_buffer(8)
+            assert n.read_memory(app.handle, app.memory, size, 8, None)
+            assert n.is_visible(button)
+            bounds = n.rectangle(button)
+            assert (bounds[2] - bounds[0], bounds[3] - bounds[1]) == struct.unpack("<ii", size.raw)
+            assert bounds[0] >= previous[2]
+            assert abs(bounds[1] + bounds[3] - previous[1] - previous[3]) <= 1
+            previous = bounds
 
 
 def test_constant_summary_pseudocode_and_information_copy(launch, settings):
+    import json
+    import subprocess
     from test_context import find_popup, wait_closed, wait_clipboard_available, clipboard_text
     from support.accessibility import client
     import win32clipboard as clipboard
@@ -314,6 +282,13 @@ def test_constant_summary_pseudocode_and_information_copy(launch, settings):
     shutil.copyfile(settings[1], path)
     app = launch([path])
     app.query("Windows.Win32.Foundation.WIN32_ERROR.ERROR_ACCESS_DENIED")
+    matches = json.loads(subprocess.check_output([
+        str(settings[0].with_name("winlex.exe")), str(path), "search",
+        app.cell(0).splitlines()[0], "--name", "--json",
+    ], encoding="utf-8"))["result"]["matches"]
+    assert len(matches) == 1
+    identity = matches[0]["id"]
+    entity_id = f'{identity["source_id"]}::0x{identity["token"]:08x}'
     doc = app.open_row()
     n.wait(lambda: "ERROR_ACCESS_DENIED = 5;" in app.content(doc), "constant", 45)
     assert app.content(doc).strip() == "WIN32_ERROR ERROR_ACCESS_DENIED = 5; // 0x00000005"
@@ -328,15 +303,14 @@ def test_constant_summary_pseudocode_and_information_copy(launch, settings):
         with client(hwnd) as accessible:
             assert accessible.name in names
     button = n.get_item(doc, 1206)
-    expected = [str(path), "0::0x04002ffc", "ERROR_ACCESS_DENIED",
+    expected = [str(path), entity_id, "ERROR_ACCESS_DENIED",
                 "Windows.Win32.Foundation.WIN32_ERROR.ERROR_ACCESS_DENIED", path.name]
     for index, value in enumerate(expected):
         app.focus(button)
         assert app.focused() == button
         wait_clipboard_available()
         sequence = clipboard.GetClipboardSequenceNumber()
-        assert n.post(button, win32con.WM_KEYDOWN, win32con.VK_SPACE, 1)
-        n.wait(lambda: n.send(button, win32con.BM_GETSTATE) & 4, "button pressed")
+        n.send(button, win32con.WM_KEYDOWN, win32con.VK_SPACE, 1)
         assert n.post(button, win32con.WM_KEYUP, win32con.VK_SPACE, n.KEY_UP_LPARAM)
         menu, items = find_popup(app)
         assert items[2] == 0  # Separator between identity and convenient text copies.

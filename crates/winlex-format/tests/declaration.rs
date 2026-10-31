@@ -46,7 +46,6 @@ fn declarations_cover_native_signatures_and_architecture_specific_types() {
                 assert!(text.contains("dwDesiredAccess"));
                 assert!(text.contains("[in, const] PWSTR lpFileName"));
                 assert!(text.contains("optional"));
-                assert!(!text.contains("\"parameters\""));
             } else {
                 assert!(text.contains("struct RECT"), "{text}");
                 assert!(text.contains("INT32 left;"));
@@ -73,16 +72,16 @@ fn declarations_cover_native_signatures_and_architecture_specific_types() {
                 .next()
                 .unwrap()
                 .unwrap();
-            winlex_format::declaration::render(&catalog, entity.id, arch)
-                .unwrap()
-                .text
+            winlex_format::declaration::render(&catalog, entity.id, arch).unwrap()
         };
-        let text = render("SECURITY_ATTRIBUTES");
+        let rendered = render("SECURITY_ATTRIBUTES");
+        let text = &rendered.text;
         assert!(text.contains("UINT32 nLength;"), "{text}");
         assert!(text.contains("BOOL bInheritHandle;"), "{text}");
         let pointer_offset = if arch == Architecture::X86 { "4" } else { "8" };
         assert!(text.contains(&format!("offset: {pointer_offset} bytes, size: {pointer_offset} bytes\n    void *lpSecurityDescriptor;")), "{text}");
-        let text = render("IUnknown");
+        let rendered = render("IUnknown");
+        let text = &rendered.text;
         let release_offset = if arch == Architecture::X86 {
             "0x8"
         } else {
@@ -94,7 +93,25 @@ fn declarations_cover_native_signatures_and_architecture_specific_types() {
             )),
             "{text}"
         );
-        let text = render("IStream");
+        let units: Vec<_> = text.encode_utf16().collect();
+        for (region, value, unit) in [
+            ("slot 2".to_owned(), 2, None),
+            (
+                format!("vtable +{release_offset}"),
+                if arch == Architecture::X86 { 8 } else { 16 },
+                Some("bytes"),
+            ),
+        ] {
+            let number = rendered
+                .numbers
+                .iter()
+                .find(|n| String::from_utf16(&units[n.range.clone()]).unwrap() == region)
+                .unwrap();
+            assert_eq!(number.value, value);
+            assert_eq!(number.unit, unit);
+        }
+        let rendered = render("IStream");
+        let text = &rendered.text;
         assert!(
             text.contains("IUnknown::Release (inherited/implicit)"),
             "{text}"
@@ -315,6 +332,11 @@ fn enum_members_and_individual_constants_share_annotations() {
         parent.text
     );
     assert!(member.text.contains("Failure = -1073741819; // 0xC0000005"));
+    assert_eq!(member.numbers.len(), 2);
+    for number in &member.numbers {
+        assert_eq!(number.value, -1073741819);
+        assert_eq!(number.hexadecimal(), "0xC0000005");
+    }
     assert_eq!(parent.numbers.len(), 2);
     for (a, b) in parent.numbers.iter().zip(&member.numbers) {
         assert_eq!(a.entity, b.entity);
@@ -331,6 +353,9 @@ fn enum_members_and_individual_constants_share_annotations() {
         parent.text
     );
     assert!(member.text.contains("length: 7 UTF-16 code units"));
+    assert_eq!(member.numbers.len(), 1);
+    assert_eq!(member.numbers[0].value, 7);
+    assert_eq!(member.numbers[0].with_unit(), "7 UTF-16 code units");
     assert_eq!(parent.numbers[0].entity, member.numbers[0].entity);
     assert!(
         render("EmptyText")
