@@ -92,8 +92,8 @@ def test_infotips_include_values_and_full_guids(launch, settings):
     app = launch([settings[1]])
     mode = n.get_item(app.frame, 1114)
     for index, query, labels in [
-        (2, '5', ('Value: 5', '值：5')),
-        (3, '0000000c00000000c000000000000046', ('GUID: ', 'GUID：')),
+        (1, 'value = 5', ('Value: 5', '值：5')),
+        (1, 'guid = "0000000c-0000-0000-c000-000000000046"', ('GUID: ', 'GUID：')),
     ]:
         n.send(mode, win32con.CB_SETCURSEL, index)
         app.command(1114, code=win32con.CBN_SELENDOK)
@@ -101,5 +101,5 @@ def test_infotips_include_values_and_full_guids(launch, settings):
         assert app.count() > 0
         tip = infotip(app, app.results, 0, settings[2] / ('value-tooltip-%d.bmp' % index))
         assert any(label in tip for label in labels), tip
-        if index == 3:
+        if query.startswith('guid'):
             assert '0000000c-0000-0000-c000-000000000046' in tip.lower()

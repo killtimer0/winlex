@@ -64,6 +64,7 @@ pub enum SearchMode {
     Name,
     Value,
     Guid,
+    Condition,
 }
 #[derive(Debug)]
 pub struct InvalidSearchInput(pub SearchMode);
@@ -417,6 +418,24 @@ impl Catalog {
         ));
         self.iter(matcher, options)
     }
+    pub fn search_query<'a>(
+        &'a self,
+        query: &crate::Query,
+        options: SearchOptions<'a>,
+    ) -> Result<Search<'a>> {
+        let matcher = Matcher::Query(Box::new(SearchQuery::from_query(
+            query,
+            options.case_sensitive,
+        )?));
+        self.iter(matcher, options)
+    }
+    pub fn search_compiled<'a>(
+        &'a self,
+        query: crate::CompiledQuery,
+        options: SearchOptions<'a>,
+    ) -> Result<Search<'a>> {
+        self.iter(Matcher::Query(Box::new(query)), options)
+    }
     /// Exact short or full name lookup, without scope browsing or combined search.
     pub fn search_exact<'a>(
         &'a self,
@@ -537,6 +556,7 @@ impl Search<'_> {
             {
                 return Ok(SearchStep::Skipped);
             }
+            let mut evidence = Vec::new();
             let quality = match &mut self.matcher {
                 Matcher::Exact(query) => {
                     let full = self.catalog.full_name(&row);
@@ -561,7 +581,30 @@ impl Search<'_> {
                     } else {
                         String::new()
                     };
-                    query.matches(&row, &full, self.options.architecture)
+                    let namespace = if query.needs_full_name() {
+                        if let Some(owner) = row.owner() {
+                            let name = &self.catalog.names[&key(owner, 2)];
+                            &name.full[..name.namespace_len]
+                        } else if let Declaration::Reference(r) = &row {
+                            r.namespace()
+                        } else {
+                            ""
+                        }
+                    } else {
+                        ""
+                    };
+                    query
+                        .matches(
+                            &row,
+                            &full,
+                            namespace,
+                            id.source_id,
+                            self.options.architecture,
+                        )
+                        .map(|(quality, found)| {
+                            evidence = found;
+                            quality
+                        })
                 }
                 Matcher::References(target, arch) => {
                     let Some(owner) = row.owner() else {
@@ -608,6 +651,7 @@ impl Search<'_> {
                 return Ok(SearchStep::Match(SearchMatch {
                     entity: self.catalog.summarize(id, &row),
                     quality,
+                    evidence,
                 }));
             }
             return Ok(SearchStep::Skipped);

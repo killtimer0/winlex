@@ -31,6 +31,9 @@ fn search_mode_flags_are_exclusive_and_only_apply_to_search() {
         vec!["search", "1", "--value", "--guid"],
         vec!["search", "1", "--guid", "--name"],
         vec!["search", "1", "--name", "--name"],
+        vec!["search", "--where", "value = 5", "--value"],
+        vec!["search", "--name", "--where", "value = 5"],
+        vec!["show", "--where", "value = 5"],
         vec!["show", "CreateFileW", "--name"],
         vec!["summary", "--value"],
         vec!["search", "CreateFileW", "--exact"],
@@ -39,12 +42,12 @@ fn search_mode_flags_are_exclusive_and_only_apply_to_search() {
     ] {
         let (code, result, _) = cli(&arguments);
         assert_eq!(code, 2, "{arguments:?}");
-        assert_eq!(result["schema"], "winlex-cli-6");
+        assert_eq!(result["schema"], "winlex-cli-7");
         assert_eq!(result["ok"], false);
     }
     for (query, flag) in [
         ("08", "--value"),
-        ("NaN", "--value"),
+        ("Infinity", "--value"),
         ("FF 239", "--guid"),
         (".", "--name"),
     ] {
@@ -56,9 +59,43 @@ fn search_mode_flags_are_exclusive_and_only_apply_to_search() {
 }
 
 #[test]
+fn conditions_find_real_constants_and_report_input_spans() {
+    let (code, result, _) = cli(&[
+        "search",
+        "--where",
+        r#"name contains "access" and value = 5"#,
+    ]);
+    assert_eq!(code, 0, "{result}");
+    let matches = result["result"]["matches"].as_array().unwrap();
+    assert!(matches.iter().any(|r| r["name"] == "ERROR_ACCESS_DENIED"));
+    for row in matches {
+        assert!(
+            row["name"]
+                .as_str()
+                .unwrap()
+                .to_lowercase()
+                .contains("access")
+        );
+        let evidence = row["evidence"].as_array().unwrap();
+        assert!(evidence.iter().any(|e| e["field"] == "name"));
+        assert!(evidence.iter().any(|e| e["field"] == "value"));
+    }
+    let (code, error, _) = cli(&["search", "--where", "value < nan"]);
+    assert_eq!(code, 3);
+    assert_eq!(error["error"]["span"]["start"], 0);
+    assert_eq!(error["error"]["incomplete"], false);
+    let (code, error, _) = cli(&["search", "--where", "value ="]);
+    assert_eq!(code, 3);
+    assert_eq!(error["error"]["incomplete"], true);
+    for query in ["nan", "inf", "+inf", "-inf"] {
+        assert_eq!(cli(&["search", query, "--value"]).0, 0);
+    }
+}
+
+#[test]
 fn guid_fragments_bytes_and_numeric_radices_share_the_cli_search_contract() {
     let (_, expected, _) = cli(&["search", "2147483648", "--value", "--limit", "1000"]);
-    assert_eq!(expected["schema"], "winlex-cli-6");
+    assert_eq!(expected["schema"], "winlex-cli-7");
     assert_eq!(expected["sources"][0]["id"], 0);
     for query in [
         "+0x80000000",

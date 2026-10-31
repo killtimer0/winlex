@@ -1,114 +1,25 @@
 use crate::Architecture;
 use anyhow::{Context, Result, bail, ensure};
-use num_bigint::BigInt;
-use num_traits::{Signed, Zero};
 use std::cmp::Ordering;
 use windows_metadata::Value;
 
-#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
-pub struct FloatDistance(Decimal);
-
-#[derive(Clone, Debug)]
-pub(super) struct Decimal {
-    coefficient: BigInt,
-    exponent: i128,
-    digits: usize,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Comparison {
+    Equal,
+    Less,
+    LessEqual,
+    Greater,
+    GreaterEqual,
 }
-impl Decimal {
-    fn new(coefficient: BigInt, exponent: i128) -> Self {
-        let digits = coefficient.to_str_radix(10).trim_start_matches('-').len();
-        Self {
-            coefficient,
-            exponent,
-            digits,
-        }
-    }
-    fn float(value: f64) -> Option<Self> {
-        if !value.is_finite() {
-            return None;
-        }
-        let bits = value.to_bits();
-        let exponent = ((bits >> 52) & 0x7ff) as i32;
-        let fraction = bits & ((1u64 << 52) - 1);
-        let (mantissa, power) = if exponent == 0 {
-            (fraction, -1074)
-        } else {
-            (fraction | (1u64 << 52), exponent - 1023 - 52)
-        };
-        if mantissa == 0 {
-            return Some(Self::new(BigInt::ZERO, 0));
-        }
-        let mut coefficient = BigInt::from(mantissa);
-        let decimal_power = if power >= 0 {
-            coefficient <<= power as usize;
-            0
-        } else {
-            coefficient *= BigInt::from(5u8).pow((-power) as u32);
-            power as i128
-        };
-        if bits >> 63 != 0 {
-            coefficient = -coefficient;
-        }
-        Some(Self::new(coefficient, decimal_power))
-    }
-    fn magnitude_cmp(&self, other: &Self) -> Ordering {
-        let order =
-            (self.exponent + self.digits as i128).cmp(&(other.exponent + other.digits as i128));
-        if order != Ordering::Equal {
-            return order;
-        }
-        let (left, right) = self.aligned(other);
-        left.abs().cmp(&right.abs())
-    }
-    fn aligned(&self, other: &Self) -> (BigInt, BigInt) {
-        let exponent = self.exponent.min(other.exponent);
-        let scale = |value: &Self| {
-            let power =
-                u32::try_from(value.exponent - exponent).expect("bounded decimal alignment");
-            &value.coefficient * BigInt::from(10u8).pow(power)
-        };
-        (scale(self), scale(other))
-    }
-    fn distance(&self, other: &Self) -> FloatDistance {
-        if self.coefficient.is_zero() {
-            return FloatDistance(Self::new(other.coefficient.abs(), other.exponent));
-        }
-        if other.coefficient.is_zero() {
-            return FloatDistance(Self::new(self.coefficient.abs(), self.exponent));
-        }
-        let (left, right) = self.aligned(other);
-        FloatDistance(Self::new(
-            (left - right).abs(),
-            self.exponent.min(other.exponent),
-        ))
-    }
-}
-impl PartialEq for Decimal {
-    fn eq(&self, other: &Self) -> bool {
-        self.cmp(other) == Ordering::Equal
-    }
-}
-impl Eq for Decimal {}
-impl Ord for Decimal {
-    fn cmp(&self, other: &Self) -> Ordering {
-        let sign = self.coefficient.sign().cmp(&other.coefficient.sign());
-        if sign != Ordering::Equal {
-            return sign;
-        }
-        if self.coefficient.is_zero() {
-            return Ordering::Equal;
-        }
-        let order = self.magnitude_cmp(other);
-        if self.coefficient.is_negative() {
-            order.reverse()
-        } else {
-            order
-        }
-    }
-}
-impl PartialOrd for Decimal {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
+impl Comparison {
+    fn accepts(self, order: Option<Ordering>) -> bool {
+        matches!(
+            (self, order),
+            (Self::Equal, Some(Ordering::Equal))
+                | (Self::Less | Self::LessEqual, Some(Ordering::Less))
+                | (Self::Greater | Self::GreaterEqual, Some(Ordering::Greater))
+                | (Self::LessEqual | Self::GreaterEqual, Some(Ordering::Equal))
+        )
     }
 }
 
@@ -118,13 +29,25 @@ pub(super) enum NumberQuery {
         magnitude: u64,
     },
     Float {
-        center: Decimal,
-        lower: Decimal,
-        upper: Decimal,
+        narrow: Option<f32>,
+        wide: Option<f64>,
     },
 }
 impl NumberQuery {
     pub fn compile(text: &str) -> Result<Self> {
+        ensure!(text.len() <= 4096, "number is too long");
+        let special = match text.to_ascii_lowercase().as_str() {
+            "nan" => Some(f64::NAN),
+            "inf" | "+inf" => Some(f64::INFINITY),
+            "-inf" => Some(f64::NEG_INFINITY),
+            _ => None,
+        };
+        if let Some(value) = special {
+            return Ok(Self::Float {
+                narrow: Some(value as f32),
+                wide: Some(value),
+            });
+        }
         let (negative, body) = match text.as_bytes().first() {
             Some(b'-') => (true, &text[1..]),
             Some(b'+') => (false, &text[1..]),
@@ -134,7 +57,7 @@ impl NumberQuery {
         let prefixed = super::hex_digits(body).is_some()
             || ["0o", "0O", "0b", "0B"].iter().any(|p| body.starts_with(p));
         if !prefixed && body.contains(['.', 'e', 'E']) {
-            return Self::decimal(body, negative);
+            return Self::decimal(text, body);
         }
         let (radix, digits) = if body.starts_with(['0']) && body.len() > 1 {
             match body.as_bytes()[1] {
@@ -156,10 +79,10 @@ impl NumberQuery {
             magnitude,
         })
     }
-    fn decimal(body: &str, negative: bool) -> Result<Self> {
+    fn decimal(text: &str, body: &str) -> Result<Self> {
         let mut parts = body.split(['e', 'E']);
         let mantissa = parts.next().unwrap();
-        let exponent = parts
+        parts
             .next()
             .map(|s| {
                 let digits = s.strip_prefix(['+', '-']).unwrap_or(s);
@@ -167,33 +90,34 @@ impl NumberQuery {
                     !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()),
                     "invalid decimal exponent"
                 );
-                Ok(s.parse::<i64>()? as i128)
+                Ok::<_, anyhow::Error>(())
             })
-            .transpose()?
-            .unwrap_or(0);
+            .transpose()?;
         ensure!(parts.next().is_none(), "invalid decimal exponent");
-        let mut digits = String::new();
-        let mut point = None;
+        let mut digits = 0;
+        let mut point = false;
+        let mut nonzero = false;
         for byte in mantissa.bytes() {
             match byte {
-                b'.' if point.is_none() => point = Some(digits.len()),
-                b'0'..=b'9' => digits.push(byte as char),
+                b'.' if !point => point = true,
+                b'0'..=b'9' => {
+                    digits += 1;
+                    nonzero |= byte != b'0';
+                }
                 _ => bail!("invalid decimal number"),
             }
         }
-        ensure!(!digits.is_empty(), "invalid decimal number");
-        let exponent = exponent - point.map_or(0, |p| digits.len() - p) as i128;
-        let mut coefficient = BigInt::parse_bytes(digits.as_bytes(), 10).unwrap();
-        if negative {
-            coefficient = -coefficient;
-        }
-        let lower = Decimal::new((&coefficient * 2 - 1) * 5, exponent - 1);
-        let upper = Decimal::new((&coefficient * 2 + 1) * 5, exponent - 1);
-        Ok(Self::Float {
-            center: Decimal::new(coefficient, exponent),
-            lower,
-            upper,
-        })
+        ensure!(digits > 0, "invalid decimal number");
+        let narrow = text
+            .parse::<f32>()
+            .ok()
+            .filter(|v| v.is_finite() && (!nonzero || *v != 0.0));
+        let wide = text
+            .parse::<f64>()
+            .ok()
+            .filter(|v| v.is_finite() && (!nonzero || *v != 0.0));
+        ensure!(narrow.is_some() || wide.is_some(), "float out of range");
+        Ok(Self::Float { narrow, wide })
     }
     pub fn matches(
         &self,
@@ -204,8 +128,11 @@ impl NumberQuery {
         use Value::*;
         let (bits, unsigned) = match value {
             EnumValue(_, value) => return self.matches(value, architecture, mask),
-            F32(value) => return self.float(*value as f64),
-            F64(value) => return self.float(*value),
+            F32(_) | F64(_) => {
+                return self
+                    .compare(value, architecture, mask, Comparison::Equal)
+                    .then_some(super::MatchQuality::Float);
+            }
             U8(v) => (8, *v as u64),
             I8(v) => (8, *v as u8 as u64),
             U16(v) => (16, *v as u64),
@@ -252,19 +179,97 @@ impl NumberQuery {
         };
         (unsigned == expected).then_some(super::MatchQuality::Integer)
     }
-    fn float(&self, value: f64) -> Option<super::MatchQuality> {
-        let Self::Float {
-            center,
-            lower,
-            upper,
+    pub fn is_nan(&self) -> bool {
+        matches!(self, Self::Float { wide: Some(value), .. } if value.is_nan())
+    }
+    pub fn validate_comparison(&self, op: Comparison) -> Result<()> {
+        ensure!(
+            op == Comparison::Equal || !self.is_nan(),
+            "NaN cannot be an ordered bound"
+        );
+        Ok(())
+    }
+    pub fn compare(
+        &self,
+        value: &Value,
+        architecture: Option<Architecture>,
+        mask: i32,
+        op: Comparison,
+    ) -> bool {
+        if let Value::EnumValue(_, value) = value {
+            return self.compare(value, architecture, mask, op);
+        }
+        if let Self::Float { narrow, wide } = self {
+            let pair = match value {
+                Value::F32(value) => narrow.map(|bound| (*value as f64, bound as f64)),
+                Value::F64(value) => wide.map(|bound| (*value, bound)),
+                _ => None,
+            };
+            return pair.is_some_and(|(value, bound)| {
+                if bound.is_nan() {
+                    op == Comparison::Equal && value.is_nan()
+                } else {
+                    op.accepts(value.partial_cmp(&bound))
+                }
+            });
+        }
+        if matches!(value, Value::F32(_) | Value::F64(_)) {
+            return false;
+        }
+        if op == Comparison::Equal {
+            return self.matches(value, architecture, mask).is_some();
+        }
+        let Self::Integer {
+            negative,
+            magnitude,
         } = self
         else {
-            return None;
+            unreachable!()
         };
-        let value = Decimal::float(value)?;
-        (value >= *lower && value < *upper)
-            .then(|| super::MatchQuality::Float(center.distance(&value)))
+        let bound = if *negative {
+            -(*magnitude as i128)
+        } else {
+            *magnitude as i128
+        };
+        let integer = match value {
+            Value::I8(v) => *v as i128,
+            Value::U8(v) => *v as i128,
+            Value::I16(v) => *v as i128,
+            Value::U16(v) => *v as i128,
+            Value::I32(v) => *v as i128,
+            Value::U32(v) => *v as i128,
+            Value::I64(v) => *v as i128,
+            Value::U64(v) => *v as i128,
+            Value::ISize(v) => {
+                if !native_fits(*v as i128, true, architecture, mask) {
+                    return false;
+                }
+                *v as i128
+            }
+            Value::USize(v) => {
+                if !native_fits(*v as i128, false, architecture, mask) {
+                    return false;
+                }
+                *v as i128
+            }
+            _ => return false,
+        };
+        op.accepts(Some(integer.cmp(&bound)))
     }
+}
+
+fn native_fits(value: i128, signed: bool, architecture: Option<Architecture>, mask: i32) -> bool {
+    [Architecture::X86, Architecture::X64, Architecture::Arm64]
+        .into_iter()
+        .filter(|&a| architecture.map_or(a.supports(mask), |selected| a == selected))
+        .any(|a| {
+            a != Architecture::X86
+                || if signed {
+                    i32::try_from(value).is_ok()
+                } else {
+                    u32::try_from(value).is_ok()
+                }
+        })
 }
 
 #[cfg(test)]
@@ -332,33 +337,90 @@ mod tests {
         }
     }
     #[test]
-    fn decimal_intervals_preserve_precision_and_exact_binary_boundaries() {
+    fn floats_compare_in_the_declared_type_without_implicit_intervals() {
         assert!(hit("1.5", Value::F64(1.5)));
-        assert!(hit("1.5", Value::F32(1.46)));
+        assert!(hit("1.50", Value::F64(1.5)));
+        assert!(!hit("1.5", Value::F32(1.46)));
         assert!(!hit("1.50", Value::F32(1.46)));
-        assert!(hit("1.5e3", Value::F64(1450.0)));
+        assert!(hit("1.5e3", Value::F64(1500.0)));
+        assert!(!hit("1.5e3", Value::F64(1450.0)));
         assert!(!hit("1.5e3", Value::F64(1550.0)));
-        assert!(hit("-1.5e3", Value::F64(-1550.0)));
+        assert!(!hit("-1.5e3", Value::F64(-1550.0)));
         assert!(!hit("-1.5e3", Value::F64(-1450.0)));
-        assert!(hit("0.3", Value::F64(0.1 + 0.2)));
+        assert!(!hit("0.3", Value::F64(0.1 + 0.2)));
+        assert!(hit("0.1", Value::F32(0.1)));
+        assert!(hit("0.1", Value::F64(0.1)));
+        let rounding = "1.000000059604644775390625000000000001";
+        assert!(hit(
+            rounding,
+            Value::F32(f32::from_bits(1.0f32.to_bits() + 1))
+        ));
+        assert!(!hit(rounding, Value::F32(1.0)));
         assert!(!hit("1.5", Value::F64(f64::NAN)));
         assert!(!hit("1.5", Value::F64(f64::INFINITY)));
         assert!(!hit("1.0", Value::I32(1)));
         assert!(!hit("1", Value::F64(1.0)));
-        assert!(hit("0e9223372036854775807", Value::F64(f64::MAX)));
+        assert!(!hit("0e9223372036854775807", Value::F64(f64::MAX)));
         assert!(hit("0e-9223372036854775808", Value::F64(-0.0)));
-        assert!(!hit("1e-9223372036854775808", Value::F64(0.0)));
         assert!(hit("5e-324", Value::F64(f64::from_bits(1))));
-        let q = NumberQuery::compile("1.5").unwrap();
-        assert!(
-            q.matches(&Value::F64(1.5), None, 7)
-                .unwrap()
-                .compare(&q.matches(&Value::F64(1.51), None, 7).unwrap())
-                .is_lt()
-        );
-        for query in [".", "1.2.3", "1e", "1e2e3", "NaN", "Infinity"] {
+        assert!(!hit("5e-324", Value::F32(0.0)));
+        assert!(!hit("1e100", Value::F32(f32::INFINITY)));
+        for query in [".", "1.2.3", "1e", "1e2e3", "Infinity", "1e9999", "1e-9999"] {
             assert!(NumberQuery::compile(query).is_err(), "{query}");
         }
+    }
+    #[test]
+    fn special_float_literals_classify_nan_and_preserve_infinity_sign() {
+        for query in ["nan", "NaN", "NAN"] {
+            for value in [f64::NAN, f64::from_bits(0xfff0000000000001)] {
+                assert!(hit(query, Value::F64(value)));
+            }
+            assert!(hit(query, Value::F32(f32::NAN)));
+            assert!(!hit(query, Value::F64(0.0)));
+        }
+        for query in ["inf", "+inf", "INF"] {
+            assert!(hit(query, Value::F64(f64::INFINITY)));
+            assert!(!hit(query, Value::F64(f64::NEG_INFINITY)));
+        }
+        assert!(hit("-inf", Value::F32(f32::NEG_INFINITY)));
+        assert!(hit("-0.0", Value::F32(0.0)));
+    }
+    #[test]
+    fn explicit_ranges_use_ordered_values_and_open_or_closed_bounds() {
+        let compare = |text, value, op| {
+            NumberQuery::compile(text)
+                .unwrap()
+                .compare(&value, None, 7, op)
+        };
+        assert!(compare("0", Value::I32(-1), Comparison::Less));
+        assert!(!compare("0", Value::I32(-1), Comparison::Greater));
+        assert!(compare("-1", Value::U64(u64::MAX), Comparison::Greater));
+        assert!(compare(
+            "18446744073709551615",
+            Value::U64(u64::MAX),
+            Comparison::LessEqual
+        ));
+        assert!(!compare(
+            "18446744073709551615",
+            Value::U64(u64::MAX),
+            Comparison::Less
+        ));
+        assert!(compare("1.45", Value::F64(1.45), Comparison::GreaterEqual));
+        assert!(!compare("1.55", Value::F64(1.55), Comparison::Less));
+        assert!(compare("inf", Value::F64(f64::MAX), Comparison::Less));
+        assert!(!compare("inf", Value::F64(f64::INFINITY), Comparison::Less));
+        assert!(compare(
+            "inf",
+            Value::F64(f64::INFINITY),
+            Comparison::LessEqual
+        ));
+        assert!(!compare("inf", Value::F64(f64::NAN), Comparison::LessEqual));
+        assert!(
+            NumberQuery::compile("nan")
+                .unwrap()
+                .validate_comparison(Comparison::Less)
+                .is_err()
+        );
     }
     #[test]
     fn native_integer_widths_follow_target_architecture() {

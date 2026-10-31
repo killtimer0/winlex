@@ -18,6 +18,12 @@ BEGIN
         MENUITEM "自由排列(&F)", FREE
         MENUITEM "最大化文档(&M)", MAXIMIZE
     END
+    POPUP "帮助(&H)"
+    BEGIN
+        MENUITEM "搜索语法(&S)...", SEARCH_HELP
+        MENUITEM SEPARATOR
+        MENUITEM "关于(&A)", ABOUT
+    END
 END
 IDD_SETTINGS_GENERAL DIALOGEX 0, 0, 240, 150
 STYLE 0x40000448
@@ -45,13 +51,18 @@ END
 STRINGTABLE
 BEGIN
     IDS_SETTINGS "设置"
-    IDS_MODE_COMBINED "综合"
-    IDS_MODE_NAME "符号名"
-    IDS_MODE_VALUE "数字"
-    IDS_MODE_GUID "GUID"
-    IDS_INVALID_NAME_QUERY "名称范围无效。请在末尾的“.”或“+”前输入所属名称。"
-    IDS_INVALID_VALUE_QUERY "数字无效。请输入整数或十进制小数，可带指数。"
-    IDS_INVALID_GUID_QUERY "GUID 输入无效。请输入十六进制片段，或以逗号、空格分隔的字节。"
+    IDS_MODE_COMBINED "快速搜索"
+    IDS_MODE_CONDITION "条件搜索"
+    IDS_INCOMPLETE_CONDITION_QUERY "条件尚未输入完整"
+    IDS_QUERY_FIELD "条件无效：未知字段"
+    IDS_QUERY_OPERATOR "条件无效：此字段不支持该操作"
+    IDS_QUERY_VALUE "条件无效：请检查值的类型、范围或格式"
+    IDS_QUERY_LIMIT "查询超过支持的长度或复杂度"
+    IDS_SEARCH_HELP_TITLE "搜索语法"
+    IDS_SEARCH_HELP "快速搜索匹配名称、常量值和 GUID。\n\n条件示例：\nname contains ""access"" and value = 5\nvalue contains ""Windows""\nvalue >= 1.45 and value < 1.55\nvalue = nan or value = inf\n\n使用 AND、OR、NOT 和括号；字符串需加双引号。\n字段：name、fullname、value、guid、namespace、category、source、architecture。\n文本操作：=、contains、starts_with；名称还支持 fuzzy。\nnamespace within ""Windows.Win32"" 包含子命名空间。\nsource = 0 指第一个输入；architecture = ""x86"" 指适用于 x86。\n\n整数、浮点数和字符串不同：5、5.0、""5""。\n浮点边界按常量声明类型舍入。\nnan 匹配所有 NaN；inf 和 -inf 匹配相应符号的无穷。\nNaN 不能作为有序边界；NOT 也包含缺少该字段的条目。"
+    IDS_INVALID_CONDITION_QUERY "条件无效：语法错误"
+    IDS_SEARCH_TIP_QUICK "搜索名称、常量值和 GUID。\n示例：CrtFlW、5、1.5、Windows\n组合多个条件时，请选择“条件搜索”。\n完整说明：帮助 → 搜索语法。"
+    IDS_SEARCH_TIP_CONDITION "按字段组合搜索，支持 AND、OR、NOT 和括号。\nname contains ""access"" and value = 5\nvalue >= 1.45 and value < 1.55\n完整说明：帮助 → 搜索语法。"
     IDS_GENERAL "常规"
     IDS_LANGUAGE_AUTO "跟随系统"
     IDS_LANGUAGE_ENGLISH "English"

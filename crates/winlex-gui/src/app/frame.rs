@@ -53,6 +53,15 @@ pub(super) fn layout_frame() {
 pub(super) fn command(id: u16) -> bool {
     match id {
         SETTINGS => super::settings::open(),
+        ABOUT => {}
+        SEARCH_HELP => unsafe {
+            MessageBoxW(
+                read(|a| a.frame),
+                wide_text(IDS_SEARCH_HELP).as_ptr(),
+                wide_text(IDS_SEARCH_HELP_TITLE).as_ptr(),
+                MB_OK | MB_ICONINFORMATION,
+            );
+        },
         FOCUS_NEXT_REGION => {
             let h = unsafe { GetFocus() };
             let d = active();

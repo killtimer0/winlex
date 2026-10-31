@@ -10,5 +10,4 @@ repc.workspace = true
 sha1.workspace = true
 anyhow.workspace = true
 nucleo-matcher = { version = "0.3.1", default-features = false, features = ["unicode-casefold", "unicode-normalization"] }
-num-bigint = "0.4"
-num-traits = "0.2"
+winnow = { version = "1.0.4", default-features = false, features = ["std", "ascii"] }

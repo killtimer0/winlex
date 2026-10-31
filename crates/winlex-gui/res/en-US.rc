@@ -18,6 +18,12 @@ BEGIN
         MENUITEM "&Free arrangement", FREE
         MENUITEM "&Maximize document", MAXIMIZE
     END
+    POPUP "&Help"
+    BEGIN
+        MENUITEM "Search &syntax...", SEARCH_HELP
+        MENUITEM SEPARATOR
+        MENUITEM "&About", ABOUT
+    END
 END
 IDD_SETTINGS_GENERAL DIALOGEX 0, 0, 240, 150
 STYLE 0x40000448
@@ -45,13 +51,18 @@ END
 STRINGTABLE
 BEGIN
     IDS_SETTINGS "Settings"
-    IDS_MODE_COMBINED "Combined"
-    IDS_MODE_NAME "Name"
-    IDS_MODE_VALUE "Number"
-    IDS_MODE_GUID "GUID"
-    IDS_INVALID_NAME_QUERY "Invalid name scope. Enter a parent name before the trailing '.' or '+'."
-    IDS_INVALID_VALUE_QUERY "Invalid number. Use an integer or a decimal number with an optional exponent."
-    IDS_INVALID_GUID_QUERY "Invalid GUID input. Use a hexadecimal fragment or bytes separated by commas or spaces."
+    IDS_MODE_COMBINED "Quick"
+    IDS_MODE_CONDITION "Conditions"
+    IDS_INCOMPLETE_CONDITION_QUERY "Incomplete condition"
+    IDS_QUERY_FIELD "Invalid condition: unknown field"
+    IDS_QUERY_OPERATOR "Invalid condition: operator is not supported for this field"
+    IDS_QUERY_VALUE "Invalid condition: check the value type, range or format"
+    IDS_QUERY_LIMIT "Query exceeds the supported length or complexity"
+    IDS_SEARCH_HELP_TITLE "Search syntax"
+    IDS_SEARCH_HELP "Quick search matches names, constant values and GUIDs.\n\nConditions:\nname contains ""access"" and value = 5\nvalue contains ""Windows""\nvalue >= 1.45 and value < 1.55\nvalue = nan or value = inf\n\nUse AND, OR, NOT and parentheses. Strings need double quotes.\nFields: name, fullname, value, guid, namespace, category, source, architecture.\nText: =, contains, starts_with; names also support fuzzy.\nnamespace within ""Windows.Win32"" includes child namespaces.\nsource = 0 selects the first input. architecture = ""x86"" means applicable to x86.\n\nIntegers, floats and strings are distinct: 5, 5.0, ""5"".\nFloat boundaries are rounded to the constant's declared type.\nnan matches any NaN; inf and -inf match signed infinity.\nNaN cannot be an ordered bound. NOT includes missing fields."
+    IDS_INVALID_CONDITION_QUERY "Invalid condition syntax"
+    IDS_SEARCH_TIP_QUICK "Search names, constant values and GUIDs.\nExamples: CrtFlW, 5, 1.5, Windows\nFor combined conditions, select Conditions.\nFull syntax: Help > Search syntax."
+    IDS_SEARCH_TIP_CONDITION "Combine fields with AND, OR, NOT and parentheses.\nname contains ""access"" and value = 5\nvalue >= 1.45 and value < 1.55\nFull syntax: Help > Search syntax."
     IDS_GENERAL "General"
     IDS_LANGUAGE_AUTO "System default"
     IDS_LANGUAGE_ENGLISH "English"

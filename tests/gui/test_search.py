@@ -13,8 +13,8 @@ def test_result_rows_show_context_and_match_emphasis(launch, settings):
     mode = n.get_item(app.frame, 1114)
     for index, query, prefix, name_match in [
         (0, "CrtFlW", "Apis · ", True),
-        (2, "5", "= 5 · ", False),
-        (3, "0000000c00000000c000000000000046", "{0000000c-0000-0000-c000-000000000046} · ", False),
+        (1, 'name contains "access" and value = 5', "= 5 · ", False),
+        (1, 'guid = "0000000c-0000-0000-c000-000000000046"', "{0000000c-0000-0000-c000-000000000046} · ", False),
     ]:
         n.send(mode, win32con.CB_SETCURSEL, index)
         app.command(1114, code=win32con.CBN_SELENDOK)
@@ -41,17 +41,20 @@ def test_search_modes_match_cli_order(launch, settings):
     app = launch([settings[1]])
     mode = n.get_item(app.frame, 1114)
     for index, query, flag in [
-        (0, "CrtFlW", None), (1, "CreateFileW", "--name"),
-        (2, "0x80000000", "--value"), (2, "1.5", "--value"),
-        (3, "0000000c00000000c000000000000046", "--guid"),
+        (0, "CrtFlW", None), (1, 'name = "CreateFileW"', "--where"),
+        (1, 'name contains "access" and value = 5', "--where"),
+        (1, 'value contains "Microsoft"', "--where"),
+        (1, "value = 1.5", "--where"),
+        (1, 'guid = "0000000c-0000-0000-c000-000000000046"', "--where"),
         (0, "0x80000000", None),
     ]:
         n.send(mode, win32con.CB_SETCURSEL, index)
         app.command(1114, code=win32con.CBN_SELENDOK)
         app.query(query)
-        command = [str(cli), str(settings[1]), "search", query, "--limit", "1000", "--json"]
+        command = [str(cli), str(settings[1]), "search"]
         if flag:
             command.append(flag)
+        command += [query, "--limit", "1000", "--json"]
         result = json.loads(subprocess.check_output(command, encoding="utf-8"))["result"]
         expected = result["matches"]
         assert len(expected) < 1000
@@ -65,8 +68,8 @@ def test_search_modes_labels_mapping_errors_and_ime(launch, settings):
     app.query("CrtFlW")
     mode = n.get_item(app.frame, 1114)
     chinese = app.toolbar_text(1040) == "搜索"
-    assert app.choices(mode) == (["综合", "符号名", "数字", "GUID"] if chinese
-                                 else ["Combined", "Name", "Number", "GUID"])
+    assert app.choices(mode) == (["快速搜索", "条件搜索"] if chinese
+                                 else ["Quick", "Conditions"])
     assert n.send(mode, win32con.CB_GETCURSEL) == 0
     assert app.named_rows("CreateFileW")
 
@@ -75,24 +78,28 @@ def test_search_modes_labels_mapping_errors_and_ime(launch, settings):
         app.command(1114, code=win32con.CBN_SELENDOK)
 
     choose(1)
-    n.wait(lambda: app.status_text().startswith(("Results ", "共 ")), "exact search")
+    n.wait(lambda: ("条件" if chinese else "condition") in app.status_text(), "condition error")
     assert app.count() == 0
-    app.query("CreateFileW")
+    app.query('name = "CreateFileW"')
     assert app.count() > 0
-    n.send(mode, win32con.CB_SETCURSEL, 3)
+    n.send(mode, win32con.CB_SETCURSEL, 0)
     app.command(1114, code=win32con.CBN_SELENDCANCEL)
     assert n.send(mode, win32con.CB_GETCURSEL) == 1
-    choose(2)
-    n.wait(lambda: ("数字无效" if chinese else "Invalid number") in app.status_text(), "number error")
+    n.set_text(app.search, "value =")
+    n.wait(lambda: ("尚未输入完整" if chinese else "Incomplete") in app.status_text(), "incomplete condition")
     assert app.count() == 0
-    app.query("0x80000000")
+    n.set_text(app.search, "value < nan")
+    n.wait(lambda: ("条件无效" if chinese else "Invalid condition") in app.status_text(), "NaN bound error")
+    assert app.count() == 0
+    app.query('name contains "access" and value = 5')
+    assert app.named_rows("ERROR_ACCESS_DENIED")
+    app.query("value = 0x80000000")
     assert app.count() > 0
-    choose(3)
-    app.query("0000000c00000000c000000000000046")
+    app.query('guid = "0000000c-0000-0000-c000-000000000046"')
     assert app.count() > 0
     n.send(app.search, win32con.WM_IME_STARTCOMPOSITION)
     n.set_text(app.search, "CreateFileW")
-    choose(1)
+    choose(0)
     time.sleep(.35)
     assert app.count() == 0
     n.send(app.search, win32con.WM_IME_ENDCOMPOSITION)
@@ -155,3 +162,22 @@ def test_ime_defers_search(launch, settings):
     assert app.count() == 0
     n.send(app.search, win32con.WM_IME_ENDCOMPOSITION)
     n.wait(lambda: app.count() > 0, "search after IME commit", 45)
+
+
+def test_search_syntax_help_preserves_query(launch, settings):
+    app = launch([settings[1]])
+    app.query("CrtFlW")
+    count = app.count()
+    n.post(app.frame, win32con.WM_COMMAND, 1053, 0)
+    dialog = n.wait(lambda: next((h for h in n.windows()
+                    if n.class_name(h) == "#32770" and n.is_visible(h)
+                    and n.window_text(h) in ("Search syntax", "搜索语法")), None), "search syntax help")
+    labels = "\n".join(n.window_text(h) for h in n.windows(dialog))
+    assert 'name contains "access" and value = 5' in labels
+    assert "value = nan or value = inf" in labels
+    button = n.wait(lambda: next((h for h in n.windows(dialog)
+                    if n.class_name(h) == "Button" and n.is_visible(h)), None), "help button")
+    n.post(button, win32con.BM_CLICK, 0, 0)
+    n.wait(lambda: not n.is_window(dialog), "help closed")
+    assert n.window_text(app.search) == "CrtFlW"
+    assert app.count() == count

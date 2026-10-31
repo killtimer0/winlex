@@ -9,7 +9,8 @@ Usage: winlex FILE... COMMAND [QUERY] [options]
 
 Commands:
   summary                 Sources, assembly identities and row counts
-  search TEXT             Combined name, number and GUID search, ranked by quality
+  search TEXT             Quick name, constant value and GUID search
+  search --where EXPR     Conditional search with AND, OR, NOT and parentheses
   show NAME|ID            Declaration, members and typed references
   layout TYPE             Compute size/alignment/offsets (bits)
   vtable INTERFACE        Compute inherited method slots
@@ -20,7 +21,7 @@ Options:
   --arch x86|x64|arm64     Required for layout/vtable/references
   --json                  Versioned machine-readable output
   --name                  Exact name or trailing '.'/'+' scope search
-  --value                 Integer bits or decimal-precision floating range
+  --value                 Integer bits or target-type floating equality
   --guid                  GUID text fragment or byte sequence
   --limit N               Page size, 0..1000 (default: 50)
   --offset N              Matching rows to skip
@@ -30,10 +31,20 @@ Input files precede the command. Use .\search for a file named search.
 Declaration selectors accept SOURCE::NAME or SOURCE::0xTOKEN.
 Bare tokens require a single input source. Names can be namespace-qualified.
 Source indices follow input order and belong to this catalog only.
-Search modes are mutually exclusive; the default tries all three branches.
+Search modes and --where are mutually exclusive.
 Name queries containing '.' or '+' match qualified names; otherwise short names.
 Integers accept signs and 0b/leading-zero/0o/decimal/0x notation, using width-local bits.
-Decimal points/exponents select floating ranges: 1.5 matches [1.45, 1.55).
+Decimal points/exponents select floating equality: 1.5 and 1.50 are equivalent.
+Special floats: nan (any NaN), inf, +inf, -inf; NaN cannot be an ordered bound.
+Conditions: name contains "access" and value = 5
+            value >= 1.45 and value < 1.55
+Fields: name, fullname, value, guid, namespace, category, source, architecture.
+Text operators: =, contains, starts_with; name/fullname also support fuzzy.
+namespace within "Windows.Win32" includes child namespaces.
+source = 0 selects an input ID; architecture = "x86" means applicable to x86.
+Numeric comparisons: =, <, <=, >, >=. Integers and floats remain distinct.
+Quoted values are strings; escapes: \" \\ \n \r \t \0. Keywords ignore ASCII case.
+Missing fields do not match a predicate; NOT also includes entries missing that field.
 GUID bytes: 239,254 (decimal), FF 0A (hex), or 0xBC,0xAB (explicit hex).
 "#;
 
@@ -57,6 +68,7 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
     let mut limit = 50;
     let mut offset = 0;
     let mut positional = vec![];
+    let mut expression = None;
     let mut i = 0;
     let text = |s: &OsString| {
         s.to_str()
@@ -68,6 +80,14 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
         let a = arg.to_str().unwrap_or("");
         i += 1;
         match a {
+            "--where" => {
+                if mode.is_some() {
+                    return Err("choose only one search mode".into());
+                }
+                mode = Some(SearchMode::Condition);
+                expression = Some(text(args.get(i).ok_or("missing value for --where")?)?);
+                i += 1;
+            }
             "--source" | "--arch" | "--limit" | "--offset" => {
                 let v = args
                     .get(i)
@@ -118,12 +138,16 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
         return Err("limit must be <= 1000".into());
     }
     let command = positional.first().ok_or("missing command")?.clone();
-    let count = if command == "summary" { 1 } else { 2 };
+    let count = if command == "summary" || expression.is_some() {
+        1
+    } else {
+        2
+    };
     if positional.len() != count {
         return Err(format!("{command} expects {} query argument(s)", count - 1));
     }
     if mode.is_some() && command != "search" {
-        return Err("--name/--value/--guid apply only to search".into());
+        return Err("--name/--value/--guid/--where apply only to search".into());
     }
     if ["layout", "vtable", "references"].contains(&command.as_str()) && arch.is_none() {
         return Err(format!("{command} requires --arch"));
@@ -140,7 +164,7 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
     }
     Ok(Options {
         command,
-        query: positional.get(1).cloned(),
+        query: expression.or_else(|| positional.get(1).cloned()),
         paths,
         source,
         arch,
@@ -218,7 +242,7 @@ pub fn run(
                 let matches = db.search(q, opt)?;
                 let mut matches = matches.collect::<winlex_core::Result<Vec<_>>>()?;
                 matches.sort_unstable_by(winlex_core::SearchMatch::compare);
-                let result = page(matches.into_iter().map(|m| Ok(m.entity)), o.offset, o.limit)?;
+                let result = page(matches.into_iter().map(Ok), o.offset, o.limit)?;
                 Query::Matches(result)
             }
             "show" => Query::Show(select(&db, &selector, o.arch, false)?),
@@ -232,11 +256,7 @@ pub fn run(
                 let target = select(&db, &selector, o.arch, true)?;
                 let arch = o.arch.unwrap();
                 let mut results = db.references(target, arch, None)?;
-                let page = page(
-                    results.by_ref().map(|m| m.map(|m| m.entity)),
-                    o.offset,
-                    o.limit,
-                )?;
+                let page = page(results.by_ref(), o.offset, o.limit)?;
                 Query::References(target, page, results.unresolved_type_uses())
             }
             _ => unreachable!(),
@@ -244,7 +264,17 @@ pub fn run(
     })();
     let result = match result {
         Ok(r) => r,
-        Err(e) => return error(out, err, o.json, 3, "query_error", &e.to_string()),
+        Err(e) => {
+            return error_detail(
+                out,
+                err,
+                o.json,
+                3,
+                "query_error",
+                &format!("{e:#}"),
+                e.downcast_ref::<winlex_core::QueryError>(),
+            );
+        }
     };
     let written = if o.json {
         let result = match result.json(&db, o.arch) {
@@ -252,7 +282,7 @@ pub fn run(
             Err(e) => return error(out, err, true, 3, "query_error", &e.to_string()),
         };
         let response = Response {
-            schema: "winlex-cli-6",
+            schema: "winlex-cli-7",
             ok: true,
             sources: db.sources(),
             command: &o.command,
@@ -290,7 +320,7 @@ struct Page {
     total: usize,
     offset: usize,
     limit: usize,
-    matches: Vec<winlex_core::EntitySummary>,
+    matches: Vec<winlex_core::SearchMatch>,
 }
 enum Query {
     Summary,
@@ -336,7 +366,7 @@ enum JsonResult<'a> {
     },
 }
 fn page(
-    items: impl IntoIterator<Item = winlex_core::Result<winlex_core::EntitySummary>>,
+    items: impl IntoIterator<Item = winlex_core::Result<winlex_core::SearchMatch>>,
     offset: usize,
     limit: usize,
 ) -> winlex_core::Result<Page> {
@@ -437,10 +467,26 @@ fn error(
     code: &str,
     message: &str,
 ) -> u8 {
+    error_detail(out, err, json_mode, exit, code, message, None)
+}
+fn error_detail(
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+    json_mode: bool,
+    exit: u8,
+    code: &str,
+    message: &str,
+    query: Option<&winlex_core::QueryError>,
+) -> u8 {
     let result = if json_mode {
+        let mut detail = serde_json::json!({"code":code,"message":message});
+        if let Some(query) = query {
+            detail["span"] = serde_json::json!({"start":query.span.start,"end":query.span.end});
+            detail["incomplete"] = query.incomplete.into();
+        }
         serde_json::to_writer(
             &mut *out,
-            &serde_json::json!({"schema":"winlex-cli-6","ok":false,"error":{"code":code,"message":message}}),
+            &serde_json::json!({"schema":"winlex-cli-7","ok":false,"error":detail}),
         )
         .map_err(std::io::Error::other)
         .and_then(|_| writeln!(out))

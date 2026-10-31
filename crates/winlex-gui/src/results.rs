@@ -5,9 +5,7 @@ use crate::{
     resources::*,
 };
 use std::{ops::Deref, ops::Range, os::windows::ffi::OsStrExt};
-use winlex_core::{
-    Architecture, Catalog, EntityContext, MatchField, MatchQuality, NameMatcher, SearchMatch,
-};
+use winlex_core::{Architecture, Catalog, EntityContext, EvidenceField, SearchMatch};
 
 pub struct ResultItem {
     pub matched: SearchMatch,
@@ -31,15 +29,11 @@ impl ResultItem {
 }
 
 pub struct Builder {
-    matcher: NameMatcher,
-    query: String,
     indices: Vec<u32>,
 }
 impl Builder {
-    pub fn new(query: &str) -> Self {
+    pub fn new() -> Self {
         Self {
-            matcher: NameMatcher::new(query, false),
-            query: query.to_lowercase(),
             indices: Vec::new(),
         }
     }
@@ -62,28 +56,40 @@ impl Builder {
     }
     fn present(&mut self, matched: SearchMatch, context: EntityContext) -> ResultItem {
         self.indices.clear();
-        let full = matched.quality.field() == Some(MatchField::FullName);
+        let full = matched
+            .evidence
+            .iter()
+            .any(|e| e.field == EvidenceField::FullName);
         let text = if full {
             &matched.full_name
         } else {
             &matched.name
         };
-        match matched.quality {
-            MatchQuality::NameExact(_) => self.indices.extend(0..text.chars().count() as u32),
-            MatchQuality::NameScope => {
-                let mut length = 0;
-                for (index, ch) in text.chars().enumerate() {
-                    if length >= self.query.len() {
-                        break;
+        if !matched.evidence.is_empty() {
+            let field = if full {
+                EvidenceField::FullName
+            } else {
+                EvidenceField::Name
+            };
+            for evidence in &matched.evidence {
+                if evidence.field == field {
+                    if let Some(indices) = &evidence.indices {
+                        self.indices.extend(indices);
+                    } else {
+                        self.indices.extend(0..text.chars().count() as u32);
                     }
-                    self.indices.push(index as u32);
-                    length += ch.to_lowercase().map(char::len_utf8).sum::<usize>();
+                } else if full && evidence.field == EvidenceField::Name {
+                    let offset =
+                        (matched.full_name.chars().count() - matched.name.chars().count()) as u32;
+                    if let Some(indices) = &evidence.indices {
+                        self.indices.extend(indices.iter().map(|i| i + offset));
+                    } else {
+                        self.indices.extend(offset..text.chars().count() as u32);
+                    }
                 }
             }
-            MatchQuality::Fuzzy { .. } => {
-                self.matcher.indices(text, &mut self.indices);
-            }
-            _ => {}
+            self.indices.sort_unstable();
+            self.indices.dedup();
         }
         let title_offset = if full {
             matched.full_name.chars().count() - matched.name.chars().count()
@@ -96,11 +102,16 @@ impl Builder {
             icon: Some(Icon::for_kind(&matched.kind)),
             ..Default::default()
         };
-        let guid_match = matches!(
-            matched.quality,
-            MatchQuality::GuidExact | MatchQuality::GuidFragment
-        );
-        let show_guid = guid_match || context.constant.is_none() && context.guid.is_some();
+        let guid_match = matched
+            .evidence
+            .iter()
+            .any(|e| e.field == EvidenceField::Guid);
+        let value_match = matched
+            .evidence
+            .iter()
+            .any(|e| e.field == EvidenceField::Value);
+        let show_guid =
+            guid_match && !value_match || context.constant.is_none() && context.guid.is_some();
         let value = if show_guid {
             context.guid.as_ref().map(|guid| format!("{{{guid}}}"))
         } else {
@@ -118,13 +129,36 @@ impl Builder {
                     kind: FoldKind::Guid,
                 });
             }
-            if guid_match
-                || matches!(
-                    matched.quality,
-                    MatchQuality::Integer | MatchQuality::Float(_)
-                )
-            {
+            if guid_match && show_guid {
                 display.detail_matches.push(start..display.detail.len());
+            }
+            for evidence in &matched.evidence {
+                if evidence.field != EvidenceField::Value || show_guid {
+                    continue;
+                }
+                match (&evidence.indices, &context.constant) {
+                    (
+                        Some(indices),
+                        Some(
+                            winlex_core::windows_metadata::Value::Utf8(text)
+                            | winlex_core::windows_metadata::Value::Utf16(text),
+                        ),
+                    ) => {
+                        let mut offset = start + 1;
+                        for (index, ch) in text.chars().enumerate() {
+                            let width = if ch == '\'' {
+                                1
+                            } else {
+                                ch.escape_debug().map(char::len_utf16).sum::<usize>()
+                            };
+                            if indices.binary_search(&(index as u32)).is_ok() {
+                                display.detail_matches.push(offset..offset + width);
+                            }
+                            offset += width;
+                        }
+                    }
+                    _ => display.detail_matches.push(start..display.detail.len()),
+                }
             }
         } else if let Some(owner) = &context.owner {
             let offset =
@@ -133,6 +167,18 @@ impl Builder {
                 display.detail_matches = project(owner, offset, &self.indices);
             }
             display.detail.extend(owner.encode_utf16());
+        }
+        if guid_match
+            && !show_guid
+            && let Some(guid) = &context.guid
+        {
+            let start = display.detail.len() + usize::from(!display.detail.is_empty()) * 3;
+            append(&mut display.detail, &format!("{{{guid}}}"));
+            display.detail_matches.push(start..display.detail.len());
+            display.detail_folds.push(Fold {
+                range: start..display.detail.len(),
+                kind: FoldKind::Guid,
+            });
         }
         let arches = architectures(matched.architecture_mask);
         append(&mut display.detail, &arches);
@@ -145,8 +191,33 @@ impl Builder {
                         .map(|r| start + r.start..start + r.end),
                 );
             }
+            for evidence in &matched.evidence {
+                if evidence.field == EvidenceField::Namespace
+                    && let Some(indices) = &evidence.indices
+                {
+                    display.detail_matches.extend(
+                        project(&context.namespace, 0, indices)
+                            .into_iter()
+                            .map(|r| start + r.start..start + r.end),
+                    );
+                }
+            }
             append(&mut display.detail, &context.namespace);
         }
+        display
+            .detail_matches
+            .sort_unstable_by_key(|r| (r.start, r.end));
+        let mut merged: Vec<Range<usize>> = Vec::new();
+        for range in display.detail_matches.drain(..) {
+            if let Some(last) = merged.last_mut()
+                && range.start <= last.end
+            {
+                last.end = last.end.max(range.end);
+            } else {
+                merged.push(range);
+            }
+        }
+        display.detail_matches = merged;
         ResultItem { matched, display }
     }
 }
@@ -227,10 +298,35 @@ fn project(text: &str, offset: usize, indices: &[u32]) -> Vec<Range<usize>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use winlex_core::{EntityId, EntitySummary, windows_metadata::Value};
+    use winlex_core::{
+        EntityId, EntitySummary, MatchEvidence, MatchField, MatchQuality, windows_metadata::Value,
+    };
 
     fn item(name: &str, full_name: &str, kind: &str, quality: MatchQuality) -> SearchMatch {
         SearchMatch {
+            evidence: match &quality {
+                MatchQuality::NameExact(field) => vec![MatchEvidence {
+                    field: if *field == MatchField::Name {
+                        EvidenceField::Name
+                    } else {
+                        EvidenceField::FullName
+                    },
+                    indices: None,
+                }],
+                MatchQuality::Integer => vec![MatchEvidence {
+                    field: EvidenceField::Value,
+                    indices: None,
+                }],
+                MatchQuality::GuidFragment => vec![MatchEvidence {
+                    field: EvidenceField::Guid,
+                    indices: None,
+                }],
+                MatchQuality::NameScope => vec![MatchEvidence {
+                    field: EvidenceField::FullName,
+                    indices: Some(vec![0, 1]),
+                }],
+                _ => Vec::new(),
+            },
             entity: EntitySummary {
                 id: EntityId {
                     source_id: 0,
@@ -252,22 +348,33 @@ mod tests {
             guid: None,
         }
     }
+    fn with_indices(mut hit: SearchMatch, field: EvidenceField, indices: Vec<u32>) -> SearchMatch {
+        hit.evidence = vec![MatchEvidence {
+            field,
+            indices: Some(indices),
+        }];
+        hit
+    }
     fn text(value: &[u16]) -> String {
         String::from_utf16(value).unwrap()
     }
 
     #[test]
     fn names_and_qualified_matches_project_to_utf16_display_fields() {
-        let mut builder = Builder::new("😀W");
+        let mut builder = Builder::new();
         let result = builder.present(
-            item(
-                "😀窗口W",
-                "N.Outer+Inner.😀窗口W",
-                "method",
-                MatchQuality::Fuzzy {
-                    score: 1,
-                    field: MatchField::Name,
-                },
+            with_indices(
+                item(
+                    "😀窗口W",
+                    "N.Outer+Inner.😀窗口W",
+                    "method",
+                    MatchQuality::Fuzzy {
+                        score: 1,
+                        field: MatchField::Name,
+                    },
+                ),
+                EvidenceField::Name,
+                vec![0, 3],
             ),
             context(),
         );
@@ -276,16 +383,20 @@ mod tests {
         assert_eq!(text(&result.display.detail), "Outer+Inner · N");
         assert_eq!(result.display.icon, Some(Icon::Method));
 
-        let mut builder = Builder::new("N.O+I.W");
+        let mut builder = Builder::new();
         let result = builder.present(
-            item(
-                "Window",
-                "N.Outer+Inner.Window",
-                "method",
-                MatchQuality::Fuzzy {
-                    score: 1,
-                    field: MatchField::FullName,
-                },
+            with_indices(
+                item(
+                    "Window",
+                    "N.Outer+Inner.Window",
+                    "method",
+                    MatchQuality::Fuzzy {
+                        score: 1,
+                        field: MatchField::FullName,
+                    },
+                ),
+                EvidenceField::FullName,
+                vec![0, 1, 2, 7, 8, 13, 14],
             ),
             context(),
         );
@@ -295,13 +406,17 @@ mod tests {
         );
         assert_eq!(result.display.detail_matches, [0..1, 5..7, 14..15]);
 
-        let mut builder = Builder::new("N.Outer+");
+        let mut builder = Builder::new();
         let result = builder.present(
-            item(
-                "Window",
-                "N.Outer+Inner.Window",
-                "method",
-                MatchQuality::NameScope,
+            with_indices(
+                item(
+                    "Window",
+                    "N.Outer+Inner.Window",
+                    "method",
+                    MatchQuality::NameScope,
+                ),
+                EvidenceField::FullName,
+                (0..8).collect(),
             ),
             context(),
         );
@@ -310,8 +425,8 @@ mod tests {
     }
 
     #[test]
-    fn values_and_guids_only_highlight_the_winning_branch() {
-        let mut builder = Builder::new("5");
+    fn values_and_guids_highlight_reported_evidence() {
+        let mut builder = Builder::new();
         let mut ctx = context();
         ctx.constant = Some(Value::I32(5));
         let result = builder.present(
@@ -347,7 +462,7 @@ mod tests {
         );
         assert_eq!(result.display.icon, Some(Icon::Interface));
 
-        let mut builder = Builder::new("VALUE");
+        let mut builder = Builder::new();
         let mut ctx = context();
         ctx.constant = Some(Value::I32(5));
         ctx.guid = Some("12345678-9abc-def0-1234-56789abcdef0".into());
@@ -368,6 +483,48 @@ mod tests {
     }
 
     #[test]
+    fn multiple_fields_and_escaped_strings_keep_independent_highlights() {
+        let mut hit = item("ACCESS", "N.ACCESS", "constant", MatchQuality::Filter);
+        hit.evidence = vec![
+            MatchEvidence {
+                field: EvidenceField::Name,
+                indices: Some(vec![0, 1, 2, 3, 4, 5]),
+            },
+            MatchEvidence {
+                field: EvidenceField::Value,
+                indices: Some(vec![1, 2, 3, 4]),
+            },
+        ];
+        let mut ctx = context();
+        ctx.constant = Some(Value::Utf16("a\n😀'\\z".into()));
+        let result = Builder::new().present(hit, ctx);
+        assert_eq!(text(&result.display.detail), "= \"a\\n😀'\\\\z\" · N");
+        assert_eq!(result.display.title_matches, vec![0..6]);
+        assert_eq!(result.display.detail_matches, vec![4..11]);
+
+        let mut hit = item("ACCESS", "N.ACCESS", "constant", MatchQuality::Filter);
+        hit.evidence = vec![
+            MatchEvidence {
+                field: EvidenceField::Value,
+                indices: None,
+            },
+            MatchEvidence {
+                field: EvidenceField::Guid,
+                indices: None,
+            },
+        ];
+        let mut ctx = context();
+        ctx.constant = Some(Value::I32(5));
+        ctx.guid = Some("12345678-9abc-def0-1234-56789abcdef0".into());
+        let result = Builder::new().present(hit, ctx);
+        assert_eq!(
+            text(&result.display.detail),
+            "= 5 · {12345678-9abc-def0-1234-56789abcdef0} · N"
+        );
+        assert_eq!(result.display.detail_matches, vec![2..3, 6..44]);
+    }
+
+    #[test]
     fn all_architectures_is_omitted_only_for_the_full_mask() {
         for (mask, label) in [
             (7, ""),
@@ -382,7 +539,7 @@ mod tests {
             ctx.owner = None;
             let mut hit = item("Type", "N.Type", "struct", MatchQuality::NameScope);
             hit.entity.architecture_mask = mask;
-            let result = Builder::new("N.").present(hit, ctx);
+            let result = Builder::new().present(hit, ctx);
             let expected = if label.is_empty() {
                 "N".to_owned()
             } else {
@@ -414,7 +571,7 @@ mod tests {
                 MatchQuality::NameExact(MatchField::Name),
             );
             hit.entity.architecture_mask = Architecture::X64.bit();
-            let result = Builder::new("Method").present(hit, ctx);
+            let result = Builder::new().present(hit, ctx);
             assert_eq!(text(&result.display.detail), format!("{owner} · x64"));
         }
     }

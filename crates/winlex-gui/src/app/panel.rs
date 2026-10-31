@@ -11,9 +11,7 @@ use winlex_core::SearchMode;
 
 const SEARCH_MODES: &[(u16, SearchMode)] = &[
     (IDS_MODE_COMBINED, SearchMode::Combined),
-    (IDS_MODE_NAME, SearchMode::Name),
-    (IDS_MODE_VALUE, SearchMode::Value),
-    (IDS_MODE_GUID, SearchMode::Guid),
+    (IDS_MODE_CONDITION, SearchMode::Condition),
 ];
 
 pub(super) fn search_mode() -> SearchMode {
@@ -56,6 +54,7 @@ enum Content {
 }
 struct Search {
     input: HWND,
+    tooltip: HWND,
     selector: HWND,
     mode: Cell<usize>,
     composing: Cell<bool>,
@@ -69,6 +68,16 @@ fn search<T>(f: impl FnOnce(&Search) -> T) -> T {
     f(search)
 }
 const SEARCH_TIMER: usize = 1;
+fn search_tool(input: HWND, label: u16) -> TTTOOLINFOW {
+    TTTOOLINFOW {
+        cbSize: std::mem::size_of::<TTTOOLINFOW>() as u32,
+        uFlags: TTF_IDISHWND | TTF_SUBCLASS,
+        hwnd: input,
+        uId: input as usize,
+        lpszText: resources::wide_text(label).as_ptr().cast_mut(),
+        ..unsafe { std::mem::zeroed() }
+    }
+}
 pub(super) fn cancel_debounce() -> (HWND, bool) {
     let state = search(|s| {
         s.deadline.set(None);
@@ -119,6 +128,33 @@ impl Panel {
             );
         }
         send(mode, CB_SETCURSEL, 0, 0);
+        let tooltip = unsafe {
+            CreateWindowExW(
+                WS_EX_TOPMOST,
+                TOOLTIPS_CLASSW,
+                std::ptr::null(),
+                WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX,
+                0,
+                0,
+                0,
+                0,
+                frame,
+                std::ptr::null_mut(),
+                instance(),
+                std::ptr::null(),
+            )
+        };
+        if tooltip.is_null() {
+            return Err(error("Create search tooltip"));
+        }
+        let tool = search_tool(input, IDS_SEARCH_TIP_QUICK);
+        if send(tooltip, TTM_ADDTOOLW, 0, &tool as *const _ as isize) == 0 {
+            unsafe {
+                DestroyWindow(tooltip);
+            }
+            anyhow::bail!("Register search tooltip failed");
+        }
+        send(tooltip, TTM_SETMAXTIPWIDTH, 0, 480);
         let list = List::new(
             frame,
             RESULTS,
@@ -131,6 +167,7 @@ impl Panel {
             controls: vec![input, list.hwnd, mode],
             content: Content::Search(Search {
                 input,
+                tooltip,
                 selector: mode,
                 mode: Cell::new(0),
                 composing: Cell::new(false),
@@ -179,6 +216,10 @@ impl Panel {
         focus(self.controls[0]);
     }
     pub fn prepare(&self, m: &layout::Metrics) {
+        if let Content::Search(search) = &self.content {
+            bind(search.tooltip, m.font);
+            send(search.tooltip, TTM_SETMAXTIPWIDTH, 0, m.px(480) as isize);
+        }
         for &h in &self.controls {
             bind(h, m.font);
         }
@@ -265,6 +306,19 @@ impl Search {
             SEARCH_MODE if code == CBN_SELENDOK => {
                 let index = send(self.selector, CB_GETCURSEL, 0, 0) as usize;
                 if index < SEARCH_MODES.len() && self.mode.replace(index) != index {
+                    let label = match SEARCH_MODES[index].1 {
+                        SearchMode::Combined => IDS_SEARCH_TIP_QUICK,
+                        SearchMode::Condition => IDS_SEARCH_TIP_CONDITION,
+                        _ => unreachable!(),
+                    };
+                    let tool = search_tool(self.input, label);
+                    send(self.tooltip, TTM_POP, 0, 0);
+                    send(
+                        self.tooltip,
+                        TTM_UPDATETIPTEXTW,
+                        0,
+                        &tool as *const _ as isize,
+                    );
                     catalog::search();
                 }
             }

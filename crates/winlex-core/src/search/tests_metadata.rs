@@ -129,6 +129,202 @@ fn hits(db: &Catalog, query: &str, mode: SearchMode) -> Vec<SearchMatch> {
     hits
 }
 
+fn conditions_fixture() -> SourceData {
+    let mut file = writer::File::new("Conditions");
+    let object = file.TypeRef("System", "Object");
+    file.TypeDef(
+        "Example",
+        "Constants",
+        writer::TypeDefOrRef::TypeRef(object),
+        TypeAttributes::Public,
+    );
+    for (name, value) in [
+        ("ACCESS_DENIED", Value::I32(5)),
+        ("ACCESS_OTHER", Value::I32(6)),
+        ("OTHER_FIVE", Value::U32(5)),
+        ("SERVICE_TEXT", Value::Utf16("Windows\n😀\"\\".into())),
+        ("STRING_FIVE", Value::Utf16("5".into())),
+        ("EMPTY", Value::Utf16("".into())),
+        ("FLOAT_FIVE", Value::F32(5.0)),
+        ("NAN_VALUE", Value::F64(f64::NAN)),
+        ("POS_INF", Value::F64(f64::INFINITY)),
+        ("NEG_INF", Value::F32(f32::NEG_INFINITY)),
+    ] {
+        let field = file.Field(
+            name,
+            &value.ty(),
+            FieldAttributes::Public | FieldAttributes::Static | FieldAttributes::Literal,
+        );
+        file.Constant(writer::HasConstant::Field(field), &value);
+    }
+    SourceData {
+        path: "Conditions.winmd".into(),
+        bytes: file.into_stream().into(),
+    }
+}
+
+#[test]
+fn conditions_combine_same_entity_fields_and_keep_all_positive_evidence() {
+    let db = Catalog::from_inputs([conditions_fixture()]).unwrap();
+    let query = r#"name contains "access" and value = 5"#;
+    let found = hits(&db, query, SearchMode::Condition);
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].name, "ACCESS_DENIED");
+    assert_eq!(found[0].evidence.len(), 2);
+    assert_eq!(found[0].evidence[0].field, EvidenceField::Name);
+    assert_eq!(found[0].evidence[1].field, EvidenceField::Value);
+    assert_eq!(
+        found[0].id,
+        hits(
+            &db,
+            r#"value = 5 and name contains "access""#,
+            SearchMode::Condition
+        )[0]
+        .id
+    );
+    let parsed = Query::parse(query).unwrap();
+    assert_eq!(
+        db.search_query(&parsed, SearchOptions::default())
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .id,
+        found[0].id
+    );
+    assert_eq!(
+        hits(
+            &db,
+            r#"name = "ACCESS_DENIED" or value = 5 and name = "OTHER_FIVE""#,
+            SearchMode::Condition
+        )
+        .len(),
+        2
+    );
+    assert_eq!(
+        hits(
+            &db,
+            r#"(name = "ACCESS_DENIED" or value = 5) and name = "OTHER_FIVE""#,
+            SearchMode::Condition
+        )
+        .len(),
+        1
+    );
+    let complement = hits(&db, "not (value = 5)", SearchMode::Condition);
+    assert!(complement.iter().any(|r| r.name == "Constants"));
+    assert!(complement.iter().all(|r| r.evidence.is_empty()));
+    assert!(
+        db.search(
+            query,
+            SearchOptions {
+                mode: SearchMode::Condition,
+                categories: Some(EntityCategory::Type as u32),
+                ..Default::default()
+            }
+        )
+        .unwrap()
+        .next()
+        .is_none()
+    );
+}
+
+#[test]
+fn strings_special_floats_and_ranges_are_typed_conditions() {
+    let db = Catalog::from_inputs([conditions_fixture()]).unwrap();
+    for (query, expected) in [
+        (
+            r#"name contains "SERVICE" and value contains "Windows""#,
+            vec!["SERVICE_TEXT"],
+        ),
+        (r#"value = "Windows\n😀\"\\""#, vec!["SERVICE_TEXT"]),
+        (r#"value = """#, vec!["EMPTY"]),
+        (r#"value = "5""#, vec!["STRING_FIVE"]),
+        ("value = 5.0", vec!["FLOAT_FIVE"]),
+        ("value = nan", vec!["NAN_VALUE"]),
+        ("value = inf", vec!["POS_INF"]),
+        ("value = -inf", vec!["NEG_INF"]),
+        ("value > -inf and value < inf", vec!["FLOAT_FIVE"]),
+        ("value > 5 and value <= 6", vec!["ACCESS_OTHER"]),
+    ] {
+        let found = hits(&db, query, SearchMode::Condition);
+        assert_eq!(
+            found.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
+            expected,
+            "{query}"
+        );
+    }
+    assert_eq!(
+        hits(&db, "Windows", SearchMode::Combined)[0].name,
+        "SERVICE_TEXT"
+    );
+    assert!(
+        hits(&db, "5", SearchMode::Combined)
+            .iter()
+            .any(|r| r.name == "STRING_FIVE")
+    );
+    for query in [
+        "value < nan",
+        "value contains 5",
+        "value = 1e9999",
+        "unknown = 5",
+        "source = -1",
+    ] {
+        let error = db
+            .search(
+                query,
+                SearchOptions {
+                    mode: SearchMode::Condition,
+                    ..Default::default()
+                },
+            )
+            .err()
+            .unwrap();
+        assert!(error.downcast_ref::<QueryError>().is_some(), "{error:#}");
+    }
+}
+
+#[test]
+fn condition_scopes_and_sources_intersect_external_filters() {
+    let db = Catalog::from_inputs([fixture(), fixture()]).unwrap();
+    let query = r#"namespace within "Fixture" and category = "type" and source = 1 and architecture = "x86""#;
+    let found = hits(&db, query, SearchMode::Condition);
+    assert!(!found.is_empty());
+    assert!(
+        found
+            .iter()
+            .all(|r| r.id.source_id == 1 && r.name != "Excluded")
+    );
+    assert!(found.iter().any(|r| r.name == "Child"));
+    let exact = hits(
+        &db,
+        r#"namespace = "Fixture" and category = "type""#,
+        SearchMode::Condition,
+    );
+    assert!(!exact.iter().any(|r| r.name == "Child"));
+    assert!(
+        db.search(
+            query,
+            SearchOptions {
+                mode: SearchMode::Condition,
+                source: Some(0),
+                ..Default::default()
+            }
+        )
+        .unwrap()
+        .next()
+        .is_none()
+    );
+    assert!(
+        hits(
+            &db,
+            r#"guid = "12345678-9abc-def0-1234-56789abcdef0""#,
+            SearchMode::Condition
+        )
+        .len()
+            >= 2
+    );
+}
+
 #[test]
 fn combined_union_is_unique_and_uses_strongest_quality() {
     let db = Catalog::from_inputs([fixture()]).unwrap();
@@ -249,7 +445,7 @@ fn scopes_respect_boundaries_and_strict_selectors_remain_independent() {
 }
 
 #[test]
-fn float_distance_guid_order_and_source_filters_use_shared_scan() {
+fn float_equality_guid_order_and_source_filters_use_shared_scan() {
     let db = Catalog::from_inputs([fixture(), fixture()]).unwrap();
     let floats = hits(&db, "1.5", SearchMode::Value);
     assert_eq!(
@@ -257,11 +453,10 @@ fn float_distance_guid_order_and_source_filters_use_shared_scan() {
             .iter()
             .map(|hit| hit.name.as_str())
             .collect::<Vec<_>>(),
-        ["Center", "Center", "Far", "Far"]
+        ["Center", "Center"]
     );
     let interval = hits(&db, "1.5e3", SearchMode::Value);
-    assert_eq!(interval.len(), 2);
-    assert!(interval.iter().all(|hit| hit.name == "Lower"));
+    assert!(interval.is_empty());
     for query in [
         "12345678-9ABC-def0-1234-56789abcdef0",
         "120,154",

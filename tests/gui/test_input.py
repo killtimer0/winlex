@@ -37,8 +37,12 @@ def test_real_search_keyboard(request, launch, settings):
         input_state.key(win32con.VK_HOME)
         input_state.key(win32con.VK_DOWN)
         input_state.key(win32con.VK_RETURN)
-        n.wait(lambda: n.send(mode, win32con.CB_GETCURSEL) == 1, "real keyboard selects name mode")
-        n.wait(lambda: app.status_text().startswith(("Results ", "共 ")), "real name search completed", 45)
-        assert app.count() > 0 and all("CreateFileW" in app.cell(row) for row in range(app.count()))
+        n.wait(lambda: n.send(mode, win32con.CB_GETCURSEL) == 1, "real keyboard selects condition mode")
+        n.wait(lambda: "condition" in app.status_text() or "条件" in app.status_text(), "condition diagnostic", 45)
+        assert app.count() == 0
+        input_state.key(win32con.VK_HOME)
+        input_state.key(win32con.VK_RETURN)
+        n.wait(lambda: app.status_text().startswith(("Results ", "共 ")), "quick search restored", 45)
+        assert app.count() > 0
         input_state.key(win32con.VK_TAB)
         n.wait(lambda: app.focused() == app.results, "real Tab reaches results")

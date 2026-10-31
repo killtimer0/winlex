@@ -123,19 +123,7 @@ impl Session {
             Ok(Output::Matches(batch)) => self.pending_results.extend(batch),
             Ok(Output::SearchDone) => self.search = Search::Done,
             Err(e) => {
-                let error = if let Some(input) = e.downcast_ref::<winlex_core::InvalidSearchInput>()
-                {
-                    let label = match input.0 {
-                        winlex_core::SearchMode::Name => IDS_INVALID_NAME_QUERY,
-                        winlex_core::SearchMode::Value => IDS_INVALID_VALUE_QUERY,
-                        winlex_core::SearchMode::Guid => IDS_INVALID_GUID_QUERY,
-                        winlex_core::SearchMode::Combined => unreachable!(),
-                    };
-                    anyhow::anyhow!(resources::text(label))
-                } else {
-                    e
-                };
-                self.search = Search::Failed(error);
+                self.search = Search::Failed(e);
             }
             _ => unreachable!(),
         }
@@ -280,6 +268,36 @@ fn submit_search() {
             }
             return Ok(());
         };
+        let compiled = match winlex_core::CompiledQuery::compile(&query, mode, false) {
+            Ok(compiled) => compiled,
+            Err(error) => {
+                if let Some(id) = previous {
+                    a.worker.cancel(id);
+                }
+                let diagnostic =
+                    if let Some(error) = error.downcast_ref::<winlex_core::QueryError>() {
+                        use winlex_core::QueryErrorKind;
+                        let label = if error.incomplete {
+                            IDS_INCOMPLETE_CONDITION_QUERY
+                        } else {
+                            match error.kind {
+                                QueryErrorKind::Syntax => IDS_INVALID_CONDITION_QUERY,
+                                QueryErrorKind::Field => IDS_QUERY_FIELD,
+                                QueryErrorKind::Operator => IDS_QUERY_OPERATOR,
+                                QueryErrorKind::Value => IDS_QUERY_VALUE,
+                                QueryErrorKind::Limit => IDS_QUERY_LIMIT,
+                            }
+                        };
+                        let start = query[..error.span.start].encode_utf16().count();
+                        let end = query[..error.span.end].encode_utf16().count();
+                        format!("{} ({start}..{end})", resources::text(label))
+                    } else {
+                        resources::text(IDS_QUERY_LIMIT)
+                    };
+                s.search = Search::Failed(anyhow::anyhow!(diagnostic));
+                return Ok(());
+            }
+        };
         let ticket = s.ticket();
         s.search = Search::Running(ticket.id);
         a.worker.replace(
@@ -287,8 +305,7 @@ fn submit_search() {
             ticket,
             Job::Search {
                 catalog,
-                query,
-                mode,
+                compiled: Box::new(compiled),
                 categories: a.settings.preferences.categories,
             },
         )
@@ -605,6 +622,7 @@ mod tests {
         Box::new(ResultItem {
             display: Default::default(),
             matched: winlex_core::SearchMatch {
+                evidence: Vec::new(),
                 entity: winlex_core::EntitySummary {
                     id: winlex_core::EntityId {
                         source_id: 0,
