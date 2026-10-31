@@ -9,6 +9,8 @@ use windows::Win32::UI::Controls::RichEdit::{
 };
 use winlex_format::declaration::NumberRegion;
 
+mod word_break;
+
 /// Capture context before TrackPopupMenu enters its nested message loop.
 pub fn context_menu(hwnd: HWND, location: isize, numbers: &[NumberRegion]) -> anyhow::Result<()> {
     use crate::resources::{
@@ -134,6 +136,12 @@ pub fn create(parent: HWND, id: u16) -> anyhow::Result<HWND> {
         id,
     )?;
     send(hwnd, EM_SETLIMITTEXT, 0x7ffffffe, 0);
+    send(
+        hwnd,
+        EM_SETWORDBREAKPROC,
+        0,
+        word_break::callback as *const () as isize,
+    );
     Ok(hwnd)
 }
 
@@ -357,6 +365,82 @@ fn spans(text: &[u16]) -> Vec<(usize, usize, u32)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_word_selection_and_navigation_use_identifier_boundaries() {
+        unsafe {
+            let parent = CreateWindowExW(
+                0,
+                w!("STATIC"),
+                std::ptr::null(),
+                WS_POPUP,
+                0,
+                0,
+                900,
+                600,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                instance(),
+                std::ptr::null(),
+            );
+            assert!(!parent.is_null());
+            let editor = create(parent, 1).unwrap();
+            place(editor, crate::layout::rect(0, 0, 800, 400));
+            let body = "ERROR_ACCESS_DENIED  next_value(x);";
+            set_content(editor, body, true);
+            let selection = || {
+                let mut range = CHARRANGE::default();
+                send(editor, EM_EXGETSEL, 0, &mut range as *mut _ as isize);
+                (range.cpMin, range.cpMax)
+            };
+            for (index, expected) in [(8, (0, 19)), (25, (21, 31)), (31, (31, 32))] {
+                let mut point = POINT { x: 0, y: 0 };
+                send(editor, EM_POSFROMCHAR, &mut point as *mut _ as usize, index);
+                let location = ((point.y + 2) << 16 | (point.x + 2)) as isize;
+                send(
+                    editor,
+                    WM_LBUTTONDOWN,
+                    windows_sys::Win32::System::SystemServices::MK_LBUTTON as usize,
+                    location,
+                );
+                send(editor, WM_LBUTTONUP, 0, location);
+                send(
+                    editor,
+                    WM_LBUTTONDBLCLK,
+                    windows_sys::Win32::System::SystemServices::MK_LBUTTON as usize,
+                    location,
+                );
+                send(editor, WM_LBUTTONUP, 0, location);
+                assert_eq!(selection(), expected);
+            }
+            let mut original = [0u8; 256];
+            assert_ne!(GetKeyboardState(original.as_mut_ptr()), 0);
+            for (start, key, shift, expected) in [
+                (0, VK_RIGHT, false, (19, 19)),
+                (19, VK_RIGHT, false, (21, 21)),
+                (21, VK_LEFT, false, (19, 19)),
+                (19, VK_LEFT, false, (0, 0)),
+                (0, VK_RIGHT, true, (0, 19)),
+                (31, VK_LEFT, true, (21, 31)),
+            ] {
+                let range = CHARRANGE {
+                    cpMin: start,
+                    cpMax: start,
+                };
+                send(editor, EM_EXSETSEL, 0, &range as *const _ as isize);
+                let mut keys = original;
+                keys[VK_CONTROL as usize] = 0x80;
+                keys[VK_SHIFT as usize] = if shift { 0x80 } else { 0 };
+                assert_ne!(SetKeyboardState(keys.as_ptr()), 0);
+                send(editor, WM_KEYDOWN, key as usize, 0);
+                send(editor, WM_KEYUP, key as usize, 0);
+                let actual = selection();
+                assert_ne!(SetKeyboardState(original.as_ptr()), 0);
+                assert_eq!(actual, expected);
+            }
+            DestroyWindow(parent);
+        }
+    }
 
     #[test]
     fn visual_wrapping_preserves_declaration_and_paragraph_format() {
