@@ -272,6 +272,9 @@ impl Panel {
         }
         positions.push((self.list.hwnd, area));
     }
+    pub fn fit_list(&self) {
+        crate::list::fit(self.list.hwnd);
+    }
     pub fn region(&self, hwnd: HWND) -> Option<keys::Region> {
         match &self.content {
             Content::Search(s) if hwnd == s.input => Some(keys::Region::SearchEntry {

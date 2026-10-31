@@ -153,6 +153,22 @@ def test_stream_and_panel_state(launch, settings):
     assert app.count() == 0
 
 
+def test_search_after_scrolling_keeps_new_results_in_view(launch, settings):
+    app = launch([settings[1]])
+    n.wait(lambda: app.status_text().startswith(("Ready.", "已就绪")), "loaded", 45)
+    app.query("file")
+    assert app.count() > 100
+    for query in ("CreateFileW", "file"):
+        n.send(app.results, 0x1013, app.count() // 2, 0)  # LVM_ENSUREVISIBLE
+        assert n.send(app.results, 0x1027) > 0  # LVM_GETTOPINDEX
+        app.query(query)
+        assert app.count() > 0
+        assert n.send(app.results, 0x1027) == 0
+        _, top, _, bottom = app.item_rect(0)
+        _, client_top, _, client_bottom = n.rectangle(app.results, client=True)
+        assert 0 <= top < bottom <= client_bottom - client_top
+
+
 def test_ime_defers_search(launch, settings):
     app = launch([settings[1]])
     n.wait(lambda: app.status_text().startswith(("Ready.", "已就绪")), "loaded", 45)

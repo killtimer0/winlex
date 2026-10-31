@@ -422,9 +422,6 @@ pub fn fit(hwnd: HWND) {
         0,
         client(hwnd).right.max(1) as isize,
     );
-    unsafe {
-        ShowScrollBar(hwnd, SB_HORZ, 0);
-    }
 }
 pub struct State {
     pub indices: [isize; 4],
@@ -575,11 +572,6 @@ unsafe extern "system" fn list_proc(
     _data: usize,
 ) -> isize {
     unsafe {
-        if msg == WM_SIZE {
-            let result = default_subclass(h, msg, w, l);
-            fit(h);
-            return result;
-        }
         if matches!(msg, WM_THEMECHANGED | WM_SETTINGCHANGE | WM_SYSCOLORCHANGE) {
             let result = default_subclass(h, msg, w, l);
             refresh_palette(h);

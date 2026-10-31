@@ -55,6 +55,14 @@ pub(super) fn layout_frame() {
     positions.push((mdi, area));
     if let Err(error) = place_all(&positions) {
         super::write(|a| a.failure = Some(error));
+    } else {
+        let panel = read(|a| {
+            let s = &a.sidebar;
+            (!s.collapsed).then(|| s.panel(s.active))
+        });
+        if let Some(panel) = panel {
+            panel.fit_list();
+        }
     }
 }
 pub(super) fn command(id: u16) -> bool {
