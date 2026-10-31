@@ -402,6 +402,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "windows",
+ "windows-core",
  "windows-sys",
  "winlex-core",
  "winlex-format",

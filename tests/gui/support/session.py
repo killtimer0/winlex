@@ -239,7 +239,7 @@ class Session:
         with self._click_row(row):
             return n.wait(
                 lambda: (lambda doc: doc if doc in self.documents()
-                         and n.window_text(doc).startswith(name + " —") else None)(self.active_document()),
+                         and n.window_text(doc).startswith(name + " -") else None)(self.active_document()),
                 "preview document",
             )
 
@@ -248,7 +248,7 @@ class Session:
         with self._click_row(row, double=True):
             return n.wait(
                 lambda: (lambda doc: doc if doc in self.documents()
-                         and n.window_text(doc).startswith(name + " —") else None)(self.active_document()),
+                         and n.window_text(doc).startswith(name + " -") else None)(self.active_document()),
                 "opened document",
             )
 
@@ -271,21 +271,18 @@ class Session:
         return info.focus
 
     def tab_labels(self):
+        from .accessibility import client
         tabs = n.get_item(self.frame, 1104)
-        count = n.send(tabs, messages.TCM_GETITEMCOUNT)
-        return [self.tab_label(index) for index in range(count)]
+        with client(tabs) as root, root.children() as pages:
+            return [page.name for page in pages]
 
     def tab_label(self, index):
-        tabs = n.get_item(self.frame, 1104)
-        # TCITEMW: mask, dwState, dwStateMask, pszText, cchTextMax, iImage, lParam.
-        item = bytearray(128)
-        struct.pack_into("<III", item, 0, messages.TCIF_TEXT, 0, 0)
-        pointer = 16 if self.is64 else 12
-        struct.pack_into("<Q" if self.is64 else "<I", item, pointer, self.memory + 4096)
-        struct.pack_into("<i", item, pointer + (8 if self.is64 else 4), 512)
-        assert n.write_memory(self.handle, self.memory, bytes(item), len(item), None)
-        assert n.send(tabs, messages.TCM_GETITEMW, index, self.memory) == 1
-        return self.remote_text(self.memory + 4096, 512)
+        return self.tab_labels()[index]
+
+    def tab_descriptions(self):
+        from .accessibility import client
+        with client(n.get_item(self.frame, 1104)) as root, root.children() as pages:
+            return [page.string(12) for page in pages]
 
     def content(self, doc):
         control = n.get_item(doc, 1203)

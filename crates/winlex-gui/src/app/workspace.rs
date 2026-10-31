@@ -3,7 +3,8 @@ use super::{document as host, dpi, read, write};
 use crate::{
     layout::{Arrangement, Placement},
     native::*,
-    resources::{self, IDS_PREVIEW},
+    resources::{self, IDS_PREVIEW, IDS_TAB_CLOSE, IDS_TAB_PIN},
+    tabs,
 };
 
 pub(super) struct Workspace {
@@ -63,11 +64,6 @@ pub(super) fn show_document(hwnd: HWND) {
     }
     send(mdi, WM_MDIACTIVATE, hwnd as usize, 0);
 }
-/// Enter a document explicitly, focusing its body after native MDI activation.
-pub(super) fn activate_document(hwnd: HWND) {
-    show_document(hwnd);
-    host::focus_document(hwnd);
-}
 /// Opening from the sidebar shows the document without taking keyboard focus from it.
 pub(super) fn keep_focus(open: impl FnOnce()) {
     let (frame, mdi) = read(|a| (a.frame, a.workspace.mdi));
@@ -98,7 +94,35 @@ pub(super) fn unregister_document(hwnd: HWND) {
 pub(super) fn close_document(hwnd: HWND) {
     let mdi = read(|a| a.workspace.mdi);
     if document(hwnd, |_| ()).is_some() {
+        let tabs = read(|a| a.workspace.tabs);
+        let previous = unsafe { GetFocus() };
+        let tab_focus = previous == tabs;
+        let next = if active() == hwnd {
+            read(|a| {
+                let docs = &a.workspace.documents;
+                let index = docs.iter().position(|d| d.hwnd == hwnd)?;
+                docs.get(index + 1)
+                    .or_else(|| index.checked_sub(1).and_then(|i| docs.get(i)))
+                    .map(|d| d.hwnd)
+            })
+        } else {
+            None
+        };
         send(mdi, WM_MDIDESTROY, hwnd as usize, 0);
+        if let Some(next) = next {
+            keep_focus(|| show_document(next));
+        }
+        if tab_focus {
+            if read(|a| a.workspace.documents.is_empty()) {
+                super::sidebar::focus();
+            } else {
+                focus(tabs);
+            }
+        } else if read(|a| a.workspace.documents.is_empty())
+            && (previous == hwnd || unsafe { IsWindow(previous) } == 0)
+        {
+            super::sidebar::focus();
+        }
     }
 }
 pub(super) fn preview_document() -> Option<HWND> {
@@ -123,135 +147,128 @@ pub(super) fn pin_document(hwnd: HWND) {
         refresh_document_tabs();
     }
 }
-pub(super) fn pin_tab_at_cursor() {
-    let tabs = read(|a| a.workspace.tabs);
-    let mut point = POINT { x: 0, y: 0 };
-    unsafe {
-        GetCursorPos(&mut point);
-        ScreenToClient(tabs, &mut point);
-    }
-    let mut hit = TCHITTESTINFO {
-        pt: point,
-        flags: 0,
-    };
-    let index = send(tabs, TCM_HITTEST, 0, &mut hit as *mut _ as isize);
-    if let Some(hwnd) = read(|a| a.workspace.documents.get(index as usize).map(|d| d.hwnd)) {
-        pin_document(hwnd);
-    }
-}
 pub(super) fn sync_document_selection() {
     let current = active();
     let (tabs, selected) = read(|a| {
         (
             a.workspace.tabs,
-            a.workspace.documents.iter().position(|d| d.hwnd == current),
+            a.workspace
+                .documents
+                .iter()
+                .find(|d| d.hwnd == current)
+                .map(|d| d.id),
         )
     });
-    send(tabs, TCM_SETCURSEL, selected.unwrap_or(usize::MAX), 0);
-}
-pub(super) unsafe extern "system" fn document_tabs_proc(
-    hwnd: HWND,
-    msg: u32,
-    w: usize,
-    l: isize,
-    _id: usize,
-    _data: usize,
-) -> isize {
-    unsafe {
-        if msg == WM_MBUTTONUP {
-            let mut hit = TCHITTESTINFO {
-                pt: POINT {
-                    x: l as u16 as i16 as i32,
-                    y: (l >> 16) as u16 as i16 as i32,
-                },
-                flags: 0,
-            };
-            let index = send(hwnd, TCM_HITTEST, 0, &mut hit as *mut _ as isize);
-            let target = read(|a| a.workspace.documents.get(index as usize).map(|d| d.hwnd));
-            if let Some(target) = target {
-                close_document(target);
-            }
-            return 0;
-        }
-        if msg == WM_NCDESTROY {
-            remove_subclass(hwnd, Some(document_tabs_proc), 1);
-        }
-        default_subclass(hwnd, msg, w, l)
-    }
+    tabs::select(tabs, selected);
 }
 pub(super) fn refresh_document_tabs() {
-    // A tab control cannot give individual tabs a font, so transient documents
-    // are marked in the label itself.
     let (tabs, docs) = read(|a| {
         (
             a.workspace.tabs,
             a.workspace
                 .documents
                 .iter()
-                .map(|d| (d.title.clone(), d.preview))
+                .map(|d| (d.id, d.hwnd, d.title.clone(), d.preview))
                 .collect::<Vec<_>>(),
         )
     });
-    let count = send(tabs, TCM_GETITEMCOUNT, 0, 0).max(0) as usize;
-    for index in (docs.len()..count).rev() {
-        send(tabs, TCM_DELETEITEM, index, 0);
-    }
     let mut ordinals = std::collections::HashMap::new();
-    for (index, (title, preview)) in docs.iter().enumerate() {
-        let ordinal = ordinals.entry(title).or_insert(0);
-        *ordinal += 1;
-        let marker = if *preview {
-            format!(" · {}", resources::text(IDS_PREVIEW))
-        } else {
-            String::new()
-        };
-        let suffix = if *ordinal > 1 {
-            format!(" ({ordinal})")
-        } else {
-            String::new()
-        };
-        let mut label = wide(&format!("{title}{marker}{suffix}"));
-        if index < count {
-            let mut old = vec![0u16; label.len() + 1];
-            let mut item = TCITEMW {
-                mask: TCIF_TEXT,
-                pszText: old.as_mut_ptr(),
-                cchTextMax: old.len() as i32,
-                ..unsafe { std::mem::zeroed() }
-            };
-            if send(tabs, TCM_GETITEMW, index, &mut item as *mut _ as isize) != 0
-                && old[..old.iter().position(|&c| c == 0).unwrap_or(old.len())]
-                    == label[..label.len() - 1]
-            {
-                continue;
-            }
-        }
-        let item = TCITEMW {
-            mask: TCIF_TEXT,
-            pszText: label.as_mut_ptr(),
-            ..unsafe { std::mem::zeroed() }
-        };
-        send(
-            tabs,
-            if index < count {
-                TCM_SETITEMW
+    let items = docs
+        .iter()
+        .map(|(id, hwnd, title, preview)| {
+            let ordinal = ordinals.entry(title).or_insert(0);
+            *ordinal += 1;
+            let suffix = if *ordinal > 1 {
+                format!(" ({ordinal})")
             } else {
-                TCM_INSERTITEMW
-            },
-            index,
-            &item as *const _ as isize,
-        );
-    }
+                String::new()
+            };
+            let title = format!("{title}{suffix}");
+            let mut description = super::metadata::binding(*hwnd)
+                .map(|b| {
+                    format!(
+                        "{} · {:08X}",
+                        b.catalog.sources()[b.id.source_id].path.display(),
+                        b.id.token
+                    )
+                })
+                .unwrap_or_default();
+            if *preview {
+                description = format!("{} · {description}", resources::text(IDS_PREVIEW));
+            }
+            tabs::Item {
+                id: *id,
+                italic: *preview,
+                title,
+                description,
+                icon: send(*hwnd, WM_GETICON, ICON_SMALL as usize, 0) as HICON,
+                closable: true,
+            }
+        })
+        .collect();
+    tabs::set_items(tabs, items);
     sync_document_selection();
 }
-pub(super) fn activate_document_tab() {
-    let tabs = read(|a| a.workspace.tabs);
-    let index = send(tabs, TCM_GETCURSEL, 0, 0);
-    let target = read(|a| a.workspace.documents.get(index as usize).map(|d| d.hwnd));
-    if let Some(hwnd) = target {
-        activate_document(hwnd);
+pub(super) fn tab_notification(n: &tabs::Notification) {
+    let target = read(|a| {
+        a.workspace
+            .documents
+            .iter()
+            .find(|d| d.id == n.id)
+            .map(|d| d.hwnd)
+    });
+    let Some(hwnd) = target else { return };
+    match n.header.code {
+        tabs::SELECT => keep_focus(|| show_document(hwnd)),
+        tabs::CLOSE => close_document(hwnd),
+        tabs::ACTIVATE => pin_document(hwnd),
+        tabs::REORDER => {
+            write(|a| {
+                let docs = &mut a.workspace.documents;
+                if let Some(index) = docs.iter().position(|d| d.id == n.id) {
+                    let doc = docs.remove(index);
+                    docs.insert(n.index.min(docs.len()), doc);
+                }
+            });
+            refresh_document_tabs();
+        }
+        tabs::CONTEXT => unsafe {
+            let menu = CreatePopupMenu();
+            if menu.is_null() {
+                return;
+            }
+            AppendMenuW(
+                menu,
+                MF_STRING,
+                1,
+                resources::wide_text(IDS_TAB_CLOSE).as_ptr(),
+            );
+            if document(hwnd, |d| d.preview) == Some(true) {
+                AppendMenuW(
+                    menu,
+                    MF_STRING,
+                    2,
+                    resources::wide_text(IDS_TAB_PIN).as_ptr(),
+                );
+            }
+            let command = TrackPopupMenu(
+                menu,
+                TPM_RETURNCMD | TPM_RIGHTBUTTON,
+                n.point.x,
+                n.point.y,
+                0,
+                read(|a| a.frame),
+                std::ptr::null(),
+            );
+            DestroyMenu(menu);
+            match command {
+                1 => close_document(hwnd),
+                2 => pin_document(hwnd),
+                _ => {}
+            }
+        },
+        _ => {}
     }
-    sync_document_selection();
 }
 pub(super) fn scale_documents() {
     let docs = read(|a| {

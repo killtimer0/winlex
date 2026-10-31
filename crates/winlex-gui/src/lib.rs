@@ -12,6 +12,7 @@ mod platform;
 mod resources;
 mod results;
 mod rich_text;
+mod tabs;
 mod tasks;
 mod worker;
 

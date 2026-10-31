@@ -27,8 +27,12 @@ fn prepare() {
     for (hwnd, content) in docs {
         content.prepare(hwnd);
     }
+    workspace::refresh_document_tabs();
 }
 fn recolor() {
+    unsafe {
+        InvalidateRect(read(|a| a.workspace.tabs), ptr::null(), 0);
+    }
     sidebar::recolor();
     for (_, content) in workspace::views() {
         content.recolor();
@@ -46,7 +50,7 @@ pub(super) fn layout_frame() {
     area.bottom = bounds(status, frame).top;
     let sidebar = sidebar::layout(area.bottom);
     layout::take_left(&mut area, sidebar);
-    place(tabs, layout::take_top(&mut area, m.height + m.px(16)));
+    place(tabs, layout::take_top(&mut area, m.height + m.px(8)));
     // Sidebar layout can overlap the old MDI bounds; do not preserve those pixels.
     place_with_flags(mdi, area, SWP_NOCOPYBITS);
 }
@@ -67,8 +71,14 @@ pub(super) fn command(id: u16) -> bool {
             let d = active();
             if !d.is_null() && (h == d || unsafe { IsChild(d, h) != 0 }) {
                 sidebar::focus();
+            } else if h == read(|a| a.workspace.tabs) {
+                if d.is_null() {
+                    sidebar::focus();
+                } else {
+                    super::document::focus_document(d);
+                }
             } else {
-                super::document::focus_document(d);
+                focus(read(|a| a.workspace.tabs));
             }
         }
         CLOSE => workspace::close_document(active()),
@@ -100,12 +110,11 @@ pub(super) unsafe extern "system" fn frame_proc(hwnd: HWND, msg: u32, w: usize, 
             }
             WM_CREATE => {
                 let result = (|| -> anyhow::Result<()> {
-                    let tabs = child(
+                    let tabs = crate::tabs::create(
                         hwnd,
-                        w!("SysTabControl32"),
-                        &[0],
-                        WS_TABSTOP | TCS_TOOLTIPS,
                         DOCUMENT_TABS,
+                        crate::resources::text(IDS_DOCUMENT_TABS),
+                        crate::resources::text(IDS_TAB_SELECT),
                     )?;
                     let status = child(
                         hwnd,
@@ -134,9 +143,6 @@ pub(super) unsafe extern "system" fn frame_proc(hwnd: HWND, msg: u32, w: usize, 
                     );
                     if mdi.is_null() {
                         return Err(error("Create MDI client"));
-                    }
-                    if set_subclass(tabs, Some(workspace::document_tabs_proc), 1, 0) == 0 {
-                        anyhow::bail!("Subclass document tabs failed");
                     }
                     write(|a| {
                         a.workspace.tabs = tabs;
@@ -192,17 +198,8 @@ pub(super) unsafe extern "system" fn frame_proc(hwnd: HWND, msg: u32, w: usize, 
             WM_NOTIFY => {
                 let hdr = &*(l as *const NMHDR);
                 if hdr.hwndFrom == read(|a| a.workspace.tabs) {
-                    match hdr.code {
-                        TCN_SELCHANGE => {
-                            workspace::activate_document_tab();
-                            return 0;
-                        }
-                        NM_DBLCLK => {
-                            workspace::pin_tab_at_cursor();
-                            return 0;
-                        }
-                        _ => {}
-                    }
+                    workspace::tab_notification(&*(l as *const crate::tabs::Notification));
+                    return 0;
                 }
                 if let Some(result) = sidebar::notify(l) {
                     return result;

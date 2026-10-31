@@ -19,7 +19,8 @@ def test_single_click_replaces_preview_preserving_architecture_and_focus(launch,
     app.focus(app.results)
     first = app.preview_row()
     n.wait(lambda: app.focused() == app.results, "preview keeps the list focus")
-    assert app.tab_labels()[0].startswith(name + " — x86 · ")
+    assert app.tab_labels()[0] == name + " - x86"
+    assert app.tab_descriptions()[0].startswith(("Preview · ", "预览 · "))
     n.wait(lambda: "CreateFileW(" in app.content(first), "declaration", 45)
     app.choose(first, "x64")
 
@@ -31,8 +32,9 @@ def test_single_click_replaces_preview_preserving_architecture_and_focus(launch,
     assert second == first
     assert len(app.documents()) == 1
     assert app.choice(second) == "x64"
-    assert n.window_text(second) == name + " — x64"
-    assert app.tab_labels()[0].startswith(name + " — x64 · ")
+    assert n.window_text(second) == name + " - x64"
+    assert app.tab_labels()[0] == name + " - x64"
+    assert app.tab_descriptions()[0].startswith(("Preview · ", "预览 · "))
     n.wait(lambda: name in app.content(second), "replacement declaration", 45)
 
 
@@ -46,7 +48,7 @@ def test_preview_rebinds_architecture_choices_and_body(launch, settings):
     assert app.preview_row() == doc
     assert app.choices(app.architecture(doc)) == ["arm64"]
     assert app.choice(doc) == "arm64"
-    assert n.window_text(doc).endswith(" — arm64")
+    assert n.window_text(doc).endswith(" - arm64")
     n.wait(lambda: "enum WHV_ARM64_PENDING_EVENT_TYPE" in app.content(doc), "ARM64 preview", 45)
 
     app.query("Windows.Win32.Security.SECURITY_ATTRIBUTES")
@@ -69,7 +71,7 @@ def test_preview_inherits_the_architecture_being_read(launch, profile, settings)
     arm = app.open_row()
     n.wait(lambda: app.choices(app.architecture(arm)) == ["arm64"], "arm64 only")
     assert app.choice(arm) == "arm64"
-    assert n.window_text(arm).endswith(" — arm64")
+    assert n.window_text(arm).endswith(" - arm64")
     n.wait(lambda: "enum WHV_ARM64_PENDING_EVENT_TYPE" in app.content(arm),
            "ARM64-only declaration", 45)
 
@@ -91,9 +93,10 @@ def test_space_previews_without_leaving_the_list(launch, settings):
     app.focus(app.results)
     app.select(0)
     n.key_message(app.results, win32con.VK_SPACE)
-    n.wait(lambda: n.window_text(doc) == name + " — x86", "space preview")
+    n.wait(lambda: n.window_text(doc) == name + " - x86", "space preview")
     assert len(app.documents()) == 1
-    assert " · " in app.tab_labels()[0]
+    assert app.tab_labels()[0] == name + " - x86"
+    assert app.tab_descriptions()[0].startswith(("Preview · ", "预览 · "))
     assert app.focused() == app.results
 
 
@@ -128,7 +131,7 @@ def test_pinning_and_open_commands_preserve_documents_and_focus(launch, settings
 
     app.select(0)
     n.key_message(app.results, win32con.VK_RETURN)  # Pin the preview.
-    n.wait(lambda: " · " not in app.tab_labels()[0], "pinned")
+    n.wait(lambda: not app.tab_descriptions()[0].startswith(("Preview · ", "预览 · ")), "pinned")
     n.wait(lambda: app.focused() == body(app, doc), "enter focuses the body")
     assert app.documents() == [doc]
 
@@ -144,7 +147,7 @@ def test_pinning_and_open_commands_preserve_documents_and_focus(launch, settings
     app.focus(app.results)
     opened = app.double_click_row(0)
     n.wait(lambda: len(app.documents()) == 2, "double click opens a document")
-    assert app.tab_labels()[1] == name + " — x86"
+    assert app.tab_labels()[1] == name + " - x86"
     n.wait(lambda: app.focused() == body(app, opened), "double click focuses the body")
 
     n.send(app.mdi, win32con.WM_MDIACTIVATE, doc)
@@ -159,4 +162,4 @@ def test_pinning_and_open_commands_preserve_documents_and_focus(launch, settings
     n.wait(lambda: len(app.documents()) == 3, "new document")
     n.wait(lambda: app.focused() == body(app, app.active_document()),
            "forced open focuses the new body")
-    assert name + " — x86 (2)" in app.tab_labels()
+    assert name + " - x86 (2)" in app.tab_labels()

@@ -186,6 +186,9 @@ def test_accelerator_region_navigation_and_tab_enter(launch, settings):
     n.key_message(editor, win32con.VK_F6)  # F6 through TranslateAccelerator
     n.wait(lambda: app.focused() == app.search, "F6 to sidebar")
     n.key_message(app.search, win32con.VK_F6)
+    tabs = n.get_item(app.frame, 1104)
+    n.wait(lambda: app.focused() == tabs, "F6 to tabs")
+    n.key_message(tabs, win32con.VK_F6)
     n.wait(lambda: app.focused() == editor, "F6 to document")
     n.key_message(editor, win32con.VK_F6)
     n.wait(lambda: app.focused() == app.search, "sidebar before tab Enter")

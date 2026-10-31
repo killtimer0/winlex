@@ -45,7 +45,7 @@ pub(super) fn find(binding: &Binding) -> Option<HWND> {
     })
 }
 pub(super) fn open(name: &str, binding: Binding, preview: bool) -> anyhow::Result<HWND> {
-    let title = format!("{name} — {}", binding.architecture.name());
+    let title = format!("{name} - {}", binding.architecture.name());
     let hwnd = workspace::create_document(
         &title,
         MetadataView {
@@ -133,7 +133,7 @@ impl MetadataView {
             state.numbers = Arc::from([]);
             (state.binding.clone(), state.name.clone(), previous)
         };
-        let title = format!("{name} — {}", binding.architecture.name());
+        let title = format!("{name} - {}", binding.architecture.name());
         workspace::edit_document(hwnd, |d| d.title = title.clone());
         set_text(hwnd, &title);
         workspace::refresh_document_tabs();
