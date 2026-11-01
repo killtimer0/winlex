@@ -53,6 +53,11 @@ fn read<T>(f: impl FnOnce(&App) -> T) -> T {
 fn write<T>(f: impl FnOnce(&mut App) -> T) -> T {
     APP.with(|a| f(a.borrow_mut().as_mut().unwrap()))
 }
+fn checked<T>(result: anyhow::Result<T>) -> Option<T> {
+    result
+        .map_err(|error| write(|a| a.failure = Some(error)))
+        .ok()
+}
 fn dpi() -> Dpi {
     read(|a| a.dpi)
 }
@@ -65,14 +70,9 @@ fn font_for(value: u32) -> (HFONT, i32) {
     }) {
         return font;
     }
-    let font = match Font::new(value) {
-        Ok(font) => font,
-        Err(error) => {
-            write(|a| a.failure = Some(error));
-            // Window callbacks cannot return a Rust error through the native ABI.
-            // The application boundary reports it and destroys the window tree.
-            return (ptr::null_mut(), 0);
-        }
+    let Some(font) = checked(Font::new(value)) else {
+        // Window callbacks report errors at the application boundary.
+        return (ptr::null_mut(), 0);
     };
     let result = (font.handle.0, font.height);
     write(|a| a.fonts.push(font));
@@ -240,16 +240,10 @@ unsafe fn run_windows(paths: Vec<std::path::PathBuf>) -> anyhow::Result<()> {
             {
                 continue;
             }
-            if TranslateMDISysAccel(mdi, &msg) != 0 {
-                continue;
-            }
-            if TranslateAcceleratorW(frame, accelerators, &msg) != 0 {
-                continue;
-            }
-            if keys::translate(&msg) {
-                continue;
-            }
-            if sidebar::translate(frame, &msg)
+            if TranslateMDISysAccel(mdi, &msg) != 0
+                || TranslateAcceleratorW(frame, accelerators, &msg) != 0
+                || keys::translate(&msg)
+                || sidebar::translate(frame, &msg)
                 || msg.hwnd == document_tabs && IsDialogMessageW(frame, &msg) != 0
             {
                 continue;
@@ -268,23 +262,19 @@ unsafe fn run_windows(paths: Vec<std::path::PathBuf>) -> anyhow::Result<()> {
     }
 }
 fn poll_completions() {
+    use crate::tasks::Completion;
     for _ in 0..8 {
         match read(|a| a.worker.rx.try_recv()) {
-            Ok(c) => {
-                use crate::tasks::Completion;
-                match c {
-                    Completion::Loaded { id, result } => catalog::loaded(id, result),
-                    Completion::Matches { id, items } => catalog::matches(id, items),
-                    Completion::SearchDone { id, result } => catalog::search_done(id, result),
-                    Completion::Description {
-                        id,
-                        document,
-                        result,
-                    } => {
-                        if let Some(view) = workspace::by_id(document) {
-                            view.complete(id, result);
-                        }
-                    }
+            Ok(Completion::Loaded { id, result }) => catalog::loaded(id, result),
+            Ok(Completion::Matches { id, items }) => catalog::matches(id, items),
+            Ok(Completion::SearchDone { id, result }) => catalog::search_done(id, result),
+            Ok(Completion::Description {
+                id,
+                document,
+                result,
+            }) => {
+                if let Some(view) = workspace::by_id(document) {
+                    view.complete(id, result);
                 }
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => {

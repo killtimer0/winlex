@@ -128,13 +128,8 @@ impl MetadataView {
             state.context_link = None;
         }
         self.fill_architectures();
-        let binding = self.binding();
-        if let Err(error) = self.info.fill(&binding) {
-            write(|a| a.failure = Some(error));
-        }
-        if let Err(error) = self.update_icons() {
-            write(|a| a.failure = Some(error));
-        }
+        super::checked(self.info.fill(&self.binding()));
+        super::checked(self.update_icons());
         self.request();
     }
     pub(super) fn title(&self) -> String {
@@ -218,9 +213,7 @@ impl MetadataView {
             state.context_link = None;
             state.content = Some(content.clone());
         }
-        if let Err(error) = crate::rich_text::set_content(self.editor, &content) {
-            catalog::set_status(format!("{error:#}"));
-        }
+        catalog::report(crate::rich_text::set_content(self.editor, &content));
         self.find.refresh(self.editor, false);
     }
     fn select_architecture(&self, code: u32) {
@@ -242,10 +235,10 @@ impl MetadataView {
         let Some(&arch) = supported.get(index as usize) else {
             return;
         };
-        if supported.len() > 1
-            && let Err(error) = write(|a| a.settings.set_preferred_architecture(&a.config, arch))
-        {
-            catalog::set_status(format!("{error:#}"));
+        if supported.len() > 1 {
+            catalog::report(write(|a| {
+                a.settings.set_preferred_architecture(&a.config, arch)
+            }));
         }
         if arch != binding.architecture {
             binding.architecture = arch;
@@ -329,14 +322,17 @@ impl MetadataView {
                 .filter(|current| Rc::ptr_eq(current, clicked))?;
             regions.iter().find(|region| &region.range == range)
         });
-        match crate::rich_text::context_menu(self.editor, location, regions, mouse_region) {
-            Ok(Some(target)) => self.queue_navigation(Navigation {
+        if let Some(Some(target)) = catalog::report(crate::rich_text::context_menu(
+            self.editor,
+            location,
+            regions,
+            mouse_region,
+        )) {
+            self.queue_navigation(Navigation {
                 content: content.expect("reference content"),
                 binding,
                 target,
-            }),
-            Ok(None) => {}
-            Err(error) => catalog::set_status(format!("{error:#}")),
+            });
         }
         true
     }
@@ -441,12 +437,9 @@ impl MetadataView {
                 .filter(|request| state.contains(request))
         };
         let Some(navigation) = navigation else { return };
-        let entity = match navigation.binding.catalog.entity(navigation.target) {
-            Ok(entity) => entity,
-            Err(error) => {
-                catalog::set_status(format!("{error:#}"));
-                return;
-            }
+        let Some(entity) = catalog::report(navigation.binding.catalog.entity(navigation.target))
+        else {
+            return;
         };
         if !navigation
             .binding
@@ -503,27 +496,21 @@ impl MetadataView {
     }
     pub(super) fn prepare(&self) {
         let hwnd = self.hwnd;
-        if let Err(error) = self.update_icons() {
-            write(|a| a.failure = Some(error));
-        }
+        super::checked(self.update_icons());
         let (font, _) = font_for(dpi().window(hwnd));
         for h in [self.editor, self.header] {
             bind(h, font);
         }
         self.find.prepare(font);
-        if let Err(error) = self.info.prepare(&super::metrics(hwnd)) {
-            write(|a| a.failure = Some(error));
-        }
+        super::checked(self.info.prepare(&super::metrics(hwnd)));
         crate::rich_text::font(self.editor);
         self.layout();
     }
     pub(super) fn recolor(&self) {
         self.cancel_link_press();
         let content = self.state.borrow().content.clone();
-        if let Some(content) = content
-            && let Err(error) = crate::rich_text::recolor(self.editor, &content)
-        {
-            catalog::set_status(format!("{error:#}"));
+        if let Some(content) = content {
+            catalog::report(crate::rich_text::recolor(self.editor, &content));
         }
     }
     pub(super) fn layout(&self) {
@@ -539,9 +526,7 @@ impl MetadataView {
         self.info.layout(&mut area, &m, &mut positions);
         self.find.layout(&mut area, &m, &mut positions);
         positions.push((self.editor, area));
-        if let Err(error) = place_all(&positions) {
-            write(|a| a.failure = Some(error));
-        }
+        super::checked(place_all(&positions));
     }
     pub(super) fn command(&self, id: u16, code: u32) -> bool {
         let visible = self.find.visible();
@@ -554,14 +539,10 @@ impl MetadataView {
         match id {
             SELECT_ARCH => self.select_architecture(code),
             DOCUMENT_MORE if code == BN_CLICKED => {
-                if let Err(error) = self.info.menu(self.hwnd) {
-                    catalog::set_status(format!("{error:#}"));
-                }
+                catalog::report(self.info.menu(self.hwnd));
             }
             DOCUMENT_ONLINE if code == BN_CLICKED => {
-                if let Err(error) = self.info.open_online(self.hwnd) {
-                    catalog::set_status(format!("{error:#}"));
-                }
+                catalog::report(self.info.open_online(self.hwnd));
             }
             _ => return false,
         }

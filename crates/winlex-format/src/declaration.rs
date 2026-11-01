@@ -16,17 +16,19 @@ impl Types<'_> {
         match t {
             Type::ArrayFixed(t, n) => self.ty(t, name.suffix(&format!("[{n}]"))),
             Type::Array(t) => self.ty(t, name.suffix("[]")),
-            Type::PtrConst(t, depth) => self
-                .ty(&Type::PtrMut(t.clone(), *depth), name)
-                .prefix("const "),
-            Type::PtrMut(t, depth) => {
+            pointer @ (Type::PtrMut(t, depth) | Type::PtrConst(t, depth)) => {
                 let name = name.prefix(&"*".repeat((*depth).min(256)));
                 let name = if matches!(**t, Type::ArrayFixed(..) | Type::Array(..)) {
                     name.prefix("(").suffix(")")
                 } else {
                     name
                 };
-                self.ty(t, name)
+                let rendered = self.ty(t, name);
+                if matches!(pointer, Type::PtrConst(..)) {
+                    rendered.prefix("const ")
+                } else {
+                    rendered
+                }
             }
             Type::RefMut(t) => self.ty(t, name.prefix("&")),
             Type::RefConst(t) => self.ty(t, name).prefix("const "),
@@ -163,6 +165,29 @@ impl Write for Rendered {
 }
 
 impl Rendered {
+    fn context<T>(
+        &mut self,
+        pad: &str,
+        arch: Architecture,
+        label: &str,
+        result: Result<T>,
+        summary: impl FnOnce(&mut Self, &T) -> std::fmt::Result,
+    ) -> Result<Option<T>> {
+        write!(self, "{pad}// [{}] ", arch.name())?;
+        let value = match result {
+            Ok(value) => {
+                summary(self, &value)?;
+                Some(value)
+            }
+            Err(error) => {
+                write!(self, "{label} unavailable: {error:#}")?;
+                None
+            }
+        };
+        writeln!(self)?;
+        Ok(value)
+    }
+
     fn fragment(&mut self, mut fragment: Self) {
         for region in &mut fragment.regions {
             region.range = region.range.start + self.position..region.range.end + self.position;
@@ -338,15 +363,12 @@ fn generic_name<'a>(name: &str, params: impl Iterator<Item = GenericParam<'a>>) 
     if params.is_empty() {
         name.to_owned()
     } else {
-        format!(
-            "{}<{}>",
-            name.split('`').next().unwrap_or(name),
-            params
-                .iter()
-                .map(|p| p.name())
-                .collect::<Vec<_>>()
-                .join(", ")
-        )
+        let names = params
+            .iter()
+            .map(|p| p.name())
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("{}<{names}>", name.split('`').next().unwrap_or(name))
     }
 }
 
@@ -369,21 +391,19 @@ fn method(
                 .map(|p| p.name().to_owned())
                 .filter(|n| !n.is_empty())
                 .unwrap_or_else(|| format!("arg{}", i + 1));
-            let mut flags = Vec::new();
-            if let Some(p) = p {
-                for (present, label) in [
+            let flags = p.map_or_else(Vec::new, |p| {
+                [
                     (p.flags().contains(ParamAttributes::In), "in"),
                     (p.flags().contains(ParamAttributes::Out), "out"),
                     (p.is_optional(), "optional"),
                     (p.is_reserved(), "reserved"),
                     (p.is_retval_attribute(), "retval"),
                     (p.has_attribute("ConstAttribute"), "const"),
-                ] {
-                    if present {
-                        flags.push(label);
-                    }
-                }
-            }
+                ]
+                .into_iter()
+                .filter_map(|(present, label)| present.then_some(label))
+                .collect()
+            });
             let prefix = if flags.is_empty() {
                 String::new()
             } else {
@@ -425,44 +445,18 @@ fn append(
     match row {
         Declaration::Type(t) => {
             let layout = if entity.kind == "struct" {
-                match c.layout(id, arch) {
-                    Ok(layout) => {
-                        write!(out, "{pad}// [{}] ", arch.name())?;
-                        out.bit_position("size: ", layout.size_bits, id)?;
-                        write!(out, ", ")?;
-                        out.bit_position("alignment: ", layout.alignment_bits, id)?;
-                        writeln!(out)?;
-                        Some(layout)
-                    }
-                    Err(error) => {
-                        writeln!(
-                            out,
-                            "{pad}// [{}] Layout unavailable: {error:#}",
-                            arch.name()
-                        )?;
-                        None
-                    }
-                }
+                out.context(pad, arch, "Layout", c.layout(id, arch), |out, layout| {
+                    out.bit_position("size: ", layout.size_bits, id)?;
+                    write!(out, ", ")?;
+                    out.bit_position("alignment: ", layout.alignment_bits, id)
+                })?
             } else {
                 None
             };
             let vtable = if entity.kind == "interface" {
-                match c.vtable(id, arch) {
-                    Ok(vtable) => {
-                        write!(out, "{pad}// [{}] ", arch.name())?;
-                        out.number("vtable: ", vtable.slots.len() as u64, Some("slots"), id)?;
-                        writeln!(out)?;
-                        Some(vtable)
-                    }
-                    Err(error) => {
-                        writeln!(
-                            out,
-                            "{pad}// [{}] Vtable unavailable: {error:#}",
-                            arch.name()
-                        )?;
-                        None
-                    }
-                }
+                out.context(pad, arch, "Vtable", c.vtable(id, arch), |out, vtable| {
+                    out.number("vtable: ", vtable.slots.len() as u64, Some("slots"), id)
+                })?
             } else {
                 None
             };

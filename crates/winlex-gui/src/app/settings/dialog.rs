@@ -39,9 +39,7 @@ impl Dialog {
 thread_local! { static CURRENT: Cell<*const Dialog> = const { Cell::new(ptr::null()) }; }
 
 pub(in super::super) fn open() {
-    if let Err(error) = show() {
-        catalog::set_status(format!("{error:#}"));
-    }
+    catalog::report(show());
 }
 
 fn show() -> anyhow::Result<()> {

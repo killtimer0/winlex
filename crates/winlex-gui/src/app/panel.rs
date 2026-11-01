@@ -182,14 +182,10 @@ impl Panel {
         for &h in &self.controls {
             bind(h, m.font);
         }
-        if let Err(error) = self.list.prepare(m) {
-            super::write(|a| a.failure = Some(error));
-        }
+        super::checked(self.list.prepare(m));
     }
     pub fn recolor(&self) {
-        if let Err(error) = self.list.recolor() {
-            super::write(|a| a.failure = Some(error));
-        }
+        super::checked(self.list.recolor());
     }
 }
 impl Search {

@@ -1,4 +1,5 @@
 use super::*;
+use crate::test_support::{FixtureFile, catalog, source, type_id};
 use crate::{Catalog, EntityCategory, SearchOptions, SourceData};
 use windows_metadata::{writer, *};
 
@@ -19,21 +20,8 @@ fn fixture() -> SourceData {
         Value::U8(0xde),
         Value::U8(0xf0),
     ];
-    let constructor = file.MemberRef(
-        ".ctor",
-        &Signature {
-            flags: MethodCallAttributes::HASTHIS,
-            return_type: Type::Void,
-            types: values.iter().map(Value::ty).collect(),
-        },
-        writer::MemberRefParent::TypeRef(attribute),
-    );
-    let outer = file.TypeDef(
-        "Fixture",
-        "Outer",
-        writer::TypeDefOrRef::TypeRef(object),
-        TypeAttributes::Public,
-    );
+    let constructor = file.constructor(attribute, values.iter().map(Value::ty).collect());
+    let outer = file.public_type("Fixture", "Outer", object);
     for (name, value) in [
         ("257", Value::U16(257)),
         ("ValueOnly", Value::I32(257)),
@@ -43,12 +31,7 @@ fn fixture() -> SourceData {
         ("Lower", Value::F64(1450.0)),
         ("Upper", Value::F64(1550.0)),
     ] {
-        let field = file.Field(
-            name,
-            &value.ty(),
-            FieldAttributes::Public | FieldAttributes::Static | FieldAttributes::Literal,
-        );
-        file.Constant(writer::HasConstant::Field(field), &value);
+        let field = file.constant(name, &value);
         if name == "257" || name == "ValueOnly" {
             let mut arguments: Vec<_> = values
                 .iter()
@@ -84,33 +67,15 @@ fn fixture() -> SourceData {
         TypeAttributes::NestedPublic,
     );
     file.NestedClass(inner, outer);
-    let guid = file.TypeDef(
-        "Fixture",
-        "Guid257",
-        writer::TypeDefOrRef::TypeRef(object),
-        TypeAttributes::Public,
-    );
+    let guid = file.public_type("Fixture", "Guid257", object);
     file.Attribute(
         writer::HasAttribute::TypeDef(guid),
         writer::AttributeType::MemberRef(constructor),
         &arguments,
     );
-    file.TypeDef(
-        "Fixture.Other",
-        "Child",
-        writer::TypeDefOrRef::TypeRef(object),
-        TypeAttributes::Public,
-    );
-    file.TypeDef(
-        "FixtureExtra",
-        "Excluded",
-        writer::TypeDefOrRef::TypeRef(object),
-        TypeAttributes::Public,
-    );
-    SourceData {
-        path: "SearchFixture.winmd".into(),
-        bytes: file.into_stream().into(),
-    }
+    file.public_type("Fixture.Other", "Child", object);
+    file.public_type("FixtureExtra", "Excluded", object);
+    source("SearchFixture", file)
 }
 
 fn hits(db: &Catalog, query: &str, mode: SearchMode) -> Vec<SearchMatch> {
@@ -184,17 +149,8 @@ fn quick_and_conditional_trees_preserve_quality_and_evidence_order() {
 fn quick_and_conditional_text_keep_original_unicode_evidence() {
     let mut file = writer::File::new("Unicode");
     let object = file.TypeRef("System", "Object");
-    file.TypeDef(
-        "İScope",
-        "İ😀Widget",
-        writer::TypeDefOrRef::TypeRef(object),
-        TypeAttributes::Public,
-    );
-    let db = Catalog::from_inputs([SourceData {
-        path: "Unicode.winmd".into(),
-        bytes: file.into_stream().into(),
-    }])
-    .unwrap();
+    file.public_type("İScope", "İ😀Widget", object);
+    let db = catalog("Unicode", file);
     for (quick, condition, expected) in [
         ("i\u{307}😀widget", "name = \"i\u{307}😀widget\"", 0..8),
         (
@@ -216,12 +172,7 @@ fn quick_and_conditional_text_keep_original_unicode_evidence() {
 fn conditions_fixture() -> SourceData {
     let mut file = writer::File::new("Conditions");
     let object = file.TypeRef("System", "Object");
-    file.TypeDef(
-        "Example",
-        "Constants",
-        writer::TypeDefOrRef::TypeRef(object),
-        TypeAttributes::Public,
-    );
+    file.public_type("Example", "Constants", object);
     for (name, value) in [
         ("ACCESS_DENIED", Value::I32(5)),
         ("ACCESS_OTHER", Value::I32(6)),
@@ -234,17 +185,9 @@ fn conditions_fixture() -> SourceData {
         ("POS_INF", Value::F64(f64::INFINITY)),
         ("NEG_INF", Value::F32(f32::NEG_INFINITY)),
     ] {
-        let field = file.Field(
-            name,
-            &value.ty(),
-            FieldAttributes::Public | FieldAttributes::Static | FieldAttributes::Literal,
-        );
-        file.Constant(writer::HasConstant::Field(field), &value);
+        file.constant(name, &value);
     }
-    SourceData {
-        path: "Conditions.winmd".into(),
-        bytes: file.into_stream().into(),
-    }
+    source("Conditions", file)
 }
 
 #[test]
@@ -652,12 +595,7 @@ fn namespace_filters_and_entity_context_agree_for_nested_and_global_declarations
     let object = file.TypeRef("System", "Object");
     file.TypeRef("", "GlobalReference");
     for namespace in ["", "命名.空间"] {
-        let outer = file.TypeDef(
-            namespace,
-            "Outer",
-            writer::TypeDefOrRef::TypeRef(object),
-            TypeAttributes::Public,
-        );
+        let outer = file.public_type(namespace, "Outer", object);
         file.Field("TopMember", &Type::I32, FieldAttributes::Public);
         let inner = file.TypeDef(
             "",
@@ -668,11 +606,7 @@ fn namespace_filters_and_entity_context_agree_for_nested_and_global_declarations
         file.NestedClass(inner, outer);
         file.Field("NestedMember", &Type::I32, FieldAttributes::Public);
     }
-    let db = Catalog::from_inputs([SourceData {
-        path: "NamespaceFixture.winmd".into(),
-        bytes: file.into_stream().into(),
-    }])
-    .unwrap();
+    let db = catalog("NamespaceFixture", file);
     let mut covered = 0;
     for namespace in ["", "命名.空间", "System"] {
         let found = db
@@ -856,12 +790,7 @@ fn reference_counts_do_not_short_circuit_after_an_interface_hit() {
             writer::TypeDefOrRef::TypeRef(object),
             TypeAttributes::Public | TypeAttributes::Interface | TypeAttributes::Abstract,
         );
-        let owner = file.TypeDef(
-            "Fixture",
-            "Owner",
-            writer::TypeDefOrRef::TypeRef(object),
-            TypeAttributes::Public,
-        );
+        let owner = file.public_type("Fixture", "Owner", object);
         let target = Type::ClassName(TypeName::named("Fixture", "Target"));
         let missing = Type::ClassName(TypeName::named("Fixture", "Missing"));
         let interfaces = if target_first {
@@ -872,24 +801,8 @@ fn reference_counts_do_not_short_circuit_after_an_interface_hit() {
         for interface in interfaces {
             file.InterfaceImpl(owner, interface);
         }
-        let db = Catalog::from_inputs([SourceData {
-            path: "References.winmd".into(),
-            bytes: file.into_stream().into(),
-        }])
-        .unwrap();
-        let target = db
-            .search_exact(
-                "Target",
-                SearchOptions {
-                    categories: Some(EntityCategory::Type as u32),
-                    ..Default::default()
-                },
-            )
-            .unwrap()
-            .next()
-            .unwrap()
-            .unwrap()
-            .id;
+        let db = catalog("References", file);
+        let target = type_id(&db, "Target");
         let mut query = db.references(target, Architecture::X64, None).unwrap();
         let matches = query.by_ref().collect::<anyhow::Result<Vec<_>>>().unwrap();
         assert_eq!(

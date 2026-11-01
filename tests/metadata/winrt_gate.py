@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import re
 import subprocess
-from reader_gate import compare
+from reader_gate import check_reader
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "tmp/verify/winrt"
@@ -33,14 +33,6 @@ def references(value):
     elif isinstance(value, list):
         for child in value:
             yield from references(child)
-
-
-def oracle(file):
-    dest = OUT / (file.stem + "-oracle.json")
-    subprocess.run(["dotnet", "run", "--project", ROOT / "tests/metadata/MetadataOracle", "-c", "Release", "--", file, dest], check=True, capture_output=True)
-    expected = json.loads(dest.read_text())
-    actual = json.loads(subprocess.run([ROOT / "target/release/examples/reader-facts.exe", file], check=True, capture_output=True).stdout)
-    compare(actual, expected)
 
 
 def main():
@@ -79,7 +71,7 @@ def main():
     assert re.search(r"IAsyncInfo\s*:\s*public IInspectable", header)
     block = header.split("typedef struct IAsyncInfoVtbl", 1)[1].split("} IAsyncInfoVtbl", 1)[0]
     assert re.findall(r"STDMETHODCALLTYPE\s*\*(\w+)", block) == [s["method"] for s in slots]
-    oracle(union)
+    check_reader(union, OUT / (union.stem + "-oracle.json"), capture_output=True)
     apps = sorted(set(args.apps.glob("**/metadata/*.winmd"))) if args.apps else []
     subprocess.run([ROOT / "target/release/examples/query-audit.exe", union, *apps], check=True)
     if apps:
@@ -100,7 +92,7 @@ def main():
         overlap = query(apps + contracts + [union], "show", ref)
         assert "2 matching definitions" in overlap["resolution"]["unresolved"]
         for file in apps:
-            oracle(file)
+            check_reader(file, OUT / (file.stem + "-oracle.json"), capture_output=True)
     checks = ["generic declarations", "properties/events/accessors", "default interfaces", "interface and delegate ABI slots", "reverse generic uses", "independent raw metadata"]
     if apps:
         checks.extend(["WinRT namespace resolution", "missing/overlapping sources"])

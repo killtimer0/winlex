@@ -1,7 +1,9 @@
 """Persist owned input changes before delivery so the outer runner can undo them."""
 import json
 import os
+from contextlib import contextmanager
 from pathlib import Path
+import pytest
 import win32api
 import win32con
 import win32gui
@@ -10,6 +12,29 @@ from . import native as n
 
 IMC_GETOPENSTATUS = 5
 IMC_SETOPENSTATUS = 6
+
+
+@contextmanager
+def foreground(app, inputs):
+    win32gui.SetWindowPos(app.frame, win32con.HWND_TOPMOST, 0, 0, 0, 0,
+                         win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_NOACTIVATE)
+    try:
+        win32gui.ShowWindow(app.frame, win32con.SW_RESTORE)
+        try:
+            win32gui.SetForegroundWindow(app.frame)
+        except Exception:
+            pass
+        with n.window_dpi_context(app.frame):
+            left, top, right, bottom = n.rectangle(app.search)
+            inputs.click((left + right) // 2, (top + bottom) // 2)
+        try:
+            n.wait(lambda: win32gui.GetForegroundWindow() == app.frame, "foreground input")
+        except AssertionError:
+            pytest.skip("physical input unverified: foreground acquisition failed")
+        yield lambda: win32gui.GetForegroundWindow() == app.frame
+    finally:
+        win32gui.SetWindowPos(app.frame, win32con.HWND_NOTOPMOST, 0, 0, 0, 0,
+                             win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_NOACTIVATE)
 
 
 def ime_window(hwnd):

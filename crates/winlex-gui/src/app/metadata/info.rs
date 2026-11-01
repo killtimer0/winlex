@@ -323,25 +323,14 @@ impl Info {
         } else {
             layout::take_left(&mut row, m.px(8));
         }
-        let more = centered(layout::take_left(&mut row, button.cx), button.cy);
-        show(
-            self.more,
-            more.bottom - more.top >= button.cy && more.right - more.left >= button.cx,
-        );
-        positions.push((self.more, more));
+        place_button(self.more, &mut row, button, positions);
         if row.right - row.left < m.px(8) + online.cx {
             row = layout::take_top(area, online.cy);
             layout::take_top(area, m.px(4));
         } else {
             layout::take_left(&mut row, m.px(8));
         }
-        let online_bounds = centered(layout::take_left(&mut row, online.cx), online.cy);
-        show(
-            self.online,
-            online_bounds.right - online_bounds.left >= online.cx
-                && online_bounds.bottom - online_bounds.top >= online.cy,
-        );
-        positions.push((self.online, online_bounds));
+        place_button(self.online, &mut row, online, positions);
         positions.push((self.line, layout::take_top(area, m.px(2))));
         layout::take_top(area, m.px(8));
     }
@@ -478,17 +467,23 @@ fn centered(mut row: RECT, height: i32) -> RECT {
     row.bottom = (row.top + height).min(row.bottom);
     row
 }
+fn place_button(control: HWND, row: &mut RECT, size: SIZE, positions: &mut Vec<(HWND, RECT)>) {
+    let rect = centered(layout::take_left(row, size.cx), size.cy);
+    show(
+        control,
+        rect.right - rect.left >= size.cx && rect.bottom - rect.top >= size.cy,
+    );
+    positions.push((control, rect));
+}
 fn menu_label(label: &[u16], value: &[u16]) -> Vec<u16> {
     let mut result = Vec::new();
-    for ch in label.iter().copied().take_while(|ch| *ch != 0) {
+    let label = label.iter().copied().take_while(|ch| *ch != 0);
+    let value = value
+        .iter()
+        .copied()
+        .map(|ch| if matches!(ch, 9 | 10 | 13) { 32 } else { ch });
+    for ch in label.chain(Some(9)).chain(value) {
         result.push(ch);
-        if ch == 38 {
-            result.push(ch);
-        }
-    }
-    result.push(9);
-    for ch in value.iter().copied() {
-        result.push(if matches!(ch, 9 | 10 | 13) { 32 } else { ch });
         if ch == 38 {
             result.push(ch);
         }
@@ -500,6 +495,14 @@ fn menu_label(label: &[u16], value: &[u16]) -> Vec<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn menu_labels_escape_mnemonics_and_keep_values_on_one_line() {
+        let value: Vec<_> = "A&B\tC\r\nD".encode_utf16().collect();
+        assert_eq!(
+            String::from_utf16(&menu_label(&wide("Copy & path"), &value)).unwrap(),
+            "Copy && path\tA&&B C  D\0"
+        );
+    }
     #[test]
     fn online_targets_use_https_documentation_or_encoded_search() {
         let url = "https://learn.microsoft.com/windows/win32/api/test?a=1&b=2#member";

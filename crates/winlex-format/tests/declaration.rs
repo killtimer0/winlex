@@ -1,5 +1,31 @@
 use winlex_core::{Architecture, Catalog, SearchMode, SearchOptions};
 
+fn source(name: &str, bytes: Vec<u8>) -> winlex_core::SourceData {
+    let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tmp");
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join(format!("{name}-{}.winmd", std::process::id()));
+    std::fs::write(&path, bytes).unwrap();
+    let source = winlex_core::SourceData::read(&path).unwrap();
+    std::fs::remove_file(path).unwrap();
+    source
+}
+
+fn render(catalog: &Catalog, name: &str) -> winlex_format::declaration::Rendered {
+    let entity = catalog
+        .search(
+            name,
+            SearchOptions {
+                mode: SearchMode::Name,
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap();
+    winlex_format::declaration::render(catalog, entity.id, Architecture::X64).unwrap()
+}
+
 #[test]
 fn external_references_remain_unlinked_when_missing_or_ambiguous() {
     use winlex_core::windows_metadata::{reader, writer, *};
@@ -26,21 +52,10 @@ fn external_references_remain_unlinked_when_missing_or_ambiguous() {
         &Type::class_named("External", "Target"),
         FieldAttributes::Public,
     );
-    let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tmp");
-    std::fs::create_dir_all(&directory).unwrap();
-    let paths = ["consumer", "dependency"].map(|name| {
-        directory.join(format!(
-            "navigation-external-{name}-{}.winmd",
-            std::process::id()
-        ))
-    });
-    std::fs::write(&paths[0], consumer.into_stream()).unwrap();
-    std::fs::write(&paths[1], bytes).unwrap();
-    let inputs = paths.map(|path| {
-        let input = winlex_core::SourceData::read(&path).unwrap();
-        std::fs::remove_file(path).unwrap();
-        input
-    });
+    let inputs = [
+        source("navigation-external-consumer", consumer.into_stream()),
+        source("navigation-external-dependency", bytes),
+    ];
     let missing = Catalog::from_inputs([inputs[0].clone()]).unwrap();
     let resolved = Catalog::from_inputs(inputs.clone()).unwrap();
     let ambiguous =
@@ -51,21 +66,7 @@ fn external_references_remain_unlinked_when_missing_or_ambiguous() {
         (&ambiguous, false),
         (&missing, false),
     ] {
-        let member = catalog
-            .search(
-                "Member",
-                SearchOptions {
-                    mode: SearchMode::Name,
-                    ..Default::default()
-                },
-            )
-            .unwrap()
-            .next()
-            .unwrap()
-            .unwrap()
-            .id;
-        let rendered =
-            winlex_format::declaration::render(catalog, member, Architecture::X64).unwrap();
+        let rendered = render(catalog, "Member");
         assert_eq!(rendered.text, "Target Member;\n");
         assert_eq!(rendered.regions.len(), usize::from(expected));
         if expected {
@@ -140,15 +141,8 @@ fn named_references_keep_identity_through_declarators_generics_and_utf16() {
     );
     file.Param("参数😀", 1, ParamAttributes::In);
     file.Param("missing", 2, ParamAttributes::default());
-    let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tmp");
-    std::fs::create_dir_all(&directory).unwrap();
-    let path = directory.join(format!(
-        "navigation-declarations-{}.winmd",
-        std::process::id()
-    ));
-    std::fs::write(&path, file.into_stream()).unwrap();
-    let catalog = Catalog::open(&path).unwrap();
-    std::fs::remove_file(path).unwrap();
+    let catalog =
+        Catalog::from_inputs([source("navigation-declarations", file.into_stream())]).unwrap();
     let owner = catalog
         .type_ids()
         .find(|&id| catalog.entity(id).unwrap().name == "Owner😀")
@@ -294,27 +288,10 @@ fn parameter_modifiers_preserve_order_and_missing_parameter_names() {
             }
         }
     }
-    let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tmp");
-    std::fs::create_dir_all(&directory).unwrap();
-    let path = directory.join(format!("parameter-modifiers-{}.winmd", std::process::id()));
-    std::fs::write(&path, file.into_stream()).unwrap();
-    let catalog = Catalog::open(&path).unwrap();
-    std::fs::remove_file(path).unwrap();
+    let catalog =
+        Catalog::from_inputs([source("parameter-modifiers", file.into_stream())]).unwrap();
     for (mask, expected) in cases {
-        let entity = catalog
-            .search(
-                &format!("Call{mask}"),
-                SearchOptions {
-                    mode: SearchMode::Name,
-                    ..Default::default()
-                },
-            )
-            .unwrap()
-            .next()
-            .unwrap()
-            .unwrap();
-        let rendered =
-            winlex_format::declaration::render(&catalog, entity.id, Architecture::X64).unwrap();
+        let rendered = render(&catalog, &format!("Call{mask}"));
         assert!(
             rendered.text.lines().any(|line| line.trim() == expected),
             "{}",
@@ -331,7 +308,7 @@ fn declarations_cover_native_signatures_and_architecture_specific_types() {
     )
     .unwrap();
     for arch in [Architecture::X86, Architecture::X64, Architecture::Arm64] {
-        for name in ["CreateFileW", "RECT"] {
+        let render = |name| {
             let entity = catalog
                 .search(
                     name,
@@ -349,7 +326,10 @@ fn declarations_cover_native_signatures_and_architecture_specific_types() {
                 .next()
                 .unwrap()
                 .unwrap();
-            let rendered = winlex_format::declaration::render(&catalog, entity.id, arch).unwrap();
+            winlex_format::declaration::render(&catalog, entity.id, arch).unwrap()
+        };
+        for name in ["CreateFileW", "RECT"] {
+            let rendered = render(name);
             let utf16: Vec<_> = rendered.text.encode_utf16().collect();
             let mut end = 0;
             for annotation in &rendered.regions {
@@ -381,26 +361,6 @@ fn declarations_cover_native_signatures_and_architecture_specific_types() {
                 assert!(text.contains("offset: 12 bytes, size: 4 bytes"));
             }
         }
-        let render = |name| {
-            let entity = catalog
-                .search(
-                    name,
-                    SearchOptions {
-                        mode: SearchMode::Name,
-                        categories: Some(
-                            winlex_core::EntityCategory::ALL
-                                & !(winlex_core::EntityCategory::TypeReference as u32),
-                        ),
-                        architecture: Some(arch),
-                        ..Default::default()
-                    },
-                )
-                .unwrap()
-                .next()
-                .unwrap()
-                .unwrap();
-            winlex_format::declaration::render(&catalog, entity.id, arch).unwrap()
-        };
         let rendered = render("SECURITY_ATTRIBUTES");
         let text = &rendered.text;
         assert!(text.contains("UINT32 nLength;"), "{text}");
@@ -523,37 +483,16 @@ fn generic_inheritance_and_delegate_signatures_are_preserved() {
         0,
         GenericParamAttributes(0),
     );
-    let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tmp");
-    std::fs::create_dir_all(&directory).unwrap();
-    let path = directory.join(format!("declaration-fixtures-{}.winmd", std::process::id()));
-    std::fs::write(&path, file.into_stream()).unwrap();
-    let catalog = Catalog::open(&path).unwrap();
-    std::fs::remove_file(path).unwrap();
-    let render = |name| {
-        let entity = catalog
-            .search(
-                name,
-                SearchOptions {
-                    mode: SearchMode::Name,
-                    ..Default::default()
-                },
-            )
-            .unwrap()
-            .next()
-            .unwrap()
-            .unwrap();
-        winlex_format::declaration::render(&catalog, entity.id, Architecture::X64)
-            .unwrap()
-            .text
-    };
-    let text = render("Derived`1");
+    let catalog =
+        Catalog::from_inputs([source("declaration-fixtures", file.into_stream())]).unwrap();
+    let text = render(&catalog, "Derived`1").text;
     assert!(text.contains("class Derived<T> : Base"), "{text}");
     assert!(text.contains("T Convert("), "{text}");
     assert!(text.contains("[in, out, optional] T value"), "{text}");
-    let text = render("Callback");
+    let text = render(&catalog, "Callback").text;
     assert!(text.starts_with("delegate INT32 Callback("), "{text}");
     assert!(!text.contains("Invoke"));
-    let text = render("IGeneric`1");
+    let text = render(&catalog, "IGeneric`1").text;
     assert!(text.contains("Vtable unavailable:"), "{text}");
     assert!(text.contains("interface IGeneric<T>"), "{text}");
 }
@@ -629,30 +568,8 @@ fn enum_members_and_individual_constants_share_annotations() {
         assert_eq!(positions.len(), 1);
         bytes[positions[0]] = 0x12;
     }
-    let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tmp");
-    std::fs::create_dir_all(&directory).unwrap();
-    let path = directory.join(format!(
-        "constant-declarations-{}.winmd",
-        std::process::id()
-    ));
-    std::fs::write(&path, bytes).unwrap();
-    let catalog = Catalog::open(&path).unwrap();
-    std::fs::remove_file(path).unwrap();
-    let render = |name| {
-        let entity = catalog
-            .search(
-                name,
-                SearchOptions {
-                    mode: SearchMode::Name,
-                    ..Default::default()
-                },
-            )
-            .unwrap()
-            .next()
-            .unwrap()
-            .unwrap();
-        winlex_format::declaration::render(&catalog, entity.id, Architecture::X64).unwrap()
-    };
+    let catalog = Catalog::from_inputs([source("constant-declarations", bytes)]).unwrap();
+    let render = |name| render(&catalog, name);
     let parent = render("Status");
     let member = render("Failure");
     assert!(

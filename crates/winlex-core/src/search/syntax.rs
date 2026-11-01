@@ -83,7 +83,7 @@ impl Query {
             });
         }
         let mut nodes = 0;
-        let mut parser = |input: &mut &str| expression(input, text.len(), 0, &mut nodes);
+        let mut parser = |input: &mut &str| junction(input, text.len(), 0, &mut nodes, true);
         parser.parse(text).map_err(|error| {
             let start = error.offset();
             let end = start + text[start..].chars().next().map_or(0, char::len_utf8);
@@ -109,39 +109,33 @@ fn keyword<'a>(
     .void()
 }
 
-fn expression(
+fn junction(
     input: &mut &str,
     length: usize,
     depth: usize,
     nodes: &mut usize,
+    disjunction: bool,
 ) -> ModalResult<Query> {
     let mut terms: Vec<_> = separated(
         1..,
-        cut_err(|i: &mut &str| conjunction(i, length, depth, nodes)),
-        delimited(multispace0, keyword("or"), multispace0),
+        cut_err(|i: &mut &str| {
+            if disjunction {
+                junction(i, length, depth, nodes, false)
+            } else {
+                unary(i, length, depth, nodes)
+            }
+        }),
+        delimited(
+            multispace0,
+            keyword(if disjunction { "or" } else { "and" }),
+            multispace0,
+        ),
     )
     .parse_next(input)?;
     Ok(if terms.len() == 1 {
         terms.pop().unwrap()
-    } else {
+    } else if disjunction {
         Query::Any(terms)
-    })
-}
-
-fn conjunction(
-    input: &mut &str,
-    length: usize,
-    depth: usize,
-    nodes: &mut usize,
-) -> ModalResult<Query> {
-    let mut terms: Vec<_> = separated(
-        1..,
-        cut_err(|i: &mut &str| unary(i, length, depth, nodes)),
-        delimited(multispace0, keyword("and"), multispace0),
-    )
-    .parse_next(input)?;
-    Ok(if terms.len() == 1 {
-        terms.pop().unwrap()
     } else {
         Query::All(terms)
     })
@@ -162,7 +156,7 @@ fn unary(input: &mut &str, length: usize, depth: usize, nodes: &mut usize) -> Mo
     }
     if opt('(').parse_next(input)?.is_some() {
         return cut_err(terminated(
-            |i: &mut &str| expression(i, length, depth + 1, nodes),
+            |i: &mut &str| junction(i, length, depth + 1, nodes, true),
             delimited(multispace0, ')', multispace0),
         ))
         .parse_next(input);

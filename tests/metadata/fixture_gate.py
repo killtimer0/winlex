@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 import subprocess
-from reader_gate import compare
+from reader_gate import check_reader
 
 ROOT = Path(__file__).resolve().parents[2]
 EXE = ROOT / "target/release/examples/host-cli.exe"
@@ -16,11 +16,7 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     subprocess.run(["dotnet", "build", str(ROOT / "tests/metadata/ReaderFixtures"), "-c", "Release", "-o", str(out)], check=True)
     source = out / "ReaderFixtures.dll"
-    subprocess.run(["dotnet", "run", "--project", str(ROOT / "tests/metadata/MetadataOracle"), "-c", "Release", "--", str(source), str(out / "oracle.json")], check=True)
-    facts = subprocess.run([ROOT / "target/release/examples/reader-facts.exe", source], capture_output=True, check=True)
-    facts = json.loads(facts.stdout)
-    oracle = json.loads((out / "oracle.json").read_text())
-    compare(facts, oracle)
+    facts, _ = check_reader(source, out / "oracle.json")
     assert any(r["offset"] == 8 for r in facts["layouts"])
     for name, reason in (("Nonzero", "nonzero/missing explicit offset"), ("SizedOverlay", "declared size"), ("External", "external ResolutionScope")):
         result = layout(source, name)

@@ -20,15 +20,24 @@ def compare(actual, expected):
     return counts
 
 
+def check_reader(source, oracle_path, *, capture_output=False, facts_path=None):
+    subprocess.run(["dotnet", "run", "--project", ROOT / "tests/metadata/MetadataOracle",
+                    "-c", "Release", "--", source, oracle_path],
+                   check=True, capture_output=capture_output)
+    facts = subprocess.run([ROOT / "target/release/examples/reader-facts.exe", source],
+                           capture_output=True, check=True).stdout
+    if facts_path is not None:
+        facts_path.write_bytes(facts)
+    actual = json.loads(facts)
+    counts = compare(actual, json.loads(oracle_path.read_text()))
+    return actual, counts
+
+
 def main():
     out = ROOT / "tmp/verify"
     out.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["dotnet", "run", "--project", str(ROOT / "tests/metadata/MetadataOracle"), "-c", "Release", "--", str(ROOT / "inputs/Windows.Win32.winmd"), str(out / "oracle.json")], check=True)
-    p = subprocess.run([str(ROOT / "target/release/examples/reader-facts.exe"), str(ROOT / "inputs/Windows.Win32.winmd")], capture_output=True, check=True)
-    (out / "reader-facts.json").write_bytes(p.stdout)
-    actual = json.loads(p.stdout)
-    oracle = json.loads((out / "oracle.json").read_text())
-    counts = compare(actual, oracle)
+    _, counts = check_reader(ROOT / "inputs/Windows.Win32.winmd", out / "oracle.json",
+                             facts_path=out / "reader-facts.json")
     result = {"passed": True, "compared": counts, "scope": "Named type tokens in field/method signatures; modifiers and TypeSpec expansion are not a lossless AST guarantee"}
     (out / "reader-gate.json").write_text(json.dumps(result, indent=2))
     print(json.dumps(result, indent=2))

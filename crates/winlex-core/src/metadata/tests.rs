@@ -1,4 +1,7 @@
-use crate::{Architecture, Catalog, EntityCategory, SearchOptions, SourceData};
+use crate::{
+    Architecture,
+    test_support::{catalog, type_id as id},
+};
 use windows_metadata::{writer, *};
 
 fn method(file: &mut writer::File, name: &str, flags: MethodAttributes) {
@@ -12,29 +15,6 @@ fn method(file: &mut writer::File, name: &str, flags: MethodAttributes) {
         MethodAttributes::Public | flags,
         MethodImplAttributes::default(),
     );
-}
-
-fn catalog(file: writer::File) -> Catalog {
-    Catalog::from_inputs([SourceData {
-        path: "VtableFixture.winmd".into(),
-        bytes: file.into_stream().into(),
-    }])
-    .unwrap()
-}
-
-fn id(db: &Catalog, name: &str) -> crate::EntityId {
-    db.search_exact(
-        name,
-        SearchOptions {
-            categories: Some(EntityCategory::Type as u32),
-            ..Default::default()
-        },
-    )
-    .unwrap()
-    .next()
-    .unwrap()
-    .unwrap()
-    .id
 }
 
 #[test]
@@ -69,7 +49,7 @@ fn native_and_winrt_tables_preserve_headers_slots_and_provenance() {
     );
     method(&mut file, ".ctor", MethodAttributes::SpecialName);
     method(&mut file, "Invoke", MethodAttributes::Virtual);
-    let db = catalog(file);
+    let db = catalog("VtableFixture", file);
     for arch in [Architecture::X86, Architecture::X64, Architecture::Arm64] {
         for (name, winrt, expected) in [
             ("Derived", false, vec!["BaseMethod", "DerivedMethod"]),
@@ -172,7 +152,7 @@ fn vtable_construction_keeps_native_and_runtime_rejections() {
                     MethodAttributes::Virtual
                 },
             );
-            let db = catalog(file);
+            let db = catalog("VtableFixture", file);
             let error = db
                 .vtable(id(&db, "Invalid"), Architecture::X64)
                 .err()

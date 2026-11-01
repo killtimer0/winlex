@@ -4,16 +4,10 @@ use windows_metadata::reader::{Assembly, AssemblyRef};
 #[cfg(test)]
 mod snapshot_tests {
     use super::SourceData;
+    use crate::test_support::{source as data, type_id as find};
     use std::sync::Arc;
     use windows_metadata::{FieldAttributes, Type, TypeAttributes, reader, writer};
 
-    fn data(name: &str, file: writer::File) -> SourceData {
-        let bytes: Arc<[u8]> = file.into_stream().into();
-        SourceData {
-            path: format!("{name}.winmd").into(),
-            bytes,
-        }
-    }
     fn dependency(ty: Type) -> SourceData {
         let mut file = writer::File::new("Dependency");
         let base = file.TypeRef("System", "ValueType");
@@ -28,21 +22,6 @@ mod snapshot_tests {
         );
         file.Field("Value", &ty, FieldAttributes::Public);
         data("Dependency", file)
-    }
-    fn find(db: &crate::Catalog, name: &str) -> crate::EntityId {
-        db.search(
-            name,
-            crate::SearchOptions {
-                mode: crate::SearchMode::Name,
-                categories: Some(crate::EntityCategory::Type as u32),
-                ..Default::default()
-            },
-        )
-        .unwrap()
-        .next()
-        .unwrap()
-        .unwrap()
-        .id
     }
     #[test]
     fn source_descriptions_keep_input_order_paths_and_assembly_names() {

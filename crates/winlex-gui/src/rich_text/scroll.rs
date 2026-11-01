@@ -132,9 +132,6 @@ unsafe extern "system" fn procedure(
 mod tests {
     use super::*;
     use crate::rich_text::{Content, Editor, ViewState, set_content};
-    use windows::Win32::UI::Controls::RichEdit::{
-        CFM_SIZE, CHARFORMATW, CHARRANGE, EM_EXGETSEL, SCF_ALL,
-    };
 
     impl Editor {
         fn long_document() -> Self {
@@ -166,28 +163,13 @@ mod tests {
     fn reading_position_survives_replacement_deep_scroll_wrapping_and_font_changes() {
         let editor = Editor::long_document();
         let hwnd = editor.1;
-        let format = CHARFORMATW {
-            cbSize: std::mem::size_of::<CHARFORMATW>() as u32,
-            dwMask: CFM_SIZE,
-            yHeight: 300,
-            ..Default::default()
-        };
-        send(
-            hwnd,
-            EM_SETCHARFORMAT,
-            SCF_ALL as usize,
-            &format as *const _ as isize,
-        );
+        editor.font_size(300);
         let content = Content::new(
             "const UINT32 value😀 = 42; // a long declaration with a stable reading anchor\n"
                 .repeat(4000),
         );
         set_content(hwnd, &content).unwrap();
-        let selection = CHARRANGE {
-            cpMin: 70009,
-            cpMax: 70023,
-        };
-        send(hwnd, EM_EXSETSEL, 0, &selection as *const _ as isize);
+        editor.select(70009, 70023);
         // Finish fallback-font layout before establishing the starting viewport.
         send(hwnd, EM_GETLINECOUNT, 0, 0);
         editor.scroll_to(70003);
@@ -212,34 +194,14 @@ mod tests {
         set_content(hwnd, &content).unwrap();
         before.restore(hwnd);
         assert_eq!(position(hwnd).y, original);
-        let mut selected = CHARRANGE::default();
-        send(hwnd, EM_EXGETSEL, 0, &mut selected as *mut _ as isize);
-        assert_eq!((selected.cpMin, selected.cpMax), (70009, 70023));
-        let format = CHARFORMATW {
-            cbSize: std::mem::size_of::<CHARFORMATW>() as u32,
-            dwMask: CFM_SIZE,
-            yHeight: 420,
-            ..Default::default()
-        };
-        send(
-            hwnd,
-            EM_SETCHARFORMAT,
-            SCF_ALL as usize,
-            &format as *const _ as isize,
-        );
+        assert_eq!(editor.selection(), (70009, 70023));
+        editor.font_size(420);
         place(hwnd, crate::layout::rect(0, 0, 470, 500));
         send(hwnd, EM_GETLINECOUNT, 0, 0);
         before.restore(hwnd);
-        send(hwnd, EM_EXGETSEL, 0, &mut selected as *mut _ as isize);
-        assert_eq!((selected.cpMin, selected.cpMax), (70009, 70023));
-        let mut anchor = POINT { x: 0, y: 0 };
+        assert_eq!(editor.selection(), (70009, 70023));
+        let anchor = editor.character_position(before.anchor);
         let mut area: RECT = unsafe { std::mem::zeroed() };
-        send(
-            hwnd,
-            EM_POSFROMCHAR,
-            &mut anchor as *mut _ as usize,
-            before.anchor as isize,
-        );
         send(hwnd, EM_GETRECT, 0, &mut area as *mut _ as isize);
         assert_eq!(area.top - anchor.y, unsafe {
             MulDiv(
@@ -254,11 +216,7 @@ mod tests {
     fn native_wheel_is_immediate_precise_and_keeps_selection_in_long_documents() {
         let editor = Editor::long_document();
         let hwnd = editor.1;
-        let range = CHARRANGE {
-            cpMin: 10,
-            cpMax: 18,
-        };
-        send(hwnd, EM_EXSETSEL, 0, &range as *const _ as isize);
+        editor.select(10, 18);
         for y in [0, 1, 70000, 120000] {
             editor.scroll_to(y);
             assert_eq!(position(hwnd).y, y);
@@ -299,9 +257,7 @@ mod tests {
             i64::from(position(hwnd).y),
             (i64::from(whole) - pixels).max(0)
         );
-        let mut selected = CHARRANGE::default();
-        send(hwnd, EM_EXGETSEL, 0, &mut selected as *mut _ as isize);
-        assert_eq!((selected.cpMin, selected.cpMax), (10, 18));
+        assert_eq!(editor.selection(), (10, 18));
         editor.scroll_to(0);
         editor.wheel(120);
         assert_eq!(position(hwnd).y, 0);
@@ -320,18 +276,7 @@ mod tests {
         let editor = Editor::long_document();
         let hwnd = editor.1;
         let original = line_height(hwnd).unwrap();
-        let format = CHARFORMATW {
-            cbSize: std::mem::size_of::<CHARFORMATW>() as u32,
-            dwMask: CFM_SIZE,
-            yHeight: 420,
-            ..Default::default()
-        };
-        send(
-            hwnd,
-            EM_SETCHARFORMAT,
-            SCF_ALL as usize,
-            &format as *const _ as isize,
-        );
+        editor.font_size(420);
         assert!(line_height(hwnd).unwrap() > original);
         editor.scroll_to(1000);
         let start = position(hwnd).y;
@@ -353,9 +298,8 @@ mod tests {
         editor.scroll_to(70000);
         send(hwnd, WM_KEYDOWN, VK_HOME as usize, 0);
         send(hwnd, WM_KEYUP, VK_HOME as usize, 0);
-        let mut range = CHARRANGE::default();
-        send(hwnd, EM_EXGETSEL, 0, &mut range as *mut _ as isize);
-        assert_eq!(range.cpMin, range.cpMax);
+        let (start, end) = editor.selection();
+        assert_eq!(start, end);
     }
 
     #[test]

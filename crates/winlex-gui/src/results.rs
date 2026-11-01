@@ -222,29 +222,26 @@ mod tests {
         EntityId, EntitySummary, MatchEvidence, MatchField, MatchQuality, windows_metadata::Value,
     };
 
+    fn evidence(field: EvidenceField, indices: Option<Vec<u32>>) -> MatchEvidence {
+        MatchEvidence { field, indices }
+    }
+
     fn item(name: &str, full_name: &str, kind: &str, quality: MatchQuality) -> SearchMatch {
         SearchMatch {
             evidence: match &quality {
-                MatchQuality::NameExact(field) => vec![MatchEvidence {
-                    field: if *field == MatchField::Name {
+                MatchQuality::NameExact(field) => vec![evidence(
+                    if *field == MatchField::Name {
                         EvidenceField::Name
                     } else {
                         EvidenceField::FullName
                     },
-                    indices: None,
-                }],
-                MatchQuality::Integer => vec![MatchEvidence {
-                    field: EvidenceField::Value,
-                    indices: None,
-                }],
-                MatchQuality::GuidFragment => vec![MatchEvidence {
-                    field: EvidenceField::Guid,
-                    indices: None,
-                }],
-                MatchQuality::NameScope => vec![MatchEvidence {
-                    field: EvidenceField::FullName,
-                    indices: Some(vec![0, 1]),
-                }],
+                    None,
+                )],
+                MatchQuality::Integer => vec![evidence(EvidenceField::Value, None)],
+                MatchQuality::GuidFragment => vec![evidence(EvidenceField::Guid, None)],
+                MatchQuality::NameScope => {
+                    vec![evidence(EvidenceField::FullName, Some(vec![0, 1]))]
+                }
                 _ => Vec::new(),
             },
             entity: EntitySummary {
@@ -269,10 +266,7 @@ mod tests {
         }
     }
     fn with_indices(mut hit: SearchMatch, field: EvidenceField, indices: Vec<u32>) -> SearchMatch {
-        hit.evidence = vec![MatchEvidence {
-            field,
-            indices: Some(indices),
-        }];
+        hit.evidence = vec![evidence(field, Some(indices))];
         hit
     }
     fn text(value: &crate::list::TextLine) -> String {
@@ -291,18 +285,12 @@ mod tests {
             MatchQuality::Filter,
         );
         hit.evidence = vec![
-            MatchEvidence {
-                field: EvidenceField::FullName,
-                indices: Some(vec![15, 9, 0, 1, 3, 8, 14, 15, u32::MAX]),
-            },
-            MatchEvidence {
-                field: EvidenceField::Name,
-                indices: Some(vec![1, 1]),
-            },
-            MatchEvidence {
-                field: EvidenceField::Namespace,
-                indices: Some(vec![1]),
-            },
+            evidence(
+                EvidenceField::FullName,
+                Some(vec![15, 9, 0, 1, 3, 8, 14, 15, u32::MAX]),
+            ),
+            evidence(EvidenceField::Name, Some(vec![1, 1])),
+            evidence(EvidenceField::Namespace, Some(vec![1])),
         ];
         let mut ctx = context();
         ctx.namespace = "中😀".into();
@@ -321,10 +309,7 @@ mod tests {
             "method",
             MatchQuality::Filter,
         );
-        hit.evidence = vec![MatchEvidence {
-            field: EvidenceField::FullName,
-            indices: None,
-        }];
+        hit.evidence = vec![evidence(EvidenceField::FullName, None)];
         let mut ctx = context();
         ctx.namespace = "中😀".into();
         let result = present(hit, ctx);
@@ -454,14 +439,8 @@ mod tests {
     fn multiple_fields_and_escaped_strings_keep_independent_highlights() {
         let mut hit = item("ACCESS", "N.ACCESS", "constant", MatchQuality::Filter);
         hit.evidence = vec![
-            MatchEvidence {
-                field: EvidenceField::Name,
-                indices: Some(vec![0, 1, 2, 3, 4, 5]),
-            },
-            MatchEvidence {
-                field: EvidenceField::Value,
-                indices: Some(vec![1, 2, 3, 4]),
-            },
+            evidence(EvidenceField::Name, Some(vec![0, 1, 2, 3, 4, 5])),
+            evidence(EvidenceField::Value, Some(vec![1, 2, 3, 4])),
         ];
         let mut ctx = context();
         ctx.constant = Some(Value::Utf16("a\n😀'\\z".into()));
@@ -483,14 +462,8 @@ mod tests {
 
         let mut hit = item("ACCESS", "N.ACCESS", "constant", MatchQuality::Filter);
         hit.evidence = vec![
-            MatchEvidence {
-                field: EvidenceField::Value,
-                indices: None,
-            },
-            MatchEvidence {
-                field: EvidenceField::Guid,
-                indices: None,
-            },
+            evidence(EvidenceField::Value, None),
+            evidence(EvidenceField::Guid, None),
         ];
         let mut ctx = context();
         ctx.constant = Some(Value::I32(5));

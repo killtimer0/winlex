@@ -646,28 +646,21 @@ impl Search<'_> {
                             &mut self.unresolved,
                         )
                     };
+                    fn signature_uses(s: Signature, mut check: impl FnMut(&Type) -> bool) -> bool {
+                        s.types
+                            .iter()
+                            .fold(check(&s.return_type), |hit, t| check(t) || hit)
+                    }
                     let matches = match &row {
                         Declaration::Type(t) => {
-                            let mut hit = false;
-                            for interface in t.interface_impls() {
-                                hit |= check(&interface.interface(&t.generic_types()));
-                            }
-                            hit
+                            t.interface_impls().fold(false, |hit, interface| {
+                                hit | check(&interface.interface(&t.generic_types()))
+                            })
                         }
                         Declaration::Field(f) => check(&f.ty()),
                         Declaration::Event(e) => check(&e.ty()),
-                        Declaration::Method(m) => {
-                            let s = m.signature(&[]);
-                            s.types
-                                .iter()
-                                .fold(check(&s.return_type), |hit, t| check(t) || hit)
-                        }
-                        Declaration::Property(p) => {
-                            let s = p.signature();
-                            s.types
-                                .iter()
-                                .fold(check(&s.return_type), |hit, t| check(t) || hit)
-                        }
+                        Declaration::Method(m) => signature_uses(m.signature(&[]), &mut check),
+                        Declaration::Property(p) => signature_uses(p.signature(), &mut check),
                         Declaration::Reference(_) => false,
                     };
                     matches.then_some(MatchQuality::Reference)
@@ -735,15 +728,12 @@ fn uses(
 #[cfg(test)]
 mod tests {
     use super::Architecture;
+    use crate::test_support::{FixtureFile, source as data};
 
     #[test]
     fn named_resolution_preserves_dependencies_architecture_and_snapshots() {
-        use crate::{Catalog, Declaration, SourceData};
+        use crate::{Catalog, Declaration};
         use windows_metadata::{reader, writer, *};
-        let data = |name: &str, file: writer::File| SourceData {
-            path: format!("{name}.winmd").into(),
-            bytes: file.into_stream().into(),
-        };
         let dependency = |field_type: Type| {
             let mut file = writer::File::new("NavigationDependency");
             let ty = file.TypeDef(
@@ -754,15 +744,7 @@ mod tests {
             );
             file.Field("Value", &field_type, FieldAttributes::Public);
             let attr = file.TypeRef("Windows.Win32.Metadata", "SupportedArchitectureAttribute");
-            let ctor = file.MemberRef(
-                ".ctor",
-                &Signature {
-                    flags: MethodCallAttributes::HASTHIS,
-                    return_type: Type::Void,
-                    types: vec![Type::I32],
-                },
-                writer::MemberRefParent::TypeRef(attr),
-            );
+            let ctor = file.constructor(attr, vec![Type::I32]);
             file.Attribute(
                 writer::HasAttribute::TypeDef(ty),
                 writer::AttributeType::MemberRef(ctor),
@@ -892,21 +874,8 @@ mod tests {
             "Windows.Win32.Foundation.Metadata",
             "DocumentationAttribute",
         );
-        let constructor = file.MemberRef(
-            ".ctor",
-            &Signature {
-                flags: MethodCallAttributes::HASTHIS,
-                return_type: Type::Void,
-                types: vec![Type::String],
-            },
-            writer::MemberRefParent::TypeRef(attribute),
-        );
-        let ty = file.TypeDef(
-            "Fixture",
-            "Documented",
-            writer::TypeDefOrRef::TypeRef(object),
-            TypeAttributes::Public,
-        );
+        let constructor = file.constructor(attribute, vec![Type::String]);
+        let ty = file.public_type("Fixture", "Documented", object);
         let field = file.Field("Value", &Type::I32, FieldAttributes::Public);
         let method = file.MethodDef(
             "Call",
@@ -938,12 +907,7 @@ mod tests {
                 &[(String::new(), Value::Utf8(url.into()))],
             );
         }
-        file.TypeDef(
-            "Fixture",
-            "Undocumented",
-            writer::TypeDefOrRef::TypeRef(object),
-            TypeAttributes::Public,
-        );
+        file.public_type("Fixture", "Undocumented", object);
         let index = Index::new(vec![File::new(file.into_stream()).unwrap()]);
         let types: Vec<_> = index
             .rows::<TypeDef>(0)

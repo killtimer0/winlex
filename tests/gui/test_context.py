@@ -153,11 +153,7 @@ def test_preview_context_tracks_the_current_declaration(launch, settings):
         app.select(0)
         name = app.cell(0).splitlines()[0].rsplit(".", 1)[-1]
         n.key_message(app.results, win32con.VK_SPACE)
-        current = n.wait(
-            lambda: (lambda current: current if current in app.documents()
-                     and n.window_text(current).startswith(name + " -") else None)(app.active_document()),
-            "current preview document",
-        )
+        current = app.wait_document("current preview document", name)
         if doc is not None:
             assert current == doc
         doc = current

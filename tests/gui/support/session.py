@@ -191,23 +191,25 @@ class Session:
         return [h for h in n.windows(self.mdi) if n.class_name(h) == "Winlex.Document" and n.get_item(h, 1203)]
 
     def open_row(self, row=0):
-        self.select(row)
-        self.command(1050)
-        return n.wait(
-            lambda: (lambda doc: doc if doc in self.documents() else None)(self.active_document()),
-            "document opened",
-        )
+        return self._open_row(row, 1050, "document opened")
 
     def active_document(self):
         return n.send(self.mdi, win32con.WM_MDIGETACTIVE)
 
     def open_new(self, row=0):
+        return self._open_row(row, 1049, "new document")
+
+    def _open_row(self, row, command, description):
         self.select(row)
-        self.command(1049)
-        return n.wait(
-            lambda: (lambda doc: doc if doc in self.documents() else None)(self.active_document()),
-            "new document",
-        )
+        self.command(command)
+        return self.wait_document(description)
+
+    def wait_document(self, description, name=None):
+        def match():
+            doc = self.active_document()
+            if doc in self.documents() and (name is None or n.window_text(doc).startswith(name + " -")):
+                return doc
+        return n.wait(match, description)
 
     @contextmanager
     def _click_row(self, row, double=False):
@@ -235,22 +237,15 @@ class Session:
         yield
 
     def preview_row(self, row=0):
-        name = self.cell(row).splitlines()[0].rsplit(".", 1)[-1]
-        with self._click_row(row):
-            return n.wait(
-                lambda: (lambda doc: doc if doc in self.documents()
-                         and n.window_text(doc).startswith(name + " -") else None)(self.active_document()),
-                "preview document",
-            )
+        return self._clicked_document(row, False, "preview document")
 
     def double_click_row(self, row=0):
+        return self._clicked_document(row, True, "opened document")
+
+    def _clicked_document(self, row, double, description):
         name = self.cell(row).splitlines()[0].rsplit(".", 1)[-1]
-        with self._click_row(row, double=True):
-            return n.wait(
-                lambda: (lambda doc: doc if doc in self.documents()
-                         and n.window_text(doc).startswith(name + " -") else None)(self.active_document()),
-                "opened document",
-            )
+        with self._click_row(row, double=double):
+            return self.wait_document(description, name)
 
     def focus(self, control):
         attach = n.api(n.user, "AttachThreadInput", w.BOOL, w.DWORD, w.DWORD, w.BOOL)

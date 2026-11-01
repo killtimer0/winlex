@@ -44,15 +44,7 @@ impl Fixture {
                 crate::layout::rect(0, 0, 600, 150),
             );
             let tabs = create(parent, 42, "Pages".into(), "Select".into()).unwrap();
-            place(
-                tabs,
-                RECT {
-                    left: 0,
-                    top: 0,
-                    right: 500,
-                    bottom: 32,
-                },
-            );
+            place(tabs, crate::layout::rect(0, 0, 500, 32));
             REQUESTS.with(|r| r.borrow_mut().clear());
             Self {
                 parent,
@@ -98,11 +90,19 @@ fn children(root: &IAccessible) -> Vec<IAccessible> {
         let mut fetched = 0;
         AccessibleChildren(root, 0, &mut values, &mut fetched).unwrap();
         assert_eq!(fetched, count);
-        values
-            .iter()
-            .map(|v| IDispatch::try_from(v).unwrap().cast().unwrap())
-            .collect()
+        values.into_iter().map(page).collect()
     }
+}
+fn page(value: VARIANT) -> IAccessible {
+    IDispatch::try_from(&value).unwrap().cast().unwrap()
+}
+fn location(page: &IAccessible) -> RECT {
+    let (mut x, mut y, mut width, mut height) = (0, 0, 0, 0);
+    unsafe {
+        page.accLocation(&mut x, &mut y, &mut width, &mut height, &0i32.into())
+            .unwrap();
+    }
+    crate::layout::rect(x, y, width, height)
 }
 fn same(a: &IAccessible, b: &IAccessible) -> bool {
     let child = VARIANT::from(0i32);
@@ -178,12 +178,7 @@ fn italic_titles_keep_overhang_without_painting_outside_their_bounds() {
             let old_font = SelectObject(dc, font);
             SetBkMode(dc, TRANSPARENT as i32);
             SetTextColor(dc, 0);
-            let canvas = RECT {
-                left: 0,
-                top: 0,
-                right: 320,
-                bottom: 128,
-            };
+            let canvas = crate::layout::rect(0, 0, 320, 128);
             let white = GetStockObject(WHITE_BRUSH);
             let title = "Wf".encode_utf16().collect::<Vec<_>>();
             let mut size = SIZE { cx: 0, cy: 0 };
@@ -191,12 +186,7 @@ fn italic_titles_keep_overhang_without_painting_outside_their_bounds() {
                 GetTextExtentPoint32W(dc, title.as_ptr(), title.len() as i32, &mut size),
                 0
             );
-            let mut full = RECT {
-                left: 16,
-                top: 8,
-                right: 300,
-                bottom: 120,
-            };
+            let mut full = crate::layout::rect(16, 8, 284, 112);
             let pixels = || {
                 (0..128)
                     .flat_map(|y| (0..320).map(move |x| GetPixel(dc, x, y)))
@@ -297,10 +287,7 @@ fn focus_cue_changes_repaint_without_changing_accessible_focus() {
             action == UIS_SET
         );
         assert_ne!(unsafe { GetUpdateRect(f.tabs, ptr::null_mut(), 0) }, 0);
-        let page: IAccessible = IDispatch::try_from(&unsafe { root.accFocus() }.unwrap())
-            .unwrap()
-            .cast()
-            .unwrap();
+        let page = page(unsafe { root.accFocus() }.unwrap());
         assert_eq!(
             unsafe { page.get_accName(&0i32.into()) }
                 .unwrap()
@@ -385,10 +372,7 @@ fn msaa_focus_and_selection_are_independent_and_none_is_noop() {
             requests().is_empty(),
             "focus alone must not activate a document"
         );
-        let title = |value: VARIANT| {
-            let page: IAccessible = IDispatch::try_from(&value).unwrap().cast().unwrap();
-            page.get_accName(&self_id).unwrap().to_string()
-        };
+        let title = |value: VARIANT| page(value).get_accName(&self_id).unwrap().to_string();
         assert_eq!(title(root.accSelection().unwrap()), "Alpha");
         assert_eq!(title(root.accFocus().unwrap()), "Beta");
         let flags = i32::try_from(&beta.get_accState(&self_id).unwrap()).unwrap() as u32;
@@ -460,10 +444,7 @@ fn msaa_tree_identity_requests_and_disconnection() {
                 & STATE_SYSTEM_SELECTED as i32,
             0
         );
-        let selected: IAccessible = IDispatch::try_from(&root.accSelection().unwrap())
-            .unwrap()
-            .cast()
-            .unwrap();
+        let selected = page(root.accSelection().unwrap());
         assert!(same(&selected, alpha));
         original[1].accDoDefaultAction(&self_id).unwrap();
         send(f.tabs, WM_MBUTTONUP, 0, (10 << 16) | 10);
@@ -482,14 +463,11 @@ fn msaa_tree_identity_requests_and_disconnection() {
         set_items(f.tabs, vec![b.clone(), a.clone()]);
         let reordered = children(&root);
         assert!(same(&reordered[1], alpha));
-        let next: IAccessible = IDispatch::try_from(
-            &reordered[0]
+        let next = page(
+            reordered[0]
                 .accNavigate(NAVDIR_NEXT as i32, &self_id)
                 .unwrap(),
-        )
-        .unwrap()
-        .cast()
-        .unwrap();
+        );
         assert!(same(&next, alpha));
         let mut renamed = a.clone();
         renamed.title = "Renamed".into();
@@ -514,18 +492,10 @@ fn tab_drag_threshold_uses_horizontal_motion_and_capture_cancellation() {
     let root = f.accessible();
     let pages = children(&root);
     let point = |page: &IAccessible| unsafe {
-        let (mut x, mut y, mut width, mut height) = (0, 0, 0, 0);
-        page.accLocation(
-            &mut x,
-            &mut y,
-            &mut width,
-            &mut height,
-            &VARIANT::from(0i32),
-        )
-        .unwrap();
+        let r = location(page);
         let mut p = POINT {
-            x: x + width / 2,
-            y: y + height / 2,
+            x: r.left + (r.right - r.left) / 2,
+            y: r.top + (r.bottom - r.top) / 2,
         };
         ScreenToClient(f.tabs, &mut p);
         p
@@ -590,16 +560,10 @@ fn keyboard_mouse_and_accessible_geometry_share_the_same_tabs() {
             0
         );
         assert_eq!(pages[7].accChildCount().unwrap(), 0);
-        let (mut x, mut y, mut width, mut height) = (0, 0, 0, 0);
-        pages[7]
-            .accLocation(&mut x, &mut y, &mut width, &mut height, &self_id)
-            .unwrap();
-        let x = x + width - 4;
-        let y = y + height / 2;
-        let hit: IAccessible = IDispatch::try_from(&root.accHitTest(x, y).unwrap())
-            .unwrap()
-            .cast()
-            .unwrap();
+        let r = location(&pages[7]);
+        let x = r.right - 4;
+        let y = r.top + (r.bottom - r.top) / 2;
+        let hit = page(root.accHitTest(x, y).unwrap());
         assert!(same(&hit, &pages[7]));
         assert_eq!(i32::try_from(&hit.accHitTest(x, y).unwrap()).unwrap(), 0);
         let mut p = POINT { x, y };

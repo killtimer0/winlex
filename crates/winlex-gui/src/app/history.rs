@@ -222,13 +222,9 @@ pub(super) fn navigate(direction: Direction) {
             write(|a| a.workspace.history.remove(index));
             continue;
         };
-        let entity = match snapshot.entity(entry.entity) {
-            Ok(entity) => entity,
-            Err(error) => {
-                catalog::set_status(format!("{error:#}"));
-                write(|a| a.workspace.history.remove(index));
-                continue;
-            }
+        let Some(entity) = catalog::report(snapshot.entity(entry.entity)) else {
+            write(|a| a.workspace.history.remove(index));
+            continue;
         };
         let binding = Binding {
             catalog: snapshot,
@@ -288,6 +284,7 @@ pub(super) fn refresh() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use Direction::{Back, Forward};
 
     fn catalog() -> Arc<Catalog> {
         Arc::new(
@@ -317,6 +314,13 @@ mod tests {
         history.arrived(index, entry.document);
         Some(entry)
     }
+    #[track_caller]
+    fn assert_token(history: &mut History, direction: Direction, expected: Option<u32>) {
+        assert_eq!(
+            replay(history, direction).map(|entry| entry.entity.token),
+            expected
+        );
+    }
 
     #[test]
     fn previews_share_a_document_but_replay_preserves_forward_until_new_navigation() {
@@ -325,33 +329,15 @@ mod tests {
         for token in 1..=3 {
             history.visit(entry(&catalog, token));
         }
-        assert_eq!(
-            replay(&mut history, Direction::Back).unwrap().entity.token,
-            2
-        );
+        assert_token(&mut history, Back, Some(2));
         history.visit(entry(&catalog, 2));
-        assert_eq!(
-            replay(&mut history, Direction::Forward)
-                .unwrap()
-                .entity
-                .token,
-            3
-        );
-        assert_eq!(
-            replay(&mut history, Direction::Back).unwrap().entity.token,
-            2
-        );
+        assert_token(&mut history, Forward, Some(3));
+        assert_token(&mut history, Back, Some(2));
         history.visit(entry(&catalog, 4));
-        assert!(replay(&mut history, Direction::Forward).is_none());
-        assert_eq!(
-            replay(&mut history, Direction::Back).unwrap().entity.token,
-            2
-        );
-        assert_eq!(
-            replay(&mut history, Direction::Back).unwrap().entity.token,
-            1
-        );
-        assert!(replay(&mut history, Direction::Back).is_none());
+        assert_token(&mut history, Forward, None);
+        assert_token(&mut history, Back, Some(2));
+        assert_token(&mut history, Back, Some(1));
+        assert_token(&mut history, Back, None);
         for direction in Direction::ALL {
             assert_eq!(
                 Direction::from_command(direction.command()),
@@ -372,18 +358,9 @@ mod tests {
         history.visit(entry(&current, 2));
         drop(old);
         assert!(weak.upgrade().is_none());
-        assert_eq!(
-            replay(&mut history, Direction::Back).unwrap().entity.token,
-            1
-        );
-        assert!(replay(&mut history, Direction::Back).is_none());
-        assert_eq!(
-            replay(&mut history, Direction::Forward)
-                .unwrap()
-                .entity
-                .token,
-            2
-        );
+        assert_token(&mut history, Back, Some(1));
+        assert_token(&mut history, Back, None);
+        assert_token(&mut history, Forward, Some(2));
     }
 
     #[test]
@@ -393,23 +370,11 @@ mod tests {
         for token in [1, 2, 3, 4, 1, 5] {
             history.visit(entry(&catalog, token));
         }
-        assert_eq!(
-            replay(&mut history, Direction::Back).unwrap().entity.token,
-            1
-        );
-        assert_eq!(
-            replay(&mut history, Direction::Back).unwrap().entity.token,
-            4
-        );
+        assert_token(&mut history, Back, Some(1));
+        assert_token(&mut history, Back, Some(4));
         history.after_close(Some(entry(&catalog, 1)));
-        assert!(replay(&mut history, Direction::Back).is_none());
-        assert_eq!(
-            replay(&mut history, Direction::Forward)
-                .unwrap()
-                .entity
-                .token,
-            2
-        );
+        assert_token(&mut history, Back, None);
+        assert_token(&mut history, Forward, Some(2));
     }
 
     #[test]
@@ -425,27 +390,25 @@ mod tests {
             history.visit(entry.clone());
         }
         assert_eq!(
-            replay(&mut history, Direction::Back).unwrap().architecture,
+            replay(&mut history, Back).unwrap().architecture,
             Architecture::X86
         );
-        assert_eq!(replay(&mut history, Direction::Back).unwrap().document, 1);
+        assert_eq!(replay(&mut history, Back).unwrap().document, 1);
         history.after_close(Some(duplicate.clone()));
         assert_eq!(
-            replay(&mut history, Direction::Forward)
-                .unwrap()
-                .architecture,
+            replay(&mut history, Forward).unwrap().architecture,
             Architecture::X64
         );
         history.after_close(None);
         assert_eq!(
-            replay(&mut history, Direction::Back).unwrap().architecture,
+            replay(&mut history, Back).unwrap().architecture,
             Architecture::X64
         );
         for token in 1..=200 {
             history.visit(entry(&catalog, token));
         }
         let mut remaining = Vec::new();
-        while let Some(entry) = replay(&mut history, Direction::Back) {
+        while let Some(entry) = replay(&mut history, Back) {
             remaining.push(entry.entity.token);
         }
         assert_eq!(remaining, (101..200).rev().collect::<Vec<_>>());

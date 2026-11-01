@@ -176,12 +176,12 @@ pub(super) fn prepare() {
     panel::search().prepare(&m);
 }
 fn update_images(toolbar: HWND, size: i32) {
-    match Images::toolbar(size, PanelId::ALL.into_iter().map(|id| id.presentation().2)) {
-        Ok(images) => {
-            send(toolbar, TB_SETIMAGELIST, 0, images.handle());
-            write(|a| a.sidebar.images = Some(images));
-        }
-        Err(error) => write(|a| a.failure = Some(error)),
+    if let Some(images) = super::checked(Images::toolbar(
+        size,
+        PanelId::ALL.into_iter().map(|id| id.presentation().2),
+    )) {
+        send(toolbar, TB_SETIMAGELIST, 0, images.handle());
+        write(|a| a.sidebar.images = Some(images));
     }
 }
 pub(super) fn recolor() {

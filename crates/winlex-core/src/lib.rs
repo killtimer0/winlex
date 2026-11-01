@@ -22,3 +22,5 @@ pub use api::{
     Search, SearchMode, SearchOptions, SearchStep, guid, integer,
 };
 pub use windows_metadata;
+#[cfg(test)]
+mod test_support;

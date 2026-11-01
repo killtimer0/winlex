@@ -15,12 +15,9 @@ fn prepare() {
     let (frame, tabs, status) = read(|a| (a.frame, a.workspace.tabs, a.status));
     let docs = workspace::views();
     let value = dpi().window(frame);
-    match crate::icons::WindowIcons::load(value) {
-        Ok(icons) => {
-            icons.apply(frame);
-            write(|a| a.icons = Some(icons));
-        }
-        Err(error) => write(|a| a.failure = Some(error)),
+    if let Some(icons) = super::checked(crate::icons::WindowIcons::load(value)) {
+        icons.apply(frame);
+        write(|a| a.icons = Some(icons));
     }
     let (font, _) = super::font_for(value);
     super::bind(tabs, font);
@@ -56,9 +53,7 @@ pub(super) fn layout_frame() {
     layout::take_left(&mut area, sidebar);
     positions.push((tabs, layout::take_top(&mut area, m.height + m.px(8))));
     positions.push((mdi, area));
-    if let Err(error) = place_all(&positions) {
-        super::write(|a| a.failure = Some(error));
-    } else {
+    if super::checked(place_all(&positions)).is_some() {
         let panel = read(|a| {
             let s = &a.sidebar;
             (!s.collapsed).then(|| s.panel(s.active))
@@ -97,10 +92,8 @@ pub(super) fn command(id: u16) -> bool {
             } else if h == read(|a| a.workspace.tabs) {
                 if d.is_null() {
                     sidebar::focus();
-                } else {
-                    if let Some(document) = workspace::view(d) {
-                        document.focus();
-                    }
+                } else if let Some(document) = workspace::view(d) {
+                    document.focus();
                 }
             } else {
                 focus(read(|a| a.workspace.tabs));
@@ -179,8 +172,7 @@ pub(super) unsafe extern "system" fn frame_proc(hwnd: HWND, msg: u32, w: usize, 
                     prepare();
                     Ok(())
                 })();
-                if let Err(error) = result {
-                    write(|a| a.failure = Some(error));
+                if super::checked(result).is_none() {
                     return -1;
                 }
                 return 0;
@@ -240,9 +232,7 @@ pub(super) unsafe extern "system" fn frame_proc(hwnd: HWND, msg: u32, w: usize, 
                 }
             }
             WM_CONTEXTMENU if w as HWND == GetDlgItem(hwnd, SOURCE_LIST as i32) => {
-                if let Err(error) = sources::context_menu(w as HWND, l) {
-                    catalog::set_status(format!("{error:#}"));
-                }
+                catalog::report(sources::context_menu(w as HWND, l));
                 return 0;
             }
             // A top-level WM_GETMINMAXINFO minimum can block a DPI downscale.

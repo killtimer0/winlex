@@ -59,7 +59,7 @@ impl Accessible {
             !s.hwnd.is_null()
                 && match self.node {
                     Node::Root => true,
-                    Node::Tab(id) => s.items.iter().any(|i| i.id == id),
+                    Node::Tab(id) => s.item(id).is_some(),
                 }
         };
         if valid { Ok(s) } else { Err(E_FAIL.into()) }
@@ -97,6 +97,14 @@ impl Accessible {
     }
     fn variant(&self, node: Node) -> Result<VARIANT> {
         Ok(object(&self.live()?, node).cast::<IDispatch>()?.into())
+    }
+    fn target(&self, id: Option<u64>, root_is_self: bool) -> Result<VARIANT> {
+        match (self.node, id) {
+            (Node::Root, Some(id)) => self.variant(Node::Tab(id)),
+            (Node::Root, None) if root_is_self => Ok(0i32.into()),
+            (Node::Tab(id), Some(target)) if id == target => Ok(0i32.into()),
+            _ => Ok(VARIANT::new()),
+        }
     }
     fn native(&self) -> Result<IAccessible> {
         let hwnd = self.live()?.borrow().hwnd;
@@ -176,7 +184,7 @@ impl IAccessible_Impl for Accessible_Impl {
         let s = s.borrow();
         Ok(match node {
             Node::Root => s.name.as_str(),
-            Node::Tab(id) => &s.items.iter().find(|i| i.id == id).unwrap().title,
+            Node::Tab(id) => &s.item(id).unwrap().title,
         }
         .into())
     }
@@ -190,7 +198,7 @@ impl IAccessible_Impl for Accessible_Impl {
         let s = s.borrow();
         Ok(match node {
             Node::Root => "",
-            Node::Tab(id) => &s.items.iter().find(|i| i.id == id).unwrap().description,
+            Node::Tab(id) => &s.item(id).unwrap().description,
         }
         .into())
     }
@@ -257,20 +265,11 @@ impl IAccessible_Impl for Accessible_Impl {
         if !focused {
             return Ok(VARIANT::new());
         }
-        match (self.node, id) {
-            (Node::Root, Some(id)) => self.variant(Node::Tab(id)),
-            (Node::Root, None) => Ok(0i32.into()),
-            (Node::Tab(id), Some(selected)) if id == selected => Ok(0i32.into()),
-            _ => Ok(VARIANT::new()),
-        }
+        self.target(id, true)
     }
     fn accSelection(&self) -> Result<VARIANT> {
         let id = self.live()?.borrow().selected;
-        match (self.node, id) {
-            (Node::Root, Some(id)) => self.variant(Node::Tab(id)),
-            (Node::Tab(id), Some(selected)) if id == selected => Ok(0i32.into()),
-            _ => Ok(VARIANT::new()),
-        }
+        self.target(id, false)
     }
     fn get_accDefaultAction(&self, child: &VARIANT) -> Result<BSTR> {
         match self.resolve(child)? {
@@ -372,12 +371,7 @@ impl IAccessible_Impl for Accessible_Impl {
         if !inside {
             return Ok(VARIANT::new());
         }
-        match (self.node, hit) {
-            (Node::Root, Some(id)) => self.variant(Node::Tab(id)),
-            (Node::Root, None) => Ok(0i32.into()),
-            (Node::Tab(id), Some(hit)) if id == hit => Ok(0i32.into()),
-            _ => Ok(VARIANT::new()),
-        }
+        self.target(hit, true)
     }
     fn accDoDefaultAction(&self, child: &VARIANT) -> Result<()> {
         let node = self.resolve(child)?;

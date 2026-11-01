@@ -1,12 +1,12 @@
 """Declaration links preserve document identity and ordinary editor gestures."""
 import shutil
 import struct
-from contextlib import contextmanager
 
 import pytest
 import win32con
 
 from support import native as n
+from support.input_state import foreground as real_foreground
 from test_context import character_point, dismiss, find_popup, popup, wait_closed
 
 
@@ -69,30 +69,6 @@ def pin_active_tab(app):
         n.send(tabs, win32con.WM_LBUTTONUP, 0, point)
     n.wait(lambda: not any(text.startswith(("Preview · ", "预览 · "))
                           for text in app.tab_descriptions()), "tab kept open")
-
-
-@contextmanager
-def real_foreground(app, inputs):
-    import win32gui
-    win32gui.SetWindowPos(app.frame, win32con.HWND_TOPMOST, 0, 0, 0, 0,
-                         win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_NOACTIVATE)
-    try:
-        win32gui.ShowWindow(app.frame, win32con.SW_RESTORE)
-        try:
-            win32gui.SetForegroundWindow(app.frame)
-        except Exception:
-            pass
-        with n.window_dpi_context(app.frame):
-            left, top, right, bottom = n.rectangle(app.search)
-            inputs.click((left + right) // 2, (top + bottom) // 2)
-        try:
-            n.wait(lambda: win32gui.GetForegroundWindow() == app.frame, "foreground navigation input")
-        except AssertionError:
-            pytest.skip("physical input unverified: foreground acquisition failed")
-        yield lambda: win32gui.GetForegroundWindow() == app.frame
-    finally:
-        win32gui.SetWindowPos(app.frame, win32con.HWND_NOTOPMOST, 0, 0, 0, 0,
-                             win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_NOACTIVATE)
 
 
 def editor_selection(app, editor):
@@ -385,9 +361,7 @@ def test_real_unfocused_scrolled_reference_navigates_on_first_gesture(request, l
             app.focus(app.results)
             assert foreground(), "real input requires foreground ownership"
             inputs.key(win32con.VK_SPACE)
-            source = n.wait(lambda: (lambda doc: doc if doc in app.documents()
-                            and n.window_text(doc).startswith("Apis -") else None)(
-                                app.active_document()), "Gdi preview")
+            source = app.wait_document("Gdi preview", "Apis")
             n.wait(lambda: "HDC" in app.content(source), "loaded Gdi declaration", 45)
             editor = n.get_item(source, 1203)
             body = app.content(source)

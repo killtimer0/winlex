@@ -1,13 +1,14 @@
 """Workspace history preserves targets, snapshot identity and reading positions."""
 import shutil
 import struct
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack
 
 import pytest
 import win32con
 
 from support import native as n
 from support.accessibility import client
+from support.input_state import foreground
 from test_context import find_popup, wait_closed
 from test_navigation import follow_caret, reference
 
@@ -417,30 +418,6 @@ def test_appcommand_routes_from_editor_and_search(launch, settings):
     n.send(app.search, 0x0319, app.search, 2 << 16)
     current(app, "CloseHandle", document=doc)
     n.wait(lambda: app.focused() == editor, "appcommand forward focuses editor")
-
-
-@contextmanager
-def foreground(app, inputs):
-    import win32gui
-    win32gui.SetWindowPos(app.frame, win32con.HWND_TOPMOST, 0, 0, 0, 0,
-                         win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_NOACTIVATE)
-    try:
-        win32gui.ShowWindow(app.frame, win32con.SW_RESTORE)
-        try:
-            win32gui.SetForegroundWindow(app.frame)
-        except Exception:
-            pass
-        with n.window_dpi_context(app.frame):
-            left, top, right, bottom = n.rectangle(app.search)
-            inputs.click((left + right) // 2, (top + bottom) // 2)
-        try:
-            n.wait(lambda: win32gui.GetForegroundWindow() == app.frame, "foreground history input")
-        except AssertionError:
-            pytest.skip("real history input unverified: foreground acquisition failed")
-        yield lambda: win32gui.GetForegroundWindow() == app.frame
-    finally:
-        win32gui.SetWindowPos(app.frame, win32con.HWND_NOTOPMOST, 0, 0, 0, 0,
-                             win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_NOACTIVATE)
 
 
 @pytest.mark.parametrize("gesture", ["alt-arrows", "mouse-side-buttons", "menu"])

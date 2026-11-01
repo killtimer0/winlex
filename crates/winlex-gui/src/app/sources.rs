@@ -165,9 +165,11 @@ pub(super) fn add(files: Vec<PathBuf>) {
 }
 
 fn choose_add() {
-    match input::choose_files(read(|a| a.frame), read(|a| a.system_version)) {
-        Ok(paths) => add(paths),
-        Err(error) => catalog::set_status(format!("{error:#}")),
+    if let Some(paths) = catalog::report(input::choose_files(
+        read(|a| a.frame),
+        read(|a| a.system_version),
+    )) {
+        add(paths);
     }
 }
 
@@ -185,11 +187,10 @@ pub(super) fn command(id: u16) -> bool {
 }
 fn action_path(command: u16, path: PathBuf) {
     if command == COPY_SOURCE_PATH {
-        if let Err(error) =
-            copy_unicode(list(), &path.as_os_str().encode_wide().collect::<Vec<_>>())
-        {
-            catalog::set_status(format!("{error:#}"));
-        }
+        catalog::report(copy_unicode(
+            list(),
+            &path.as_os_str().encode_wide().collect::<Vec<_>>(),
+        ));
         return;
     }
     if !read(|a| a.session.inputs().iter().any(|s| s.path() == path)) {

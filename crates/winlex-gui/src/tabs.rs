@@ -82,6 +82,9 @@ impl std::ops::Deref for Tab {
     }
 }
 impl State {
+    fn item(&self, id: u64) -> Option<&Tab> {
+        self.items.iter().find(|item| item.id == id)
+    }
     fn object_slot(
         &mut self,
         node: accessible::Node,
@@ -103,10 +106,7 @@ impl State {
         }
     }
     fn rect(&self, id: u64) -> Option<RECT> {
-        self.items
-            .iter()
-            .find(|item| item.id == id)
-            .map(|item| item.rect)
+        self.item(id).map(|item| item.rect)
     }
     fn hit(&self, p: POINT) -> Option<u64> {
         if !contains(client(self.hwnd), p) {
@@ -196,9 +196,7 @@ pub fn set_items(hwnd: HWND, items: Vec<Item>) {
         if !s.items.iter().any(|i| Some(i.id) == s.selected) {
             s.selected = None;
         }
-        if s.focused
-            .is_some_and(|id| !s.items.iter().any(|i| i.id == id))
-        {
+        if s.focused.is_some_and(|id| s.item(id).is_none()) {
             s.focused = s.selected;
         }
         (old, added, renamed, described, reordered)
@@ -226,7 +224,7 @@ pub fn set_items(hwnd: HWND, items: Vec<Item>) {
 }
 pub fn select(hwnd: HWND, id: Option<u64>) {
     let Some(s) = state(hwnd) else { return };
-    let id = id.filter(|id| s.borrow().items.iter().any(|i| i.id == *id));
+    let id = id.filter(|id| s.borrow().item(*id).is_some());
     let old = {
         let mut s = s.borrow_mut();
         let old = s.selected;
@@ -252,13 +250,7 @@ pub fn select(hwnd: HWND, id: Option<u64>) {
 fn event(hwnd: HWND, event: u32, id: Option<u64>) {
     let child = match id {
         Some(id) => {
-            let Some(child) = state(hwnd).and_then(|s| {
-                s.borrow()
-                    .items
-                    .iter()
-                    .find(|i| i.id == id)
-                    .map(|i| i.child)
-            }) else {
+            let Some(child) = state(hwnd).and_then(|s| s.borrow().item(id).map(|i| i.child)) else {
                 return;
             };
             child
@@ -502,12 +494,7 @@ fn tooltip(shared: &Rc<RefCell<State>>, hit: Option<u64>) {
     let (hwnd, tip, text) = {
         let mut s = shared.borrow_mut();
         let text = hit
-            .and_then(|hit| {
-                s.items
-                    .iter()
-                    .find(|i| i.id == hit)
-                    .map(|i| i.title.clone())
-            })
+            .and_then(|hit| s.item(hit).map(|i| i.title.clone()))
             .unwrap_or_default();
         s.tip = wide(&text);
         (s.hwnd, s.tooltip, s.tip.as_mut_ptr())

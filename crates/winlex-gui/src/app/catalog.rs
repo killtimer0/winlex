@@ -188,6 +188,11 @@ pub(super) fn set_status(message: String) {
     write(|a| a.session.notice = Some(message));
     refresh_status();
 }
+pub(super) fn report<T>(result: anyhow::Result<T>) -> Option<T> {
+    result
+        .map_err(|error| set_status(format!("{error:#}")))
+        .ok()
+}
 fn refresh_status() {
     let (hwnd, message) = read(|a| (a.status, a.session.status()));
     set_status_text(hwnd, &message);
@@ -472,16 +477,8 @@ pub(super) fn open_binding(title: &str, binding: Binding, mode: Open) -> Option<
             })
         })
         .flatten();
-    let hwnd = match existing {
-        Some(hwnd) => hwnd,
-        None => match metadata::open(title, binding, mode == Open::Preview) {
-            Ok(hwnd) => hwnd,
-            Err(error) => {
-                set_status(format!("{error:#}"));
-                return None;
-            }
-        },
-    };
+    let hwnd =
+        existing.or_else(|| report(metadata::open(title, binding, mode == Open::Preview)))?;
     if mode == Open::Pin {
         workspace::pin_document(hwnd);
     }
@@ -506,7 +503,7 @@ pub(super) fn loaded(id: u64, result: anyhow::Result<Option<Arc<Catalog>>>) {
     }
     if committed {
         submit_search();
-        if let Err(error) = read(|a| {
+        report(read(|a| {
             if a.session.remember_sources {
                 let paths: Vec<_> = a
                     .session
@@ -517,9 +514,7 @@ pub(super) fn loaded(id: u64, result: anyhow::Result<Option<Arc<Catalog>>>) {
                 a.config.write_key()?.set_paths("AutoLoad", &paths)?;
             }
             Ok::<_, anyhow::Error>(())
-        }) {
-            set_status(format!("{error:#}"));
-        }
+        }));
         for view in workspace::views() {
             view.layout();
         }

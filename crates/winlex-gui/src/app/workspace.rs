@@ -183,9 +183,7 @@ pub(super) fn tab_notification(n: &tabs::Notification) {
             refresh_document_tabs();
         }
         tabs::CONTEXT => {
-            if let Err(error) = tab_menu(hwnd, n.point) {
-                super::catalog::set_status(format!("{error:#}"));
-            }
+            super::catalog::report(tab_menu(hwnd, n.point));
         }
         _ => {}
     }

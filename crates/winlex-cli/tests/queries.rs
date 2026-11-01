@@ -20,6 +20,16 @@ fn catalog() -> &'static Catalog {
     DB.get_or_init(|| Catalog::open(input()).expect("prepare pinned inputs/Windows.Win32.winmd"))
 }
 
+fn invoke(args: impl IntoIterator<Item = OsString>) -> (u8, String, String) {
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let code = winlex_cli::run(args, &mut out, &mut err);
+    (
+        code,
+        String::from_utf8(out).unwrap(),
+        String::from_utf8(err).unwrap(),
+    )
+}
+
 #[test]
 fn search_mode_flags_are_exclusive_and_only_apply_to_search() {
     for arguments in [
@@ -126,13 +136,10 @@ fn guid_fragments_bytes_and_numeric_radices_share_the_cli_search_contract() {
 #[test]
 fn queries_require_explicit_inputs_in_text_and_json_modes() {
     for args in [vec!["summary"], vec!["search", "CreateFileW", "--json"]] {
-        let (mut out, mut err) = (vec![], vec![]);
-        assert_eq!(
-            winlex_cli::run(args.iter().map(OsString::from), &mut out, &mut err),
-            2
-        );
+        let (code, out, err) = invoke(args.iter().map(OsString::from));
+        assert_eq!(code, 2);
         if args.contains(&"--json") {
-            let response: Value = serde_json::from_slice(&out).unwrap();
+            let response: Value = serde_json::from_str(&out).unwrap();
             assert_eq!(response["error"]["code"], "invalid_arguments");
             assert!(
                 response["error"]["message"]
@@ -143,7 +150,7 @@ fn queries_require_explicit_inputs_in_text_and_json_modes() {
             assert!(err.is_empty());
         } else {
             assert!(out.is_empty());
-            assert!(String::from_utf8(err).unwrap().contains("input file"));
+            assert!(err.contains("input file"));
         }
     }
 }
@@ -207,33 +214,25 @@ fn source_paths_preserve_native_utf16_without_changing_json() {
     let value = serde_json::to_value(&db.sources()[0]).unwrap();
     assert!(value.get("native_path").is_none());
     assert!(value["path"].as_str().unwrap().contains('\u{fffd}'));
-    let (mut out, mut err) = (vec![], vec![]);
-    assert_eq!(
-        winlex_cli::run(
-            [
-                path.clone().into_os_string(),
-                OsString::from("summary"),
-                OsString::from("--json"),
-            ],
-            &mut out,
-            &mut err,
-        ),
-        0
-    );
+    let (code, out, err) = invoke([
+        path.clone().into_os_string(),
+        "summary".into(),
+        "--json".into(),
+    ]);
+    assert_eq!(code, 0);
     assert!(err.is_empty());
-    assert!(serde_json::from_slice::<Value>(&out).is_ok());
+    assert!(serde_json::from_str::<Value>(&out).is_ok());
     std::fs::remove_file(path).unwrap();
     std::fs::remove_dir(directory).unwrap();
 }
 fn cli(args: &[&str]) -> (u8, Value, String) {
     let mut argv = vec![input().into_os_string(), OsString::from("--json")];
     argv.extend(args.iter().map(OsString::from));
-    let (mut out, mut err) = (vec![], vec![]);
-    let code = winlex_cli::run(argv, &mut out, &mut err);
+    let (code, out, err) = invoke(argv);
     (
         code,
-        serde_json::from_slice(&out).expect("exactly one JSON response"),
-        String::from_utf8(err).unwrap(),
+        serde_json::from_str(&out).expect("exactly one JSON response"),
+        err,
     )
 }
 
@@ -634,22 +633,16 @@ fn text_output_and_input_error() {
         let args = [input().into_os_string()]
             .into_iter()
             .chain(args.into_iter().map(OsString::from));
-        let (mut out, mut err) = (vec![], vec![]);
-        assert_eq!(
-            winlex_cli::run(args, &mut out, &mut err),
-            0,
-            "{}",
-            String::from_utf8_lossy(&err)
-        );
-        let text = String::from_utf8(out).unwrap();
+        let (code, text, err) = invoke(args);
+        assert_eq!(code, 0, "{err}");
         for expected in expected {
             assert!(text.contains(expected), "missing {expected:?} in {text}");
         }
         assert!(err.is_empty());
     }
     let args = ["/does-not-exist.winmd", "--json", "summary"].map(OsString::from);
-    let (mut out, mut err) = (vec![], vec![]);
-    assert_eq!(winlex_cli::run(args, &mut out, &mut err), 3);
-    let e: Value = serde_json::from_slice(&out).unwrap();
+    let (code, out, _) = invoke(args);
+    assert_eq!(code, 3);
+    let e: Value = serde_json::from_str(&out).unwrap();
     assert_eq!(e["error"]["code"], "input_error");
 }

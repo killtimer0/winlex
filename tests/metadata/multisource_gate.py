@@ -2,7 +2,7 @@
 import json
 from pathlib import Path
 import subprocess
-from reader_gate import compare
+from reader_gate import check_reader
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "tmp/verify/multisource"
@@ -82,11 +82,7 @@ def main():
     assert query([signed_user, signed, base], "layout", "SignedHolder")["result"]["size_bits"] == 64
     query([signed_user, base], "layout", "SignedHolder", error="0 matching sources")
     for file in (base, consumer, signed, signed_user):
-        oracle = file.parent / "oracle.json"
-        subprocess.run(["dotnet", "run", "--project", ROOT / "tests/metadata/MetadataOracle", "-c", "Release", "--", file, oracle], check=True, capture_output=True)
-        facts = json.loads(subprocess.run([ROOT / "target/release/examples/reader-facts.exe", file], check=True, capture_output=True).stdout)
-        expected = json.loads(oracle.read_text())
-        compare(facts, expected)
+        check_reader(file, file.parent / "oracle.json", capture_output=True)
     print("Multi-source layouts, nested/global references, COM inheritance, identity conflicts and independent reader checks passed")
 
 

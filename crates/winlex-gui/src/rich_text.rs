@@ -576,6 +576,58 @@ impl Editor {
         editor.1 = create(parent, 1).unwrap();
         editor
     }
+
+    pub fn select(&self, start: i32, end: i32) {
+        let range = CHARRANGE {
+            cpMin: start,
+            cpMax: end,
+        };
+        send_ref(self.1, EM_EXSETSEL, 0, &range);
+    }
+
+    pub fn selection(&self) -> (i32, i32) {
+        let mut range = CHARRANGE::default();
+        send_mut(self.1, EM_EXGETSEL, 0, &mut range);
+        (range.cpMin, range.cpMax)
+    }
+
+    pub fn character_format(&self) -> CHARFORMAT2W {
+        let mut format = CHARFORMAT2W {
+            Base: CHARFORMATW {
+                cbSize: size_of::<CHARFORMAT2W>() as u32,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        send_mut(
+            self.1,
+            EM_GETCHARFORMAT,
+            SCF_SELECTION as usize,
+            &mut format,
+        );
+        format
+    }
+
+    pub fn font_size(&self, height: i32) {
+        let format = CHARFORMATW {
+            cbSize: size_of::<CHARFORMATW>() as u32,
+            dwMask: CFM_SIZE,
+            yHeight: height,
+            ..Default::default()
+        };
+        send_ref(self.1, EM_SETCHARFORMAT, SCF_ALL as usize, &format);
+    }
+
+    pub fn character_position(&self, index: i32) -> POINT {
+        let mut point = POINT { x: 0, y: 0 };
+        send(
+            self.1,
+            EM_POSFROMCHAR,
+            &mut point as *mut _ as usize,
+            index as isize,
+        );
+        point
+    }
 }
 
 #[cfg(test)]
@@ -649,38 +701,16 @@ mod tests {
                 assert_ne!(send(editor, EM_GETEVENTMASK, 0, 0) & ENM_LINK as isize, 0);
                 for refresh in [false, true] {
                     if refresh {
-                        let range = CHARRANGE {
-                            cpMin: 7,
-                            cpMax: 10,
-                        };
-                        send(editor, EM_EXSETSEL, 0, &range as *const _ as isize);
+                        fixture.select(7, 10);
                         let result = recolor(editor, &content);
                         if !plain {
                             result.unwrap();
                         }
-                        let mut actual = CHARRANGE::default();
-                        send(editor, EM_EXGETSEL, 0, &mut actual as *mut _ as isize);
-                        assert_eq!((actual.cpMin, actual.cpMax), (7, 10));
+                        assert_eq!(fixture.selection(), (7, 10));
                     }
                     for index in 0..27 {
-                        let selected = CHARRANGE {
-                            cpMin: index,
-                            cpMax: index + 1,
-                        };
-                        send(editor, EM_EXSETSEL, 0, &selected as *const _ as isize);
-                        let mut format = CHARFORMAT2W {
-                            Base: CHARFORMATW {
-                                cbSize: size_of::<CHARFORMAT2W>() as u32,
-                                ..Default::default()
-                            },
-                            ..Default::default()
-                        };
-                        send(
-                            editor,
-                            EM_GETCHARFORMAT,
-                            SCF_SELECTION as usize,
-                            &mut format as *mut _ as isize,
-                        );
+                        fixture.select(index, index + 1);
+                        let format = fixture.character_format();
                         let linked = content
                             .regions
                             .iter()
@@ -697,26 +727,13 @@ mod tests {
                         );
                     }
                     for region in &content.regions {
-                        let mut end = POINT { x: 0, y: 0 };
-                        let mut last = POINT { x: 0, y: 0 };
-                        send(
-                            editor,
-                            EM_POSFROMCHAR,
-                            &mut end as *mut _ as usize,
-                            region.range.end as isize,
-                        );
-                        send(
-                            editor,
-                            EM_POSFROMCHAR,
-                            &mut last as *mut _ as usize,
-                            (region.range.end - 1) as isize,
-                        );
+                        let end = fixture.character_position(region.range.end as i32);
+                        let last = fixture.character_position((region.range.end - 1) as i32);
                         for (x, expected) in
                             [((last.x + end.x) / 2 + 1, Some(target)), (end.x + 30, None)]
                         {
                             received.clear();
-                            let caret = CHARRANGE::default();
-                            send(editor, EM_EXSETSEL, 0, &caret as *const _ as isize);
+                            fixture.select(0, 0);
                             let location =
                                 (((end.y + 6) as u16 as u32) << 16 | x as u16 as u32) as isize;
                             send(editor, WM_LBUTTONDOWN, 9, location);
@@ -745,24 +762,8 @@ mod tests {
                 }
                 // Replacing linked text must not leave an inherited link on ordinary text.
                 set_content(editor, &Content::new("plain replacement".into())).unwrap();
-                let all = CHARRANGE {
-                    cpMin: 0,
-                    cpMax: -1,
-                };
-                send(editor, EM_EXSETSEL, 0, &all as *const _ as isize);
-                let mut format = CHARFORMAT2W {
-                    Base: CHARFORMATW {
-                        cbSize: size_of::<CHARFORMAT2W>() as u32,
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                };
-                send(
-                    editor,
-                    EM_GETCHARFORMAT,
-                    SCF_SELECTION as usize,
-                    &mut format as *mut _ as isize,
-                );
+                fixture.select(0, -1);
+                let format = fixture.character_format();
                 assert_eq!(format.Base.dwEffects.0 & (CFE_LINK | CFE_UNDERLINE).0, 0);
             }
             drop(fixture);
@@ -777,14 +778,8 @@ mod tests {
             place(editor, crate::layout::rect(0, 0, 800, 400));
             let body = "ERROR_ACCESS_DENIED  next_value(x);";
             set_content(editor, &Content::new(body.into())).unwrap();
-            let selection = || {
-                let mut range = CHARRANGE::default();
-                send(editor, EM_EXGETSEL, 0, &mut range as *mut _ as isize);
-                (range.cpMin, range.cpMax)
-            };
             for (index, expected) in [(8, (0, 19)), (25, (21, 31)), (31, (31, 32))] {
-                let mut point = POINT { x: 0, y: 0 };
-                send(editor, EM_POSFROMCHAR, &mut point as *mut _ as usize, index);
+                let point = fixture.character_position(index);
                 let location = ((point.y + 2) << 16 | (point.x + 2)) as isize;
                 send(
                     editor,
@@ -800,7 +795,7 @@ mod tests {
                     location,
                 );
                 send(editor, WM_LBUTTONUP, 0, location);
-                assert_eq!(selection(), expected);
+                assert_eq!(fixture.selection(), expected);
             }
             let mut original = [0u8; 256];
             assert_ne!(GetKeyboardState(original.as_mut_ptr()), 0);
@@ -812,18 +807,14 @@ mod tests {
                 (0, VK_RIGHT, true, (0, 19)),
                 (31, VK_LEFT, true, (21, 31)),
             ] {
-                let range = CHARRANGE {
-                    cpMin: start,
-                    cpMax: start,
-                };
-                send(editor, EM_EXSETSEL, 0, &range as *const _ as isize);
+                fixture.select(start, start);
                 let mut keys = original;
                 keys[VK_CONTROL as usize] = 0x80;
                 keys[VK_SHIFT as usize] = if shift { 0x80 } else { 0 };
                 assert_ne!(SetKeyboardState(keys.as_ptr()), 0);
                 send(editor, WM_KEYDOWN, key as usize, 0);
                 send(editor, WM_KEYUP, key as usize, 0);
-                let actual = selection();
+                let actual = fixture.selection();
                 assert_ne!(SetKeyboardState(original.as_ptr()), 0);
                 assert_eq!(actual, expected);
             }
@@ -890,18 +881,7 @@ mod tests {
             let editor = fixture.1;
             place(editor, crate::layout::rect(0, 0, 750, 500));
             focus(editor);
-            let size = CHARFORMATW {
-                cbSize: size_of::<CHARFORMATW>() as u32,
-                dwMask: CFM_SIZE,
-                yHeight: 210,
-                ..Default::default()
-            };
-            send(
-                editor,
-                EM_SETCHARFORMAT,
-                SCF_ALL as usize,
-                &size as *const _ as isize,
-            );
+            fixture.font_size(210);
             for body in [
                 "",
                 "const UINT32 n = 42;",
@@ -922,11 +902,7 @@ mod tests {
                 (8, 13, "const", 0x800000),
                 (24, 29, "\"中😀\"", 0x000080),
             ] {
-                let range = CHARRANGE {
-                    cpMin: start,
-                    cpMax: end,
-                };
-                send(editor, EM_EXSETSEL, 0, &range as *const _ as isize);
+                fixture.select(start, end);
                 let mut selected = vec![0u16; (end - start + 1) as usize];
                 let count = send(editor, EM_GETSELTEXT, 0, selected.as_mut_ptr() as isize);
                 assert_eq!(
@@ -956,19 +932,13 @@ mod tests {
             }
             let content = Content::new("const UINT32 value = 42;\n".repeat(500));
             set_content(editor, &content).unwrap();
-            let range = CHARRANGE {
-                cpMin: 6000,
-                cpMax: 6005,
-            };
-            send(editor, EM_EXSETSEL, 0, &range as *const _ as isize);
+            fixture.select(6000, 6005);
             send(editor, EM_LINESCROLL, 0, 30);
             let first = send(editor, EM_GETFIRSTVISIBLELINE, 0, 0);
             assert!(first > 0);
             for _ in 0..2 {
                 recolor(editor, &content).unwrap();
-                let mut actual = CHARRANGE::default();
-                send(editor, EM_EXGETSEL, 0, &mut actual as *mut _ as isize);
-                assert_eq!((actual.cpMin, actual.cpMax), (range.cpMin, range.cpMax));
+                assert_eq!(fixture.selection(), (6000, 6005));
                 assert_eq!(send(editor, EM_GETFIRSTVISIBLELINE, 0, 0), first);
                 assert_eq!(text(editor).replace("\r\n", "\r"), content.text);
             }
