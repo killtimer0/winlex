@@ -5,6 +5,13 @@ edition = "2024"
 build = "build.rs"
 default-run = "winlex"
 
+[profile.dist]
+inherits = "release"
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+
 [[bin]]
 name = "winlex-gui"
 path = "src/gui.rs"

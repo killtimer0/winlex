@@ -4,7 +4,7 @@ param(
     [Parameter(Mandatory=$true)][string]$LinkExe,
     [Parameter(Mandatory=$true)][string]$VcLtlRoot,
     [ValidateSet('x86','x64')][string]$Architecture = 'x86',
-    [ValidateSet('Debug','Release')][string]$Configuration = 'Release',
+    [ValidateSet('Debug','Release','Dist')][string]$Configuration = 'Release',
     [string]$TargetDir,
     [string]$RcExe
 )
@@ -58,12 +58,29 @@ $oldLtl = $env:WINLEX_VC_LTL_ROOT
 $oldRc = $env:WINLEX_RC_EXE
 try {
     if ($oldFlags -or $oldRustFlags) { throw 'Clear existing RUSTFLAGS/CARGO_ENCODED_RUSTFLAGS before this reproducible build.' }
-    $env:CARGO_ENCODED_RUSTFLAGS = @('-C','target-feature=+crt-static','-C',"linker=$linker") -join [char]31
+    $flags = @('-C','target-feature=+crt-static','-C',"linker=$linker")
+    if ($Configuration -eq 'Dist') {
+        $sysroot = & rustc --print sysroot
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path $sysroot)) { throw 'Rust sysroot was not found.' }
+        $cargoHome = if ($env:CARGO_HOME) { $env:CARGO_HOME } else { Join-Path $env:USERPROFILE '.cargo' }
+        $remappings = @(
+            @($root, '/src/winlex'),
+            @($ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($cargoHome), '/cargo'),
+            @($sysroot, '/rust-toolchain')
+        )
+        foreach ($mapping in $remappings) {
+            foreach ($prefix in @($mapping[0].Replace('/', '\'), $mapping[0].Replace('\', '/')) | Select-Object -Unique) {
+                $flags += "--remap-path-prefix=$prefix=$($mapping[1])"
+            }
+        }
+    }
+    $env:CARGO_ENCODED_RUSTFLAGS = $flags -join [char]31
     $env:WINLEX_YY_THUNKS_OBJ = $object
     $env:WINLEX_VC_LTL_ROOT = $ltlRoot
     $env:WINLEX_RC_EXE = $rc
     $arguments = @('build', '--manifest-path', "$root/Cargo.toml", '--package', 'winlex', '--target', $target, '--locked', '--message-format=json-render-diagnostics')
     if ($Configuration -eq 'Release') { $arguments += '--release' }
+    if ($Configuration -eq 'Dist') { $arguments += @('--profile', 'dist') }
     if ($TargetDir) { $arguments += @('--target-dir', $TargetDir) }
     $executables = @{}
     $buildOutputs = @{}

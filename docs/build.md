@@ -29,10 +29,11 @@ $link = Join-Path $env:VCToolsInstallDir 'bin/Hostx64/x86/link.exe'
 
 x64 构建将架构、链接器和 OBJ 路径改为 x64。
 默认构建 Release，使用 `-Configuration Debug` 构建开发版本。
+分发版本使用 `-Configuration Dist`，启用体积优化、完整 LTO、单代码生成单元和源码路径重映射；发生 panic 时直接终止进程，不执行栈展开清理。
 脚本优先从开发环境的 Windows SDK 路径查找 Microsoft `rc.exe`，也可用 `-RcExe PATH` 指定。
 GUI 菜单、字符串、版本信息和清单从 `crates/winlex-gui/res/gui.rc` 编译并嵌入。
 输出目录遵循 Cargo 配置和 `CARGO_TARGET_DIR`，也可用 `-TargetDir PATH` 指定。
-默认产物位于 `target/<Rust target>/{debug,release}/`；构建结束后显示实际路径。
+默认产物位于 `target/<Rust target>/{debug,release,dist}/`；构建结束后显示实际路径。
 `winlex.exe` 为命令行程序，`winlex-gui.exe` 为图形界面程序。
 各自的 `.build.json` 记录构建版本和哈希。CLI 查询另需所需 WinMD。
 
