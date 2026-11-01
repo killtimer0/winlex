@@ -1,6 +1,234 @@
 use winlex_core::{Architecture, Catalog, SearchMode, SearchOptions};
 
 #[test]
+fn external_references_remain_unlinked_when_missing_or_ambiguous() {
+    use winlex_core::windows_metadata::{reader, writer, *};
+    let mut dependency = writer::File::new("NavigationExternal");
+    dependency.TypeDef(
+        "External",
+        "Target",
+        writer::TypeDefOrRef::default(),
+        TypeAttributes::Public | TypeAttributes::WindowsRuntime,
+    );
+    let bytes = dependency.into_stream();
+    let mut consumer = writer::File::new("NavigationConsumer");
+    consumer.set_reference(reader::Index::new(vec![
+        reader::File::new(bytes.clone()).unwrap(),
+    ]));
+    consumer.TypeDef(
+        "Fixture",
+        "Owner",
+        writer::TypeDefOrRef::default(),
+        TypeAttributes::Public,
+    );
+    consumer.Field(
+        "Member",
+        &Type::class_named("External", "Target"),
+        FieldAttributes::Public,
+    );
+    let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tmp");
+    std::fs::create_dir_all(&directory).unwrap();
+    let paths = ["consumer", "dependency"].map(|name| {
+        directory.join(format!(
+            "navigation-external-{name}-{}.winmd",
+            std::process::id()
+        ))
+    });
+    std::fs::write(&paths[0], consumer.into_stream()).unwrap();
+    std::fs::write(&paths[1], bytes).unwrap();
+    let inputs = paths.map(|path| {
+        let input = winlex_core::SourceData::read(&path).unwrap();
+        std::fs::remove_file(path).unwrap();
+        input
+    });
+    let missing = Catalog::from_inputs([inputs[0].clone()]).unwrap();
+    let resolved = Catalog::from_inputs(inputs.clone()).unwrap();
+    let ambiguous =
+        Catalog::from_inputs([inputs[0].clone(), inputs[1].clone(), inputs[1].clone()]).unwrap();
+    for (catalog, expected) in [
+        (&missing, false),
+        (&resolved, true),
+        (&ambiguous, false),
+        (&missing, false),
+    ] {
+        let member = catalog
+            .search(
+                "Member",
+                SearchOptions {
+                    mode: SearchMode::Name,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .id;
+        let rendered =
+            winlex_format::declaration::render(catalog, member, Architecture::X64).unwrap();
+        assert_eq!(rendered.text, "Target Member;\n");
+        assert_eq!(rendered.regions.len(), usize::from(expected));
+        if expected {
+            let target = rendered.regions[0].reference().unwrap();
+            assert_eq!(target.source_id, 1);
+            assert_eq!(catalog.entity(target).unwrap().full_name, "External.Target");
+            assert_eq!(rendered.regions[0].range, 0..6);
+        }
+    }
+}
+
+#[test]
+fn named_references_keep_identity_through_declarators_generics_and_utf16() {
+    use winlex_core::windows_metadata::{writer, *};
+    let mut file = writer::File::new("NavigationDeclarations");
+    for namespace in ["Left", "Right"] {
+        file.TypeDef(
+            namespace,
+            "Item",
+            writer::TypeDefOrRef::default(),
+            TypeAttributes::Public,
+        );
+    }
+    let generic = file.TypeDef(
+        "Fixture",
+        "Box`1",
+        writer::TypeDefOrRef::default(),
+        TypeAttributes::Public,
+    );
+    file.GenericParam(
+        "T",
+        writer::TypeOrMethodDef::TypeDef(generic),
+        0,
+        GenericParamAttributes(0),
+    );
+    let base = file.TypeDef(
+        "Fixture",
+        "Base",
+        writer::TypeDefOrRef::default(),
+        TypeAttributes::Public,
+    );
+    let owner = file.TypeDef(
+        "Fixture",
+        "Owner😀",
+        writer::TypeDefOrRef::TypeDef(base),
+        TypeAttributes::Public,
+    );
+    file.InterfaceImpl(owner, &Type::class_named("Left", "Item"));
+    let mut generic_name = TypeName::named("Fixture", "Box`1");
+    generic_name.generics = vec![Type::value_named("Right", "Item")];
+    let nested = Type::PtrConst(
+        Box::new(Type::ArrayFixed(
+            Box::new(Type::ValueName(generic_name.clone())),
+            3,
+        )),
+        1,
+    );
+    file.Field("值😀", &nested, FieldAttributes::Public);
+    let property = file.Property("Current", &Type::ValueName(generic_name));
+    file.PropertyMap(owner, property);
+    let event = file.Event("Changed", &Type::class_named("Right", "Item"));
+    file.EventMap(owner, event);
+    file.MethodDef(
+        "Call",
+        &Signature {
+            return_type: Type::PtrMut(Box::new(Type::value_named("Left", "Item")), 1),
+            types: vec![nested, Type::class_named("Missing", "Unknown")],
+            ..Default::default()
+        },
+        MethodAttributes::Public,
+        MethodImplAttributes(0),
+    );
+    file.Param("参数😀", 1, ParamAttributes::In);
+    file.Param("missing", 2, ParamAttributes::default());
+    let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tmp");
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join(format!(
+        "navigation-declarations-{}.winmd",
+        std::process::id()
+    ));
+    std::fs::write(&path, file.into_stream()).unwrap();
+    let catalog = Catalog::open(&path).unwrap();
+    std::fs::remove_file(path).unwrap();
+    let owner = catalog
+        .type_ids()
+        .find(|&id| catalog.entity(id).unwrap().name == "Owner😀")
+        .unwrap();
+    let rendered = winlex_format::declaration::render(&catalog, owner, Architecture::X64).unwrap();
+    assert!(
+        rendered.text.contains("class Owner😀 : Base, Item\n{"),
+        "{}",
+        rendered.text
+    );
+    assert!(
+        rendered.text.contains("const Box<Item> (*值😀)[3];"),
+        "{}",
+        rendered.text
+    );
+    assert!(rendered.text.contains("Item *Call(\n        [in] const Box<Item> (*参数😀)[3],\n        Unknown missing\n    );"), "{}", rendered.text);
+    let units: Vec<_> = rendered.text.encode_utf16().collect();
+    let links: Vec<_> = rendered
+        .regions
+        .iter()
+        .filter_map(|r| {
+            r.reference().map(|id| {
+                (
+                    String::from_utf16(&units[r.range.clone()]).unwrap(),
+                    catalog.entity(id).unwrap().full_name,
+                )
+            })
+        })
+        .collect();
+    assert_eq!(
+        links,
+        [
+            ("Base", "Fixture.Base"),
+            ("Item", "Left.Item"),
+            ("Box", "Fixture.Box`1"),
+            ("Item", "Right.Item"),
+            ("Box", "Fixture.Box`1"),
+            ("Item", "Right.Item"),
+            ("Item", "Right.Item"),
+            ("Item", "Left.Item"),
+            ("Box", "Fixture.Box`1"),
+            ("Item", "Right.Item"),
+        ]
+        .map(|(text, name)| (text.to_owned(), name.to_owned()))
+    );
+    for pair in rendered.regions.windows(2) {
+        assert!(pair[0].range.end <= pair[1].range.start);
+    }
+    let reference = catalog
+        .search(
+            "Left.Item",
+            SearchOptions {
+                mode: SearchMode::Name,
+                categories: Some(winlex_core::EntityCategory::TypeReference as u32),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap();
+    let resolved =
+        winlex_format::declaration::render(&catalog, reference.id, Architecture::X64).unwrap();
+    let link = resolved
+        .regions
+        .iter()
+        .find(|r| r.reference().is_some())
+        .unwrap();
+    let units: Vec<_> = resolved.text.encode_utf16().collect();
+    assert_eq!(
+        String::from_utf16(&units[link.range.clone()]).unwrap(),
+        "Left.Item"
+    );
+    assert_eq!(
+        catalog.entity(link.reference().unwrap()).unwrap().full_name,
+        "Left.Item"
+    );
+}
+
+#[test]
 fn parameter_modifiers_preserve_order_and_missing_parameter_names() {
     use winlex_core::windows_metadata::{writer, *};
     let mut file = writer::File::new("ParameterModifiers");
@@ -124,10 +352,13 @@ fn declarations_cover_native_signatures_and_architecture_specific_types() {
             let rendered = winlex_format::declaration::render(&catalog, entity.id, arch).unwrap();
             let utf16: Vec<_> = rendered.text.encode_utf16().collect();
             let mut end = 0;
-            for number in &rendered.numbers {
-                assert!(number.range.start >= end);
-                end = number.range.end;
-                let region = String::from_utf16(&utf16[number.range.clone()]).unwrap();
+            for annotation in &rendered.regions {
+                assert!(annotation.range.start >= end);
+                end = annotation.range.end;
+                let Some(number) = annotation.number() else {
+                    continue;
+                };
+                let region = String::from_utf16(&utf16[annotation.range.clone()]).unwrap();
                 assert!(
                     region.contains(&number.value.to_string())
                         || region.contains(&number.hexadecimal()),
@@ -199,9 +430,11 @@ fn declarations_cover_native_signatures_and_architecture_specific_types() {
             ),
         ] {
             let number = rendered
-                .numbers
+                .regions
                 .iter()
                 .find(|n| String::from_utf16(&units[n.range.clone()]).unwrap() == region)
+                .unwrap()
+                .number()
                 .unwrap();
             assert_eq!(number.value, value);
             assert_eq!(number.unit, unit);
@@ -428,13 +661,18 @@ fn enum_members_and_individual_constants_share_annotations() {
         parent.text
     );
     assert!(member.text.contains("Failure = -1073741819; // 0xC0000005"));
-    assert_eq!(member.numbers.len(), 2);
-    for number in &member.numbers {
+    assert_eq!(member.regions.len(), 2);
+    for number in member.regions.iter().filter_map(|r| r.number()) {
         assert_eq!(number.value, -1073741819);
         assert_eq!(number.hexadecimal(), "0xC0000005");
     }
-    assert_eq!(parent.numbers.len(), 2);
-    for (a, b) in parent.numbers.iter().zip(&member.numbers) {
+    assert_eq!(parent.regions.len(), 2);
+    for (a, b) in parent
+        .regions
+        .iter()
+        .filter_map(|r| r.number())
+        .zip(member.regions.iter().filter_map(|r| r.number()))
+    {
         assert_eq!(a.entity, b.entity);
         assert_eq!(a.value, b.value);
         assert_eq!(a.hexadecimal(), b.hexadecimal());
@@ -449,10 +687,16 @@ fn enum_members_and_individual_constants_share_annotations() {
         parent.text
     );
     assert!(member.text.contains("length: 7 UTF-16 code units"));
-    assert_eq!(member.numbers.len(), 1);
-    assert_eq!(member.numbers[0].value, 7);
-    assert_eq!(member.numbers[0].with_unit(), "7 UTF-16 code units");
-    assert_eq!(parent.numbers[0].entity, member.numbers[0].entity);
+    assert_eq!(member.regions.len(), 1);
+    assert_eq!(member.regions[0].number().unwrap().value, 7);
+    assert_eq!(
+        member.regions[0].number().unwrap().with_unit(),
+        "7 UTF-16 code units"
+    );
+    assert_eq!(
+        parent.regions[0].number().unwrap().entity,
+        member.regions[0].number().unwrap().entity
+    );
     assert!(
         render("EmptyText")
             .text
@@ -460,5 +704,5 @@ fn enum_members_and_individual_constants_share_annotations() {
     );
     let null = render("NullText");
     assert!(null.text.contains("= null;"), "{}", null.text);
-    assert!(null.numbers.is_empty());
+    assert!(null.regions.is_empty());
 }

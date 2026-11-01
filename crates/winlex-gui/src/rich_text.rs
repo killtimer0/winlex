@@ -3,12 +3,16 @@ use crate::native::*;
 use anyhow::{Context, ensure};
 use std::{mem::size_of, sync::OnceLock};
 use windows::Win32::UI::Controls::RichEdit::{
-    CFM_COLOR, CFM_FACE, CFM_SIZE, CHARFORMATW, CHARRANGE, EDITSTREAM, EM_EXGETSEL, EM_EXSETSEL,
-    EM_GETCHARFORMAT, EM_GETSELTEXT, EM_SETBKGNDCOLOR, EM_SETCHARFORMAT, EM_SETPARAFORMAT,
-    EM_STREAMIN, PARAFORMAT, PARAFORMAT2, PFM_LINESPACING, PFM_RIGHTINDENT, PFM_STARTINDENT,
-    SCF_ALL, SF_RTF,
+    CFE_LINK, CFE_UNDERLINE, CFM_COLOR, CFM_FACE, CFM_LINK, CFM_SIZE, CFM_UNDERLINE, CHARFORMAT2W,
+    CHARFORMATW, CHARRANGE, EDITSTREAM, EM_EXGETSEL, EM_EXSETSEL, EM_GETCHARFORMAT,
+    EM_GETEVENTMASK, EM_GETOLEINTERFACE, EM_GETSELTEXT, EM_SETBKGNDCOLOR, EM_SETCHARFORMAT,
+    EM_SETEVENTMASK, EM_SETPARAFORMAT, EM_STREAMIN, ENLINK, ENM_LINK, IRichEditOle, ITextDocument,
+    PARAFORMAT, PARAFORMAT2, PFM_LINESPACING, PFM_RIGHTINDENT, PFM_STARTINDENT, SCF_ALL,
+    SCF_SELECTION, SF_RTF,
 };
-use winlex_format::declaration::{NumberRegion, Rendered};
+use windows_core::Interface;
+use winlex_core::EntityId;
+use winlex_format::declaration::{Region, RegionKind, Rendered};
 
 mod rtf;
 mod scroll;
@@ -17,7 +21,7 @@ mod word_break;
 pub struct Content {
     text: String,
     rtf: Vec<u8>,
-    pub numbers: Vec<NumberRegion>,
+    pub regions: Vec<Region>,
 }
 
 impl Content {
@@ -34,15 +38,56 @@ impl From<Rendered> for Content {
         Self {
             rtf: rtf::render(&text),
             text,
-            numbers: body.numbers,
+            regions: body.regions,
         }
     }
 }
 
+pub fn region_at(regions: &[Region], range: std::ops::Range<usize>) -> Option<&Region> {
+    regions.iter().find(|region| {
+        range.start <= range.end
+            && region.range.start <= range.start
+            && range.end <= region.range.end
+            && (range.start < region.range.end || region.number().is_some())
+    })
+}
+
+pub fn link_region<'a>(hwnd: HWND, content: &'a Content, link: &ENLINK) -> Option<&'a Region> {
+    let range = link.chrg;
+    let mut candidates = content.regions.iter().filter(|region| {
+        matches!(region.kind, RegionKind::Reference(_))
+            && range.cpMin >= 0
+            && range.cpMin as usize <= region.range.start
+            && region.range.end <= range.cpMax as usize
+    });
+    let first = candidates.next()?;
+    if candidates.next().is_none() {
+        return Some(first);
+    }
+    let point = POINT {
+        x: link.lParam.0 as i16 as i32,
+        y: (link.lParam.0 >> 16) as i16 as i32,
+    };
+    let index = send(hwnd, EM_CHARFROMPOS, 0, &point as *const _ as isize);
+    let region = region_at(&content.regions, index as usize..index as usize)?;
+    matches!(region.kind, RegionKind::Reference(_)).then_some(region)
+}
+
+enum ContextAction {
+    Copy(String),
+    Navigate(EntityId),
+}
+
 /// Capture context before TrackPopupMenu enters its nested message loop.
-pub fn context_menu(hwnd: HWND, location: isize, numbers: &[NumberRegion]) -> anyhow::Result<()> {
+pub fn context_menu(
+    hwnd: HWND,
+    location: isize,
+    regions: &[Region],
+    mouse_region: Option<&Region>,
+) -> anyhow::Result<Option<EntityId>> {
     use crate::resources::{
         self, IDS_COPY_DECIMAL, IDS_COPY_HEX, IDS_COPY_SELECTION, IDS_COPY_VALUE,
+        IDS_GO_TO_DECLARATION,
     };
     let mut selection = CHARRANGE::default();
     send(hwnd, EM_EXGETSEL, 0, &mut selection as *mut _ as isize);
@@ -70,7 +115,11 @@ pub fn context_menu(hwnd: HWND, location: isize, numbers: &[NumberRegion]) -> an
             ScreenToClient(hwnd, &mut local);
         }
         let index = send(hwnd, EM_CHARFROMPOS, 0, &local as *const _ as isize) as i32;
-        if index >= 0 && !(selection.cpMin..selection.cpMax).contains(&index) {
+        let selected_link = mouse_region.is_some_and(|region| {
+            selection.cpMin as usize <= region.range.start
+                && region.range.end <= selection.cpMax as usize
+        });
+        if index >= 0 && !(selection.cpMin..selection.cpMax).contains(&index) && !selected_link {
             selection = CHARRANGE {
                 cpMin: index,
                 cpMax: index,
@@ -81,32 +130,52 @@ pub fn context_menu(hwnd: HWND, location: isize, numbers: &[NumberRegion]) -> an
     let mut buffer = vec![0u16; (selection.cpMax - selection.cpMin).max(0) as usize + 1];
     let length = send(hwnd, EM_GETSELTEXT, 0, buffer.as_mut_ptr() as isize).max(0) as usize;
     let selected = (length != 0).then(|| String::from_utf16_lossy(&buffer[..length]));
-    let number = numbers.iter().find(|n| {
-        n.range.start <= selection.cpMin as usize && selection.cpMax as usize <= n.range.end
-    });
+    let selected_region = region_at(regions, selection.cpMin as usize..selection.cpMax as usize);
+    let region = if location == -1 {
+        selected_region
+    } else {
+        mouse_region.or_else(|| selected_region.filter(|region| region.number().is_some()))
+    };
     let mut actions = Vec::new();
-    if let Some(number) = number {
-        actions.push((IDS_COPY_DECIMAL, Some(number.value.to_string())));
-        actions.push((IDS_COPY_HEX, Some(number.hexadecimal())));
-        if number.unit.is_some() {
-            actions.push((IDS_COPY_VALUE, Some(number.with_unit())));
+    if let Some(region) = region {
+        match &region.kind {
+            RegionKind::Number(number) => {
+                actions.push((
+                    IDS_COPY_DECIMAL,
+                    Some(ContextAction::Copy(number.value.to_string())),
+                ));
+                actions.push((
+                    IDS_COPY_HEX,
+                    Some(ContextAction::Copy(number.hexadecimal())),
+                ));
+                if number.unit.is_some() {
+                    actions.push((
+                        IDS_COPY_VALUE,
+                        Some(ContextAction::Copy(number.with_unit())),
+                    ));
+                }
+            }
+            RegionKind::Reference(target) => {
+                actions.push((
+                    IDS_GO_TO_DECLARATION,
+                    Some(ContextAction::Navigate(*target)),
+                ));
+            }
         }
     }
-    actions.push((IDS_COPY_SELECTION, selected));
+    actions.push((IDS_COPY_SELECTION, selected.map(ContextAction::Copy)));
     unsafe {
         let menu = Popup::new()?;
         for (id, value) in &actions {
-            if *id == IDS_COPY_SELECTION && number.is_some() {
+            if *id == IDS_COPY_SELECTION && region.is_some() {
                 menu.separator()?;
             }
-            let label = if *id == IDS_COPY_SELECTION {
-                resources::text(*id)
+            let label = if let Some(ContextAction::Copy(value)) = value
+                && *id != IDS_COPY_SELECTION
+            {
+                format!("{}\t{}", resources::text(*id), value)
             } else {
-                format!(
-                    "{}\t{}",
-                    resources::text(*id),
-                    value.as_deref().unwrap_or_default()
-                )
+                resources::text(*id)
             };
             menu.item(*id, &wide(&label), value.is_some())?;
         }
@@ -114,10 +183,13 @@ pub fn context_menu(hwnd: HWND, location: isize, numbers: &[NumberRegion]) -> an
         if IsWindow(hwnd) != 0
             && let Some((_, Some(value))) = actions.iter().find(|(id, _)| *id == command)
         {
-            copy_text(hwnd, value)?;
+            match value {
+                ContextAction::Copy(value) => copy_text(hwnd, value)?,
+                ContextAction::Navigate(target) => return Ok(Some(*target)),
+            }
         }
     }
-    Ok(())
+    Ok(None)
 }
 
 fn copy_text(hwnd: HWND, value: &str) -> anyhow::Result<()> {
@@ -152,6 +224,8 @@ pub fn create(parent: HWND, id: u16) -> anyhow::Result<HWND> {
         return Err(error);
     }
     send(hwnd, EM_SETLIMITTEXT, 0x7ffffffe, 0);
+    let mask = send(hwnd, EM_GETEVENTMASK, 0, 0);
+    send(hwnd, EM_SETEVENTMASK, 0, mask | ENM_LINK as isize);
     send(
         hwnd,
         EM_SETWORDBREAKPROC,
@@ -238,8 +312,9 @@ pub fn font(hwnd: HWND) {
 
 pub fn set_content(hwnd: HWND, content: &Content) -> anyhow::Result<()> {
     send(hwnd, WM_SETREDRAW, 0, 0);
+    let frozen = freeze(hwnd);
     let result = replace(hwnd, content);
-    redraw(hwnd);
+    redraw(hwnd, frozen);
     result
 }
 
@@ -248,20 +323,34 @@ pub fn recolor(hwnd: HWND, content: &Content) -> anyhow::Result<()> {
     send(hwnd, EM_EXGETSEL, 0, &mut range as *mut _ as isize);
     let first_line = send(hwnd, EM_GETFIRSTVISIBLELINE, 0, 0);
     send(hwnd, WM_SETREDRAW, 0, 0);
+    let frozen = freeze(hwnd);
     let result = replace(hwnd, content);
     send(hwnd, EM_EXSETSEL, 0, &range as *const _ as isize);
+    redraw(hwnd, frozen);
     send(
         hwnd,
         EM_LINESCROLL,
         0,
         first_line - send(hwnd, EM_GETFIRSTVISIBLELINE, 0, 0),
     );
-    redraw(hwnd);
     result
 }
 
-fn redraw(hwnd: HWND) {
+fn freeze(hwnd: HWND) -> Option<ITextDocument> {
+    let mut ole = None::<IRichEditOle>;
+    send(hwnd, EM_GETOLEINTERFACE, 0, &mut ole as *mut _ as isize);
+    let document = ole?.cast::<ITextDocument>().ok()?;
+    unsafe { document.Freeze().ok()? };
+    Some(document)
+}
+
+fn redraw(hwnd: HWND, frozen: Option<ITextDocument>) {
+    if let Some(document) = frozen {
+        let _ = unsafe { document.Unfreeze() };
+    }
     send(hwnd, WM_SETREDRAW, 1, 0);
+    // RichEdit20 otherwise clamps deep scrolling to the lazily measured prefix.
+    send(hwnd, EM_GETLINECOUNT, 0, 0);
     unsafe {
         InvalidateRect(hwnd, std::ptr::null(), 1);
     }
@@ -282,12 +371,15 @@ fn replace(hwnd: HWND, content: &Content) -> anyhow::Result<()> {
     };
     if !colored || result.is_err() {
         set_text(hwnd, &content.text);
-        let plain = CHARFORMATW {
-            cbSize: size_of::<CHARFORMATW>() as u32,
-            dwMask: CFM_COLOR,
-            crTextColor: windows::Win32::Foundation::COLORREF(unsafe {
-                GetSysColor(COLOR_WINDOWTEXT)
-            }),
+        let plain = CHARFORMAT2W {
+            Base: CHARFORMATW {
+                cbSize: size_of::<CHARFORMAT2W>() as u32,
+                dwMask: CFM_COLOR | CFM_LINK | CFM_UNDERLINE,
+                crTextColor: windows::Win32::Foundation::COLORREF(unsafe {
+                    GetSysColor(COLOR_WINDOWTEXT)
+                }),
+                ..Default::default()
+            },
             ..Default::default()
         };
         send(
@@ -305,9 +397,41 @@ fn replace(hwnd: HWND, content: &Content) -> anyhow::Result<()> {
         &format as *const _ as isize,
     );
     font(hwnd);
+    apply_regions(hwnd, content)?;
     let range = CHARRANGE::default();
     send(hwnd, EM_EXSETSEL, 0, &range as *const _ as isize);
     result
+}
+
+fn apply_regions(hwnd: HWND, content: &Content) -> anyhow::Result<()> {
+    let format = CHARFORMAT2W {
+        Base: CHARFORMATW {
+            cbSize: size_of::<CHARFORMAT2W>() as u32,
+            dwMask: CFM_LINK | CFM_UNDERLINE,
+            dwEffects: CFE_LINK | CFE_UNDERLINE,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    for region in &content.regions {
+        if matches!(region.kind, RegionKind::Reference(_)) {
+            let range = CHARRANGE {
+                cpMin: i32::try_from(region.range.start)?,
+                cpMax: i32::try_from(region.range.end)?,
+            };
+            send(hwnd, EM_EXSETSEL, 0, &range as *const _ as isize);
+            ensure!(
+                send(
+                    hwnd,
+                    EM_SETCHARFORMAT,
+                    SCF_SELECTION as usize,
+                    &format as *const _ as isize
+                ) != 0,
+                "Set declaration link failed"
+            );
+        }
+    }
+    Ok(())
 }
 
 fn stream_in(hwnd: HWND, data: &[u8]) -> anyhow::Result<()> {
@@ -438,6 +562,197 @@ mod tests {
     use super::*;
 
     #[test]
+    fn native_links_preserve_utf16_ranges_recoloring_and_plain_text_fallback() {
+        use windows::Win32::UI::Controls::RichEdit::EN_LINK;
+
+        unsafe extern "system" fn observe(
+            hwnd: HWND,
+            msg: u32,
+            w: usize,
+            l: isize,
+            _id: usize,
+            data: usize,
+        ) -> isize {
+            unsafe {
+                if msg == WM_NOTIFY && (l as *const NMHDR).read_unaligned().code == EN_LINK {
+                    let link = (l as *const ENLINK).read_unaligned();
+                    let received = &mut *(data as *mut Vec<ENLINK>);
+                    received.push(link);
+                    return 0;
+                }
+                default_subclass(hwnd, msg, w, l)
+            }
+        }
+
+        unsafe {
+            let parent = CreateWindowExW(
+                0,
+                w!("STATIC"),
+                std::ptr::null(),
+                WS_POPUP | WS_VISIBLE,
+                -10000,
+                -10000,
+                900,
+                600,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                instance(),
+                std::ptr::null(),
+            );
+            assert!(!parent.is_null());
+            let editor = create(parent, 1).unwrap();
+            place(editor, crate::layout::rect(0, 0, 750, 500));
+            let mut received = Vec::<ENLINK>::new();
+            assert_ne!(
+                set_subclass(parent, Some(observe), 1, &mut received as *mut _ as usize),
+                0
+            );
+            let target = EntityId {
+                source_id: 7,
+                token: 0x02000002,
+            };
+            let mut rendered = Rendered::from("// 😀\nTarget value;\nTarget");
+            rendered.regions = [6..12, 20..26]
+                .into_iter()
+                .map(|range| Region {
+                    range,
+                    kind: RegionKind::Reference(target),
+                })
+                .collect();
+            let mut content = Content::from(rendered);
+            for plain in [false, true] {
+                if plain {
+                    content.rtf = b"invalid RTF".to_vec();
+                }
+                let result = set_content(editor, &content);
+                if !plain {
+                    result.unwrap();
+                }
+                assert_eq!(text(editor).replace("\r\n", "\r"), content.text);
+                assert_ne!(send(editor, EM_GETEVENTMASK, 0, 0) & ENM_LINK as isize, 0);
+                for refresh in [false, true] {
+                    if refresh {
+                        let range = CHARRANGE {
+                            cpMin: 7,
+                            cpMax: 10,
+                        };
+                        send(editor, EM_EXSETSEL, 0, &range as *const _ as isize);
+                        let result = recolor(editor, &content);
+                        if !plain {
+                            result.unwrap();
+                        }
+                        let mut actual = CHARRANGE::default();
+                        send(editor, EM_EXGETSEL, 0, &mut actual as *mut _ as isize);
+                        assert_eq!((actual.cpMin, actual.cpMax), (7, 10));
+                    }
+                    for index in 0..27 {
+                        let selected = CHARRANGE {
+                            cpMin: index,
+                            cpMax: index + 1,
+                        };
+                        send(editor, EM_EXSETSEL, 0, &selected as *const _ as isize);
+                        let mut format = CHARFORMAT2W {
+                            Base: CHARFORMATW {
+                                cbSize: size_of::<CHARFORMAT2W>() as u32,
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        };
+                        send(
+                            editor,
+                            EM_GETCHARFORMAT,
+                            SCF_SELECTION as usize,
+                            &mut format as *mut _ as isize,
+                        );
+                        let linked = content
+                            .regions
+                            .iter()
+                            .any(|r| r.range.contains(&(index as usize)));
+                        assert_eq!(
+                            format.Base.dwEffects.contains(CFE_LINK),
+                            linked,
+                            "index {index}"
+                        );
+                        assert_eq!(
+                            format.Base.dwEffects.contains(CFE_UNDERLINE),
+                            linked,
+                            "index {index}"
+                        );
+                    }
+                    for region in &content.regions {
+                        let mut end = POINT { x: 0, y: 0 };
+                        let mut last = POINT { x: 0, y: 0 };
+                        send(
+                            editor,
+                            EM_POSFROMCHAR,
+                            &mut end as *mut _ as usize,
+                            region.range.end as isize,
+                        );
+                        send(
+                            editor,
+                            EM_POSFROMCHAR,
+                            &mut last as *mut _ as usize,
+                            (region.range.end - 1) as isize,
+                        );
+                        for (x, expected) in
+                            [((last.x + end.x) / 2 + 1, Some(target)), (end.x + 30, None)]
+                        {
+                            received.clear();
+                            let caret = CHARRANGE::default();
+                            send(editor, EM_EXSETSEL, 0, &caret as *const _ as isize);
+                            let location =
+                                (((end.y + 6) as u16 as u32) << 16 | x as u16 as u32) as isize;
+                            send(editor, WM_LBUTTONDOWN, 9, location);
+                            send(editor, WM_LBUTTONUP, 8, location);
+                            let actual = received.iter().find_map(|link| {
+                                link_region(editor, &content, link).and_then(Region::reference)
+                            });
+                            assert_eq!(
+                                actual,
+                                expected,
+                                "plain={plain}, refresh={refresh}, range={:?}, end=({}, {}), notifications={}",
+                                region.range,
+                                end.x,
+                                end.y,
+                                received.len()
+                            );
+                            if expected.is_some() {
+                                let range = received.last().unwrap().chrg;
+                                assert_eq!(
+                                    range.cpMin as usize..range.cpMax as usize,
+                                    region.range
+                                );
+                            }
+                        }
+                    }
+                }
+                // Replacing linked text must not leave an inherited link on ordinary text.
+                set_content(editor, &Content::new("plain replacement".into())).unwrap();
+                let all = CHARRANGE {
+                    cpMin: 0,
+                    cpMax: -1,
+                };
+                send(editor, EM_EXSETSEL, 0, &all as *const _ as isize);
+                let mut format = CHARFORMAT2W {
+                    Base: CHARFORMATW {
+                        cbSize: size_of::<CHARFORMAT2W>() as u32,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                };
+                send(
+                    editor,
+                    EM_GETCHARFORMAT,
+                    SCF_SELECTION as usize,
+                    &mut format as *mut _ as isize,
+                );
+                assert_eq!(format.Base.dwEffects.0 & (CFE_LINK | CFE_UNDERLINE).0, 0);
+            }
+            DestroyWindow(parent);
+        }
+    }
+
+    #[test]
     fn native_word_selection_and_navigation_use_identifier_boundaries() {
         unsafe {
             let parent = CreateWindowExW(
@@ -537,10 +852,10 @@ mod tests {
             .next()
             .unwrap()
             .unwrap();
-        let body = winlex_format::declaration::render(&catalog, entity.id, Architecture::X64)
-            .unwrap()
-            .text;
-        let content = Content::new(body.clone());
+        let rendered =
+            winlex_format::declaration::render(&catalog, entity.id, Architecture::X64).unwrap();
+        let body = rendered.text.clone();
+        let content = Content::from(rendered);
         unsafe {
             let parent = CreateWindowExW(
                 0,

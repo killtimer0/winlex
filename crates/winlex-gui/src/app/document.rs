@@ -2,6 +2,9 @@
 use super::{dpi, metadata::MetadataView, read, workspace};
 use crate::native::*;
 use std::rc::Rc;
+use windows::Win32::UI::Controls::RichEdit::{EN_LINK, ENLINK};
+
+pub(super) const FOLLOW_REFERENCE: u32 = WM_APP + 42;
 
 pub(super) struct Init {
     pub content: Option<super::metadata::MetadataView>,
@@ -84,6 +87,19 @@ impl MetadataView {
         let hwnd = self.hwnd;
         unsafe {
             match msg {
+                FOLLOW_REFERENCE => {
+                    if self.id == w as u32 as u64 | ((l as u32 as u64) << 32) {
+                        self.follow_reference();
+                    }
+                    return 0;
+                }
+                WM_NOTIFY => {
+                    let header = (l as *const NMHDR).read_unaligned();
+                    if header.code == EN_LINK {
+                        self.link_notification((l as *const ENLINK).read_unaligned());
+                        return 0;
+                    }
+                }
                 WM_CLOSE => {
                     workspace::close_document(hwnd);
                     return 0;
@@ -147,26 +163,35 @@ unsafe extern "system" fn editor_proc(
     owner: usize,
 ) -> isize {
     unsafe {
+        let document = workspace::view(owner as HWND);
+        if let Some(document) = &document {
+            match msg {
+                WM_LBUTTONDOWN | WM_LBUTTONDBLCLK | WM_RBUTTONDOWN | WM_KILLFOCUS
+                | WM_CANCELMODE | WM_SIZE | WM_SETFONT | WM_MOUSEWHEEL | WM_MOUSEHWHEEL
+                | WM_VSCROLL | WM_HSCROLL | WM_KEYDOWN | WM_SYSKEYDOWN => {
+                    document.cancel_link_press()
+                }
+                WM_CAPTURECHANGED if !document.releasing_link.get() || l != 0 => {
+                    document.cancel_link_press();
+                }
+                WM_LBUTTONUP => document.releasing_link.set(true),
+                WM_RBUTTONUP => document.clear_context_link(),
+                WM_MOUSEMOVE => document.move_link_press(POINT {
+                    x: l as i16 as i32,
+                    y: (l >> 16) as i16 as i32,
+                }),
+                _ => {}
+            }
+        }
+        if msg == WM_LBUTTONDOWN && super::metadata::link_modifiers(w) {
+            focus(hwnd);
+        }
         match msg {
             WM_GETDLGCODE if w == VK_TAB as usize => {
                 return (DLGC_WANTARROWS | DLGC_WANTCHARS) as isize;
             }
             // RichEdit must not collapse an existing selection on a contextual click.
             WM_RBUTTONDOWN => return 0,
-            WM_RBUTTONUP => {
-                let mut point = POINT {
-                    x: l as i16 as i32,
-                    y: (l >> 16) as i16 as i32,
-                };
-                ClientToScreen(hwnd, &mut point);
-                send(
-                    owner as HWND,
-                    WM_CONTEXTMENU,
-                    hwnd as usize,
-                    ((point.x as u16 as u32) | ((point.y as u16 as u32) << 16)) as isize,
-                );
-                return 0;
-            }
             WM_CONTEXTMENU => return send(owner as HWND, msg, hwnd as usize, l),
             WM_KEYDOWN
                 if w == VK_APPS as usize
@@ -185,6 +210,13 @@ unsafe extern "system" fn editor_proc(
             }
             _ => {}
         }
-        default_subclass(hwnd, msg, w, l)
+        let result = default_subclass(hwnd, msg, w, l);
+        if msg == WM_LBUTTONUP
+            && let Some(document) = document
+        {
+            document.releasing_link.set(false);
+            document.cancel_link_press();
+        }
+        result
     }
 }

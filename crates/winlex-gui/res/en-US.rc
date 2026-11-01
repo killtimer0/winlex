@@ -105,6 +105,7 @@ BEGIN
     IDS_COPY_HEX "Copy hexadecimal"
     IDS_COPY_VALUE "Copy value with unit"
     IDS_COPY_SELECTION "Copy selected text"
+    IDS_GO_TO_DECLARATION "Go to declaration\tCtrl+click"
     IDS_LOADED "Loaded"
     IDS_COPY_SOURCE_PATH "Copy full path"
     IDS_RELOADING "Reloading…"

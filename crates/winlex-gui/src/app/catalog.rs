@@ -443,7 +443,6 @@ fn open_now(row: isize, mode: Open) -> Option<HWND> {
         set_status(resources::text(IDS_UNSUPPORTED_ARCH));
         return None;
     };
-    let preview = workspace::preview_document();
     // A new result keeps the architecture of the declaration being read.
     let architecture = if mode == Open::New {
         fallback
@@ -459,11 +458,15 @@ fn open_now(row: isize, mode: Open) -> Option<HWND> {
         catalog: catalog.clone(),
         architecture_mask: mask,
     };
+    open_binding(&title, binding, mode)
+}
+pub(super) fn open_binding(title: &str, binding: Binding, mode: Open) -> Option<HWND> {
+    let preview = workspace::preview_document();
     let existing = (mode != Open::New)
         .then(|| {
             metadata::find(&binding).or_else(|| {
                 preview.and_then(|hwnd| {
-                    workspace::view(hwnd)?.rebind(&title, binding.clone());
+                    workspace::view(hwnd)?.rebind(title, binding.clone());
                     Some(hwnd)
                 })
             })
@@ -471,7 +474,7 @@ fn open_now(row: isize, mode: Open) -> Option<HWND> {
         .flatten();
     let hwnd = match existing {
         Some(hwnd) => hwnd,
-        None => match metadata::open(&title, binding, mode == Open::Preview) {
+        None => match metadata::open(title, binding, mode == Open::Preview) {
             Ok(hwnd) => hwnd,
             Err(error) => {
                 set_status(format!("{error:#}"));

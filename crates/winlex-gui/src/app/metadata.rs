@@ -11,6 +11,7 @@ use std::{
     rc::Rc,
     sync::Arc,
 };
+use windows::Win32::UI::Controls::RichEdit::ENLINK;
 use winlex_core::{Architecture, Catalog, EntityId};
 
 mod info;
@@ -27,12 +28,36 @@ struct State {
     name: String,
     ticket: Option<u64>,
     content: Option<Rc<crate::rich_text::Content>>,
+    press: Option<LinkPress>,
+    navigation: Option<Navigation>,
+    context_link: Option<(Rc<crate::rich_text::Content>, std::ops::Range<usize>)>,
+}
+struct Navigation {
+    content: Rc<crate::rich_text::Content>,
+    binding: Binding,
+    target: EntityId,
+}
+struct LinkPress {
+    navigation: Navigation,
+    range: std::ops::Range<usize>,
+    origin: POINT,
+}
+impl State {
+    fn contains(&self, navigation: &Navigation) -> bool {
+        self.content
+            .as_ref()
+            .is_some_and(|content| Rc::ptr_eq(content, &navigation.content))
+            && self.binding.id == navigation.binding.id
+            && self.binding.architecture == navigation.binding.architecture
+            && Arc::ptr_eq(&self.binding.catalog, &navigation.binding.catalog)
+    }
 }
 pub(super) struct MetadataView {
     pub id: u64,
     pub hwnd: HWND,
     pub placement: Cell<Option<layout::Placement>>,
     pub preview: Cell<bool>,
+    pub releasing_link: Cell<bool>,
     state: RefCell<State>,
     icons: RefCell<Option<Rc<crate::icons::WindowIcons>>>,
     editor: HWND,
@@ -58,12 +83,16 @@ pub(super) fn open(name: &str, binding: Binding, preview: bool) -> anyhow::Resul
         hwnd: std::ptr::null_mut(),
         placement: Cell::new(None),
         preview: Cell::new(preview),
+        releasing_link: Cell::new(false),
         icons: RefCell::new(None),
         state: RefCell::new(State {
             binding,
             name: name.into(),
             ticket: None,
             content: None,
+            press: None,
+            navigation: None,
+            context_link: None,
         }),
         editor: std::ptr::null_mut(),
         header: std::ptr::null_mut(),
@@ -87,6 +116,9 @@ impl MetadataView {
             let mut state = self.state.borrow_mut();
             state.binding = binding;
             state.name = name.into();
+            state.press = None;
+            state.navigation = None;
+            state.context_link = None;
         }
         self.fill_architectures();
         let binding = self.binding();
@@ -171,7 +203,13 @@ impl MetadataView {
     }
     fn set_content(&self, content: crate::rich_text::Content) {
         let content = Rc::new(content);
-        self.state.borrow_mut().content = Some(content.clone());
+        {
+            let mut state = self.state.borrow_mut();
+            state.press = None;
+            state.navigation = None;
+            state.context_link = None;
+            state.content = Some(content.clone());
+        }
         if let Err(error) = crate::rich_text::set_content(self.editor, &content) {
             catalog::set_status(format!("{error:#}"));
         }
@@ -241,12 +279,160 @@ impl MetadataView {
         if control != self.editor {
             return false;
         }
-        let content = self.state.borrow().content.clone();
-        let numbers = content.as_ref().map_or(&[][..], |c| c.numbers.as_slice());
-        if let Err(error) = crate::rich_text::context_menu(self.editor, location, numbers) {
-            catalog::set_status(format!("{error:#}"));
+        let (content, binding, mouse_link) = {
+            let mut state = self.state.borrow_mut();
+            (
+                state.content.clone(),
+                state.binding.clone(),
+                state.context_link.take(),
+            )
+        };
+        let regions = content.as_ref().map_or(&[][..], |c| c.regions.as_slice());
+        let mouse_region = mouse_link.as_ref().and_then(|(clicked, range)| {
+            content
+                .as_ref()
+                .filter(|current| Rc::ptr_eq(current, clicked))?;
+            regions.iter().find(|region| &region.range == range)
+        });
+        match crate::rich_text::context_menu(self.editor, location, regions, mouse_region) {
+            Ok(Some(target)) => self.queue_navigation(Navigation {
+                content: content.expect("reference content"),
+                binding,
+                target,
+            }),
+            Ok(None) => {}
+            Err(error) => catalog::set_status(format!("{error:#}")),
         }
         true
+    }
+    pub(super) fn cancel_link_press(&self) {
+        self.state.borrow_mut().press = None;
+    }
+    pub(super) fn clear_context_link(&self) {
+        self.state.borrow_mut().context_link = None;
+    }
+    pub(super) fn move_link_press(&self, point: POINT) {
+        let mut state = self.state.borrow_mut();
+        if state
+            .press
+            .as_ref()
+            .is_some_and(|press| !click_distance(press.origin, point))
+        {
+            state.press = None;
+        }
+    }
+    pub(super) fn link_notification(&self, link: ENLINK) {
+        if link.nmhdr.hwndFrom.0 != self.editor
+            || !matches!(link.msg, WM_LBUTTONDOWN | WM_LBUTTONUP | WM_RBUTTONUP)
+        {
+            return;
+        }
+        let point = POINT {
+            x: link.lParam.0 as i16 as i32,
+            y: (link.lParam.0 >> 16) as i16 as i32,
+        };
+        if link.msg != WM_RBUTTONUP && !link_modifiers(link.wParam.0) {
+            self.cancel_link_press();
+            return;
+        }
+        let (content, binding) = {
+            let state = self.state.borrow();
+            (state.content.clone(), state.binding.clone())
+        };
+        let Some(content) = content else { return };
+        let Some(region) = crate::rich_text::link_region(self.editor, &content, &link) else {
+            return;
+        };
+        let winlex_format::declaration::RegionKind::Reference(target) = region.kind else {
+            return;
+        };
+        if link.msg == WM_RBUTTONUP {
+            let range = region.range.clone();
+            self.state.borrow_mut().context_link = Some((content, range));
+            return;
+        }
+        if link.msg == WM_LBUTTONDOWN {
+            let range = region.range.clone();
+            self.state.borrow_mut().press = Some(LinkPress {
+                navigation: Navigation {
+                    content,
+                    binding,
+                    target,
+                },
+                range,
+                origin: point,
+            });
+        } else {
+            let press = self.state.borrow_mut().press.take();
+            if let Some(press) = press
+                && self.releasing_link.get()
+                && press.range == region.range
+                && press.navigation.target == target
+                && click_distance(press.origin, point)
+            {
+                self.queue_navigation(press.navigation);
+            }
+        }
+    }
+    fn queue_navigation(&self, navigation: Navigation) {
+        if !self.is_live() {
+            return;
+        }
+        {
+            let mut state = self.state.borrow_mut();
+            if !state.contains(&navigation) {
+                return;
+            }
+            state.navigation = Some(navigation);
+        }
+        if unsafe {
+            PostMessageW(
+                self.hwnd,
+                document::FOLLOW_REFERENCE,
+                self.id as u32 as usize,
+                (self.id >> 32) as isize,
+            )
+        } == 0
+        {
+            self.state.borrow_mut().navigation = None;
+            catalog::set_status(format!("{:#}", error("Queue declaration navigation")));
+        }
+    }
+    pub(super) fn follow_reference(&self) {
+        let navigation = {
+            let mut state = self.state.borrow_mut();
+            state
+                .navigation
+                .take()
+                .filter(|request| state.contains(request))
+        };
+        let Some(navigation) = navigation else { return };
+        let entity = match navigation.binding.catalog.entity(navigation.target) {
+            Ok(entity) => entity,
+            Err(error) => {
+                catalog::set_status(format!("{error:#}"));
+                return;
+            }
+        };
+        if !navigation
+            .binding
+            .architecture
+            .supports(entity.architecture_mask)
+        {
+            catalog::set_status(resources::text(IDS_UNSUPPORTED_ARCH));
+            return;
+        }
+        let binding = Binding {
+            id: entity.id,
+            architecture_mask: entity.architecture_mask,
+            ..navigation.binding
+        };
+        workspace::pin_document(self.hwnd);
+        if let Some(hwnd) = catalog::open_binding(&entity.name, binding, catalog::Open::Pin)
+            && let Some(document) = workspace::view(hwnd)
+        {
+            document.focus();
+        }
     }
     pub(super) fn create(&mut self, hwnd: HWND) -> anyhow::Result<()> {
         self.hwnd = hwnd;
@@ -285,6 +471,7 @@ impl MetadataView {
         self.layout();
     }
     pub(super) fn recolor(&self) {
+        self.cancel_link_press();
         let content = self.state.borrow().content.clone();
         if let Some(content) = content
             && let Err(error) = crate::rich_text::recolor(self.editor, &content)
@@ -331,6 +518,15 @@ impl MetadataView {
     pub(super) fn destroy(&self) {
         self.info.clear_accessibility();
     }
+}
+pub(super) fn link_modifiers(keys: usize) -> bool {
+    use windows_sys::Win32::System::SystemServices::{MK_CONTROL, MK_LBUTTON};
+    keys & !(MK_LBUTTON as usize) == MK_CONTROL as usize
+        && unsafe { GetKeyState(VK_MENU as i32) } >= 0
+}
+fn click_distance(origin: POINT, point: POINT) -> bool {
+    (point.x - origin.x).abs() < unsafe { GetSystemMetrics(SM_CXDRAG) }.max(1)
+        && (point.y - origin.y).abs() < unsafe { GetSystemMetrics(SM_CYDRAG) }.max(1)
 }
 fn old_version(binding: &Binding) -> bool {
     let path = &binding.catalog.sources()[binding.id.source_id].path;

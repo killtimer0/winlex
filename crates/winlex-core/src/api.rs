@@ -413,6 +413,29 @@ impl Catalog {
             ("", None)
         }
     }
+    /// Resolve a named type's definition in the declaration owner's context.
+    pub fn resolve_type(
+        &self,
+        owner: EntityId,
+        name: &windows_metadata::TypeName,
+        arch: Architecture,
+    ) -> Result<EntityId> {
+        let declaration = self.declaration(owner, Some(arch))?;
+        let context = match declaration.owner() {
+            Some(context) => context,
+            None => self.db.row(
+                EntityId {
+                    source_id: owner.source_id,
+                    token: 0x02000001,
+                },
+                2,
+            )?,
+        };
+        let mut definition = name.clone();
+        definition.generics.clear();
+        Ok(key(self.db.resolve(&definition, context, arch.bit())?, 2))
+    }
+
     pub fn resolve_reference(&self, id: EntityId, arch: Architecture) -> Result<EntityId> {
         let r: TypeRef = self.db.row(id, 1)?;
         let owner = self.db.row(
@@ -723,6 +746,125 @@ fn uses(
 #[cfg(test)]
 mod tests {
     use super::Architecture;
+
+    #[test]
+    fn named_resolution_preserves_dependencies_architecture_and_snapshots() {
+        use crate::{Catalog, Declaration, SourceData};
+        use windows_metadata::{reader, writer, *};
+        let data = |name: &str, file: writer::File| SourceData {
+            path: format!("{name}.winmd").into(),
+            bytes: file.into_stream().into(),
+        };
+        let dependency = |field_type: Type| {
+            let mut file = writer::File::new("NavigationDependency");
+            let ty = file.TypeDef(
+                "Fixture",
+                "Widget",
+                writer::TypeDefOrRef::default(),
+                TypeAttributes::Public | TypeAttributes::WindowsRuntime,
+            );
+            file.Field("Value", &field_type, FieldAttributes::Public);
+            let attr = file.TypeRef("Windows.Win32.Metadata", "SupportedArchitectureAttribute");
+            let ctor = file.MemberRef(
+                ".ctor",
+                &Signature {
+                    flags: MethodCallAttributes::HASTHIS,
+                    return_type: Type::Void,
+                    types: vec![Type::I32],
+                },
+                writer::MemberRefParent::TypeRef(attr),
+            );
+            file.Attribute(
+                writer::HasAttribute::TypeDef(ty),
+                writer::AttributeType::MemberRef(ctor),
+                &[(String::new(), Value::I32(2))],
+            );
+            data("NavigationDependency", file)
+        };
+        let original = dependency(Type::I32);
+        let mut file = writer::File::new("NavigationConsumer");
+        file.set_reference(reader::Index::new(vec![
+            reader::File::new_shared(original.bytes.clone()).unwrap(),
+        ]));
+        file.TypeDef(
+            "Fixture",
+            "Owner",
+            writer::TypeDefOrRef::default(),
+            TypeAttributes::Public,
+        );
+        file.Field(
+            "Member",
+            &Type::value_named("Fixture", "Widget"),
+            FieldAttributes::Public,
+        );
+        let consumer = data("NavigationConsumer", file);
+        let missing = Catalog::from_inputs([consumer.clone()]).unwrap();
+        let old = Catalog::from_inputs([consumer.clone(), original.clone()]).unwrap();
+        let current = Catalog::from_inputs([consumer.clone(), dependency(Type::I64)]).unwrap();
+        let ambiguous = Catalog::from_inputs([consumer, original.clone(), original]).unwrap();
+        let member = |catalog: &Catalog| {
+            catalog
+                .search(
+                    "Member",
+                    crate::SearchOptions {
+                        mode: crate::SearchMode::Name,
+                        ..Default::default()
+                    },
+                )
+                .unwrap()
+                .next()
+                .unwrap()
+                .unwrap()
+                .id
+        };
+        let field_name = |catalog: &Catalog| {
+            let Declaration::Field(field) = catalog.declaration(member(catalog), None).unwrap()
+            else {
+                panic!()
+            };
+            let Type::ValueName(mut name) = field.ty() else {
+                panic!()
+            };
+            name.generics = vec![Type::I32];
+            name
+        };
+        for catalog in [&missing, &ambiguous] {
+            assert!(
+                catalog
+                    .resolve_type(member(catalog), &field_name(catalog), Architecture::X64)
+                    .is_err()
+            );
+        }
+        for (catalog, expected) in [(&old, Type::I32), (&current, Type::I64)] {
+            let target = catalog
+                .resolve_type(member(catalog), &field_name(catalog), Architecture::X64)
+                .unwrap();
+            assert_eq!(target.source_id, 1);
+            assert_eq!(catalog.entity(target).unwrap().full_name, "Fixture.Widget");
+            assert!(
+                catalog
+                    .resolve_type(member(catalog), &field_name(catalog), Architecture::X86)
+                    .is_err()
+            );
+            let Declaration::Type(ty) = catalog.declaration(target, None).unwrap() else {
+                panic!()
+            };
+            let value = ty.fields().next().unwrap().ty();
+            assert_eq!(value, expected);
+        }
+        assert!(
+            missing
+                .resolve_type(member(&missing), &field_name(&missing), Architecture::X64)
+                .is_err()
+        );
+        let target = old
+            .resolve_type(member(&old), &field_name(&old), Architecture::X64)
+            .unwrap();
+        assert!(
+            old.resolve_type(target, &field_name(&old), Architecture::X86)
+                .is_err()
+        );
+    }
 
     #[test]
     fn canonical_architectures_preserve_names_bits_widths_and_strict_parsing() {

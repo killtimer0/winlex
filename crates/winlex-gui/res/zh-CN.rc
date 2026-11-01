@@ -105,6 +105,7 @@ BEGIN
     IDS_COPY_HEX "复制十六进制"
     IDS_COPY_VALUE "复制带单位的值"
     IDS_COPY_SELECTION "复制选中文本"
+    IDS_GO_TO_DECLARATION "转到声明\tCtrl+单击"
     IDS_LOADED "已加载"
     IDS_COPY_SOURCE_PATH "复制完整路径"
     IDS_RELOADING "正在重载…"

@@ -4,79 +4,126 @@ use winlex_core::windows_metadata::reader::*;
 use winlex_core::windows_metadata::*;
 use winlex_core::{Architecture, Catalog, Declaration, EntityId, Result, guid, integer};
 
-fn ty(t: &Type, name: &str) -> String {
-    match t {
-        Type::ArrayFixed(t, n) => ty(t, &format!("{name}[{n}]")),
-        Type::Array(t) => ty(t, &format!("{name}[]")),
-        Type::PtrConst(t, depth) => format!("const {}", ty(&Type::PtrMut(t.clone(), *depth), name)),
-        Type::PtrMut(t, depth) => {
-            let name = format!("{}{name}", "*".repeat((*depth).min(256)));
-            let name = if matches!(**t, Type::ArrayFixed(..) | Type::Array(..)) {
-                format!("({name})")
-            } else {
-                name
-            };
-            ty(t, &name)
-        }
-        Type::RefMut(t) => ty(t, &format!("&{name}")),
-        Type::RefConst(t) => format!("const {}", ty(t, name)),
-        _ => {
-            let base = match t {
-                Type::ClassName(n) | Type::ValueName(n) => {
-                    if n.generics.is_empty() {
-                        n.name.to_owned()
-                    } else {
-                        format!(
-                            "{}<{}>",
-                            n.name.split('`').next().unwrap_or(&n.name),
-                            n.generics
-                                .iter()
-                                .map(|t| ty(t, ""))
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        )
+struct Types<'a> {
+    catalog: &'a Catalog,
+    owner: EntityId,
+    arch: Architecture,
+}
+
+impl Types<'_> {
+    fn ty(&self, t: &Type, name: Rendered) -> Rendered {
+        match t {
+            Type::ArrayFixed(t, n) => self.ty(t, name.suffix(&format!("[{n}]"))),
+            Type::Array(t) => self.ty(t, name.suffix("[]")),
+            Type::PtrConst(t, depth) => self
+                .ty(&Type::PtrMut(t.clone(), *depth), name)
+                .prefix("const "),
+            Type::PtrMut(t, depth) => {
+                let name = name.prefix(&"*".repeat((*depth).min(256)));
+                let name = if matches!(**t, Type::ArrayFixed(..) | Type::Array(..)) {
+                    name.prefix("(").suffix(")")
+                } else {
+                    name
+                };
+                self.ty(t, name)
+            }
+            Type::RefMut(t) => self.ty(t, name.prefix("&")),
+            Type::RefConst(t) => self.ty(t, name).prefix("const "),
+            _ => {
+                let base = match t {
+                    Type::ClassName(n) | Type::ValueName(n) => {
+                        let head = if n.generics.is_empty() {
+                            n.name.as_str()
+                        } else {
+                            n.name.split('`').next().unwrap_or(&n.name)
+                        };
+                        let mut base = Rendered::from(head);
+                        if let Ok(target) = self.catalog.resolve_type(self.owner, n, self.arch) {
+                            base.regions.push(Region {
+                                range: 0..base.position,
+                                kind: RegionKind::Reference(target),
+                            });
+                        }
+                        if !n.generics.is_empty() {
+                            base.write_str("<").unwrap();
+                            base.fragment(Rendered::join(
+                                n.generics.iter().map(|t| self.ty(t, "".into())),
+                                ", ",
+                            ));
+                            base.write_str(">").unwrap();
+                        }
+                        base
                     }
+                    Type::Generic(n, _) | Type::MethodGeneric(n, _) => n.to_string().into(),
+                    Type::Void => "void".into(),
+                    Type::Bool => "bool".into(),
+                    Type::I8 => "INT8".into(),
+                    Type::U8 => "UINT8".into(),
+                    Type::I16 => "INT16".into(),
+                    Type::U16 => "UINT16".into(),
+                    Type::I32 => "INT32".into(),
+                    Type::U32 => "UINT32".into(),
+                    Type::I64 => "INT64".into(),
+                    Type::U64 => "UINT64".into(),
+                    Type::F32 => "float".into(),
+                    Type::F64 => "double".into(),
+                    Type::ISize => "INT_PTR".into(),
+                    Type::USize => "UINT_PTR".into(),
+                    Type::Char => "char16_t".into(),
+                    Type::String => "string".into(),
+                    Type::Object => "object".into(),
+                    other => format!("{other:?}").into(),
+                };
+                if name.text.is_empty() {
+                    base
+                } else {
+                    let mut base = base.suffix(" ");
+                    base.fragment(name);
+                    base
                 }
-                Type::Generic(n, _) | Type::MethodGeneric(n, _) => n.to_string(),
-                Type::Void => "void".into(),
-                Type::Bool => "bool".into(),
-                Type::I8 => "INT8".into(),
-                Type::U8 => "UINT8".into(),
-                Type::I16 => "INT16".into(),
-                Type::U16 => "UINT16".into(),
-                Type::I32 => "INT32".into(),
-                Type::U32 => "UINT32".into(),
-                Type::I64 => "INT64".into(),
-                Type::U64 => "UINT64".into(),
-                Type::F32 => "float".into(),
-                Type::F64 => "double".into(),
-                Type::ISize => "INT_PTR".into(),
-                Type::USize => "UINT_PTR".into(),
-                Type::Char => "char16_t".into(),
-                Type::String => "string".into(),
-                Type::Object => "object".into(),
-                other => format!("{other:?}"),
-            };
-            if name.is_empty() {
-                base
-            } else {
-                format!("{base} {name}")
             }
         }
     }
 }
 
-/// A semantic numeric region in RichEdit UTF-16 coordinates (one code unit per newline).
+/// A semantic region in RichEdit UTF-16 coordinates (one code unit per newline).
 #[derive(Clone, Debug)]
-pub struct NumberRegion {
+pub struct Region {
     pub range: std::ops::Range<usize>,
+    pub kind: RegionKind,
+}
+
+#[derive(Clone, Debug)]
+pub enum RegionKind {
+    Number(NumberValue),
+    Reference(EntityId),
+}
+
+impl Region {
+    pub fn number(&self) -> Option<&NumberValue> {
+        match &self.kind {
+            RegionKind::Number(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    pub fn reference(&self) -> Option<EntityId> {
+        match self.kind {
+            RegionKind::Reference(id) => Some(id),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct NumberValue {
     pub value: i128,
     pub bits: Option<u32>,
     pub unit: Option<&'static str>,
     pub entity: EntityId,
 }
 
-impl NumberRegion {
+impl NumberValue {
     pub fn hexadecimal(&self) -> String {
         if let Some(bits) = self.bits {
             let value = self.value & ((1i128 << bits) - 1);
@@ -97,7 +144,7 @@ impl NumberRegion {
 #[derive(Default)]
 pub struct Rendered {
     pub text: String,
-    pub numbers: Vec<NumberRegion>,
+    pub regions: Vec<Region>,
     position: usize,
 }
 
@@ -115,6 +162,36 @@ impl Write for Rendered {
 }
 
 impl Rendered {
+    fn fragment(&mut self, mut fragment: Self) {
+        for region in &mut fragment.regions {
+            region.range = region.range.start + self.position..region.range.end + self.position;
+        }
+        self.regions.extend(fragment.regions);
+        self.write_str(&fragment.text).unwrap();
+    }
+
+    fn prefix(self, text: &str) -> Self {
+        let mut out = Self::from(text);
+        out.fragment(self);
+        out
+    }
+
+    fn suffix(mut self, text: &str) -> Self {
+        self.write_str(text).unwrap();
+        self
+    }
+
+    fn join(parts: impl IntoIterator<Item = Self>, separator: &str) -> Self {
+        let mut out = Self::default();
+        for (index, part) in parts.into_iter().enumerate() {
+            if index != 0 {
+                out.write_str(separator).unwrap();
+            }
+            out.fragment(part);
+        }
+        out
+    }
+
     fn number(
         &mut self,
         label: &str,
@@ -142,12 +219,14 @@ impl Rendered {
     ) -> std::fmt::Result {
         let start = self.position;
         self.write_fmt(text)?;
-        self.numbers.push(NumberRegion {
+        self.regions.push(Region {
             range: start..self.position,
-            value,
-            bits,
-            unit,
-            entity,
+            kind: RegionKind::Number(NumberValue {
+                value,
+                bits,
+                unit,
+                entity,
+            }),
         });
         Ok(())
     }
@@ -176,6 +255,20 @@ impl Rendered {
             entity,
             format_args!("vtable +0x{value:X}"),
         )
+    }
+}
+
+impl From<&str> for Rendered {
+    fn from(text: &str) -> Self {
+        let mut out = Self::default();
+        out.write_str(text).unwrap();
+        out
+    }
+}
+
+impl From<String> for Rendered {
+    fn from(text: String) -> Self {
+        Self::from(text.as_str())
     }
 }
 
@@ -217,7 +310,7 @@ fn constant(
             raw
         };
         out.annotated(value, Some(bits), None, entity, format_args!("{value}"))?;
-        let hex = out.numbers.last().unwrap().hexadecimal();
+        let hex = out.regions.last().unwrap().number().unwrap().hexadecimal();
         write!(out, "{suffix} // ")?;
         out.annotated(value, Some(bits), None, entity, format_args!("{hex}"))?;
     } else if let Value::Utf8(text) | Value::Utf16(text) = value {
@@ -272,7 +365,13 @@ fn generic_name<'a>(name: &str, params: impl Iterator<Item = GenericParam<'a>>) 
     }
 }
 
-fn method(out: &mut Rendered, m: MethodDef<'_>, name: &str, pad: &str) -> Result<()> {
+fn method(
+    out: &mut Rendered,
+    types: &Types<'_>,
+    m: MethodDef<'_>,
+    name: &str,
+    pad: &str,
+) -> Result<()> {
     let signature = m.signature(&[]);
     let params = m.params_by_sequence(signature.types.len())?;
     let parameters = signature
@@ -305,22 +404,22 @@ fn method(out: &mut Rendered, m: MethodDef<'_>, name: &str, pad: &str) -> Result
             } else {
                 format!("[{}] ", flags.join(", "))
             };
-            format!("{prefix}{}", ty(t, &name))
+            types.ty(t, name.into()).prefix(&prefix)
         })
         .collect::<Vec<_>>();
     let parameters = if parameters.is_empty() {
         "void".into()
     } else {
-        format!(
-            "\n{pad}    {}\n{pad}",
-            parameters.join(&format!(",\n{pad}    "))
-        )
+        Rendered::join(parameters, &format!(",\n{pad}    "))
+            .prefix(&format!("\n{pad}    "))
+            .suffix(&format!("\n{pad}"))
     };
-    writeln!(
-        out,
-        "{pad}{};",
-        ty(&signature.return_type, &format!("{name}({parameters})"))
-    )?;
+    write!(out, "{pad}")?;
+    out.fragment(types.ty(
+        &signature.return_type,
+        parameters.prefix(&format!("{name}(")).suffix(")"),
+    ));
+    writeln!(out, ";")?;
     Ok(())
 }
 
@@ -333,6 +432,11 @@ fn append(
 ) -> Result<()> {
     let row = c.declaration(id, Some(arch))?;
     let entity = c.summarize(id, &row);
+    let types = Types {
+        catalog: c,
+        owner: id,
+        arch,
+    };
     match row {
         Declaration::Type(t) => {
             let layout = if entity.kind == "struct" {
@@ -395,7 +499,7 @@ fn append(
                 && let Some(invoke) = t.methods().find(|m| m.name() == "Invoke")
             {
                 write!(out, "{pad}delegate ")?;
-                method(out, invoke, &name, "")?;
+                method(out, &types, invoke, &name, "")?;
                 return Ok(());
             }
             let generics = t.generic_types();
@@ -405,22 +509,27 @@ fn append(
                     TypeDefOrRef::TypeSpec(s) => s.ty(&generics),
                     base => Type::ClassName(base.type_name()),
                 };
-                bases.push(ty(&base, ""));
+                bases.push(types.ty(&base, "".into()));
             }
-            bases.extend(t.interface_impls().map(|i| ty(&i.interface(&generics), "")));
+            bases.extend(
+                t.interface_impls()
+                    .map(|i| types.ty(&i.interface(&generics), "".into())),
+            );
             if entity.kind == "enum" {
                 bases = t
                     .underlying_type()
-                    .map(|t| ty(&t, ""))
+                    .map(|t| types.ty(&t, "".into()))
                     .into_iter()
                     .collect();
             }
             let bases = if bases.is_empty() {
-                String::new()
+                Rendered::default()
             } else {
-                format!(" : {}", bases.join(", "))
+                Rendered::join(bases, ", ").prefix(" : ")
             };
-            writeln!(out, "{pad}{keyword} {name}{bases}\n{pad}{{")?;
+            write!(out, "{pad}{keyword} {name}")?;
+            out.fragment(bases);
+            writeln!(out, "\n{pad}{{")?;
             let inner = format!("{pad}    ");
             if let Some(vtable) = &vtable {
                 for (index, slot) in vtable
@@ -507,7 +616,8 @@ fn append(
                 out.number("Declared offset: ", offset.into(), Some("bytes"), id)?;
                 writeln!(out)?;
             }
-            write!(out, "{pad}{}", ty(&f.ty(), f.name()))?;
+            write!(out, "{pad}")?;
+            out.fragment(types.ty(&f.ty(), f.name().into()));
             if let Some(value) = f.constant() {
                 // ELEMENT_TYPE_CLASS represents a null reference constant.
                 if value.usize(0) == 0x12 {
@@ -537,22 +647,37 @@ fn append(
                     m.calling_convention()
                 )?;
             }
-            method(out, m, &generic_name(m.name(), m.generic_params()), pad)?;
-        }
-        Declaration::Property(p) => {
-            writeln!(
+            method(
                 out,
-                "{pad}{}; // property",
-                ty(&p.signature().return_type, p.name())
+                &types,
+                m,
+                &generic_name(m.name(), m.generic_params()),
+                pad,
             )?;
         }
+        Declaration::Property(p) => {
+            write!(out, "{pad}")?;
+            out.fragment(types.ty(&p.signature().return_type, p.name().into()));
+            writeln!(out, "; // property")?;
+        }
         Declaration::Event(e) => {
-            writeln!(out, "{pad}{}; // event", ty(&e.ty(), e.name()))?;
+            write!(out, "{pad}")?;
+            out.fragment(types.ty(&e.ty(), e.name().into()));
+            writeln!(out, "; // event")?;
         }
         Declaration::Reference(_) => {
             writeln!(out, "{pad}// Type reference: {}", entity.full_name)?;
             match c.resolve_reference(id, arch) {
-                Ok(target) => writeln!(out, "{pad}// Resolved: {}", c.entity(target)?.full_name)?,
+                Ok(target) => {
+                    write!(out, "{pad}// Resolved: ")?;
+                    let start = out.position;
+                    write!(out, "{}", c.entity(target)?.full_name)?;
+                    out.regions.push(Region {
+                        range: start..out.position,
+                        kind: RegionKind::Reference(target),
+                    });
+                    writeln!(out)?;
+                }
                 Err(error) => writeln!(out, "{pad}// {error}")?,
             }
         }
@@ -578,21 +703,22 @@ mod tests {
             out.text,
             "😀\noffset: 3 bytes, size: 7 bits; vtable: 3 slots"
         );
-        for (number, (text, value, unit)) in out.numbers.iter().zip([
+        for (region, (text, value, unit)) in out.regions.iter().zip([
             ("offset: 3 bytes", 3, "bytes"),
             ("size: 7 bits", 7, "bits"),
             ("vtable: 3 slots", 3, "slots"),
         ]) {
             assert_eq!(
-                String::from_utf16(&units[number.range.clone()]).unwrap(),
+                String::from_utf16(&units[region.range.clone()]).unwrap(),
                 text
             );
+            let number = region.number().unwrap();
             assert_eq!(number.value, value);
             assert_eq!(number.unit, Some(unit));
             assert_eq!(number.entity, entity());
         }
-        assert_eq!(out.numbers.len(), 3);
-        assert_eq!(out.numbers[0].range.start, 3);
+        assert_eq!(out.regions.len(), 3);
+        assert_eq!(out.regions[0].range.start, 3);
     }
 
     fn entity() -> EntityId {
@@ -637,13 +763,13 @@ mod tests {
             .unwrap();
             assert_eq!(out.text, format!("{decimal}; // {hex}\n"));
             let utf16: Vec<_> = out.text.encode_utf16().collect();
-            for (region, expected) in out.numbers.iter().zip([decimal, hex]) {
+            for (region, expected) in out.regions.iter().zip([decimal, hex]) {
                 assert_eq!(
                     String::from_utf16(&utf16[region.range.clone()]).unwrap(),
                     expected
                 );
-                assert_eq!(region.value.to_string(), decimal);
-                assert_eq!(region.hexadecimal(), hex);
+                assert_eq!(region.number().unwrap().value.to_string(), decimal);
+                assert_eq!(region.number().unwrap().hexadecimal(), hex);
             }
         }
         let mut out = Rendered::default();
@@ -673,7 +799,8 @@ mod tests {
                 ";",
             )
             .unwrap();
-            let number = &out.numbers[0];
+            let region = &out.regions[0];
+            let number = region.number().unwrap();
             assert_eq!(number.value, text.encode_utf16().count() as i128);
             assert_eq!(
                 number.with_unit(),
@@ -681,7 +808,7 @@ mod tests {
             );
             let units: Vec<_> = out.text.encode_utf16().collect();
             assert_eq!(
-                String::from_utf16(&units[number.range.clone()]).unwrap(),
+                String::from_utf16(&units[region.range.clone()]).unwrap(),
                 format!("length: {}", number.with_unit())
             );
             assert_eq!(out.text.lines().count(), 2);
@@ -718,7 +845,7 @@ mod tests {
             let mut out = Rendered::default();
             constant(&mut out, &value, &t, Architecture::X64, entity(), ";").unwrap();
             assert_eq!(out.text, expected);
-            assert!(out.numbers.is_empty());
+            assert!(out.regions.is_empty());
         }
     }
 
@@ -730,7 +857,7 @@ mod tests {
             assert_eq!(out.text, format!("slot 3, vtable +{hex}"));
             let utf16: Vec<_> = out.text.encode_utf16().collect();
             for (region, expected) in out
-                .numbers
+                .regions
                 .iter()
                 .zip(["slot 3".to_owned(), format!("vtable +{hex}")])
             {
@@ -740,7 +867,7 @@ mod tests {
                 );
                 for index in region.range.clone() {
                     assert_eq!(
-                        out.numbers
+                        out.regions
                             .iter()
                             .filter(|n| n.range.contains(&index))
                             .count(),
@@ -749,7 +876,7 @@ mod tests {
                 }
             }
             assert!(
-                !out.numbers
+                !out.regions
                     .iter()
                     .any(|n| n.range.contains(&6) || n.range.contains(&7))
             );
@@ -766,7 +893,26 @@ mod tests {
         };
         out.number("", 64, Some("bytes"), id).unwrap();
         assert_eq!(out.text, "// 文😀\n64 bytes");
-        assert_eq!(out.numbers[0].range, 7..15);
-        assert_eq!(out.numbers[0].entity, id);
+        assert_eq!(out.regions[0].range, 7..15);
+        assert_eq!(out.regions[0].number().unwrap().entity, id);
+    }
+
+    #[test]
+    fn composed_references_follow_utf16_and_normalized_newlines() {
+        let mut fragment = Rendered::from("😀Target");
+        fragment.regions.push(Region {
+            range: 2..8,
+            kind: RegionKind::Reference(entity()),
+        });
+        let mut out = Rendered::from("// 文😀\r\n");
+        out.fragment(fragment.prefix("const ").suffix(" *value;\r\n"));
+        assert_eq!(out.text, "// 文😀\nconst 😀Target *value;\n");
+        assert_eq!(out.regions[0].range, 15..21);
+        assert_eq!(out.regions[0].reference(), Some(entity()));
+        let units: Vec<_> = out.text.encode_utf16().collect();
+        assert_eq!(
+            String::from_utf16(&units[out.regions[0].range.clone()]).unwrap(),
+            "Target"
+        );
     }
 }
