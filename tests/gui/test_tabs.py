@@ -93,13 +93,21 @@ def test_tabs_focus_only_selection_none_and_cancel_capture(launch, settings):
             return info.capture
 
         origin = n.rectangle(tabs)
-        x, y, width, height = pages[0].location()
-        point = ((x - origin[0] + min(20, width // 2)) & 0xffff) | (
-            ((y - origin[1] + height // 2) & 0xffff) << 16)
+        def point(page):
+            x, y, width, height = page.location()
+            return ((x - origin[0] + min(20, width // 2)) & 0xffff) | (
+                ((y - origin[1] + height // 2) & 0xffff) << 16)
+
+        start, end = map(point, pages)
         names = app.tab_labels()
-        n.send(tabs, win32con.WM_LBUTTONDOWN, win32con.MK_LBUTTON, point)
-        assert capture() == tabs
-        n.send(tabs, win32con.WM_CANCELMODE)
-        assert not capture()
-        n.send(tabs, win32con.WM_LBUTTONUP, 0, point)
-        assert app.tab_labels() == names
+        for cancel in (win32con.WM_CANCELMODE, win32con.WM_KEYDOWN):
+            n.send(tabs, win32con.WM_LBUTTONDOWN, win32con.MK_LBUTTON, start)
+            n.send(tabs, win32con.WM_MOUSEMOVE, win32con.MK_LBUTTON, end)
+            assert capture() == tabs
+            if cancel == win32con.WM_KEYDOWN:
+                n.key_message(tabs, win32con.VK_ESCAPE)
+            else:
+                n.send(tabs, cancel)
+            n.wait(lambda: not capture(), "cancel releases tab capture")
+            n.send(tabs, win32con.WM_LBUTTONUP, 0, end)
+            assert app.tab_labels() == names

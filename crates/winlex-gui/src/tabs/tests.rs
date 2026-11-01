@@ -562,14 +562,26 @@ fn tab_drag_threshold_uses_horizontal_motion_and_capture_cancellation() {
     send(f.tabs, WM_LBUTTONUP, 0, down);
     assert_eq!(requests(), [(SELECT, 2, 0)]);
     assert!((second.x - first.x).abs() > unsafe { GetSystemMetrics(SM_CXDRAG) });
-    for cancel in [false, true] {
+    send(f.tabs, WM_KEYDOWN, VK_ESCAPE as usize, 0);
+    assert!(requests().is_empty());
+    assert_eq!(
+        send(f.tabs, WM_GETDLGCODE, VK_ESCAPE as usize, 0) & DLGC_WANTMESSAGE as isize,
+        0
+    );
+    for cancel in [None, Some(WM_CANCELMODE), Some(WM_KEYDOWN), None] {
         send(f.tabs, WM_LBUTTONDOWN, 0, down);
         send(f.tabs, WM_MOUSEMOVE, 0, packed(first.x, first.y));
-        if cancel {
-            send(f.tabs, WM_CANCELMODE, 0, 0);
+        assert_eq!(unsafe { GetCapture() }, f.tabs);
+        assert_ne!(
+            send(f.tabs, WM_GETDLGCODE, VK_ESCAPE as usize, 0) & DLGC_WANTMESSAGE as isize,
+            0
+        );
+        if let Some(message) = cancel {
+            send(f.tabs, message, VK_ESCAPE as usize, 0);
+            assert!(unsafe { GetCapture() }.is_null());
         }
         send(f.tabs, WM_LBUTTONUP, 0, packed(first.x, first.y));
-        let expected = if cancel {
+        let expected = if cancel.is_some() {
             vec![(SELECT, 2, 0)]
         } else {
             vec![(SELECT, 2, 0), (REORDER, 2, 0)]

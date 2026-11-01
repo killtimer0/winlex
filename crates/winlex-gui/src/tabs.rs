@@ -616,7 +616,14 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, w: usize, l: isize) 
                 InvalidateRect(hwnd, ptr::null(), 0);
                 return result;
             }
-            WM_GETDLGCODE => return DLGC_WANTARROWS as isize,
+            WM_GETDLGCODE => {
+                return (DLGC_WANTARROWS
+                    | if w == VK_ESCAPE as usize && GetCapture() == hwnd {
+                        DLGC_WANTMESSAGE
+                    } else {
+                        0
+                    }) as isize;
+            }
             WM_SETFOCUS | WM_KILLFOCUS => {
                 InvalidateRect(hwnd, ptr::null(), 0);
                 let selected = shared.borrow().focused;
@@ -769,6 +776,10 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, w: usize, l: isize) 
                 return 0;
             }
             WM_KEYDOWN => {
+                if w == VK_ESCAPE as usize && GetCapture() == hwnd {
+                    send(hwnd, WM_CANCELMODE, 0, 0);
+                    return 0;
+                }
                 if w == VK_APPS as usize || w == VK_F10 as usize && GetKeyState(VK_SHIFT as i32) < 0
                 {
                     return send(hwnd, WM_CONTEXTMENU, hwnd as usize, -1);
