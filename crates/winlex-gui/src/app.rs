@@ -235,6 +235,12 @@ unsafe fn run_windows(paths: Vec<std::path::PathBuf>) -> anyhow::Result<()> {
                 break;
             }
             let (mdi, document_tabs) = read(|a| (a.workspace.mdi, a.workspace.tabs));
+            if let Some(document) = workspace::view(active())
+                && document.find_key(&msg)
+            {
+                document.layout();
+                continue;
+            }
             if TranslateMDISysAccel(mdi, &msg) != 0 {
                 continue;
             }

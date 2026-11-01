@@ -74,6 +74,11 @@ pub(super) fn command(id: u16) -> bool {
         return true;
     }
     match id {
+        FIND_DOCUMENT | FIND_NEXT | FIND_PREVIOUS => {
+            if let Some(document) = workspace::view(active()) {
+                document.command(id, 0);
+            }
+        }
         SETTINGS => super::settings::open(),
         ABOUT => {}
         SEARCH_HELP => unsafe {

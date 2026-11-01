@@ -59,7 +59,7 @@ def test_menu_scopes(launch, settings):
     window_ids = [item_id(window, i) for i in range(count(window))]
     assert 1020 in file_ids and 1051 in file_ids and 1004 in file_ids
     assert not {1049, 1050, 1003}.intersection(file_ids)
-    assert [item_id(navigation, i) for i in range(count(navigation))] == [1055, 1056]
+    assert [item_id(navigation, i) for i in range(count(navigation))] == [1060, 1061, 1062, 0, 1055, 1056]
     assert 1003 in window_ids
     documents = []
     for name in ("CreateFileW", "CloseHandle"):

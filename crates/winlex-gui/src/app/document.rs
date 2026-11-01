@@ -95,6 +95,10 @@ impl MetadataView {
                 }
                 WM_NOTIFY => {
                     let header = (l as *const NMHDR).read_unaligned();
+                    if header.code == windows::Win32::UI::Controls::RichEdit::EN_SELCHANGE {
+                        self.selection_changed();
+                        return 0;
+                    }
                     if header.code == EN_LINK {
                         self.link_notification((l as *const ENLINK).read_unaligned());
                         return 0;

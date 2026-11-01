@@ -1,4 +1,14 @@
 LANGUAGE 4, 2
+STRINGTABLE
+BEGIN
+    IDS_FIND "查找："
+    IDS_FIND_NEXT "下一处"
+    IDS_FIND_PREVIOUS "上一处"
+    IDS_FIND_CLOSE "关闭"
+    IDS_FIND_CASE "区分大小写"
+    IDS_FIND_WORD "全字匹配"
+    IDS_FIND_WRAPPED "已循环"
+END
 IDR_MAIN_MENU MENU
 BEGIN
     POPUP "文件(&F)"
@@ -11,6 +21,10 @@ BEGIN
     END
     POPUP "导航(&N)"
     BEGIN
+        MENUITEM "正文查找(&S)...\tCtrl+F", FIND_DOCUMENT
+        MENUITEM "查找下一处(&N)\tF3", FIND_NEXT
+        MENUITEM "查找上一处(&P)\tShift+F3", FIND_PREVIOUS
+        MENUITEM SEPARATOR
         MENUITEM "返回(&B)\tAlt+Left", HISTORY_BACK, GRAYED
         MENUITEM "前进(&F)\tAlt+Right", HISTORY_FORWARD, GRAYED
     END

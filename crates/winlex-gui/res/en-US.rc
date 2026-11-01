@@ -1,4 +1,14 @@
 LANGUAGE 9, 1
+STRINGTABLE
+BEGIN
+    IDS_FIND "Find:"
+    IDS_FIND_NEXT "Next"
+    IDS_FIND_PREVIOUS "Previous"
+    IDS_FIND_CLOSE "Close"
+    IDS_FIND_CASE "Match case"
+    IDS_FIND_WORD "Whole word"
+    IDS_FIND_WRAPPED "Wrapped"
+END
 IDR_MAIN_MENU MENU
 BEGIN
     POPUP "&File"
@@ -11,6 +21,10 @@ BEGIN
     END
     POPUP "&Navigate"
     BEGIN
+        MENUITEM "&Find in document...\tCtrl+F", FIND_DOCUMENT
+        MENUITEM "Find &next\tF3", FIND_NEXT
+        MENUITEM "Find &previous\tShift+F3", FIND_PREVIOUS
+        MENUITEM SEPARATOR
         MENUITEM "&Back\tAlt+Left", HISTORY_BACK, GRAYED
         MENUITEM "&Forward\tAlt+Right", HISTORY_FORWARD, GRAYED
     END

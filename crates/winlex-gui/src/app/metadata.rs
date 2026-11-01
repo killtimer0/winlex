@@ -14,6 +14,7 @@ use std::{
 use windows::Win32::UI::Controls::RichEdit::ENLINK;
 use winlex_core::{Architecture, Catalog, EntityId};
 
+mod find;
 mod info;
 
 #[derive(Clone)]
@@ -64,6 +65,7 @@ pub(super) struct MetadataView {
     editor: HWND,
     header: HWND,
     info: info::Info,
+    find: find::Find,
 }
 pub(super) fn binding(hwnd: HWND) -> Option<Binding> {
     Some(workspace::view(hwnd)?.binding())
@@ -99,6 +101,7 @@ pub(super) fn open(name: &str, binding: Binding, preview: bool) -> anyhow::Resul
         editor: std::ptr::null_mut(),
         header: std::ptr::null_mut(),
         info: info::Info::default(),
+        find: find::Find::default(),
     };
     let title = content.title();
     let content = workspace::create_document(&title, content)?;
@@ -216,6 +219,7 @@ impl MetadataView {
         if let Err(error) = crate::rich_text::set_content(self.editor, &content) {
             catalog::set_status(format!("{error:#}"));
         }
+        self.find.refresh(self.editor, false);
     }
     fn select_architecture(&self, code: u32) {
         let binding = self.state.borrow().binding.clone();
@@ -478,6 +482,17 @@ impl MetadataView {
         document::track_editor(hwnd, self.editor)?;
         show(self.header, false);
         self.info.create(hwnd, self.editor)?;
+        self.find.create(hwnd)?;
+        use windows::Win32::UI::Controls::RichEdit::{
+            EM_GETEVENTMASK, EM_SETEVENTMASK, ENM_SELCHANGE,
+        };
+        let mask = send(self.editor, EM_GETEVENTMASK, 0, 0);
+        send(
+            self.editor,
+            EM_SETEVENTMASK,
+            0,
+            mask | ENM_SELCHANGE as isize,
+        );
         self.fill_architectures();
         let binding = self.state.borrow().binding.clone();
         self.info.fill(&binding)?;
@@ -493,6 +508,7 @@ impl MetadataView {
         for h in [self.editor, self.header] {
             bind(h, font);
         }
+        self.find.prepare(font);
         if let Err(error) = self.info.prepare(&super::metrics(hwnd)) {
             write(|a| a.failure = Some(error));
         }
@@ -519,12 +535,17 @@ impl MetadataView {
             positions.push((self.header, layout::take_top(&mut area, m.height + m.px(8))));
         }
         self.info.layout(&mut area, &m, &mut positions);
+        self.find.layout(&mut area, &m, &mut positions);
         positions.push((self.editor, area));
         if let Err(error) = place_all(&positions) {
             write(|a| a.failure = Some(error));
         }
     }
     pub(super) fn command(&self, id: u16, code: u32) -> bool {
+        if self.find.command(self.editor, id, code) {
+            self.layout();
+            return true;
+        }
         match id {
             SELECT_ARCH => self.select_architecture(code),
             DOCUMENT_MORE if code == BN_CLICKED => {
@@ -546,6 +567,12 @@ impl MetadataView {
     }
     pub(super) fn destroy(&self) {
         self.info.clear_accessibility();
+    }
+    pub(super) fn find_key(&self, msg: &MSG) -> bool {
+        self.find.key(self.editor, msg)
+    }
+    pub(super) fn selection_changed(&self) {
+        self.find.count(self.editor, false);
     }
 }
 pub(super) fn link_modifiers(keys: usize) -> bool {
