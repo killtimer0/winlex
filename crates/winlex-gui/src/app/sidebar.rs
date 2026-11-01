@@ -110,7 +110,7 @@ pub(super) fn create(frame: HWND) -> anyhow::Result<()> {
             iString: index,
             ..unsafe { std::mem::zeroed() }
         };
-        if send(toolbar, TB_ADDBUTTONSW, 1, &button as *const _ as isize) == 0 {
+        if send_ref(toolbar, TB_ADDBUTTONSW, 1, &button) == 0 {
             anyhow::bail!("Add panel toolbar button failed");
         }
     }

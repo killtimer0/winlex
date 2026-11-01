@@ -258,19 +258,15 @@ fn submit_search() {
     let mode = super::panel::search_mode();
     let sent = write(|a| {
         let s = &mut a.session;
-        let previous = s.reset_search();
+        if let Some(id) = s.reset_search() {
+            a.worker.cancel(id);
+        }
         let Some(catalog) = s.catalog.clone().filter(|_| !query.is_empty()) else {
-            if let Some(id) = previous {
-                a.worker.cancel(id);
-            }
             return Ok(());
         };
         let compiled = match winlex_core::CompiledQuery::compile(&query, mode, false) {
             Ok(compiled) => compiled,
             Err(error) => {
-                if let Some(id) = previous {
-                    a.worker.cancel(id);
-                }
                 let diagnostic =
                     if let Some(error) = error.downcast_ref::<winlex_core::QueryError>() {
                         use winlex_core::QueryErrorKind;
@@ -298,7 +294,7 @@ fn submit_search() {
         let ticket = s.ticket();
         s.search = Search::Running(ticket.id);
         a.worker.replace(
-            previous,
+            None,
             ticket,
             Job::Search {
                 catalog,

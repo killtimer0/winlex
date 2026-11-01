@@ -24,6 +24,14 @@ pub(super) struct Binding {
     pub architecture: Architecture,
     pub architecture_mask: i32,
 }
+impl Binding {
+    pub(super) fn same_entity(&self, other: &Self) -> bool {
+        self.id == other.id && Arc::ptr_eq(&self.catalog, &other.catalog)
+    }
+    pub(super) fn same_location(&self, other: &Self) -> bool {
+        self.same_entity(other) && self.architecture == other.architecture
+    }
+}
 struct State {
     binding: Binding,
     name: String,
@@ -49,9 +57,7 @@ impl State {
         self.content
             .as_ref()
             .is_some_and(|content| Rc::ptr_eq(content, &navigation.content))
-            && self.binding.id == navigation.binding.id
-            && self.binding.architecture == navigation.binding.architecture
-            && Arc::ptr_eq(&self.binding.catalog, &navigation.binding.catalog)
+            && self.binding.same_location(&navigation.binding)
     }
 }
 pub(super) struct MetadataView {
@@ -72,12 +78,8 @@ pub(super) fn binding(hwnd: HWND) -> Option<Binding> {
 }
 pub(super) fn find(binding: &Binding) -> Option<HWND> {
     workspace::views().into_iter().find_map(|content| {
-        let state = content.state.borrow();
-        let candidate = &state.binding;
-        (candidate.id == binding.id
-            && candidate.architecture == binding.architecture
-            && Arc::ptr_eq(&candidate.catalog, &binding.catalog))
-        .then_some(content.hwnd)
+        let matches = content.state.borrow().binding.same_location(binding);
+        matches.then_some(content.hwnd)
     })
 }
 pub(super) fn open(name: &str, binding: Binding, preview: bool) -> anyhow::Result<HWND> {
@@ -111,7 +113,7 @@ pub(super) fn open(name: &str, binding: Binding, preview: bool) -> anyhow::Resul
 }
 impl MetadataView {
     pub(super) fn is_live(&self) -> bool {
-        read(|a| a.workspace.documents.iter().any(|doc| doc.id == self.id))
+        workspace::by_id(self.id).is_some()
     }
     pub(super) fn binding(&self) -> Binding {
         self.state.borrow().binding.clone()
@@ -222,7 +224,7 @@ impl MetadataView {
         self.find.refresh(self.editor, false);
     }
     fn select_architecture(&self, code: u32) {
-        let binding = self.state.borrow().binding.clone();
+        let mut binding = self.binding();
         let supported: Vec<_> = super::architecture::supported(binding.architecture_mask).collect();
         if code == CBN_SELENDCANCEL {
             if let Some(index) = supported
@@ -246,9 +248,10 @@ impl MetadataView {
             catalog::set_status(format!("{error:#}"));
         }
         if arch != binding.architecture {
+            binding.architecture = arch;
+            let name = self.state.borrow().name.clone();
             history::visit(|| {
-                self.state.borrow_mut().binding.architecture = arch;
-                self.request();
+                self.rebind(&name, binding);
             });
         }
     }
@@ -399,7 +402,6 @@ impl MetadataView {
             if let Some(press) = press
                 && self.releasing_link.get()
                 && press.range == region.range
-                && press.navigation.target == target
                 && click_distance(press.origin, point)
             {
                 self.queue_navigation(press.navigation);
@@ -542,8 +544,11 @@ impl MetadataView {
         }
     }
     pub(super) fn command(&self, id: u16, code: u32) -> bool {
+        let visible = self.find.visible();
         if self.find.command(self.editor, id, code) {
-            self.layout();
+            if self.find.visible() != visible {
+                self.layout();
+            }
             return true;
         }
         match id {
@@ -569,7 +574,9 @@ impl MetadataView {
         self.info.clear_accessibility();
     }
     pub(super) fn find_key(&self, msg: &MSG) -> bool {
-        self.find.key(self.editor, msg)
+        self.find
+            .key(self.editor, msg)
+            .is_some_and(|id| self.command(id, 0))
     }
     pub(super) fn selection_changed(&self) {
         self.find.count(self.editor, false);

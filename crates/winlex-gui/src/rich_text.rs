@@ -36,22 +36,13 @@ pub struct ViewState {
 impl ViewState {
     pub fn capture(hwnd: HWND) -> Self {
         let mut selection = CHARRANGE::default();
-        send(hwnd, EM_EXGETSEL, 0, &mut selection as *mut _ as isize);
+        send_mut(hwnd, EM_EXGETSEL, 0, &mut selection);
         let line = send(hwnd, EM_GETFIRSTVISIBLELINE, 0, 0);
         let anchor = send(hwnd, EM_LINEINDEX, line as usize, 0).max(0) as i32;
-        let mut point = POINT { x: 0, y: 0 };
-        let mut area: RECT = unsafe { std::mem::zeroed() };
-        send(
-            hwnd,
-            EM_POSFROMCHAR,
-            &mut point as *mut _ as usize,
-            anchor as isize,
-        );
-        send(hwnd, EM_GETRECT, 0, &mut area as *mut _ as isize);
         Self {
             selection: (selection.cpMin, selection.cpMax),
             anchor,
-            offset: area.top - point.y,
+            offset: scroll::offset(hwnd, anchor).y,
             horizontal: scroll::position(hwnd).x,
             line_height: scroll::line_height(hwnd).unwrap_or(1),
         }
@@ -62,23 +53,16 @@ impl ViewState {
             cpMin: self.selection.0,
             cpMax: self.selection.1,
         };
-        send(hwnd, EM_EXSETSEL, 0, &selection as *const _ as isize);
-        let mut point = POINT { x: 0, y: 0 };
-        let mut area: RECT = unsafe { std::mem::zeroed() };
-        send(
-            hwnd,
-            EM_POSFROMCHAR,
-            &mut point as *mut _ as usize,
-            self.anchor as isize,
-        );
-        send(hwnd, EM_GETRECT, 0, &mut area as *mut _ as isize);
+        send_ref(hwnd, EM_EXSETSEL, 0, &selection);
         let height = scroll::line_height(hwnd).unwrap_or(1);
         let scale = |v| unsafe { MulDiv(v, height, self.line_height.max(1)) };
         let target = POINT {
             x: scale(self.horizontal).max(0),
-            y: (scroll::position(hwnd).y + point.y - area.top + scale(self.offset)).max(0),
+            y: (scroll::position(hwnd).y - scroll::offset(hwnd, self.anchor).y
+                + scale(self.offset))
+            .max(0),
         };
-        send(hwnd, EM_SETSCROLLPOS, 0, &target as *const _ as isize);
+        send_ref(hwnd, EM_SETSCROLLPOS, 0, &target);
     }
 }
 
@@ -126,7 +110,7 @@ pub fn link_region<'a>(hwnd: HWND, content: &'a Content, link: &ENLINK) -> Optio
         x: link.lParam.0 as i16 as i32,
         y: (link.lParam.0 >> 16) as i16 as i32,
     };
-    let index = send(hwnd, EM_CHARFROMPOS, 0, &point as *const _ as isize);
+    let index = send_ref(hwnd, EM_CHARFROMPOS, 0, &point);
     let region = region_at(&content.regions, index as usize..index as usize)?;
     matches!(region.kind, RegionKind::Reference(_)).then_some(region)
 }
@@ -148,7 +132,7 @@ pub fn context_menu(
         IDS_GO_TO_DECLARATION,
     };
     let mut selection = CHARRANGE::default();
-    send(hwnd, EM_EXGETSEL, 0, &mut selection as *mut _ as isize);
+    send_mut(hwnd, EM_EXGETSEL, 0, &mut selection);
     let mut point = POINT {
         x: location as i16 as i32,
         y: (location >> 16) as i16 as i32,
@@ -172,7 +156,7 @@ pub fn context_menu(
         unsafe {
             ScreenToClient(hwnd, &mut local);
         }
-        let index = send(hwnd, EM_CHARFROMPOS, 0, &local as *const _ as isize) as i32;
+        let index = send_ref(hwnd, EM_CHARFROMPOS, 0, &local) as i32;
         let selected_link = mouse_region.is_some_and(|region| {
             selection.cpMin as usize <= region.range.start
                 && region.range.end <= selection.cpMax as usize
@@ -182,10 +166,10 @@ pub fn context_menu(
                 cpMin: index,
                 cpMax: index,
             };
-            send(hwnd, EM_EXSETSEL, 0, &selection as *const _ as isize);
+            send_ref(hwnd, EM_EXSETSEL, 0, &selection);
         }
         focus(hwnd);
-        send(hwnd, EM_SETSCROLLPOS, 0, &scroll as *const _ as isize);
+        send_ref(hwnd, EM_SETSCROLLPOS, 0, &scroll);
     }
     let mut buffer = vec![0u16; (selection.cpMax - selection.cpMin).max(0) as usize + 1];
     let length = send(hwnd, EM_GETSELTEXT, 0, buffer.as_mut_ptr() as isize).max(0) as usize;
@@ -341,19 +325,14 @@ pub fn font(hwnd: HWND) {
     {
         *out = ch;
     }
-    send(
-        hwnd,
-        EM_SETCHARFORMAT,
-        SCF_ALL as usize,
-        &format as *const _ as isize,
-    );
+    send_ref(hwnd, EM_SETCHARFORMAT, SCF_ALL as usize, &format);
     let mut selection = CHARRANGE::default();
-    send(hwnd, EM_EXGETSEL, 0, &mut selection as *mut _ as isize);
+    send_mut(hwnd, EM_EXGETSEL, 0, &mut selection);
     let all = CHARRANGE {
         cpMin: 0,
         cpMax: -1,
     };
-    send(hwnd, EM_EXSETSEL, 0, &all as *const _ as isize);
+    send_ref(hwnd, EM_EXSETSEL, 0, &all);
     let paragraph = PARAFORMAT2 {
         Base: PARAFORMAT {
             cbSize: size_of::<PARAFORMAT2>() as u32,
@@ -366,8 +345,8 @@ pub fn font(hwnd: HWND) {
         dyLineSpacing: 23,
         ..Default::default()
     };
-    send(hwnd, EM_SETPARAFORMAT, 0, &paragraph as *const _ as isize);
-    send(hwnd, EM_EXSETSEL, 0, &selection as *const _ as isize);
+    send_ref(hwnd, EM_SETPARAFORMAT, 0, &paragraph);
+    send_ref(hwnd, EM_EXSETSEL, 0, &selection);
 }
 
 pub fn set_content(hwnd: HWND, content: &Content) -> anyhow::Result<()> {
@@ -379,20 +358,9 @@ pub fn set_content(hwnd: HWND, content: &Content) -> anyhow::Result<()> {
 }
 
 pub fn recolor(hwnd: HWND, content: &Content) -> anyhow::Result<()> {
-    let mut range = CHARRANGE::default();
-    send(hwnd, EM_EXGETSEL, 0, &mut range as *mut _ as isize);
-    let first_line = send(hwnd, EM_GETFIRSTVISIBLELINE, 0, 0);
-    send(hwnd, WM_SETREDRAW, 0, 0);
-    let frozen = freeze(hwnd);
-    let result = replace(hwnd, content);
-    send(hwnd, EM_EXSETSEL, 0, &range as *const _ as isize);
-    redraw(hwnd, frozen);
-    send(
-        hwnd,
-        EM_LINESCROLL,
-        0,
-        first_line - send(hwnd, EM_GETFIRSTVISIBLELINE, 0, 0),
-    );
+    let view = ViewState::capture(hwnd);
+    let result = set_content(hwnd, content);
+    view.restore(hwnd);
     result
 }
 
@@ -421,7 +389,7 @@ fn replace(hwnd: HWND, content: &Content) -> anyhow::Result<()> {
         cbSize: size_of::<CHARFORMATW>() as u32,
         ..Default::default()
     };
-    send(hwnd, EM_GETCHARFORMAT, 0, &mut format as *mut _ as isize);
+    send_mut(hwnd, EM_GETCHARFORMAT, 0, &mut format);
     send(hwnd, EM_SETBKGNDCOLOR, 1, 0);
     let colored = !high_contrast() && unsafe { GetSysColor(COLOR_WINDOW) } == 0x00ffffff;
     let result = if colored {
@@ -442,24 +410,14 @@ fn replace(hwnd: HWND, content: &Content) -> anyhow::Result<()> {
             },
             ..Default::default()
         };
-        send(
-            hwnd,
-            EM_SETCHARFORMAT,
-            SCF_ALL as usize,
-            &plain as *const _ as isize,
-        );
+        send_ref(hwnd, EM_SETCHARFORMAT, SCF_ALL as usize, &plain);
     }
     format.dwMask = CFM_SIZE;
-    send(
-        hwnd,
-        EM_SETCHARFORMAT,
-        SCF_ALL as usize,
-        &format as *const _ as isize,
-    );
+    send_ref(hwnd, EM_SETCHARFORMAT, SCF_ALL as usize, &format);
     font(hwnd);
     apply_regions(hwnd, content)?;
     let range = CHARRANGE::default();
-    send(hwnd, EM_EXSETSEL, 0, &range as *const _ as isize);
+    send_ref(hwnd, EM_EXSETSEL, 0, &range);
     result
 }
 
@@ -479,14 +437,9 @@ fn apply_regions(hwnd: HWND, content: &Content) -> anyhow::Result<()> {
                 cpMin: i32::try_from(region.range.start)?,
                 cpMax: i32::try_from(region.range.end)?,
             };
-            send(hwnd, EM_EXSETSEL, 0, &range as *const _ as isize);
+            send_ref(hwnd, EM_EXSETSEL, 0, &range);
             ensure!(
-                send(
-                    hwnd,
-                    EM_SETCHARFORMAT,
-                    SCF_SELECTION as usize,
-                    &format as *const _ as isize
-                ) != 0,
+                send_ref(hwnd, EM_SETCHARFORMAT, SCF_SELECTION as usize, &format) != 0,
                 "Set declaration link failed"
             );
         }
@@ -516,12 +469,7 @@ fn stream_in(hwnd: HWND, data: &[u8]) -> anyhow::Result<()> {
         dwError: 0,
         pfnCallback: Some(read),
     };
-    send(
-        hwnd,
-        EM_STREAMIN,
-        SF_RTF as usize,
-        &mut stream as *mut _ as isize,
-    );
+    send_mut(hwnd, EM_STREAMIN, SF_RTF as usize, &mut stream);
     let error = stream.dwError;
     ensure!(error == 0, "Stream declaration into RichEdit: {error:#x}");
     Ok(())
@@ -618,6 +566,26 @@ fn spans(text: &[u16]) -> Vec<(usize, usize, u32)> {
 }
 
 #[cfg(test)]
+pub(crate) struct Editor(pub HWND, pub HWND);
+
+#[cfg(test)]
+impl Editor {
+    pub fn new(style: u32, area: RECT) -> Self {
+        let parent = unsafe { test_window(w!("STATIC"), std::ptr::null(), style, area) };
+        let mut editor = Self(parent, std::ptr::null_mut());
+        editor.1 = create(parent, 1).unwrap();
+        editor
+    }
+}
+
+#[cfg(test)]
+impl Drop for Editor {
+    fn drop(&mut self) {
+        unsafe { DestroyWindow(self.0) };
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -645,22 +613,11 @@ mod tests {
         }
 
         unsafe {
-            let parent = CreateWindowExW(
-                0,
-                w!("STATIC"),
-                std::ptr::null(),
+            let fixture = Editor::new(
                 WS_POPUP | WS_VISIBLE,
-                -10000,
-                -10000,
-                900,
-                600,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                instance(),
-                std::ptr::null(),
+                crate::layout::rect(-10000, -10000, 900, 600),
             );
-            assert!(!parent.is_null());
-            let editor = create(parent, 1).unwrap();
+            let Editor(parent, editor) = fixture;
             place(editor, crate::layout::rect(0, 0, 750, 500));
             let mut received = Vec::<ENLINK>::new();
             assert_ne!(
@@ -808,29 +765,15 @@ mod tests {
                 );
                 assert_eq!(format.Base.dwEffects.0 & (CFE_LINK | CFE_UNDERLINE).0, 0);
             }
-            DestroyWindow(parent);
+            drop(fixture);
         }
     }
 
     #[test]
     fn native_word_selection_and_navigation_use_identifier_boundaries() {
         unsafe {
-            let parent = CreateWindowExW(
-                0,
-                w!("STATIC"),
-                std::ptr::null(),
-                WS_POPUP,
-                0,
-                0,
-                900,
-                600,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                instance(),
-                std::ptr::null(),
-            );
-            assert!(!parent.is_null());
-            let editor = create(parent, 1).unwrap();
+            let fixture = Editor::new(WS_POPUP, crate::layout::rect(0, 0, 900, 600));
+            let editor = fixture.1;
             place(editor, crate::layout::rect(0, 0, 800, 400));
             let body = "ERROR_ACCESS_DENIED  next_value(x);";
             set_content(editor, &Content::new(body.into())).unwrap();
@@ -884,7 +827,6 @@ mod tests {
                 assert_ne!(SetKeyboardState(original.as_ptr()), 0);
                 assert_eq!(actual, expected);
             }
-            DestroyWindow(parent);
         }
     }
 
@@ -916,43 +858,27 @@ mod tests {
             winlex_format::declaration::render(&catalog, entity.id, Architecture::X64).unwrap();
         let body = rendered.text.clone();
         let content = Content::from(rendered);
-        unsafe {
-            let parent = CreateWindowExW(
-                0,
-                w!("STATIC"),
-                std::ptr::null(),
-                WS_POPUP | WS_VISIBLE,
-                0,
-                0,
-                900,
-                600,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                instance(),
-                std::ptr::null(),
-            );
-            assert!(!parent.is_null());
-            let editor = create(parent, 1).unwrap();
-            place(editor, crate::layout::rect(0, 0, 750, 500));
-            focus(editor);
-            let start = Instant::now();
-            set_content(editor, &content).unwrap();
-            let elapsed = start.elapsed();
-            let start = Instant::now();
-            recolor(editor, &content).unwrap();
-            let recolor_elapsed = start.elapsed();
-            let actual = text(editor).replace("\r\n", "\n").replace('\r', "\n");
-            DestroyWindow(parent);
-            assert_eq!(actual, body);
-            assert!(
-                elapsed < Duration::from_secs(3),
-                "UI blocked for {elapsed:?}"
-            );
-            assert!(
-                recolor_elapsed < Duration::from_secs(3),
-                "UI blocked during recoloring for {recolor_elapsed:?}"
-            );
-        }
+        let fixture = Editor::new(WS_POPUP | WS_VISIBLE, crate::layout::rect(0, 0, 900, 600));
+        let editor = fixture.1;
+        place(editor, crate::layout::rect(0, 0, 750, 500));
+        focus(editor);
+        let start = Instant::now();
+        set_content(editor, &content).unwrap();
+        let elapsed = start.elapsed();
+        let start = Instant::now();
+        recolor(editor, &content).unwrap();
+        let recolor_elapsed = start.elapsed();
+        let actual = text(editor).replace("\r\n", "\n").replace('\r', "\n");
+        drop(fixture);
+        assert_eq!(actual, body);
+        assert!(
+            elapsed < Duration::from_secs(3),
+            "UI blocked for {elapsed:?}"
+        );
+        assert!(
+            recolor_elapsed < Duration::from_secs(3),
+            "UI blocked during recoloring for {recolor_elapsed:?}"
+        );
     }
 
     #[test]
@@ -960,22 +886,8 @@ mod tests {
         use windows::Win32::UI::Controls::RichEdit::SCF_SELECTION;
 
         unsafe {
-            let parent = CreateWindowExW(
-                0,
-                w!("STATIC"),
-                std::ptr::null(),
-                WS_POPUP | WS_VISIBLE,
-                0,
-                0,
-                900,
-                600,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                instance(),
-                std::ptr::null(),
-            );
-            assert!(!parent.is_null());
-            let editor = create(parent, 1).unwrap();
+            let fixture = Editor::new(WS_POPUP | WS_VISIBLE, crate::layout::rect(0, 0, 900, 600));
+            let editor = fixture.1;
             place(editor, crate::layout::rect(0, 0, 750, 500));
             focus(editor);
             let size = CHARFORMATW {
@@ -1060,49 +972,31 @@ mod tests {
                 assert_eq!(send(editor, EM_GETFIRSTVISIBLELINE, 0, 0), first);
                 assert_eq!(text(editor).replace("\r\n", "\r"), content.text);
             }
-            DestroyWindow(parent);
         }
     }
 
     #[test]
     fn visual_wrapping_preserves_declaration_and_paragraph_format() {
-        unsafe {
-            let parent = CreateWindowExW(
-                0,
-                w!("STATIC"),
-                std::ptr::null(),
-                WS_POPUP,
-                0,
-                0,
-                900,
-                600,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                instance(),
-                std::ptr::null(),
-            );
-            assert!(!parent.is_null());
-            let editor = create(parent, 1).unwrap();
-            let body = "const UINT32 example = 123; // a long declaration with several words that wrap without changing the copied text 😀";
-            place(editor, crate::layout::rect(0, 0, 800, 400));
-            set_content(editor, &Content::new(body.into())).unwrap();
-            let wide_lines = send(editor, EM_GETLINECOUNT, 0, 0);
-            place(editor, crate::layout::rect(0, 0, 180, 400));
-            assert!(send(editor, EM_GETLINECOUNT, 0, 0) > wide_lines);
-            assert_eq!(text(editor), body);
-            recolor(editor, &Content::new(body.into())).unwrap();
-            assert_eq!(text(editor), body);
-            set_content(
-                editor,
-                &Content::new("struct Example {\n    UINT32 value;\n};".into()),
-            )
-            .unwrap();
-            assert_eq!(
-                text(editor).replace("\r\n", "\n").replace('\r', "\n"),
-                "struct Example {\n    UINT32 value;\n};"
-            );
-            DestroyWindow(parent);
-        }
+        let fixture = Editor::new(WS_POPUP, crate::layout::rect(0, 0, 900, 600));
+        let editor = fixture.1;
+        let body = "const UINT32 example = 123; // a long declaration with several words that wrap without changing the copied text 😀";
+        place(editor, crate::layout::rect(0, 0, 800, 400));
+        set_content(editor, &Content::new(body.into())).unwrap();
+        let wide_lines = send(editor, EM_GETLINECOUNT, 0, 0);
+        place(editor, crate::layout::rect(0, 0, 180, 400));
+        assert!(send(editor, EM_GETLINECOUNT, 0, 0) > wide_lines);
+        assert_eq!(text(editor), body);
+        recolor(editor, &Content::new(body.into())).unwrap();
+        assert_eq!(text(editor), body);
+        set_content(
+            editor,
+            &Content::new("struct Example {\n    UINT32 value;\n};".into()),
+        )
+        .unwrap();
+        assert_eq!(
+            text(editor).replace("\r\n", "\n").replace('\r', "\n"),
+            "struct Example {\n    UINT32 value;\n};"
+        );
     }
 
     #[test]

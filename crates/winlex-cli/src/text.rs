@@ -108,11 +108,7 @@ fn declaration(
             }
             writeln!(out)?;
             if let Some(b) = t.extends() {
-                let base = match b {
-                    TypeDefOrRef::TypeSpec(s) => s.ty(&t.generic_types()),
-                    b => Type::ClassName(b.type_name()),
-                };
-                writeln!(out, "{pad}  extends: {}", ty(&base))?;
+                writeln!(out, "{pad}  extends: {}", ty(&b.ty(&t.generic_types())))?;
             }
             attributes(out, &pad, t)?;
             for i in t.interface_impls() {

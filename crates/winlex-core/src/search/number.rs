@@ -1,5 +1,5 @@
 use crate::Architecture;
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, ensure};
 use std::cmp::Ordering;
 use windows_metadata::Value;
 
@@ -80,38 +80,16 @@ impl NumberQuery {
         })
     }
     fn decimal(text: &str, body: &str) -> Result<Self> {
-        let mut parts = body.split(['e', 'E']);
-        let mantissa = parts.next().unwrap();
-        if let Some(exponent) = parts.next() {
-            let digits = exponent.strip_prefix(['+', '-']).unwrap_or(exponent);
-            ensure!(
-                !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()),
-                "invalid decimal exponent"
-            );
-        }
-        ensure!(parts.next().is_none(), "invalid decimal exponent");
-        let mut digits = 0;
-        let mut point = false;
-        let mut nonzero = false;
-        for byte in mantissa.bytes() {
-            match byte {
-                b'.' if !point => point = true,
-                b'0'..=b'9' => {
-                    digits += 1;
-                    nonzero |= byte != b'0';
-                }
-                _ => bail!("invalid decimal number"),
-            }
-        }
-        ensure!(digits > 0, "invalid decimal number");
+        let wide = text.parse::<f64>().context("invalid decimal number")?;
+        let nonzero = body
+            .bytes()
+            .take_while(|b| !matches!(b, b'e' | b'E'))
+            .any(|b| matches!(b, b'1'..=b'9'));
         let narrow = text
             .parse::<f32>()
             .ok()
             .filter(|v| v.is_finite() && (!nonzero || *v != 0.0));
-        let wide = text
-            .parse::<f64>()
-            .ok()
-            .filter(|v| v.is_finite() && (!nonzero || *v != 0.0));
+        let wide = Some(wide).filter(|v| v.is_finite() && (!nonzero || *v != 0.0));
         ensure!(narrow.is_some() || wide.is_some(), "float out of range");
         Ok(Self::Float { narrow, wide })
     }
@@ -148,76 +126,64 @@ impl NumberQuery {
         if let Value::EnumValue(_, value) = value {
             return self.compare(value, architecture, mask, op);
         }
-        if let Self::Float { narrow, wide } = self {
-            let pair = match value {
-                Value::F32(value) => narrow.map(|bound| (*value as f64, bound as f64)),
-                Value::F64(value) => wide.map(|bound| (*value, bound)),
-                _ => None,
-            };
-            return pair.is_some_and(|(value, bound)| {
-                if bound.is_nan() {
-                    op == Comparison::Equal && value.is_nan()
-                } else {
-                    op.accepts(value.partial_cmp(&bound))
-                }
-            });
-        }
-        if matches!(value, Value::USize(_) | Value::ISize(_)) {
-            return Architecture::ALL
-                .into_iter()
-                .filter(|&a| architecture.map_or(a.supports(mask), |selected| a == selected))
-                .any(|a| {
-                    let value = match (value, a) {
-                        (Value::USize(v), Architecture::X86) => {
-                            u32::try_from(*v).ok().map(Value::U32)
-                        }
-                        (Value::ISize(v), Architecture::X86) => {
-                            i32::try_from(*v).ok().map(Value::I32)
-                        }
-                        (Value::USize(v), _) => Some(Value::U64(*v)),
-                        (Value::ISize(v), _) => Some(Value::I64(*v)),
-                        _ => unreachable!(),
-                    };
-                    value.is_some_and(|value| self.compare(&value, Some(a), mask, op))
-                });
-        }
-        let Some(integer) = crate::integer(value) else {
-            return false;
-        };
-        let Self::Integer {
-            negative,
-            magnitude,
-        } = self
-        else {
-            unreachable!()
-        };
-        if op == Comparison::Equal {
-            let bits = match value {
-                Value::U8(_) | Value::I8(_) => 8,
-                Value::U16(_) | Value::I16(_) => 16,
-                Value::U32(_) | Value::I32(_) => 32,
-                _ => 64,
-            };
-            let max = u64::MAX >> (64 - bits);
-            let expected = if *negative {
-                if *magnitude > 1u64 << (bits - 1) {
+        match self {
+            Self::Float { narrow, wide } => {
+                let pair = match value {
+                    Value::F32(value) => narrow.map(|bound| (*value as f64, bound as f64)),
+                    Value::F64(value) => wide.map(|bound| (*value, bound)),
+                    _ => None,
+                };
+                pair.is_some_and(|(value, bound)| {
+                    if bound.is_nan() {
+                        op == Comparison::Equal && value.is_nan()
+                    } else {
+                        op.accepts(value.partial_cmp(&bound))
+                    }
+                })
+            }
+            Self::Integer {
+                negative,
+                magnitude,
+            } => {
+                let Some(integer) = crate::integer(value) else {
                     return false;
+                };
+                let compare = |bits| {
+                    if op == Comparison::Equal {
+                        let max = u64::MAX >> (64 - bits);
+                        let limit = if *negative { 1u64 << (bits - 1) } else { max };
+                        let expected = if *negative {
+                            0u64.wrapping_sub(*magnitude)
+                        } else {
+                            *magnitude
+                        };
+                        *magnitude <= limit && integer as u64 & max == expected & max
+                    } else {
+                        let bound = if *negative {
+                            -(*magnitude as i128)
+                        } else {
+                            *magnitude as i128
+                        };
+                        op.accepts(Some(integer.cmp(&bound)))
+                    }
+                };
+                match value {
+                    Value::USize(_) | Value::ISize(_) => Architecture::ALL.into_iter().any(|a| {
+                        architecture.map_or(a.supports(mask), |selected| a == selected)
+                            && match (value, a) {
+                                (Value::USize(v), Architecture::X86) => u32::try_from(*v).is_ok(),
+                                (Value::ISize(v), Architecture::X86) => i32::try_from(*v).is_ok(),
+                                _ => true,
+                            }
+                            && compare(if a == Architecture::X86 { 32 } else { 64 })
+                    }),
+                    Value::U8(_) | Value::I8(_) => compare(8),
+                    Value::U16(_) | Value::I16(_) => compare(16),
+                    Value::U32(_) | Value::I32(_) => compare(32),
+                    _ => compare(64),
                 }
-                0u64.wrapping_sub(*magnitude) & max
-            } else {
-                if *magnitude > max {
-                    return false;
-                }
-                *magnitude
-            };
-            return integer as u64 & max == expected;
+            }
         }
-        let bound = if *negative {
-            -(*magnitude as i128)
-        } else {
-            *magnitude as i128
-        };
-        op.accepts(Some(integer.cmp(&bound)))
     }
 }
 
@@ -286,22 +252,18 @@ mod tests {
         }
     }
     #[test]
-    fn decimal_exponent_validation_preserves_diagnostics_and_zero_extremes() {
+    fn decimal_grammar_and_zero_extremes() {
         for text in [
-            "1e", "1e+", "1e-", "1e2e3", "1e+2E-3", "1e１２", "1e 2", "1..0e+",
+            ".5", "1.", "+.5", "-1.", "1.e2", ".5E-2", "+01.0e+2", "01e2",
         ] {
-            assert_eq!(
-                NumberQuery::compile(text).err().unwrap().to_string(),
-                "invalid decimal exponent",
-                "{text}"
-            );
+            assert!(NumberQuery::compile(text).is_ok(), "{text}");
         }
-        for text in ["1..0e2", ".e2"] {
-            assert_eq!(
-                NumberQuery::compile(text).err().unwrap().to_string(),
-                "invalid decimal number",
-                "{text}"
-            );
+        for text in [
+            ".", ".e2", "1..0e2", "1e", "1e+", "1e-", "1e2e3", "1e+2E-3", "1e１２", "1e 2",
+            "1..0e+", "1_0.0", "1.0_0", "1e1_0", "１２.0", " 1.0", "1.0 ", "--1.0", "+-1.0",
+            "0x1.0", "0x1p2", "NaN.0", "inf.0", "Infinity",
+        ] {
+            assert!(NumberQuery::compile(text).is_err(), "{text}");
         }
         for text in ["1e9999", "1e-9999"] {
             assert_eq!(

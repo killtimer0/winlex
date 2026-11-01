@@ -14,14 +14,7 @@ use windows_sys::Win32::Graphics::GdiPlus::{
 };
 use windows_sys::Win32::UI::HiDpi::GetSystemMetricsForDpi;
 
-pub struct WindowIcon(pub HICON);
-impl Drop for WindowIcon {
-    fn drop(&mut self) {
-        if !self.0.is_null() {
-            unsafe { DestroyIcon(self.0) };
-        }
-    }
-}
+owned_handle! { pub struct WindowIcon(pub HICON); DestroyIcon, null = ptr::null_mut() }
 
 pub struct WindowIcons {
     small: WindowIcon,
@@ -140,7 +133,7 @@ fn check(status: Status) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub struct Runtime(usize);
+owned_handle! { pub struct Runtime(usize); GdiplusShutdown }
 impl Runtime {
     pub fn new() -> anyhow::Result<Self> {
         let input = GdiplusStartupInput {
@@ -152,31 +145,10 @@ impl Runtime {
         Ok(Self(token))
     }
 }
-impl Drop for Runtime {
-    fn drop(&mut self) {
-        unsafe {
-            GdiplusShutdown(self.0);
-        }
-    }
-}
-struct Image(*mut GpImage);
-impl Drop for Image {
-    fn drop(&mut self) {
-        unsafe {
-            GdipDisposeImage(self.0);
-        }
-    }
-}
-struct Graphics(*mut GpGraphics);
-impl Drop for Graphics {
-    fn drop(&mut self) {
-        unsafe {
-            GdipDeleteGraphics(self.0);
-        }
-    }
-}
+owned_handle! { struct Image(*mut GpImage); GdipDisposeImage }
+owned_handle! { struct Graphics(*mut GpGraphics); GdipDeleteGraphics }
 struct Bitmap {
-    handle: HBITMAP,
+    handle: GdiObject,
     pixels: *mut u32,
     count: usize,
 }
@@ -215,7 +187,7 @@ impl Bitmap {
             );
             anyhow::ensure!(!handle.is_null(), "Create result icon bitmap failed");
             let bitmap = Self {
-                handle,
+                handle: GdiObject(handle),
                 pixels: pixels.cast(),
                 count: (size * size) as usize,
             };
@@ -265,15 +237,8 @@ impl Bitmap {
         }
     }
 }
-impl Drop for Bitmap {
-    fn drop(&mut self) {
-        unsafe {
-            DeleteObject(self.handle);
-        }
-    }
-}
 
-pub struct Images(HIMAGELIST);
+owned_handle! { pub struct Images(HIMAGELIST); ImageList_Destroy }
 impl Images {
     pub fn toolbar(
         size: i32,
@@ -314,7 +279,7 @@ impl Images {
                 for color in colors {
                     bitmap.tint(color);
                     anyhow::ensure!(
-                        ImageList_Add(handle, bitmap.handle, ptr::null_mut()) >= 0,
+                        ImageList_Add(handle, bitmap.handle.0, ptr::null_mut()) >= 0,
                         "Cache {purpose} icon failed"
                     );
                 }
@@ -334,13 +299,6 @@ impl Images {
         };
         unsafe {
             ImageList_Draw(self.0, icon as i32 * 3 + variant, dc, x, y, ILD_TRANSPARENT);
-        }
-    }
-}
-impl Drop for Images {
-    fn drop(&mut self) {
-        unsafe {
-            ImageList_Destroy(self.0);
         }
     }
 }

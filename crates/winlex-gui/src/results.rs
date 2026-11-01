@@ -22,12 +22,6 @@ impl Deref for ResultItem {
         &self.matched
     }
 }
-impl ResultItem {
-    pub fn compare(&self, other: &Self) -> std::cmp::Ordering {
-        self.matched.compare(&other.matched)
-    }
-}
-
 pub fn prepare(catalog: &Catalog, matched: SearchMatch) -> anyhow::Result<Box<ResultItem>> {
     let context = catalog.entity_context(matched.id)?;
     let source = &catalog.sources()[matched.id.source_id];

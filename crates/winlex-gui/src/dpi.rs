@@ -89,7 +89,7 @@ impl Dpi {
 
 pub struct Font {
     pub dpi: u32,
-    pub handle: HFONT,
+    pub handle: GdiObject,
     pub height: i32,
 }
 impl Font {
@@ -138,7 +138,7 @@ impl Font {
             }
             let mut font = Self {
                 dpi,
-                handle,
+                handle: GdiObject(handle),
                 height: 0,
             };
             let dc = CreateCompatibleDC(ptr::null_mut());
@@ -153,13 +153,6 @@ impl Font {
             anyhow::ensure!(success != 0, "Measure system font failed");
             font.height = metrics.tmHeight;
             Ok(font)
-        }
-    }
-}
-impl Drop for Font {
-    fn drop(&mut self) {
-        unsafe {
-            DeleteObject(self.handle);
         }
     }
 }

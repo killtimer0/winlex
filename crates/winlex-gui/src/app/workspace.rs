@@ -108,13 +108,10 @@ fn close_now(hwnd: HWND) {
     }
 }
 pub(super) fn preview_document() -> Option<HWND> {
-    read(|a| {
-        a.workspace
-            .documents
-            .iter()
-            .find(|d| d.preview.get())
-            .map(|d| d.hwnd)
-    })
+    views()
+        .into_iter()
+        .find(|d| d.preview.get())
+        .map(|d| d.hwnd)
 }
 pub(super) fn pin_document(hwnd: HWND) {
     let changed = view(hwnd).is_some_and(|doc| doc.preview.replace(false));
@@ -124,20 +121,13 @@ pub(super) fn pin_document(hwnd: HWND) {
 }
 pub(super) fn sync_document_selection() {
     let current = active();
-    let (tabs, selected) = read(|a| {
-        (
-            a.workspace.tabs,
-            a.workspace
-                .documents
-                .iter()
-                .find(|d| d.hwnd == current)
-                .map(|d| d.id),
-        )
-    });
+    let tabs = read(|a| a.workspace.tabs);
+    let selected = view(current).map(|d| d.id);
     tabs::select(tabs, selected);
 }
 pub(super) fn refresh_document_tabs() {
-    let (tabs, docs) = read(|a| (a.workspace.tabs, a.workspace.documents.clone()));
+    let tabs = read(|a| a.workspace.tabs);
+    let docs = views();
     let mut ordinals = std::collections::HashMap::new();
     let items = docs
         .iter()
@@ -176,14 +166,8 @@ pub(super) fn refresh_document_tabs() {
     sync_document_selection();
 }
 pub(super) fn tab_notification(n: &tabs::Notification) {
-    let target = read(|a| {
-        a.workspace
-            .documents
-            .iter()
-            .find(|d| d.id == n.id)
-            .map(|d| d.hwnd)
-    });
-    let Some(hwnd) = target else { return };
+    let Some(doc) = by_id(n.id) else { return };
+    let hwnd = doc.hwnd;
     match n.header.code {
         tabs::SELECT => keep_focus(|| show_document(hwnd)),
         tabs::CLOSE => close_document(hwnd),
@@ -220,13 +204,10 @@ fn tab_menu(hwnd: HWND, point: POINT) -> anyhow::Result<()> {
     Ok(())
 }
 pub(super) fn scale_documents() {
-    let docs = read(|a| {
-        a.workspace
-            .documents
-            .iter()
-            .filter_map(|d| d.placement.get().map(|p| (d.hwnd, p)))
-            .collect::<Vec<_>>()
-    });
+    let docs: Vec<_> = views()
+        .into_iter()
+        .filter_map(|d| d.placement.get().map(|p| (d.hwnd, p)))
+        .collect();
     for (hwnd, placement) in docs {
         if unsafe { IsZoomed(hwnd) == 0 && IsIconic(hwnd) == 0 } {
             place(hwnd, placement.at(dpi().window(hwnd)));

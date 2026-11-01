@@ -30,6 +30,12 @@ struct Dialog {
     prepared: Cell<bool>,
     failure: RefCell<Option<anyhow::Error>>,
 }
+impl Dialog {
+    fn fail(&self, hwnd: HWND, error: anyhow::Error) {
+        *self.failure.borrow_mut() = Some(error);
+        unsafe { PostMessageW(hwnd, WM_CLOSE, 0, 0) };
+    }
+}
 thread_local! { static CURRENT: Cell<*const Dialog> = const { Cell::new(ptr::null()) }; }
 
 pub(in super::super) fn open() {
@@ -102,8 +108,7 @@ unsafe extern "system" fn sheet_callback(hwnd: HWND, message: u32, _l: isize) ->
                     &resources::text(IDS_SETTINGS_CANCEL),
                 );
                 if set_subclass(hwnd, Some(sheet_proc), 1, current.get() as usize) == 0 {
-                    *state.failure.borrow_mut() = Some(error("Subclass settings property sheet"));
-                    PostMessageW(hwnd, WM_CLOSE, 0, 0);
+                    state.fail(hwnd, error("Subclass settings property sheet"));
                 } else {
                     PostMessageW(hwnd, PREPARE, 0, 0);
                 }
@@ -166,10 +171,8 @@ unsafe extern "system" fn sheet_proc(
         let state = &*(data as *const Dialog);
         match message {
             PREPARE => {
-                let result = prepare(hwnd, state);
-                if let Err(error) = result {
-                    *state.failure.borrow_mut() = Some(error);
-                    PostMessageW(hwnd, WM_CLOSE, 0, 0);
+                if let Err(error) = prepare(hwnd, state) {
+                    state.fail(hwnd, error);
                 }
                 return 0;
             }
@@ -177,20 +180,10 @@ unsafe extern "system" fn sheet_proc(
             // page and tab adjustments are applied incrementally to the current window size.
             WM_DPICHANGED if dpi().mode == crate::dpi::Mode::Pmv1 && state.prepared.get() => {
                 if let Err(error) = scale::update(&state.scales, (w & 0xffff) as u32) {
-                    *state.failure.borrow_mut() = Some(error);
-                    PostMessageW(hwnd, WM_CLOSE, 0, 0);
+                    state.fail(hwnd, error);
                     return 0;
                 }
-                let r = *(l as *const RECT);
-                SetWindowPos(
-                    hwnd,
-                    ptr::null_mut(),
-                    r.left,
-                    r.top,
-                    r.right - r.left,
-                    r.bottom - r.top,
-                    SWP_NOZORDER | SWP_NOACTIVATE,
-                );
+                let _ = set_bounds(hwnd, *(l as *const RECT));
                 align_pages(hwnd, state);
                 RedrawWindow(
                     hwnd,
@@ -222,8 +215,10 @@ unsafe extern "system" fn sheet_proc(
 }
 
 fn prepare(hwnd: HWND, state: &Dialog) -> anyhow::Result<()> {
-    if !state.prepared.replace(true) {
-        if dpi().mode == crate::dpi::Mode::Pmv1 {
+    let initial = !state.prepared.replace(true);
+    let manual = dpi().mode == crate::dpi::Mode::Pmv1;
+    if manual {
+        if initial {
             let mut scales = Vec::new();
             for page in state.pages.get() {
                 anyhow::ensure!(!page.is_null(), "Settings page was not created");
@@ -231,33 +226,26 @@ fn prepare(hwnd: HWND, state: &Dialog) -> anyhow::Result<()> {
             }
             scales.push(scale::Scale::capture(hwnd, &state.pages.get())?);
             *state.scales.borrow_mut() = scales;
-            scale::update(&state.scales, dpi().window(hwnd))?;
-            let size = state
+        }
+        scale::update(&state.scales, dpi().window(hwnd))?;
+    }
+    if initial {
+        let owner = bounds(read(|a| a.frame), ptr::null_mut());
+        let r = bounds(hwnd, ptr::null_mut());
+        let size = if manual {
+            state
                 .scales
                 .borrow()
                 .last()
                 .unwrap()
-                .initial_size(dpi().window(hwnd));
-            let r = bounds(hwnd, ptr::null_mut());
-            if unsafe {
-                SetWindowPos(
-                    hwnd,
-                    ptr::null_mut(),
-                    r.left + (r.right - r.left - size.cx) / 2,
-                    r.top + (r.bottom - r.top - size.cy) / 2,
-                    size.cx,
-                    size.cy,
-                    SWP_NOZORDER | SWP_NOACTIVATE,
-                )
-            } == 0
-            {
-                return Err(error("Scale initial settings window"));
+                .initial_size(dpi().window(hwnd))
+        } else {
+            SIZE {
+                cx: r.right - r.left,
+                cy: r.bottom - r.top,
             }
-            align_pages(hwnd, state);
-        }
-        let owner = bounds(read(|a| a.frame), ptr::null_mut());
-        let r = bounds(hwnd, ptr::null_mut());
-        let (width, height) = (r.right - r.left, r.bottom - r.top);
+        };
+        let (width, height) = (size.cx, size.cy);
         let mut x = owner.left + (owner.right - owner.left - width) / 2;
         let mut y = owner.top + (owner.bottom - owner.top - height) / 2;
         if let Some(monitor) = super::monitor(read(|a| a.frame)) {
@@ -265,19 +253,9 @@ fn prepare(hwnd: HWND, state: &Dialog) -> anyhow::Result<()> {
             x = x.clamp(work.left, (work.right - width).max(work.left));
             y = y.clamp(work.top, (work.bottom - height).max(work.top));
         }
-        unsafe {
-            SetWindowPos(
-                hwnd,
-                ptr::null_mut(),
-                x,
-                y,
-                0,
-                0,
-                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
-            );
-        }
-    } else if dpi().mode == crate::dpi::Mode::Pmv1 {
-        scale::update(&state.scales, dpi().window(hwnd))?;
+        set_bounds(hwnd, crate::layout::rect(x, y, width, height))?;
+    }
+    if manual {
         align_pages(hwnd, state);
     }
     Ok(())

@@ -16,17 +16,10 @@ pub struct Config {
     warning: Option<Warning>,
     pub key: Option<Key>,
 }
-pub struct Key(HKEY);
+owned_handle! { pub struct Key(HKEY); RegCloseKey }
 enum Warning {
     UnsupportedVersion,
     Read(u32),
-}
-impl Drop for Key {
-    fn drop(&mut self) {
-        unsafe {
-            RegCloseKey(self.0);
-        }
-    }
 }
 fn registry_error(operation: &str, status: u32) -> anyhow::Error {
     anyhow::Error::new(std::io::Error::from_raw_os_error(status as i32))
@@ -115,31 +108,19 @@ impl Config {
 impl Key {
     fn value(&self, name: &str, kind: u32) -> Option<Vec<u8>> {
         unsafe {
-            let (mut actual, mut size) = (0, 0);
-            if RegQueryValueExW(
-                self.0,
-                wide(name).as_ptr(),
-                ptr::null(),
-                &mut actual,
-                ptr::null_mut(),
-                &mut size,
-            ) != ERROR_SUCCESS
-                || actual != kind
-                || size > MAX_VALUE
-            {
+            let name = wide(name);
+            let query = |data, size: &mut u32| {
+                let mut actual = 0;
+                RegQueryValueExW(self.0, name.as_ptr(), ptr::null(), &mut actual, data, size)
+                    == ERROR_SUCCESS
+                    && actual == kind
+            };
+            let mut size = 0;
+            if !query(ptr::null_mut(), &mut size) || size > MAX_VALUE {
                 return None;
             }
             let mut bytes = vec![0; size as usize];
-            if RegQueryValueExW(
-                self.0,
-                wide(name).as_ptr(),
-                ptr::null(),
-                &mut actual,
-                bytes.as_mut_ptr(),
-                &mut size,
-            ) != ERROR_SUCCESS
-                || actual != kind
-            {
+            if !query(bytes.as_mut_ptr(), &mut size) {
                 return None;
             }
             bytes.truncate(size as usize);

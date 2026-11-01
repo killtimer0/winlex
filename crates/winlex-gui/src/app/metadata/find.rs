@@ -19,6 +19,9 @@ pub(super) struct Find {
     matches: RefCell<Vec<CHARRANGE>>,
 }
 impl Find {
+    pub fn visible(&self) -> bool {
+        self.visible.get()
+    }
     pub fn create(&mut self, owner: HWND) -> anyhow::Result<()> {
         for (id, label, class, style) in [
             (FIND_LABEL, IDS_FIND, w!("STATIC"), SS_CENTERIMAGE),
@@ -142,7 +145,7 @@ impl Find {
                 index.is_none(),
             )
         };
-        send(editor, EM_EXSETSEL, 0, &target.0 as *const _ as isize);
+        send_ref(editor, EM_EXSETSEL, 0, &target.0);
         send(
             editor,
             windows::Win32::UI::Controls::RichEdit::EM_HIDESELECTION,
@@ -194,32 +197,28 @@ impl Find {
         }
         true
     }
-    pub fn key(&self, editor: HWND, msg: &MSG) -> bool {
+    pub fn key(&self, editor: HWND, msg: &MSG) -> Option<u16> {
         if msg.message != WM_KEYDOWN || !self.visible.get() {
-            return false;
+            return None;
         }
         if msg.wParam == VK_ESCAPE as usize
             && (self.controls.contains(&msg.hwnd) || msg.hwnd == editor)
         {
-            return self.command(editor, FIND_CLOSE, 0);
+            return Some(FIND_CLOSE);
         }
         if msg.hwnd == self.controls[1] && msg.wParam == VK_RETURN as usize {
-            return self.command(
-                editor,
-                if unsafe { GetKeyState(VK_SHIFT as i32) } < 0 {
-                    FIND_PREVIOUS
-                } else {
-                    FIND_NEXT
-                },
-                0,
-            );
+            return Some(if unsafe { GetKeyState(VK_SHIFT as i32) } < 0 {
+                FIND_PREVIOUS
+            } else {
+                FIND_NEXT
+            });
         }
-        false
+        None
     }
 }
 fn selection(editor: HWND) -> CHARRANGE {
     let mut range = CHARRANGE::default();
-    send(editor, EM_EXGETSEL, 0, &mut range as *mut _ as isize);
+    send_mut(editor, EM_EXGETSEL, 0, &mut range);
     range
 }
 
@@ -241,13 +240,7 @@ fn find_matches(editor: HWND, query: &str, match_case: bool, whole_word: bool) -
         lpstrText: PCWSTR(query.as_ptr()),
         chrgText: CHARRANGE::default(),
     };
-    while send(
-        editor,
-        EM_FINDTEXTEXW,
-        flags as usize,
-        &mut find as *mut _ as isize,
-    ) >= 0
-    {
+    while send_mut(editor, EM_FINDTEXTEXW, flags as usize, &mut find) >= 0 {
         if find.chrgText.cpMax <= find.chrg.cpMin {
             break;
         }
@@ -263,48 +256,31 @@ mod tests {
 
     #[test]
     fn native_find_preserves_utf16_ranges_and_passive_reading_position() {
-        unsafe {
-            let owner = CreateWindowExW(
-                0,
-                w!("STATIC"),
-                std::ptr::null(),
-                WS_POPUP,
-                0,
-                0,
-                640,
-                480,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                instance(),
-                std::ptr::null(),
+        let fixture = crate::rich_text::Editor::new(WS_POPUP, crate::layout::rect(0, 0, 640, 480));
+        let editor = fixture.1;
+        crate::rich_text::set_content(
+            editor,
+            &crate::rich_text::Content::new("😀 Foo foo food\nFoo".into()),
+        )
+        .unwrap();
+        let selected = CHARRANGE {
+            cpMin: 7,
+            cpMax: 10,
+        };
+        send(editor, EM_EXSETSEL, 0, &selected as *const _ as isize);
+        for (case, word, expected) in [
+            (false, false, vec![(3, 6), (7, 10), (11, 14), (16, 19)]),
+            (false, true, vec![(3, 6), (7, 10), (16, 19)]),
+            (true, true, vec![(7, 10)]),
+        ] {
+            let found = find_matches(editor, "foo", case, word);
+            assert_eq!(
+                found.iter().map(|r| (r.cpMin, r.cpMax)).collect::<Vec<_>>(),
+                expected
             );
-            assert!(!owner.is_null());
-            let editor = crate::rich_text::create(owner, 1).unwrap();
-            crate::rich_text::set_content(
-                editor,
-                &crate::rich_text::Content::new("😀 Foo foo food\nFoo".into()),
-            )
-            .unwrap();
-            let selected = CHARRANGE {
-                cpMin: 7,
-                cpMax: 10,
-            };
-            send(editor, EM_EXSETSEL, 0, &selected as *const _ as isize);
-            for (case, word, expected) in [
-                (false, false, vec![(3, 6), (7, 10), (11, 14), (16, 19)]),
-                (false, true, vec![(3, 6), (7, 10), (16, 19)]),
-                (true, true, vec![(7, 10)]),
-            ] {
-                let found = find_matches(editor, "foo", case, word);
-                assert_eq!(
-                    found.iter().map(|r| (r.cpMin, r.cpMax)).collect::<Vec<_>>(),
-                    expected
-                );
-                assert_eq!((selection(editor).cpMin, selection(editor).cpMax), (7, 10));
-            }
-            assert!(find_matches(editor, "", false, false).is_empty());
-            assert!(find_matches(editor, "missing", false, false).is_empty());
-            DestroyWindow(owner);
+            assert_eq!((selection(editor).cpMin, selection(editor).cpMax), (7, 10));
         }
+        assert!(find_matches(editor, "", false, false).is_empty());
+        assert!(find_matches(editor, "missing", false, false).is_empty());
     }
 }

@@ -61,7 +61,7 @@ fn font_for(value: u32) -> (HFONT, i32) {
         a.fonts
             .iter()
             .find(|f| f.dpi == value)
-            .map(|f| (f.handle, f.height))
+            .map(|f| (f.handle.0, f.height))
     }) {
         return font;
     }
@@ -74,7 +74,7 @@ fn font_for(value: u32) -> (HFONT, i32) {
             return (ptr::null_mut(), 0);
         }
     };
-    let result = (font.handle, font.height);
+    let result = (font.handle.0, font.height);
     write(|a| a.fonts.push(font));
     result
 }
@@ -238,7 +238,6 @@ unsafe fn run_windows(paths: Vec<std::path::PathBuf>) -> anyhow::Result<()> {
             if let Some(document) = workspace::view(active())
                 && document.find_key(&msg)
             {
-                document.layout();
                 continue;
             }
             if TranslateMDISysAccel(mdi, &msg) != 0 {

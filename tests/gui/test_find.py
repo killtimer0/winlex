@@ -15,8 +15,11 @@ def test_document_find_and_preview_reuse(launch, settings):
     count = n.get_item(doc, 1223)
     assert not enabled(app, HISTORY_BACK)
     assert not n.is_visible(query)
+    collapsed = n.rectangle(editor)
     app.command(1060)
     n.wait(lambda: n.is_visible(query) and app.focused() == query, "find opened")
+    expanded = n.rectangle(editor)
+    assert expanded[1] > collapsed[1]
     n.set_text(query, "HANDLE")
     n.wait(lambda: n.window_text(count).startswith("1/"), "first match")
     first = editor_selection(app, editor)
@@ -32,8 +35,10 @@ def test_document_find_and_preview_reuse(launch, settings):
     assert editor_selection(app, editor)[0] > first[0]
     n.set_text(query, "not_present_anywhere_12345")
     n.wait(lambda: n.window_text(count).startswith("0/0"), "no matches")
+    assert n.rectangle(editor) == expanded
     n.key_message(query, win32con.VK_ESCAPE)
-    n.wait(lambda: not n.is_visible(query) and app.focused() == editor, "find dismissed")
+    n.wait(lambda: not n.is_visible(query) and app.focused() == editor
+           and n.rectangle(editor) == collapsed, "find dismissed and body expanded")
     assert not enabled(app, HISTORY_BACK)
     app.command(1060)
     assert n.window_text(query) == "HANDLE"

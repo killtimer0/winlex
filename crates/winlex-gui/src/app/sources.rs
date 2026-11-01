@@ -62,20 +62,18 @@ fn rows() -> Vec<Row> {
                 }
                 let exact =
                     resources::text(IDS_SIZE_BYTES).replace("{size}", &source.len().to_string());
-                let mut info: Vec<u16> = path
-                    .as_os_str()
-                    .encode_wide()
-                    .chain(format!("\r\n{status} · {exact}").encode_utf16())
-                    .collect();
+                let native_path: Vec<_> = path.as_os_str().encode_wide().collect();
+                let title: Vec<_> = path.file_name().unwrap_or_default().encode_wide().collect();
+                let mut info = native_path.clone();
+                info.extend(format!("\r\n{status} · {exact}").encode_utf16());
                 if let Some(error) = failure {
                     info.extend(format!("\r\n{error}").encode_utf16());
                 }
-                let mut tooltip: Vec<u16> =
-                    path.file_name().unwrap_or_default().encode_wide().collect();
+                let mut tooltip = title.clone();
                 tooltip.extend("\r\n".encode_utf16());
                 tooltip_field(&mut tooltip, IDS_TIP_STATUS, status.encode_utf16());
                 tooltip_field(&mut tooltip, IDS_TIP_SIZE, exact.encode_utf16());
-                tooltip_field(&mut tooltip, IDS_TIP_PATH, path.as_os_str().encode_wide());
+                tooltip_field(&mut tooltip, IDS_TIP_PATH, native_path);
                 if let Some(error) = failure {
                     tooltip_field(&mut tooltip, IDS_TIP_ERROR, error.encode_utf16());
                     tooltip.extend("\r\n".encode_utf16());
@@ -84,7 +82,7 @@ fn rows() -> Vec<Row> {
                 Row {
                     path: path.to_path_buf(),
                     display: Display {
-                        title: path.file_name().unwrap_or_default().encode_wide().collect(),
+                        title,
                         detail,
                         icon: Some(Icon::File),
                         tooltip,
@@ -249,16 +247,8 @@ pub(super) fn context_menu(hwnd: HWND, location: isize) -> anyhow::Result<()> {
             return Ok(());
         }
         send(hwnd, LVM_ENSUREVISIBLE, index as usize, 0);
-        let mut rect = RECT {
-            left: LVIR_BOUNDS as i32,
-            ..unsafe { std::mem::zeroed() }
-        };
-        send(
-            hwnd,
-            LVM_GETITEMRECT,
-            index as usize,
-            &mut rect as *mut _ as isize,
-        );
+        let rect = crate::list::item_rect(hwnd, index as usize)
+            .unwrap_or_else(|| crate::layout::rect(0, 0, 0, 0));
         point = POINT {
             x: rect.left,
             y: rect.bottom,
@@ -274,21 +264,12 @@ pub(super) fn context_menu(hwnd: HWND, location: isize) -> anyhow::Result<()> {
         unsafe {
             ScreenToClient(hwnd, &mut hit.pt);
         }
-        let index = send(hwnd, LVM_HITTEST, 0, &mut hit as *mut _ as isize);
+        let index = send_mut(hwnd, LVM_HITTEST, 0, &mut hit);
         if index < 0 {
             return Ok(());
         }
-        let item = LVITEMW {
-            stateMask: LVIS_SELECTED | LVIS_FOCUSED,
-            state: LVIS_SELECTED | LVIS_FOCUSED,
-            ..unsafe { std::mem::zeroed() }
-        };
-        send(
-            hwnd,
-            LVM_SETITEMSTATE,
-            index as usize,
-            &item as *const _ as isize,
-        );
+        let state = LVIS_SELECTED | LVIS_FOCUSED;
+        crate::list::set_item_state(hwnd, index, state, state);
         send(hwnd, LVM_SETSELECTIONMARK, 0, index);
     }
     let Some(path) = selected() else {

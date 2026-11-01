@@ -2,7 +2,10 @@ use super::{dpi, read};
 use crate::native::*;
 use std::{cell::RefCell, mem::size_of, ptr};
 
-pub(super) struct CreationHook(HHOOK);
+owned_handle! {
+    pub(super) struct CreationHook(HHOOK);
+    UnhookWindowsHookEx, null = ptr::null_mut()
+}
 impl CreationHook {
     pub fn new() -> anyhow::Result<Self> {
         if dpi().mode != crate::dpi::Mode::Pmv1 {
@@ -20,15 +23,6 @@ impl CreationHook {
             return Err(error("Observe property sheet creation"));
         }
         Ok(Self(hook))
-    }
-}
-impl Drop for CreationHook {
-    fn drop(&mut self) {
-        if !self.0.is_null() {
-            unsafe {
-                UnhookWindowsHookEx(self.0);
-            }
-        }
     }
 }
 unsafe extern "system" fn creation_hook(code: i32, w: usize, l: isize) -> isize {
@@ -51,18 +45,9 @@ pub(super) struct Scale {
     units: SIZE,
     outer: SIZE,
     font: LOGFONTW,
-    scaled_font: HFONT,
+    scaled_font: GdiObject,
     font_dpi: u32,
     controls: Vec<(HWND, RECT)>,
-}
-impl Drop for Scale {
-    fn drop(&mut self) {
-        if !self.scaled_font.is_null() {
-            unsafe {
-                DeleteObject(self.scaled_font);
-            }
-        }
-    }
 }
 impl Scale {
     pub fn capture(window: HWND, excluded: &[HWND]) -> anyhow::Result<Self> {
@@ -121,7 +106,7 @@ impl Scale {
                 cy: outer.bottom - outer.top,
             },
             font,
-            scaled_font: ptr::null_mut(),
+            scaled_font: GdiObject::default(),
             font_dpi: 0,
             controls,
         })
@@ -147,27 +132,16 @@ impl Scale {
                 for &(child, _) in &self.controls {
                     send(child, WM_SETFONT, new_font as usize, 0);
                 }
-                if !self.scaled_font.is_null() {
-                    DeleteObject(self.scaled_font);
-                }
-                self.scaled_font = new_font;
+                self.scaled_font = GdiObject(new_font);
                 self.font_dpi = target;
             }
             for &(child, r) in &self.controls {
                 let position = self.map(r.left, r.top, target);
                 let size = self.map(r.right, r.bottom, target);
-                if SetWindowPos(
+                set_bounds(
                     child,
-                    ptr::null_mut(),
-                    position.cx,
-                    position.cy,
-                    size.cx,
-                    size.cy,
-                    SWP_NOZORDER | SWP_NOACTIVATE,
-                ) == 0
-                {
-                    return Err(error("Scale settings control"));
-                }
+                    crate::layout::rect(position.cx, position.cy, size.cx, size.cy),
+                )?;
             }
         }
         Ok(())

@@ -5,7 +5,7 @@ use crate::{
     native::*,
     resources::{self, *},
 };
-use std::{cell::RefCell, os::windows::ffi::OsStrExt, path::PathBuf, ptr};
+use std::{cell::RefCell, ffi::OsStr, os::windows::ffi::OsStrExt, path::PathBuf, ptr};
 use windows::{
     Win32::{
         Foundation::HWND as ComHwnd,
@@ -42,29 +42,20 @@ struct Snapshot {
 }
 impl Snapshot {
     fn copies(&self) -> Vec<(u16, Vec<u16>)> {
-        vec![
-            (
-                IDS_COPY_SOURCE_PATH,
-                self.path.as_os_str().encode_wide().collect(),
-            ),
-            (
-                IDS_COPY_ENTITY_ID,
-                self.id.to_string().encode_utf16().collect(),
-            ),
-            (IDS_COPY_SYMBOL_NAME, self.name.encode_utf16().collect()),
-            (
-                IDS_COPY_QUALIFIED_NAME,
-                self.full_name.encode_utf16().collect(),
-            ),
+        let id = self.id.to_string();
+        [
+            (IDS_COPY_SOURCE_PATH, self.path.as_os_str()),
+            (IDS_COPY_ENTITY_ID, OsStr::new(&id)),
+            (IDS_COPY_SYMBOL_NAME, OsStr::new(&self.name)),
+            (IDS_COPY_QUALIFIED_NAME, OsStr::new(&self.full_name)),
             (
                 IDS_COPY_SOURCE_NAME,
-                self.path
-                    .file_name()
-                    .unwrap_or_default()
-                    .encode_wide()
-                    .collect(),
+                self.path.file_name().unwrap_or_default(),
             ),
         ]
+        .into_iter()
+        .map(|(label, value)| (label, value.encode_wide().collect()))
+        .collect()
     }
 }
 
@@ -100,25 +91,13 @@ impl Info {
         self.name = edit(DOCUMENT_NAME)?;
         self.kind = unsafe { child(owner, w!("STATIC"), &[0], 0, DOCUMENT_KIND) }?;
         self.scope = edit(DOCUMENT_SCOPE)?;
-        self.source_label = unsafe {
-            child(
-                owner,
-                w!("STATIC"),
-                resources::wide_text(IDS_DOCUMENT_SOURCE),
-                0,
-                0,
-            )
-        }?;
         self.source = edit(DOCUMENT_SOURCE)?;
-        self.architecture_label = unsafe {
-            child(
-                owner,
-                w!("STATIC"),
-                resources::wide_text(IDS_ARCHITECTURE),
-                0,
-                0,
-            )
-        }?;
+        for (control, label) in [
+            (&mut self.source_label, IDS_DOCUMENT_SOURCE),
+            (&mut self.architecture_label, IDS_ARCHITECTURE),
+        ] {
+            *control = unsafe { child(owner, w!("STATIC"), resources::wide_text(label), 0, 0) }?;
+        }
         self.architecture = unsafe {
             child(
                 owner,
@@ -128,25 +107,21 @@ impl Info {
                 SELECT_ARCH,
             )
         }?;
-        self.more = unsafe {
-            child(
-                owner,
-                w!("BUTTON"),
-                resources::wide_text(IDS_DOCUMENT_MORE),
-                WS_TABSTOP | BS_PUSHBUTTON as u32,
-                DOCUMENT_MORE,
-            )
-        }?;
+        for (control, label, id) in [
+            (&mut self.more, IDS_DOCUMENT_MORE, DOCUMENT_MORE),
+            (&mut self.online, IDS_ONLINE_SEARCH, DOCUMENT_ONLINE),
+        ] {
+            *control = unsafe {
+                child(
+                    owner,
+                    w!("BUTTON"),
+                    resources::wide_text(label),
+                    WS_TABSTOP,
+                    id,
+                )
+            }?;
+        }
         self.line = unsafe { child(owner, w!("STATIC"), &[0], SS_ETCHEDHORZ, 0) }?;
-        self.online = unsafe {
-            child(
-                owner,
-                w!("BUTTON"),
-                resources::wide_text(IDS_ONLINE_SEARCH),
-                WS_TABSTOP | BS_PUSHBUTTON as u32,
-                DOCUMENT_ONLINE,
-            )
-        }?;
         let services: IAccPropServices =
             unsafe { CoCreateInstance(&CLSID_AccPropServices, None, CLSCTX_INPROC_SERVER)? };
         self.accessibility.replace(Some(services.clone()));
@@ -240,7 +215,7 @@ impl Info {
             super::super::bind(control, m.font);
         }
         let heading = Font::heading(m.dpi, m.font)?;
-        super::super::bind(self.name, heading.handle);
+        super::super::bind(self.name, heading.handle.0);
         self.heading.replace(Some(heading));
         Ok(())
     }
@@ -269,7 +244,9 @@ impl Info {
         let online = m.button_size(self.online);
         let combo = bounds(self.architecture, ptr::null_mut());
         let combo_height = combo.bottom - combo.top;
-        let actions_width = self.actions_width(m, button.cx + m.px(8) + online.cx);
+        let label_width =
+            m.label_width([resources::wide_text(IDS_ARCHITECTURE)].into_iter(), 0) - m.px(16);
+        let actions_width = label_width + m.px(70 + 8) + button.cx + m.px(8) + online.cx;
         let wrap_button = actions_width > area.right - area.left;
         let row_height = m.height.max(combo_height).max(if wrap_button {
             0
@@ -305,21 +282,23 @@ impl Info {
         layout::take_top(area, m.px(4));
         let source_width =
             m.label_width([resources::wide_text(IDS_DOCUMENT_SOURCE)].into_iter(), 0) - m.px(16);
-        if wide {
-            let source_right = (row.right - actions_width - m.px(16)).max(row.left);
-            let mut source_row = RECT {
-                right: source_right,
-                ..row
-            };
-            self.source_row(&mut source_row, source_width, m, positions);
-            row.left = (source_right + m.px(16)).min(row.right);
+        let mut source_row = if wide {
+            let width = (row.right - row.left - actions_width - m.px(16)).max(0);
+            let source = layout::take_left(&mut row, width);
+            layout::take_left(&mut row, m.px(16));
+            source
         } else {
-            self.source_row(&mut row, source_width, m, positions);
+            row
+        };
+        positions.push((
+            self.source_label,
+            centered(layout::take_left(&mut source_row, source_width), m.height),
+        ));
+        positions.push((self.source, centered(source_row, m.height)));
+        if !wide {
             row = layout::take_top(area, row_height);
             layout::take_top(area, m.px(4));
         }
-        let label_width =
-            m.label_width([resources::wide_text(IDS_ARCHITECTURE)].into_iter(), 0) - m.px(16);
         positions.push((
             self.architecture_label,
             centered(layout::take_left(&mut row, label_width), m.height),
@@ -365,24 +344,6 @@ impl Info {
         positions.push((self.online, online_bounds));
         positions.push((self.line, layout::take_top(area, m.px(2))));
         layout::take_top(area, m.px(8));
-    }
-    fn actions_width(&self, m: &layout::Metrics, button_width: i32) -> i32 {
-        m.label_width([resources::wide_text(IDS_ARCHITECTURE)].into_iter(), 0) - m.px(16)
-            + m.px(70 + 8)
-            + button_width
-    }
-    fn source_row(
-        &self,
-        row: &mut RECT,
-        label_width: i32,
-        m: &layout::Metrics,
-        positions: &mut Vec<(HWND, RECT)>,
-    ) {
-        positions.push((
-            self.source_label,
-            centered(layout::take_left(row, label_width), m.height),
-        ));
-        positions.push((self.source, centered(*row, m.height)));
     }
     pub fn open_online(&self, owner: HWND) -> anyhow::Result<()> {
         let Some(target) = self

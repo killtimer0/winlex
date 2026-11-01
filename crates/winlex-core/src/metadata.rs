@@ -23,7 +23,8 @@ pub fn key<'a>(row: impl AsRow<'a>, table: u32) -> EntityId {
     }
 }
 pub fn supports<'a>(r: impl HasAttributes<'a>, arch: i32) -> bool {
-    r.arches() == 0 || r.arches() & arch != 0
+    let mask = r.arches();
+    mask == 0 || mask & arch != 0
 }
 
 pub fn bitfields(f: Field<'_>) -> Result<Vec<Bitfield>> {
@@ -127,14 +128,12 @@ impl Db {
         let mut target_file = owner.to_row().file;
         if let Some((file, tok)) = n.identity {
             target_file = file;
+            let reference = EntityId {
+                source_id: file,
+                token: tok,
+            };
             if tok >> 24 == 2 {
-                let t: TypeDef = self.row(
-                    EntityId {
-                        source_id: file,
-                        token: tok,
-                    },
-                    2,
-                )?;
+                let t: TypeDef = self.row(reference, 2)?;
                 ensure!(
                     supports(t, arch),
                     "TypeDef reference unavailable on architecture"
@@ -142,13 +141,7 @@ impl Db {
                 return Ok(t);
             }
             ensure!(tok >> 24 == 1, "unhandled signature reference token");
-            let r: TypeRef = self.row(
-                EntityId {
-                    source_id: file,
-                    token: tok,
-                },
-                1,
-            )?;
+            let r: TypeRef = self.row(reference, 1)?;
             let scope = r.scope_token();
             if scope >> 24 == 1 {
                 let parent: TypeRef = self.row(
@@ -158,8 +151,7 @@ impl Db {
                     },
                     1,
                 )?;
-                let mut pn = TypeName::named(parent.namespace(), parent.name());
-                pn.identity = Some((file, scope));
+                let pn = TypeDefOrRef::TypeRef(parent).type_name();
                 let p = self.resolve_inner(&pn, owner, arch, depth + 1)?;
                 let found: Vec<_> = self
                     .index

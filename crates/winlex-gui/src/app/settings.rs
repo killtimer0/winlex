@@ -175,17 +175,7 @@ pub(super) fn restore_window(hwnd: HWND) {
         bounds.left = bounds.left.clamp(work.left, work.right - width);
         bounds.top = bounds.top.clamp(work.top, work.bottom - height);
     }
-    unsafe {
-        SetWindowPos(
-            hwnd,
-            ptr::null_mut(),
-            bounds.left,
-            bounds.top,
-            width,
-            height,
-            SWP_NOZORDER | SWP_NOACTIVATE,
-        );
-    }
+    let _ = set_bounds(hwnd, layout::rect(bounds.left, bounds.top, width, height));
 }
 
 pub(super) fn save_window(hwnd: HWND) -> anyhow::Result<()> {

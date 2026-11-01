@@ -25,17 +25,23 @@ pub fn summary(c: &Catalog) -> Json {
 }
 fn integer_text(v: &Value) -> Option<(String, String, usize)> {
     let n = integer(v)?;
-    let bits = match v {
-        Value::U8(_) | Value::I8(_) => 8,
-        Value::U16(_) | Value::I16(_) => 16,
-        Value::U32(_) | Value::I32(_) => 32,
-        _ => 64,
-    };
+    let bits = integer_format(&v.ty(), Architecture::X64)?.0 as usize;
     Some((
         n.to_string(),
         format!("0x{:0width$x}", n & ((1i128 << bits) - 1), width = bits / 4),
         bits,
     ))
+}
+fn integer_format(t: &Type, arch: Architecture) -> Option<(u32, bool)> {
+    Some(match t {
+        Type::I8 | Type::U8 => (8, matches!(t, Type::I8)),
+        Type::I16 | Type::U16 => (16, matches!(t, Type::I16)),
+        Type::I32 | Type::U32 => (32, matches!(t, Type::I32)),
+        Type::I64 | Type::U64 => (64, matches!(t, Type::I64)),
+        Type::ISize => (arch.pointer_bytes() as u32 * 8, true),
+        Type::USize => (arch.pointer_bytes() as u32 * 8, false),
+        _ => return None,
+    })
 }
 pub fn attribute_value(v: &Value) -> String {
     if let Value::EnumValue(n, v) = v {
@@ -70,11 +76,8 @@ fn signature(t: &Type) -> Json {
         Type::ClassName(n) | Type::ValueName(n) => {
             json!({"kind":"named","name":n.name,"namespace":n.namespace,"reference_id":n.identity.map(|(source_id,token)|EntityId{source_id,token}),"arguments":n.generics.iter().map(signature).collect::<Vec<_>>()})
         }
-        Type::PtrMut(t, d) => {
-            json!({"kind":"pointer","depth":d,"const":false,"element":signature(t)})
-        }
-        Type::PtrConst(t, d) => {
-            json!({"kind":"pointer","depth":d,"const":true,"element":signature(t)})
+        pointer @ (Type::PtrMut(t, d) | Type::PtrConst(t, d)) => {
+            json!({"kind":"pointer","depth":d,"const":matches!(pointer, Type::PtrConst(..)),"element":signature(t)})
         }
         Type::ArrayFixed(t, n) => json!({"kind":"array","length":n,"element":signature(t)}),
         Type::Array(t) => json!({"kind":"array","length":null,"element":signature(t)}),
@@ -111,13 +114,7 @@ pub fn describe(c: &Catalog, id: EntityId, arch: Option<Architecture>) -> Result
             result["interface_implementations"]=json!(t.interface_impls().map(|i|json!({"type":signature(&i.interface(&t.generic_types())),"default":i.has_attribute("DefaultAttribute"),"attributes":attributes(i)})).collect::<Vec<_>>());
             result["base_type"] = t
                 .extends()
-                .map(|b| {
-                    signature(&match b {
-                        TypeDefOrRef::TypeSpec(s) => s.ty(&t.generic_types()),
-                        b => Type::ClassName(b.type_name()),
-                    })
-                })
-                .unwrap_or(Json::Null);
+                .map_or(Json::Null, |b| signature(&b.ty(&t.generic_types())));
             result["windows_runtime"] = json!(t.flags().contains(TypeAttributes::WindowsRuntime));
             result
         }

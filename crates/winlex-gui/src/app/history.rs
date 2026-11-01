@@ -236,10 +236,8 @@ pub(super) fn navigate(direction: Direction) {
             architecture: entry.architecture,
             architecture_mask: entity.architecture_mask,
         };
-        let original = workspace::by_id(entry.document).filter(|doc| {
-            let current = doc.binding();
-            current.id == binding.id && Arc::ptr_eq(&current.catalog, &binding.catalog)
-        });
+        let original =
+            workspace::by_id(entry.document).filter(|doc| doc.binding().same_entity(&binding));
         let hwnd = if let Some(doc) = original {
             if doc.binding().architecture != binding.architecture {
                 doc.rebind(&entity.name, binding);

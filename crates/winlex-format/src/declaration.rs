@@ -1,4 +1,5 @@
 //! Compact C/IDL-like reading view; not a compilable header or an ABI definition.
+use super::integer_format;
 use std::fmt::Write;
 use winlex_core::windows_metadata::reader::*;
 use winlex_core::windows_metadata::*;
@@ -272,22 +273,6 @@ impl From<String> for Rendered {
     }
 }
 
-fn integer_format(t: &Type, arch: Architecture) -> Option<(u32, bool)> {
-    Some(match t {
-        Type::I8 => (8, true),
-        Type::U8 => (8, false),
-        Type::I16 => (16, true),
-        Type::U16 => (16, false),
-        Type::I32 => (32, true),
-        Type::U32 => (32, false),
-        Type::I64 => (64, true),
-        Type::U64 => (64, false),
-        Type::ISize => (arch.pointer_bytes() as u32 * 8, true),
-        Type::USize => (arch.pointer_bytes() as u32 * 8, false),
-        _ => return None,
-    })
-}
-
 fn constant(
     out: &mut Rendered,
     value: &Value,
@@ -505,11 +490,7 @@ fn append(
             let generics = t.generic_types();
             let mut bases = Vec::new();
             if let Some(base) = t.extends() {
-                let base = match base {
-                    TypeDefOrRef::TypeSpec(s) => s.ty(&generics),
-                    base => Type::ClassName(base.type_name()),
-                };
-                bases.push(types.ty(&base, "".into()));
+                bases.push(types.ty(&base.ty(&generics), "".into()));
             }
             bases.extend(
                 t.interface_impls()

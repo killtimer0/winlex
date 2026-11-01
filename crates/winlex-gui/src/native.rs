@@ -12,6 +12,32 @@ pub use windows_sys::Win32::{
 };
 pub use windows_sys::w;
 
+macro_rules! owned_handle {
+    ($(#[$attr:meta])* $vis:vis struct $name:ident($field_vis:vis $handle:ty);
+        $destroy:path $(, null = $null:expr)?
+    ) => {
+        $(#[$attr])*
+        $vis struct $name($field_vis $handle);
+        impl Drop for $name {
+            #[allow(clippy::cmp_null, reason = "Handles may be pointers or integers.")]
+            fn drop(&mut self) {
+                $(if self.0 == $null {
+                    return;
+                })?
+                unsafe {
+                    $destroy(self.0);
+                }
+            }
+        }
+    };
+}
+pub(crate) use owned_handle;
+
+owned_handle! {
+    #[derive(Default)]
+    pub struct GdiObject(pub HGDIOBJ); DeleteObject, null = ptr::null_mut()
+}
+
 pub fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
 }
@@ -103,7 +129,7 @@ pub fn tooltip(owner: HWND, tool: &TTTOOLINFOW) -> anyhow::Result<HWND> {
     if hwnd.is_null() {
         return Err(error("Create tooltip"));
     }
-    if send(hwnd, TTM_ADDTOOLW, 0, tool as *const _ as isize) == 0 {
+    if send_ref(hwnd, TTM_ADDTOOLW, 0, tool) == 0 {
         unsafe { DestroyWindow(hwnd) };
         anyhow::bail!("Register tooltip failed");
     }
@@ -149,7 +175,10 @@ pub fn place(hwnd: HWND, r: RECT) {
     if (old.left, old.top, old.right, old.bottom) == (r.left, r.top, r.right, r.bottom) {
         return;
     }
-    unsafe {
+    let _ = set_bounds(hwnd, r);
+}
+pub fn set_bounds(hwnd: HWND, r: RECT) -> anyhow::Result<()> {
+    if unsafe {
         SetWindowPos(
             hwnd,
             ptr::null_mut(),
@@ -158,8 +187,12 @@ pub fn place(hwnd: HWND, r: RECT) {
             (r.right - r.left).max(0),
             (r.bottom - r.top).max(0),
             SWP_NOZORDER | SWP_NOACTIVATE,
-        );
+        )
+    } == 0
+    {
+        return Err(error("Position window"));
     }
+    Ok(())
 }
 pub fn place_all(positions: &[(HWND, RECT)]) -> anyhow::Result<()> {
     let changed: Vec<_> = positions
@@ -255,8 +288,14 @@ pub fn copy_unicode(hwnd: HWND, text: &[u16]) -> anyhow::Result<()> {
 pub fn send(hwnd: HWND, msg: u32, w: usize, l: isize) -> isize {
     unsafe { SendMessageW(hwnd, msg, w, l) }
 }
+pub fn send_ref<T>(hwnd: HWND, msg: u32, w: usize, value: &T) -> isize {
+    send(hwnd, msg, w, value as *const T as isize)
+}
+pub fn send_mut<T>(hwnd: HWND, msg: u32, w: usize, value: &mut T) -> isize {
+    send(hwnd, msg, w, value as *mut T as isize)
+}
 
-pub struct Popup(HMENU);
+owned_handle! { pub struct Popup(HMENU); DestroyMenu }
 impl Popup {
     pub fn new() -> anyhow::Result<Self> {
         let menu = unsafe { CreatePopupMenu() };
@@ -296,13 +335,6 @@ impl Popup {
         }
     }
 }
-impl Drop for Popup {
-    fn drop(&mut self) {
-        unsafe {
-            DestroyMenu(self.0);
-        }
-    }
-}
 pub fn focus(hwnd: HWND) {
     if !hwnd.is_null() {
         unsafe {
@@ -324,12 +356,67 @@ pub fn list_column(hwnd: HWND, index: usize, title: &str, width: i32) {
         pszText: title.as_mut_ptr(),
         ..unsafe { std::mem::zeroed() }
     };
-    send(hwnd, LVM_INSERTCOLUMNW, index, &col as *const _ as isize);
+    send_ref(hwnd, LVM_INSERTCOLUMNW, index, &col);
+}
+
+#[cfg(test)]
+pub unsafe fn test_window(class: *const u16, title: *const u16, style: u32, area: RECT) -> HWND {
+    let hwnd = unsafe {
+        CreateWindowExW(
+            0,
+            class,
+            title,
+            style,
+            area.left,
+            area.top,
+            area.right - area.left,
+            area.bottom - area.top,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            instance(),
+            ptr::null(),
+        )
+    };
+    assert!(!hwnd.is_null());
+    hwnd
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn owned_handles_clean_up_on_replacement_and_scope_exit() {
+        thread_local! {
+            static CLEANED: std::cell::RefCell<Vec<usize>> = const {
+                std::cell::RefCell::new(Vec::new())
+            };
+        }
+        unsafe fn destroy_integer(handle: usize) {
+            CLEANED.with(|cleaned| cleaned.borrow_mut().push(handle));
+        }
+        unsafe fn destroy_pointer(handle: *mut u8) {
+            unsafe { destroy_integer(handle as usize) };
+        }
+        owned_handle! { struct Integer(usize); destroy_integer }
+        owned_handle! {
+            #[derive(Default)]
+            struct Pointer(pub *mut u8); destroy_pointer, null = ptr::null_mut()
+        }
+
+        {
+            let mut integer = Integer(1);
+            assert_eq!(integer.0, 1);
+            integer = Integer(2);
+            assert_eq!(integer.0, 2);
+            CLEANED.with(|cleaned| assert_eq!(*cleaned.borrow(), [1]));
+            let _zero = Integer(0);
+            let _null = Pointer::default();
+            let pointer = Pointer(std::ptr::without_provenance_mut(3));
+            assert_eq!(pointer.0 as usize, 3);
+        }
+        CLEANED.with(|cleaned| assert_eq!(*cleaned.borrow(), [1, 3, 0, 2]));
+    }
 
     struct ResourceWindow(HWND);
     impl ResourceWindow {
@@ -345,21 +432,12 @@ mod tests {
                 assert!(
                     RegisterClassW(&class) != 0 || GetLastError() == ERROR_CLASS_ALREADY_EXISTS
                 );
-                let hwnd = CreateWindowExW(
-                    0,
+                let hwnd = test_window(
                     class.lpszClassName,
                     ptr::null(),
                     WS_POPUP,
-                    0,
-                    0,
-                    300,
-                    200,
-                    ptr::null_mut(),
-                    ptr::null_mut(),
-                    instance(),
-                    ptr::null(),
+                    crate::layout::rect(0, 0, 300, 200),
                 );
-                assert!(!hwnd.is_null());
                 Self(hwnd)
             }
         }
@@ -507,21 +585,12 @@ mod tests {
             }
         }
         unsafe {
-            let parent = CreateWindowExW(
-                0,
+            let parent = test_window(
                 w!("STATIC"),
                 ptr::null(),
                 WS_POPUP,
-                0,
-                0,
-                700,
-                300,
-                ptr::null_mut(),
-                ptr::null_mut(),
-                instance(),
-                ptr::null(),
+                crate::layout::rect(0, 0, 700, 300),
             );
-            assert!(!parent.is_null());
             let edit = child(parent, w!("EDIT"), &[0], 0, 1).unwrap();
             let sibling = child(parent, w!("STATIC"), &[0], 0, 2).unwrap();
             place(edit, crate::layout::rect(10, 10, 200, 28));

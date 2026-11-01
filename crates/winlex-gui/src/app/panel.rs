@@ -225,12 +225,7 @@ impl Search {
                 if index < SEARCH_MODES.len() && self.mode.replace(index) != index {
                     let tool = search_tool(self.input, SEARCH_MODES[index].2);
                     send(self.tooltip, TTM_POP, 0, 0);
-                    send(
-                        self.tooltip,
-                        TTM_UPDATETIPTEXTW,
-                        0,
-                        &tool as *const _ as isize,
-                    );
+                    send_ref(self.tooltip, TTM_UPDATETIPTEXTW, 0, &tool);
                     catalog::search();
                 }
             }

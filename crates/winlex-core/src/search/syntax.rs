@@ -221,8 +221,7 @@ fn quoted(input: &mut &str) -> ModalResult<String> {
                     '0' => Some('\0'),
                     _ => None,
                 })),
-            )
-            .map(|text: String| text.into_boxed_str().into_string()),
+            ),
             '"',
         )),
     )

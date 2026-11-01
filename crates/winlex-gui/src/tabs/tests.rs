@@ -37,21 +37,12 @@ impl Fixture {
                 ..std::mem::zeroed()
             };
             RegisterClassW(&class);
-            let parent = CreateWindowExW(
-                0,
+            let parent = test_window(
                 class.lpszClassName,
                 w!("Tabs contract"),
                 WS_OVERLAPPEDWINDOW,
-                0,
-                0,
-                600,
-                150,
-                ptr::null_mut(),
-                ptr::null_mut(),
-                instance(),
-                ptr::null(),
+                crate::layout::rect(0, 0, 600, 150),
             );
-            assert!(!parent.is_null());
             let tabs = create(parent, 42, "Pages".into(), "Select".into()).unwrap();
             place(
                 tabs,

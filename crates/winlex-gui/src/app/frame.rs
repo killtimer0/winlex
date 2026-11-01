@@ -192,16 +192,7 @@ pub(super) unsafe extern "system" fn frame_proc(hwnd: HWND, msg: u32, w: usize, 
                 return 0;
             }
             WM_DPICHANGED if dpi().per_monitor() => {
-                let r = &*(l as *const RECT);
-                SetWindowPos(
-                    hwnd,
-                    ptr::null_mut(),
-                    r.left,
-                    r.top,
-                    r.right - r.left,
-                    r.bottom - r.top,
-                    SWP_NOZORDER | SWP_NOACTIVATE,
-                );
+                let _ = set_bounds(hwnd, *(l as *const RECT));
                 prepare();
                 workspace::scale_documents();
                 return 0;

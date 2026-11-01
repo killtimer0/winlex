@@ -313,7 +313,7 @@ impl List {
             iItem: item,
             ..unsafe { std::mem::zeroed() }
         };
-        send(self.hwnd, LVM_SETINFOTIP, 0, &info as *const _ as isize);
+        send_ref(self.hwnd, LVM_SETINFOTIP, 0, &info);
         let tooltip = send(self.hwnd, LVM_GETTOOLTIPS, 0, 0) as HWND;
         if !tooltip.is_null() {
             send(tooltip, TTM_POP, 0, 0);
@@ -403,19 +403,9 @@ impl List {
                                 || stage == CDDS_ITEMPOSTPAINT | CDDS_SUBITEM =>
                         {
                             // XP custom-draw notifications do not supply usable item bounds.
-                            let mut area = RECT {
-                                left: LVIR_BOUNDS as i32,
-                                ..std::mem::zeroed()
-                            };
-                            if send(
-                                self.hwnd,
-                                LVM_GETITEMRECT,
-                                d.nmcd.dwItemSpec,
-                                &mut area as *mut RECT as isize,
-                            ) == 0
-                            {
+                            let Some(area) = item_rect(self.hwnd, d.nmcd.dwItemSpec) else {
                                 return Some(CDRF_DODEFAULT as isize);
-                            }
+                            };
                             let saved = SaveDC(d.nmcd.hdc);
                             IntersectClipRect(
                                 d.nmcd.hdc,
@@ -471,6 +461,14 @@ pub fn fit(hwnd: HWND) {
         client(hwnd).right.max(1) as isize,
     );
 }
+pub fn item_rect(hwnd: HWND, index: usize) -> Option<RECT> {
+    let mut area = RECT {
+        left: LVIR_BOUNDS as i32,
+        ..unsafe { std::mem::zeroed() }
+    };
+    (send_mut(hwnd, LVM_GETITEMRECT, index, &mut area) != 0).then_some(area)
+}
+
 pub struct State {
     pub indices: [isize; 4],
     previous: [isize; 2],
@@ -480,27 +478,18 @@ pub struct State {
 impl State {
     pub fn capture(hwnd: HWND) -> Self {
         let top = send(hwnd, LVM_GETTOPINDEX, 0, 0);
-        let mut rect = RECT {
-            left: LVIR_BOUNDS as i32,
-            ..unsafe { std::mem::zeroed() }
-        };
-        let has_top = send(
-            hwnd,
-            LVM_GETITEMRECT,
-            top as usize,
-            &mut rect as *mut _ as isize,
-        ) != 0;
+        let rect = item_rect(hwnd, top as usize);
         let indices = [
             send(hwnd, LVM_GETNEXTITEM, usize::MAX, LVNI_SELECTED as isize),
             send(hwnd, LVM_GETNEXTITEM, usize::MAX, LVNI_FOCUSED as isize),
             send(hwnd, LVM_GETSELECTIONMARK, 0, 0),
-            if has_top && top > 0 { top } else { -1 },
+            if rect.is_some() && top > 0 { top } else { -1 },
         ];
         Self {
             indices,
             previous: [indices[0], indices[1]],
             top,
-            offset: rect.top,
+            offset: rect.map_or(0, |r| r.top),
         }
     }
     pub fn apply(&self, hwnd: HWND, count: usize) {
@@ -508,19 +497,8 @@ impl State {
         if visible {
             send(hwnd, WM_SETREDRAW, 0, 0);
         }
-        let mut state = LVITEMW {
-            stateMask: LVIS_SELECTED | LVIS_FOCUSED,
-            ..unsafe { std::mem::zeroed() }
-        };
         for index in self.previous {
-            if index >= 0 {
-                send(
-                    hwnd,
-                    LVM_SETITEMSTATE,
-                    index as usize,
-                    &state as *const _ as isize,
-                );
-            }
+            set_item_state(hwnd, index, LVIS_SELECTED | LVIS_FOCUSED, 0);
         }
         send(
             hwnd,
@@ -532,31 +510,12 @@ impl State {
             (self.indices[0], LVIS_SELECTED),
             (self.indices[1], LVIS_FOCUSED),
         ] {
-            if index >= 0 {
-                state.stateMask = flag;
-                state.state = flag;
-                send(
-                    hwnd,
-                    LVM_SETITEMSTATE,
-                    index as usize,
-                    &state as *const _ as isize,
-                );
-            }
+            set_item_state(hwnd, index, flag, flag);
         }
         send(hwnd, LVM_SETSELECTIONMARK, 0, self.indices[2]);
         if self.indices[3] >= 0 {
             send(hwnd, LVM_ENSUREVISIBLE, self.indices[3] as usize, 0);
-            let mut now = RECT {
-                left: LVIR_BOUNDS as i32,
-                ..unsafe { std::mem::zeroed() }
-            };
-            if send(
-                hwnd,
-                LVM_GETITEMRECT,
-                self.indices[3] as usize,
-                &mut now as *mut _ as isize,
-            ) != 0
-            {
+            if let Some(now) = item_rect(hwnd, self.indices[3] as usize) {
                 send(hwnd, LVM_SCROLL, 0, (now.top - self.offset) as isize);
             }
         } else if self.top == 0 && count != 0 {
@@ -569,6 +528,16 @@ impl State {
         unsafe {
             InvalidateRect(hwnd, std::ptr::null(), 0);
         }
+    }
+}
+pub fn set_item_state(hwnd: HWND, index: isize, mask: u32, value: u32) {
+    if index >= 0 {
+        let state = LVITEMW {
+            stateMask: mask,
+            state: value,
+            ..unsafe { std::mem::zeroed() }
+        };
+        send_ref(hwnd, LVM_SETITEMSTATE, index as usize, &state);
     }
 }
 fn selected(hwnd: HWND, item: usize) -> bool {
@@ -705,7 +674,7 @@ impl Visuals {
                 blend(text, GetSysColor(COLOR_WINDOW))
             };
             area.bottom = area.top + height;
-            SelectObject(dc, self.heading.handle);
+            SelectObject(dc, self.heading.handle.0);
             draw_text(
                 dc,
                 area,
@@ -814,6 +783,44 @@ unsafe fn draw_text(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn restored_list_state_preserves_selection_focus_mark_and_scroll() {
+        unsafe {
+            let controls = INITCOMMONCONTROLSEX {
+                dwSize: std::mem::size_of::<INITCOMMONCONTROLSEX>() as u32,
+                dwICC: ICC_LISTVIEW_CLASSES,
+            };
+            assert_ne!(InitCommonControlsEx(&controls), 0);
+            let hwnd = test_window(
+                w!("SysListView32"),
+                ptr::null(),
+                WS_POPUP | LVS_REPORT | LVS_OWNERDATA,
+                crate::layout::rect(0, 0, 300, 200),
+            );
+            list_column(hwnd, 0, "", 100);
+            send(hwnd, LVM_SETITEMCOUNT, 100, 0);
+            set_item_state(hwnd, 20, LVIS_SELECTED, LVIS_SELECTED);
+            set_item_state(hwnd, 21, LVIS_FOCUSED, LVIS_FOCUSED);
+            send(hwnd, LVM_SETSELECTIONMARK, 0, 20);
+            send(hwnd, LVM_ENSUREVISIBLE, 25, 0);
+            let original = State::capture(hwnd);
+            assert!(original.indices[3] > 0);
+            assert!(item_rect(hwnd, usize::MAX).is_none());
+            let mut moved = State::capture(hwnd);
+            moved.indices = [40, 41, 40, 35];
+            moved.apply(hwnd, 100);
+            assert_eq!(State::capture(hwnd).indices[..3], [40, 41, 40]);
+            let mut restored = State::capture(hwnd);
+            restored.indices = original.indices;
+            restored.offset = original.offset;
+            restored.apply(hwnd, 100);
+            let result = State::capture(hwnd);
+            assert_eq!(result.indices, original.indices);
+            assert_eq!(result.offset, original.offset);
+            DestroyWindow(hwnd);
+        }
+    }
 
     #[test]
     fn folds_preserve_evidence_across_adjacent_segments() {
@@ -1023,13 +1030,13 @@ mod tests {
     fn heading_font_is_larger_and_bold_at_each_scale() {
         for dpi in [96, 120, 144, 192, 288] {
             let body = Font::new(dpi).unwrap();
-            let heading = Font::heading(dpi, body.handle).unwrap();
+            let heading = Font::heading(dpi, body.handle.0).unwrap();
             assert!(heading.height > body.height);
             let mut definition: LOGFONTW = unsafe { std::mem::zeroed() };
             unsafe {
                 assert_ne!(
                     GetObjectW(
-                        heading.handle,
+                        heading.handle.0,
                         std::mem::size_of::<LOGFONTW>() as i32,
                         (&mut definition as *mut LOGFONTW).cast()
                     ),

@@ -438,18 +438,7 @@ impl Catalog {
 
     pub fn resolve_reference(&self, id: EntityId, arch: Architecture) -> Result<EntityId> {
         let r: TypeRef = self.db.row(id, 1)?;
-        let owner = self.db.row(
-            EntityId {
-                source_id: id.source_id,
-                token: 0x02000001,
-            },
-            2,
-        )?;
-        Ok(key(
-            self.db
-                .resolve(&TypeDefOrRef::TypeRef(r).type_name(), owner, arch.bit())?,
-            2,
-        ))
+        self.resolve_type(id, &TypeDefOrRef::TypeRef(r).type_name(), arch)
     }
     pub fn layout(&self, id: EntityId, arch: Architecture) -> Result<Layout> {
         crate::layout::derive_key(&self.db, id, arch)

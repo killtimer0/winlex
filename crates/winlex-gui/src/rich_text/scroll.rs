@@ -11,13 +11,24 @@ pub(super) fn install(hwnd: HWND) -> anyhow::Result<()> {
 }
 
 pub(super) fn position(hwnd: HWND) -> POINT {
+    let mut point = offset(hwnd, 0);
+    point.x = point.x.max(0);
+    point
+}
+
+pub(super) fn offset(hwnd: HWND, index: i32) -> POINT {
     let mut origin = POINT { x: 0, y: 0 };
     let mut area: RECT = unsafe { std::mem::zeroed() };
-    send(hwnd, EM_POSFROMCHAR, &mut origin as *mut _ as usize, 0);
-    send(hwnd, EM_GETRECT, 0, &mut area as *mut _ as isize);
+    send(
+        hwnd,
+        EM_POSFROMCHAR,
+        &mut origin as *mut _ as usize,
+        index as isize,
+    );
+    send_mut(hwnd, EM_GETRECT, 0, &mut area);
     // GETSCROLLPOS scales long documents to a 16-bit range in RichEdit20.
     POINT {
-        x: (area.left - origin.x).max(0),
+        x: area.left - origin.x,
         y: area.top - origin.y,
     }
 }
@@ -74,7 +85,7 @@ unsafe extern "system" fn procedure(
                         x: current.x,
                         y: target,
                     };
-                    send(hwnd, EM_SETSCROLLPOS, 0, &point as *const _ as isize);
+                    send_ref(hwnd, EM_SETSCROLLPOS, 0, &point);
                     if target == 0 || position(hwnd).y != target {
                         remainder = 0;
                     }
@@ -120,40 +131,25 @@ unsafe extern "system" fn procedure(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rich_text::{Content, ViewState, create, set_content};
+    use crate::rich_text::{Content, Editor, ViewState, set_content};
     use windows::Win32::UI::Controls::RichEdit::{
         CFM_SIZE, CHARFORMATW, CHARRANGE, EM_EXGETSEL, SCF_ALL,
     };
 
-    struct Editor(HWND, HWND);
-
     impl Editor {
-        fn new() -> Self {
-            let parent = unsafe {
-                CreateWindowExW(
-                    0,
-                    w!("STATIC"),
-                    std::ptr::null(),
-                    WS_POPUP | WS_VISIBLE,
-                    -10000,
-                    -10000,
-                    900,
-                    600,
-                    std::ptr::null_mut(),
-                    std::ptr::null_mut(),
-                    instance(),
-                    std::ptr::null(),
-                )
-            };
-            assert!(!parent.is_null());
-            let hwnd = create(parent, 1).unwrap();
+        fn long_document() -> Self {
+            let editor = Self::new(
+                WS_POPUP | WS_VISIBLE,
+                crate::layout::rect(-10000, -10000, 900, 600),
+            );
+            let hwnd = editor.1;
             place(hwnd, crate::layout::rect(0, 0, 750, 500));
             set_content(
                 hwnd,
                 &Content::new("const UINT32 value = 42;\n".repeat(15000)),
             )
             .unwrap();
-            Self(parent, hwnd)
+            editor
         }
 
         fn scroll_to(&self, y: i32) {
@@ -166,15 +162,9 @@ mod tests {
         }
     }
 
-    impl Drop for Editor {
-        fn drop(&mut self) {
-            unsafe { DestroyWindow(self.0) };
-        }
-    }
-
     #[test]
     fn reading_position_survives_replacement_deep_scroll_wrapping_and_font_changes() {
-        let editor = Editor::new();
+        let editor = Editor::long_document();
         let hwnd = editor.1;
         let format = CHARFORMATW {
             cbSize: std::mem::size_of::<CHARFORMATW>() as u32,
@@ -213,6 +203,11 @@ mod tests {
             original,
             "capturing a reading position must preserve the viewport: {before:?}"
         );
+        for _ in 0..2 {
+            crate::rich_text::recolor(hwnd, &content).unwrap();
+            assert_eq!(ViewState::capture(hwnd), before);
+            assert_eq!(position(hwnd).y, original);
+        }
         set_content(hwnd, &Content::new("Querying".into())).unwrap();
         set_content(hwnd, &content).unwrap();
         before.restore(hwnd);
@@ -257,7 +252,7 @@ mod tests {
 
     #[test]
     fn native_wheel_is_immediate_precise_and_keeps_selection_in_long_documents() {
-        let editor = Editor::new();
+        let editor = Editor::long_document();
         let hwnd = editor.1;
         let range = CHARRANGE {
             cpMin: 10,
@@ -323,7 +318,7 @@ mod tests {
 
     #[test]
     fn wheel_remeasures_font_and_resets_fraction_on_other_interactions() {
-        let editor = Editor::new();
+        let editor = Editor::long_document();
         let hwnd = editor.1;
         let original = line_height(hwnd).unwrap();
         let format = CHARFORMATW {
@@ -405,7 +400,7 @@ mod tests {
                 default_subclass(hwnd, msg, w, l)
             }
         }
-        let editor = Editor::new();
+        let editor = Editor::long_document();
         let hwnd = editor.1;
         let mut received = (0u32, 0usize, 0isize);
         unsafe {

@@ -31,32 +31,19 @@ pub struct Item {
     pub icon: HICON,
 }
 
-#[derive(Default)]
-struct ItalicFont(HFONT);
-impl ItalicFont {
-    fn new(base: HFONT) -> Self {
-        unsafe {
-            let mut definition: LOGFONTW = std::mem::zeroed();
-            if GetObjectW(
-                base,
-                std::mem::size_of::<LOGFONTW>() as i32,
-                (&mut definition as *mut LOGFONTW).cast(),
-            ) == 0
-            {
-                return Self(ptr::null_mut());
-            }
-            definition.lfItalic = 1;
-            Self(CreateFontIndirectW(&definition))
+fn italic_font(base: HFONT) -> GdiObject {
+    unsafe {
+        let mut definition: LOGFONTW = std::mem::zeroed();
+        if GetObjectW(
+            base,
+            std::mem::size_of::<LOGFONTW>() as i32,
+            (&mut definition as *mut LOGFONTW).cast(),
+        ) == 0
+        {
+            return GdiObject::default();
         }
-    }
-}
-impl Drop for ItalicFont {
-    fn drop(&mut self) {
-        if !self.0.is_null() {
-            unsafe {
-                DeleteObject(self.0);
-            }
-        }
+        definition.lfItalic = 1;
+        GdiObject(CreateFontIndirectW(&definition))
     }
 }
 
@@ -67,7 +54,7 @@ struct State {
     selected: Option<u64>,
     focused: Option<u64>,
     font: HFONT,
-    italic_font: ItalicFont,
+    italic_font: GdiObject,
     unit: i32,
     offset: i32,
     hot: Option<u64>,
@@ -135,11 +122,7 @@ fn contains(r: RECT, p: POINT) -> bool {
 }
 fn state(hwnd: HWND) -> Option<Rc<RefCell<State>>> {
     let p = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *const Rc<RefCell<State>>;
-    if p.is_null() {
-        None
-    } else {
-        Some(unsafe { (*p).clone() })
-    }
+    unsafe { p.as_ref().cloned() }
 }
 pub fn create(parent: HWND, id: u16, name: String, select_label: String) -> anyhow::Result<HWND> {
     unsafe {
@@ -224,14 +207,14 @@ pub fn set_items(hwnd: HWND, items: Vec<Item>) {
     for tab in removed {
         event_child(hwnd, EVENT_OBJECT_DESTROY, tab.child);
     }
-    for id in added {
-        event(hwnd, EVENT_OBJECT_CREATE, Some(id));
-    }
-    for id in renamed {
-        event(hwnd, EVENT_OBJECT_NAMECHANGE, Some(id));
-    }
-    for id in described {
-        event(hwnd, EVENT_OBJECT_DESCRIPTIONCHANGE, Some(id));
+    for (kind, ids) in [
+        (EVENT_OBJECT_CREATE, added),
+        (EVENT_OBJECT_NAMECHANGE, renamed),
+        (EVENT_OBJECT_DESCRIPTIONCHANGE, described),
+    ] {
+        for id in ids {
+            event(hwnd, kind, Some(id));
+        }
     }
     if reordered {
         event(hwnd, EVENT_OBJECT_REORDER, None);
@@ -318,12 +301,7 @@ fn request(hwnd: HWND, code: u32, id: u64, index: usize, point: POINT) {
         index,
         point,
     };
-    send(
-        unsafe { GetParent(hwnd) },
-        WM_NOTIFY,
-        n.header.idFrom,
-        &n as *const _ as isize,
-    );
+    send_ref(unsafe { GetParent(hwnd) }, WM_NOTIFY, n.header.idFrom, &n);
 }
 fn title_overhang(dc: HDC, text: &[u16]) -> i32 {
     let mut metrics: TEXTMETRICW = unsafe { std::mem::zeroed() };
@@ -361,33 +339,28 @@ fn draw_title(dc: HDC, text: &[u16], bounds: RECT, overhang: i32) {
 fn layout(shared: &Rc<RefCell<State>>, reveal: bool) {
     let hwnd = shared.borrow().hwnd;
     let area = client(hwnd);
-    let (font, items) = {
+    let (unit, widths) = with_window_font(hwnd, shared.borrow().font, |dc| {
         let s = shared.borrow();
-        (
-            s.font,
-            s.items.iter().map(|i| i.item.clone()).collect::<Vec<_>>(),
-        )
-    };
-    let (unit, widths) = with_window_font(hwnd, font, |dc| {
         let mut tm: TEXTMETRICW = unsafe { std::mem::zeroed() };
         unsafe {
             GetTextMetricsW(dc, &mut tm);
         }
         let unit = (tm.tmHeight / 2).max(6);
-        let widths = items
+        let widths = s
+            .items
             .iter()
             .map(|i| {
                 let text = wide(&i.title);
                 let mut size = SIZE { cx: 0, cy: 0 };
                 unsafe {
-                    SelectObject(dc, shared.borrow().item_font(i.italic));
+                    SelectObject(dc, s.item_font(i.italic));
                     GetTextExtentPoint32W(dc, text.as_ptr(), text.len() as i32 - 1, &mut size);
                 }
                 let overhang = title_overhang(dc, &text[..text.len() - 1]);
                 (size.cx
                     + overhang
                     + unit * 2
-                    + if i.icon.is_null() {
+                    + if i.item.icon.is_null() {
                         0
                     } else {
                         unit * 2 + unit / 2
@@ -546,7 +519,7 @@ fn tooltip(shared: &Rc<RefCell<State>>, hit: Option<u64>) {
         lpszText: text,
         ..unsafe { std::mem::zeroed() }
     };
-    send(tip, TTM_UPDATETIPTEXTW, 0, &info as *const _ as isize);
+    send_ref(tip, TTM_UPDATETIPTEXTW, 0, &info);
 }
 unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, w: usize, l: isize) -> isize {
     unsafe {
@@ -554,7 +527,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, w: usize, l: isize) 
             let s = Rc::new(RefCell::new(State {
                 hwnd,
                 font: GetStockObject(DEFAULT_GUI_FONT),
-                italic_font: ItalicFont::new(GetStockObject(DEFAULT_GUI_FONT)),
+                italic_font: italic_font(GetStockObject(DEFAULT_GUI_FONT)),
                 unit: 8,
                 tip: vec![0],
                 ..State::default()
@@ -580,7 +553,6 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, w: usize, l: isize) 
                     return -1;
                 };
                 shared.borrow_mut().tooltip = tip;
-                return 0;
             }
             WM_GETOBJECT if l as i32 == OBJID_CLIENT => return accessible::result(&shared, w),
             WM_GETFONT => return shared.borrow().font as isize,
@@ -593,23 +565,19 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, w: usize, l: isize) 
                 {
                     let mut s = shared.borrow_mut();
                     s.font = font;
-                    s.italic_font = ItalicFont::new(font);
+                    s.italic_font = italic_font(font);
                 }
                 layout(&shared, true);
-                return 0;
             }
             WM_SIZE => {
                 layout(&shared, true);
-                return 0;
             }
             WM_ERASEBKGND => return 1,
             WM_PAINT => {
                 paint(&shared);
-                return 0;
             }
             WM_SYSCOLORCHANGE | WM_THEMECHANGED => {
                 InvalidateRect(hwnd, ptr::null(), 0);
-                return 0;
             }
             WM_UPDATEUISTATE => {
                 let result = DefWindowProcW(hwnd, msg, w, l);
@@ -630,11 +598,10 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, w: usize, l: isize) 
                 if msg == WM_SETFOCUS {
                     event(hwnd, EVENT_OBJECT_FOCUS, selected);
                 }
-                return 0;
             }
             WM_MOUSEMOVE => {
                 let hit = shared.borrow().hit(p);
-                let changed = {
+                let (changed, scrolling) = {
                     let mut s = shared.borrow_mut();
                     let changed = s.hot != hit;
                     s.hot = hit;
@@ -643,10 +610,6 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, w: usize, l: isize) 
                     {
                         s.dragging = true;
                     }
-                    changed
-                };
-                let scrolling = {
-                    let mut s = shared.borrow_mut();
                     let step = if p.x < s.unit * 2 {
                         -s.unit
                     } else if p.x > client(hwnd).right - s.unit * 2 {
@@ -654,12 +617,13 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, w: usize, l: isize) 
                     } else {
                         0
                     };
-                    if s.dragging {
+                    let scrolling = if s.dragging {
                         s.offset += step;
                         step != 0
                     } else {
                         false
-                    }
+                    };
+                    (changed, scrolling)
                 };
                 if scrolling {
                     layout(&shared, false);
@@ -675,13 +639,11 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, w: usize, l: isize) 
                     dwHoverTime: 0,
                 };
                 TrackMouseEvent(&mut track);
-                return 0;
             }
             WM_MOUSELEAVE => {
                 shared.borrow_mut().hot = None;
                 tooltip(&shared, None);
                 InvalidateRect(hwnd, ptr::null(), 0);
-                return 0;
             }
             WM_LBUTTONDOWN => {
                 let hit = shared.borrow().hit(p);
@@ -696,7 +658,6 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, w: usize, l: isize) 
                 if let Some(hit) = hit {
                     request(hwnd, SELECT, hit, 0, p);
                 }
-                return 0;
             }
             WM_LBUTTONUP => {
                 let (pressed, hit, dragging, index) = {
@@ -714,7 +675,6 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, w: usize, l: isize) 
                 {
                     request(hwnd, REORDER, pressed, index, p);
                 }
-                return 0;
             }
             WM_CAPTURECHANGED | WM_CANCELMODE => {
                 {
@@ -726,7 +686,6 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, w: usize, l: isize) 
                     ReleaseCapture();
                 }
                 InvalidateRect(hwnd, ptr::null(), 0);
-                return 0;
             }
             WM_MBUTTONUP | WM_LBUTTONDBLCLK => {
                 let hit = shared.borrow().hit(p);
@@ -739,7 +698,6 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, w: usize, l: isize) 
                         p,
                     );
                 }
-                return 0;
             }
             WM_MOUSEWHEEL | WM_MOUSEHWHEEL => {
                 let delta = (w >> 16) as u16 as i16 as i32;
@@ -748,7 +706,6 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, w: usize, l: isize) 
                     s.offset += if msg == WM_MOUSEWHEEL { -delta } else { delta };
                 }
                 layout(&shared, false);
-                return 0;
             }
             WM_CONTEXTMENU => {
                 let (id, point) = if l == -1 {
@@ -773,7 +730,6 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, w: usize, l: isize) 
                     ClientToScreen(hwnd, &mut point);
                     request(hwnd, CONTEXT, id, 0, point);
                 }
-                return 0;
             }
             WM_KEYDOWN => {
                 if w == VK_ESCAPE as usize && GetCapture() == hwnd {
@@ -810,6 +766,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, w: usize, l: isize) 
                     }
                     return 0;
                 }
+                return DefWindowProcW(hwnd, msg, w, l);
             }
             WM_NCDESTROY => {
                 let tip = shared.borrow().tooltip;
@@ -820,9 +777,10 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, w: usize, l: isize) 
                 let raw = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Rc<RefCell<State>>;
                 SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
                 drop(Box::from_raw(raw));
+                return DefWindowProcW(hwnd, msg, w, l);
             }
-            _ => {}
+            _ => return DefWindowProcW(hwnd, msg, w, l),
         }
-        DefWindowProcW(hwnd, msg, w, l)
+        0
     }
 }

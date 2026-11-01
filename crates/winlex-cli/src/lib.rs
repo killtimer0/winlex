@@ -58,26 +58,23 @@ enum Command {
     References,
 }
 impl Command {
+    const NAMES: &[(Self, &str)] = &[
+        (Self::Summary, "summary"),
+        (Self::Search, "search"),
+        (Self::Show, "show"),
+        (Self::Layout, "layout"),
+        (Self::Vtable, "vtable"),
+        (Self::References, "references"),
+    ];
+
     fn as_str(self) -> &'static str {
-        match self {
-            Self::Summary => "summary",
-            Self::Search => "search",
-            Self::Show => "show",
-            Self::Layout => "layout",
-            Self::Vtable => "vtable",
-            Self::References => "references",
-        }
+        Self::NAMES.iter().find(|(c, _)| *c == self).unwrap().1
     }
     fn parse(value: &str) -> Option<Self> {
-        Some(match value {
-            "summary" => Self::Summary,
-            "search" => Self::Search,
-            "show" => Self::Show,
-            "layout" => Self::Layout,
-            "vtable" => Self::Vtable,
-            "references" => Self::References,
-            _ => return None,
-        })
+        Self::NAMES
+            .iter()
+            .find(|(_, name)| *name == value)
+            .map(|(c, _)| *c)
     }
 }
 struct Options {
@@ -111,20 +108,17 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
         let a = arg.to_str().unwrap_or("");
         match a {
             "--source" | "--arch" | "--limit" | "--offset" => {
-                let v = args
-                    .next()
-                    .ok_or_else(|| format!("missing value for {a}"))?;
+                let v = text(
+                    args.next()
+                        .ok_or_else(|| format!("missing value for {a}"))?,
+                )?;
                 match a {
-                    "--source" => source = Some(text(v)?),
+                    "--source" => source = Some(v),
                     "--arch" => {
-                        arch = Some(
-                            text(v)?
-                                .parse()
-                                .map_err(|e: winlex_core::Error| e.to_string())?,
-                        )
+                        arch = Some(v.parse().map_err(|e: winlex_core::Error| e.to_string())?)
                     }
-                    "--limit" => limit = text(v)?.parse().map_err(|_| "invalid limit")?,
-                    _ => offset = text(v)?.parse().map_err(|_| "invalid offset")?,
+                    "--limit" => limit = v.parse().map_err(|_| "invalid limit")?,
+                    _ => offset = v.parse().map_err(|_| "invalid offset")?,
                 }
             }
             "--json" => json = true,
@@ -204,15 +198,16 @@ pub fn run(
 ) -> u8 {
     let args: Vec<_> = args.into_iter().collect();
     let want_json = args.iter().any(|a| a == "--json");
-    if args.is_empty() || args.len() == 1 && (args[0] == "--help" || args[0] == "-h") {
-        return if out.write_all(HELP.as_bytes()).is_ok() {
-            0
-        } else {
-            4
-        };
-    }
-    if args.len() == 1 && (args[0] == "--version" || args[0] == "-V") {
-        return if writeln!(out, "winlex {}", env!("CARGO_PKG_VERSION")).is_ok() {
+    let immediate = match args.as_slice() {
+        [] => Some(HELP),
+        [arg] if arg == "--help" || arg == "-h" => Some(HELP),
+        [arg] if arg == "--version" || arg == "-V" => {
+            Some(concat!("winlex ", env!("CARGO_PKG_VERSION"), "\n"))
+        }
+        _ => None,
+    };
+    if let Some(text) = immediate {
+        return if out.write_all(text.as_bytes()).is_ok() {
             0
         } else {
             4
@@ -498,6 +493,29 @@ mod tests {
             String::from_utf8(out).unwrap(),
             String::from_utf8(err).unwrap(),
         )
+    }
+
+    #[test]
+    fn immediate_output_keeps_aliases_and_requires_a_standalone_option() {
+        for args in [vec![], vec!["--help"], vec!["-h"]] {
+            assert_eq!(
+                invoke(args.into_iter().map(Into::into)),
+                (0, HELP.into(), String::new())
+            );
+        }
+        for option in ["--version", "-V"] {
+            assert_eq!(
+                invoke([option.into()]),
+                (
+                    0,
+                    format!("winlex {}\n", env!("CARGO_PKG_VERSION")),
+                    String::new()
+                )
+            );
+        }
+        for option in ["--help", "-h", "--version", "-V"] {
+            assert_eq!(invoke([option.into(), "--json".into()]).0, 2);
+        }
     }
 
     #[test]

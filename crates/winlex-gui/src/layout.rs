@@ -48,7 +48,7 @@ impl Metrics {
     }
     pub fn button_size(&self, hwnd: HWND) -> SIZE {
         let mut size = SIZE { cx: 0, cy: 0 };
-        if send(hwnd, BCM_GETIDEALSIZE, 0, &mut size as *mut _ as isize) == 0 {
+        if send_mut(hwnd, BCM_GETIDEALSIZE, 0, &mut size) == 0 {
             size.cx = self.label_width(std::iter::once(text_wide(hwnd)), 0);
             size.cy = self.row();
         }
@@ -158,21 +158,7 @@ mod tests {
     fn button_size_falls_back_when_query_returns_false() {
         unsafe {
             let caption = wide("More information… 更多信息");
-            let hwnd = CreateWindowExW(
-                0,
-                w!("STATIC"),
-                caption.as_ptr(),
-                WS_POPUP,
-                0,
-                0,
-                0,
-                0,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                instance(),
-                std::ptr::null(),
-            );
-            assert!(!hwnd.is_null());
+            let hwnd = test_window(w!("STATIC"), caption.as_ptr(), WS_POPUP, rect(0, 0, 0, 0));
             for dpi in [96, 168] {
                 let m = Metrics {
                     dpi,
@@ -210,22 +196,12 @@ mod tests {
             let controls: Vec<_> = ["Open files", "Reload", "Close source"]
                 .into_iter()
                 .map(|caption| {
-                    let hwnd = CreateWindowExW(
-                        0,
+                    test_window(
                         w!("STATIC"),
                         wide(caption).as_ptr(),
                         WS_POPUP,
-                        0,
-                        0,
-                        0,
-                        0,
-                        std::ptr::null_mut(),
-                        std::ptr::null_mut(),
-                        instance(),
-                        std::ptr::null(),
-                    );
-                    assert!(!hwnd.is_null());
-                    hwnd
+                        rect(0, 0, 0, 0),
+                    )
                 })
                 .collect();
             let sizes = [SIZE { cx: 100, cy: 20 }, SIZE { cx: 140, cy: 35 }];
