@@ -1,5 +1,5 @@
 //! Snapshot-bound declaration documents. Catalog changes update only the version hint.
-use super::{bind, catalog, document, dpi, font_for, read, workspace, write};
+use super::{bind, catalog, document, dpi, font_for, history, read, workspace, write};
 use crate::{
     layout,
     native::*,
@@ -27,6 +27,7 @@ struct State {
     binding: Binding,
     name: String,
     ticket: Option<u64>,
+    restore: Option<crate::rich_text::ViewState>,
     content: Option<Rc<crate::rich_text::Content>>,
     press: Option<LinkPress>,
     navigation: Option<Navigation>,
@@ -89,6 +90,7 @@ pub(super) fn open(name: &str, binding: Binding, preview: bool) -> anyhow::Resul
             binding,
             name: name.into(),
             ticket: None,
+            restore: None,
             content: None,
             press: None,
             navigation: None,
@@ -180,6 +182,7 @@ impl MetadataView {
         let ticket = write(|a| a.session.ticket());
         let (binding, previous) = {
             let mut state = self.state.borrow_mut();
+            state.restore = None;
             let previous = state.ticket.replace(ticket.id);
             (state.binding.clone(), previous)
         };
@@ -239,12 +242,32 @@ impl MetadataView {
             catalog::set_status(format!("{error:#}"));
         }
         if arch != binding.architecture {
-            self.state.borrow_mut().binding.architecture = arch;
-            self.request();
+            history::visit(|| {
+                self.state.borrow_mut().binding.architecture = arch;
+                self.request();
+            });
         }
     }
 }
 impl MetadataView {
+    pub(super) fn position(&self) -> crate::rich_text::ViewState {
+        let pending = self.state.borrow().restore;
+        pending.unwrap_or_else(|| crate::rich_text::ViewState::capture(self.editor))
+    }
+    pub(super) fn restore_position(&self, position: crate::rich_text::ViewState) {
+        let loading = {
+            let mut state = self.state.borrow_mut();
+            let loading = state.ticket.is_some();
+            state.restore = loading.then_some(position);
+            loading
+        };
+        if !loading {
+            position.restore(self.editor);
+        }
+    }
+    pub(super) fn cancel_restore(&self) {
+        self.state.borrow_mut().restore = None;
+    }
     pub(super) fn focus(&self) {
         focus(self.editor);
     }
@@ -254,20 +277,25 @@ impl MetadataView {
         }
     }
     pub(super) fn complete(&self, ticket: u64, result: anyhow::Result<crate::rich_text::Content>) {
-        {
+        let restore = {
             let mut state = self.state.borrow_mut();
             if state.ticket != Some(ticket) {
                 return;
             }
             state.ticket = None;
-        }
+            state.restore.take().filter(|_| result.is_ok())
+        };
         let content = match result {
             Ok(content) => content,
             Err(error) => crate::rich_text::Content::new(format!("{error:#}")),
         };
         self.set_content(content);
+        if let Some(position) = restore {
+            position.restore(self.editor);
+        }
     }
     pub(super) fn worker_stopped(&self) {
+        self.cancel_restore();
         let pending = self.state.borrow_mut().ticket.take().is_some();
         if pending {
             self.set_content(crate::rich_text::Content::new(resources::text(
@@ -427,12 +455,13 @@ impl MetadataView {
             architecture_mask: entity.architecture_mask,
             ..navigation.binding
         };
-        workspace::pin_document(self.hwnd);
-        if let Some(hwnd) = catalog::open_binding(&entity.name, binding, catalog::Open::Pin)
-            && let Some(document) = workspace::view(hwnd)
-        {
-            document.focus();
-        }
+        history::visit(|| {
+            if let Some(hwnd) = catalog::open_binding(&entity.name, binding, catalog::Open::Preview)
+                && let Some(document) = workspace::view(hwnd)
+            {
+                document.focus();
+            }
+        });
     }
     pub(super) fn create(&mut self, hwnd: HWND) -> anyhow::Result<()> {
         self.hwnd = hwnd;

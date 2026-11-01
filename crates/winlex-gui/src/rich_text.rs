@@ -6,9 +6,9 @@ use windows::Win32::UI::Controls::RichEdit::{
     CFE_LINK, CFE_UNDERLINE, CFM_COLOR, CFM_FACE, CFM_LINK, CFM_SIZE, CFM_UNDERLINE, CHARFORMAT2W,
     CHARFORMATW, CHARRANGE, EDITSTREAM, EM_EXGETSEL, EM_EXSETSEL, EM_GETCHARFORMAT,
     EM_GETEVENTMASK, EM_GETOLEINTERFACE, EM_GETSELTEXT, EM_SETBKGNDCOLOR, EM_SETCHARFORMAT,
-    EM_SETEVENTMASK, EM_SETPARAFORMAT, EM_STREAMIN, ENLINK, ENM_LINK, IRichEditOle, ITextDocument,
-    PARAFORMAT, PARAFORMAT2, PFM_LINESPACING, PFM_RIGHTINDENT, PFM_STARTINDENT, SCF_ALL,
-    SCF_SELECTION, SF_RTF,
+    EM_SETEVENTMASK, EM_SETPARAFORMAT, EM_SETSCROLLPOS, EM_STREAMIN, ENLINK, ENM_LINK,
+    IRichEditOle, ITextDocument, PARAFORMAT, PARAFORMAT2, PFM_LINESPACING, PFM_RIGHTINDENT,
+    PFM_STARTINDENT, SCF_ALL, SCF_SELECTION, SF_RTF,
 };
 use windows_core::Interface;
 use winlex_core::EntityId;
@@ -22,6 +22,64 @@ pub struct Content {
     text: String,
     rtf: Vec<u8>,
     pub regions: Vec<Region>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ViewState {
+    selection: (i32, i32),
+    anchor: i32,
+    offset: i32,
+    horizontal: i32,
+    line_height: i32,
+}
+
+impl ViewState {
+    pub fn capture(hwnd: HWND) -> Self {
+        let mut selection = CHARRANGE::default();
+        send(hwnd, EM_EXGETSEL, 0, &mut selection as *mut _ as isize);
+        let line = send(hwnd, EM_GETFIRSTVISIBLELINE, 0, 0);
+        let anchor = send(hwnd, EM_LINEINDEX, line as usize, 0).max(0) as i32;
+        let mut point = POINT { x: 0, y: 0 };
+        let mut area: RECT = unsafe { std::mem::zeroed() };
+        send(
+            hwnd,
+            EM_POSFROMCHAR,
+            &mut point as *mut _ as usize,
+            anchor as isize,
+        );
+        send(hwnd, EM_GETRECT, 0, &mut area as *mut _ as isize);
+        Self {
+            selection: (selection.cpMin, selection.cpMax),
+            anchor,
+            offset: area.top - point.y,
+            horizontal: scroll::position(hwnd).x,
+            line_height: scroll::line_height(hwnd).unwrap_or(1),
+        }
+    }
+
+    pub fn restore(self, hwnd: HWND) {
+        let selection = CHARRANGE {
+            cpMin: self.selection.0,
+            cpMax: self.selection.1,
+        };
+        send(hwnd, EM_EXSETSEL, 0, &selection as *const _ as isize);
+        let mut point = POINT { x: 0, y: 0 };
+        let mut area: RECT = unsafe { std::mem::zeroed() };
+        send(
+            hwnd,
+            EM_POSFROMCHAR,
+            &mut point as *mut _ as usize,
+            self.anchor as isize,
+        );
+        send(hwnd, EM_GETRECT, 0, &mut area as *mut _ as isize);
+        let height = scroll::line_height(hwnd).unwrap_or(1);
+        let scale = |v| unsafe { MulDiv(v, height, self.line_height.max(1)) };
+        let target = POINT {
+            x: scale(self.horizontal).max(0),
+            y: (scroll::position(hwnd).y + point.y - area.top + scale(self.offset)).max(0),
+        };
+        send(hwnd, EM_SETSCROLLPOS, 0, &target as *const _ as isize);
+    }
 }
 
 impl Content {
@@ -109,9 +167,9 @@ pub fn context_menu(
             ClientToScreen(hwnd, &mut point);
         }
     } else {
+        let scroll = scroll::position(hwnd);
         let mut local = point;
         unsafe {
-            SetFocus(hwnd);
             ScreenToClient(hwnd, &mut local);
         }
         let index = send(hwnd, EM_CHARFROMPOS, 0, &local as *const _ as isize) as i32;
@@ -126,6 +184,8 @@ pub fn context_menu(
             };
             send(hwnd, EM_EXSETSEL, 0, &selection as *const _ as isize);
         }
+        focus(hwnd);
+        send(hwnd, EM_SETSCROLLPOS, 0, &scroll as *const _ as isize);
     }
     let mut buffer = vec![0u16; (selection.cpMax - selection.cpMin).max(0) as usize + 1];
     let length = send(hwnd, EM_GETSELTEXT, 0, buffer.as_mut_ptr() as isize).max(0) as usize;

@@ -81,7 +81,9 @@ def main():
             (9, ord('O'), ids['LOAD_METADATA']),
             (9, ord('L'), ids['FOCUS_SEARCH']),
             (9, 0x0D, ids['OPEN_NEW']),
-            (1, 0x75, ids['FOCUS_NEXT_REGION'])}
+            (1, 0x75, ids['FOCUS_NEXT_REGION']),
+            (17, 0x25, ids['HISTORY_BACK']),
+            (17, 0x27, ids['HISTORY_FORWARD'])}
         assert languages(24, 1) == [0], "manifest must be language neutral"
         manifest = ET.fromstring(resource(24, 1, 0))
         tags = [node.tag.rsplit("}", 1)[-1] for node in manifest.iter()]

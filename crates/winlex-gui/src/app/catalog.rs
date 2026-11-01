@@ -1,5 +1,6 @@
 //! UI transactions and immutable document bindings. HWNDs never cross the worker boundary.
 use super::{
+    history,
     metadata::{self, Binding},
     read, workspace, write,
 };
@@ -406,6 +407,9 @@ pub(super) fn open_selected(mode: Open) {
     open(row, mode);
 }
 pub(super) fn open(row: isize, mode: Open) {
+    history::visit(|| open_document(row, mode));
+}
+fn open_document(row: isize, mode: Open) {
     match mode {
         // A preview shows the document but leaves the keyboard in the sidebar.
         Open::Preview => workspace::keep_focus(|| {

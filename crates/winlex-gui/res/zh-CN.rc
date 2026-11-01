@@ -9,6 +9,11 @@ BEGIN
         MENUITEM SEPARATOR
         MENUITEM "退出(&E)", EXIT
     END
+    POPUP "导航(&N)"
+    BEGIN
+        MENUITEM "返回(&B)\tAlt+Left", HISTORY_BACK, GRAYED
+        MENUITEM "前进(&F)\tAlt+Right", HISTORY_FORWARD, GRAYED
+    END
     POPUP "窗口(&W)"
     BEGIN
         MENUITEM "关闭文档(&C)\tCtrl+F4", CLOSE

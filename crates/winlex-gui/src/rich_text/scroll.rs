@@ -10,7 +10,7 @@ pub(super) fn install(hwnd: HWND) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn position(hwnd: HWND) -> POINT {
+pub(super) fn position(hwnd: HWND) -> POINT {
     let mut origin = POINT { x: 0, y: 0 };
     let mut area: RECT = unsafe { std::mem::zeroed() };
     send(hwnd, EM_POSFROMCHAR, &mut origin as *mut _ as usize, 0);
@@ -22,7 +22,7 @@ fn position(hwnd: HWND) -> POINT {
     }
 }
 
-fn line_height(hwnd: HWND) -> Option<i32> {
+pub(super) fn line_height(hwnd: HWND) -> Option<i32> {
     let index = send(hwnd, EM_LINEINDEX, 1, 0);
     if index < 0 {
         return None;
@@ -120,7 +120,7 @@ unsafe extern "system" fn procedure(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rich_text::{Content, create, set_content};
+    use crate::rich_text::{Content, ViewState, create, set_content};
     use windows::Win32::UI::Controls::RichEdit::{
         CFM_SIZE, CHARFORMATW, CHARRANGE, EM_EXGETSEL, SCF_ALL,
     };
@@ -170,6 +170,89 @@ mod tests {
         fn drop(&mut self) {
             unsafe { DestroyWindow(self.0) };
         }
+    }
+
+    #[test]
+    fn reading_position_survives_replacement_deep_scroll_wrapping_and_font_changes() {
+        let editor = Editor::new();
+        let hwnd = editor.1;
+        let format = CHARFORMATW {
+            cbSize: std::mem::size_of::<CHARFORMATW>() as u32,
+            dwMask: CFM_SIZE,
+            yHeight: 300,
+            ..Default::default()
+        };
+        send(
+            hwnd,
+            EM_SETCHARFORMAT,
+            SCF_ALL as usize,
+            &format as *const _ as isize,
+        );
+        let content = Content::new(
+            "const UINT32 value😀 = 42; // a long declaration with a stable reading anchor\n"
+                .repeat(4000),
+        );
+        set_content(hwnd, &content).unwrap();
+        let selection = CHARRANGE {
+            cpMin: 70009,
+            cpMax: 70023,
+        };
+        send(hwnd, EM_EXSETSEL, 0, &selection as *const _ as isize);
+        // Finish fallback-font layout before establishing the starting viewport.
+        send(hwnd, EM_GETLINECOUNT, 0, 0);
+        editor.scroll_to(70003);
+        let original = position(hwnd).y;
+        assert!(
+            original > 65535,
+            "deep scroll: {original}, lines: {}",
+            send(hwnd, EM_GETLINECOUNT, 0, 0)
+        );
+        let before = ViewState::capture(hwnd);
+        assert_eq!(
+            position(hwnd).y,
+            original,
+            "capturing a reading position must preserve the viewport: {before:?}"
+        );
+        set_content(hwnd, &Content::new("Querying".into())).unwrap();
+        set_content(hwnd, &content).unwrap();
+        before.restore(hwnd);
+        assert_eq!(position(hwnd).y, original);
+        let mut selected = CHARRANGE::default();
+        send(hwnd, EM_EXGETSEL, 0, &mut selected as *mut _ as isize);
+        assert_eq!((selected.cpMin, selected.cpMax), (70009, 70023));
+        let format = CHARFORMATW {
+            cbSize: std::mem::size_of::<CHARFORMATW>() as u32,
+            dwMask: CFM_SIZE,
+            yHeight: 420,
+            ..Default::default()
+        };
+        send(
+            hwnd,
+            EM_SETCHARFORMAT,
+            SCF_ALL as usize,
+            &format as *const _ as isize,
+        );
+        place(hwnd, crate::layout::rect(0, 0, 470, 500));
+        send(hwnd, EM_GETLINECOUNT, 0, 0);
+        before.restore(hwnd);
+        send(hwnd, EM_EXGETSEL, 0, &mut selected as *mut _ as isize);
+        assert_eq!((selected.cpMin, selected.cpMax), (70009, 70023));
+        let mut anchor = POINT { x: 0, y: 0 };
+        let mut area: RECT = unsafe { std::mem::zeroed() };
+        send(
+            hwnd,
+            EM_POSFROMCHAR,
+            &mut anchor as *mut _ as usize,
+            before.anchor as isize,
+        );
+        send(hwnd, EM_GETRECT, 0, &mut area as *mut _ as isize);
+        assert_eq!(area.top - anchor.y, unsafe {
+            MulDiv(
+                before.offset,
+                line_height(hwnd).unwrap(),
+                before.line_height,
+            )
+        });
     }
 
     #[test]

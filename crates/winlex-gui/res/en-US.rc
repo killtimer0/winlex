@@ -9,6 +9,11 @@ BEGIN
         MENUITEM SEPARATOR
         MENUITEM "E&xit", EXIT
     END
+    POPUP "&Navigate"
+    BEGIN
+        MENUITEM "&Back\tAlt+Left", HISTORY_BACK, GRAYED
+        MENUITEM "&Forward\tAlt+Right", HISTORY_FORWARD, GRAYED
+    END
     POPUP "&Window"
     BEGIN
         MENUITEM "&Close document\tCtrl+F4", CLOSE

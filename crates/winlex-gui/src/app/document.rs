@@ -1,5 +1,5 @@
 //! Native entry points and MDI messages for declaration documents.
-use super::{dpi, metadata::MetadataView, read, workspace};
+use super::{dpi, history, metadata::MetadataView, read, workspace};
 use crate::native::*;
 use std::rc::Rc;
 use windows::Win32::UI::Controls::RichEdit::{EN_LINK, ENLINK};
@@ -126,8 +126,14 @@ impl MetadataView {
                     return result;
                 }
                 WM_MDIACTIVATE => {
+                    if w as HWND == hwnd {
+                        history::activation(self, false);
+                    }
                     let result = DefMDIChildProcW(hwnd, msg, w, l);
                     workspace::sync_document_selection();
+                    if l as HWND == hwnd {
+                        history::activation(self, true);
+                    }
                     return result;
                 }
                 WM_COMMAND => {
@@ -165,6 +171,23 @@ unsafe extern "system" fn editor_proc(
     unsafe {
         let document = workspace::view(owner as HWND);
         if let Some(document) = &document {
+            if matches!(
+                msg,
+                WM_LBUTTONDOWN
+                    | WM_LBUTTONDBLCLK
+                    | WM_RBUTTONDOWN
+                    | WM_MOUSEWHEEL
+                    | WM_MOUSEHWHEEL
+                    | WM_VSCROLL
+                    | WM_HSCROLL
+            ) || msg == WM_KEYDOWN
+                && (matches!(
+                    w as u16,
+                    VK_LEFT | VK_RIGHT | VK_UP | VK_DOWN | VK_HOME | VK_END | VK_PRIOR | VK_NEXT
+                ) || w == VK_A as usize && GetKeyState(VK_CONTROL as i32) < 0)
+            {
+                document.cancel_restore();
+            }
             match msg {
                 WM_LBUTTONDOWN | WM_LBUTTONDBLCLK | WM_RBUTTONDOWN | WM_KILLFOCUS
                 | WM_CANCELMODE | WM_SIZE | WM_SETFONT | WM_MOUSEWHEEL | WM_MOUSEHWHEEL
@@ -183,15 +206,18 @@ unsafe extern "system" fn editor_proc(
                 _ => {}
             }
         }
-        if msg == WM_LBUTTONDOWN && super::metadata::link_modifiers(w) {
-            focus(hwnd);
-        }
         match msg {
             WM_GETDLGCODE if w == VK_TAB as usize => {
                 return (DLGC_WANTARROWS | DLGC_WANTCHARS) as isize;
             }
             // RichEdit must not collapse an existing selection on a contextual click.
             WM_RBUTTONDOWN => return 0,
+            WM_RBUTTONUP => {
+                // Native right-up focuses before WM_CONTEXTMENU and scrolls to the old caret.
+                let view = crate::rich_text::ViewState::capture(hwnd);
+                focus(hwnd);
+                view.restore(hwnd);
+            }
             WM_CONTEXTMENU => return send(owner as HWND, msg, hwnd as usize, l),
             WM_KEYDOWN
                 if w == VK_APPS as usize

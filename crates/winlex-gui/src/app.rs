@@ -15,6 +15,7 @@ mod architecture;
 mod catalog;
 mod document;
 mod frame;
+mod history;
 mod keys;
 mod metadata;
 mod panel;
@@ -211,6 +212,7 @@ unsafe fn run_windows(paths: Vec<std::path::PathBuf>) -> anyhow::Result<()> {
         sidebar::focus();
         let mut msg: MSG = std::mem::zeroed();
         loop {
+            history::refresh();
             if let Some(error) = write(|a| a.failure.take()) {
                 DestroyWindow(frame);
                 return Err(error);

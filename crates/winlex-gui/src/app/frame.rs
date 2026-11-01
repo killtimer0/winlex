@@ -1,12 +1,15 @@
 //! Native frame orchestration; sidebar owns its controls and notifications.
 use super::workspace::{self, active};
-use super::{catalog, dpi, panel, read, sidebar, sources, write};
+use super::{catalog, dpi, history, panel, read, sidebar, sources, write};
 use crate::{
     layout::{self, Arrangement},
     native::*,
     resources::*,
 };
 use std::ptr;
+use windows_sys::Win32::System::SystemServices::{
+    APPCOMMAND_BROWSER_BACKWARD, APPCOMMAND_BROWSER_FORWARD,
+};
 
 fn prepare() {
     let (frame, tabs, status) = read(|a| (a.frame, a.workspace.tabs, a.status));
@@ -66,6 +69,10 @@ pub(super) fn layout_frame() {
     }
 }
 pub(super) fn command(id: u16) -> bool {
+    if let Some(direction) = history::Direction::from_command(id) {
+        history::navigate(direction);
+        return true;
+    }
     match id {
         SETTINGS => super::settings::open(),
         ABOUT => {}
@@ -137,7 +144,7 @@ pub(super) unsafe extern "system" fn frame_proc(hwnd: HWND, msg: u32, w: usize, 
                         STATUS,
                     )?;
                     let c = CLIENTCREATESTRUCT {
-                        hWindowMenu: GetSubMenu(GetMenu(hwnd), 1),
+                        hWindowMenu: GetSubMenu(GetMenu(hwnd), 2),
                         idFirstChild: 40000,
                     };
                     let mdi = CreateWindowExW(
@@ -206,6 +213,18 @@ pub(super) unsafe extern "system" fn frame_proc(hwnd: HWND, msg: u32, w: usize, 
             WM_COMMAND => {
                 if panel::command(w, l as HWND) || command(w as u16) {
                     return 0;
+                }
+            }
+            WM_INITMENUPOPUP => history::refresh(),
+            WM_APPCOMMAND => {
+                let direction = match (l as u32 >> 16) & 0x0fff {
+                    APPCOMMAND_BROWSER_BACKWARD => Some(history::Direction::Back),
+                    APPCOMMAND_BROWSER_FORWARD => Some(history::Direction::Forward),
+                    _ => None,
+                };
+                if let Some(direction) = direction {
+                    history::navigate(direction);
+                    return 1;
                 }
             }
             WM_NOTIFY => {

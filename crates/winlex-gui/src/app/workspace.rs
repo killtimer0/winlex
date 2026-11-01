@@ -1,6 +1,6 @@
 //! MDI lifecycle, activation projection and one-shot arrangement commands.
 use super::metadata::MetadataView;
-use super::{document as host, dpi, read, write};
+use super::{document as host, dpi, history, read, write};
 use crate::{
     layout::{Arrangement, Placement},
     native::*,
@@ -14,6 +14,7 @@ pub(super) struct Workspace {
     pub tabs: HWND,
     pub documents: Vec<Rc<MetadataView>>,
     pub icons: crate::icons::DocumentIcons,
+    pub history: history::History,
     maximized: bool,
     serial: u64,
 }
@@ -24,6 +25,7 @@ impl Default for Workspace {
             tabs: std::ptr::null_mut(),
             documents: vec![],
             icons: crate::icons::DocumentIcons::default(),
+            history: history::History::default(),
             maximized: true,
             serial: 0,
         }
@@ -69,6 +71,9 @@ pub(super) fn unregister_document(hwnd: HWND) {
     }
 }
 pub(super) fn close_document(hwnd: HWND) {
+    history::closing(|| close_now(hwnd));
+}
+fn close_now(hwnd: HWND) {
     let mdi = read(|a| a.workspace.mdi);
     if view(hwnd).is_some() {
         let tabs = read(|a| a.workspace.tabs);

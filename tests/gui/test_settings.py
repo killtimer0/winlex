@@ -46,17 +46,36 @@ def test_settings_cancel_and_page_state(launch, profile):
     app.close_settings(sheet)
 
 
-def test_menu_scopes(launch):
-    app = launch()
+def test_menu_scopes(launch, settings):
+    app = launch([settings[1]])
     menu = n.api(n.user, "GetMenu", n.w.HMENU, n.w.HWND)(app.frame)
     count = n.api(n.user, "GetMenuItemCount", n.c.c_int, n.w.HMENU)
     submenu = n.api(n.user, "GetSubMenu", n.w.HMENU, n.w.HMENU, n.c.c_int)
     item_id = n.api(n.user, "GetMenuItemID", n.w.UINT, n.w.HMENU, n.c.c_int)
+    assert count(menu) == 4
+    navigation = submenu(menu, 1)
+    window = submenu(menu, 2)
     file_ids = [item_id(submenu(menu, 0), i) for i in range(count(submenu(menu, 0)))]
-    window_ids = [item_id(submenu(menu, 1), i) for i in range(count(submenu(menu, 1)))]
+    window_ids = [item_id(window, i) for i in range(count(window))]
     assert 1020 in file_ids and 1051 in file_ids and 1004 in file_ids
     assert not {1049, 1050, 1003}.intersection(file_ids)
+    assert [item_id(navigation, i) for i in range(count(navigation))] == [1055, 1056]
     assert 1003 in window_ids
+    documents = []
+    for name in ("CreateFileW", "CloseHandle"):
+        app.query(name)
+        doc = app.open_row(app.named_rows(name)[0])
+        n.wait(lambda: name in app.content(doc), "window menu document", 45)
+        documents.append(doc)
+    get_id = n.api(n.user, "GetDlgCtrlID", n.c.c_int, n.w.HWND)
+    get_state = n.api(n.user, "GetMenuState", n.w.UINT, n.w.HMENU, n.w.UINT, n.w.UINT)
+    for doc in documents:
+        command = get_id(doc)
+        assert get_state(window, command, win32con.MF_BYCOMMAND) != 0xffffffff
+        assert get_state(navigation, command, win32con.MF_BYCOMMAND) == 0xffffffff
+        app.command(command)
+        n.wait(lambda: app.active_document() == doc, "Window menu activates its document")
+        assert get_state(window, command, win32con.MF_BYCOMMAND) & win32con.MF_CHECKED
 
 
 @pytest.mark.parametrize("action", ["escape", "close", "enter"])

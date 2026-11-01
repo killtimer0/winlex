@@ -1,6 +1,7 @@
 """Declaration links preserve document identity and ordinary editor gestures."""
 import shutil
 import struct
+from contextlib import contextmanager
 
 import pytest
 import win32con
@@ -46,13 +47,59 @@ def click(app, doc, index, control=True):
 
 
 def destination(app, source, name, architecture):
-    doc = n.wait(lambda: (lambda doc: doc if doc != source and doc in app.documents()
+    doc = n.wait(lambda: (lambda doc: doc if doc in app.documents()
                          and n.window_text(doc).split(" (", 1)[0] == name + " - " + architecture else None)(
                              app.active_document()), "navigation destination")
     assert app.choice(doc) == architecture
     n.wait(lambda: app.focused() == n.get_item(doc, 1203), "destination editor focused")
     n.wait(lambda: name in app.content(doc), "destination declaration", 45)
     return doc
+
+
+def pin_active_tab(app):
+    from support.accessibility import client
+    tabs = n.get_item(app.frame, 1104)
+    with n.window_dpi_context(app.frame), client(tabs) as root, root.children() as pages:
+        page = next(page for page in pages if page.state & 2)
+        left, top, width, height = page.location()
+        origin = n.rectangle(tabs)
+        point = ((left - origin[0] + min(20, width // 2)) & 0xffff) | (
+            ((top - origin[1] + height // 2) & 0xffff) << 16)
+        n.send(tabs, win32con.WM_LBUTTONDBLCLK, win32con.MK_LBUTTON, point)
+        n.send(tabs, win32con.WM_LBUTTONUP, 0, point)
+    n.wait(lambda: not any(text.startswith(("Preview · ", "预览 · "))
+                          for text in app.tab_descriptions()), "tab kept open")
+
+
+@contextmanager
+def real_foreground(app, inputs):
+    import win32gui
+    win32gui.SetWindowPos(app.frame, win32con.HWND_TOPMOST, 0, 0, 0, 0,
+                         win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_NOACTIVATE)
+    try:
+        win32gui.ShowWindow(app.frame, win32con.SW_RESTORE)
+        try:
+            win32gui.SetForegroundWindow(app.frame)
+        except Exception:
+            pass
+        with n.window_dpi_context(app.frame):
+            left, top, right, bottom = n.rectangle(app.search)
+            inputs.click((left + right) // 2, (top + bottom) // 2)
+        try:
+            n.wait(lambda: win32gui.GetForegroundWindow() == app.frame, "foreground navigation input")
+        except AssertionError:
+            pytest.skip("physical input unverified: foreground acquisition failed")
+        yield lambda: win32gui.GetForegroundWindow() == app.frame
+    finally:
+        win32gui.SetWindowPos(app.frame, win32con.HWND_NOTOPMOST, 0, 0, 0, 0,
+                             win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_NOACTIVATE)
+
+
+def editor_selection(app, editor):
+    n.send(editor, win32con.WM_USER + 52, 0, app.memory)  # EM_EXGETSEL
+    raw = n.c.create_string_buffer(8)
+    assert n.read_memory(app.handle, app.memory, raw, 8, None)
+    return struct.unpack("<ii", raw.raw)
 
 
 def menu_label(menu, index=0):
@@ -75,10 +122,10 @@ def follow_caret(app, doc, index):
     wait_closed(editor)
 
 
-def test_ctrl_click_pins_reuses_and_refreshes_architecture_links(launch, settings, profile):
+def test_ctrl_click_reuses_explicitly_fixed_architecture_links(launch, settings, profile):
     app = launch([settings[1]])
     app.query("Windows.Win32.Storage.FileSystem.CreateFileW")
-    source = app.preview_row()
+    source = app.open_row()
     targets = {}
     for architecture, size in (("x64", "24 bytes"), ("x86", "12 bytes"), ("x64", "24 bytes")):
         app.choose(source, architecture)
@@ -94,6 +141,12 @@ def test_ctrl_click_pins_reuses_and_refreshes_architecture_links(launch, setting
         assert "Windows.Win32.Security" in n.window_text(n.get_item(target, 1209))
         if architecture in targets:
             assert target == targets[architecture]
+            assert not any(value.startswith(("Preview · ", "预览 · "))
+                           for value in app.tab_descriptions())
+        else:
+            assert sum(value.startswith(("Preview · ", "预览 · "))
+                       for value in app.tab_descriptions()) == 1
+            pin_active_tab(app)
         targets[architecture] = target
         assert source in app.documents()
         assert len(app.documents()) == 1 + len(targets)
@@ -160,9 +213,29 @@ def test_reference_context_menu_navigates_from_mouse_or_caret(launch, settings, 
         n.key_message(editor, win32con.VK_RETURN)
         wait_closed(editor)
     target = destination(app, source, "SECURITY_ATTRIBUTES", "x86")
-    assert len(app.documents()) == 2 and target != source
-    assert not any(value.startswith(("Preview · ", "预览 · "))
-                   for value in app.tab_descriptions())
+    assert app.documents() == [source] and target == source
+    assert app.tab_descriptions()[0].startswith(("Preview · ", "预览 · "))
+
+
+def test_reference_activates_fixed_target_without_pinning_or_rebinding_source_preview(launch, settings):
+    app = launch([settings[1]])
+    app.query("Windows.Win32.Security.SECURITY_ATTRIBUTES")
+    target = app.open_row()
+    n.wait(lambda: "SECURITY_ATTRIBUTES" in app.content(target), "fixed target declaration", 45)
+    app.query("CreateFileW")
+    source = app.preview_row()
+    index = reference(app, source, "SECURITY_ATTRIBUTES") + 3
+    body = app.content(source)
+    descriptions = app.tab_descriptions()
+    assert sum(text.startswith(("Preview · ", "预览 · ")) for text in descriptions) == 1
+    click(app, source, index)
+    assert destination(app, source, "SECURITY_ATTRIBUTES", "x86") == target
+    assert set(app.documents()) == {source, target}
+    assert app.content(source) == body
+    assert app.tab_descriptions() == descriptions
+    app.query("CloseHandle")
+    assert app.preview_row() == source
+    assert "SECURITY_ATTRIBUTES" in app.content(target)
 
 
 def test_primitives_unresolved_types_and_whitespace_have_no_navigation(launch, settings):
@@ -196,6 +269,7 @@ def test_navigation_uses_source_snapshot_not_current_catalog(launch, settings, r
     index = reference(app, source, "SECURITY_ATTRIBUTES") + 2
     click(app, source, index)
     old_target = destination(app, source, "SECURITY_ATTRIBUTES", "x86")
+    pin_active_tab(app)
     app.command(1021)
     app.select(0, app.sources)
     app.command(1044 if reload else 1022)
@@ -232,6 +306,7 @@ def test_identical_short_names_from_copied_sources_keep_their_identity(launch, s
         follow_caret(app, source, reference(app, source, "SECURITY_ATTRIBUTES") + 2)
         target = destination(app, source, "SECURITY_ATTRIBUTES", "x86")
         assert n.window_text(n.get_item(target, 1205)) == filename
+        pin_active_tab(app)
         targets.append(target)
     assert targets[0] != targets[1]
     assert len(app.documents()) == 4
@@ -290,6 +365,116 @@ def test_last_reference_glyph_and_trailing_line_space_have_precise_hit_bounds(la
                 assert items == [2074]
                 dismiss(editor)
                 n.send(editor, win32con.WM_NULL)
+
+
+@pytest.mark.parametrize("gesture", ["ctrl-click", "mouse-context-menu"])
+def test_real_unfocused_scrolled_reference_navigates_on_first_gesture(request, launch, settings, gesture):
+    if not request.config.getoption("--real-input"):
+        pytest.skip("actual input not requested")
+    import re
+    import win32api
+    from support.input_state import InputState
+    from support.session import ThreadInfo
+
+    with InputState() as inputs:
+        app = launch([settings[1]])
+        n.wait(lambda: app.status_text().startswith(("Ready.", "已就绪")), "loaded", 45)
+        with real_foreground(app, inputs) as foreground:
+            app.query("Windows.Win32.Graphics.Gdi.Apis")
+            app.select(app.named_rows("Apis")[0])
+            app.focus(app.results)
+            assert foreground(), "real input requires foreground ownership"
+            inputs.key(win32con.VK_SPACE)
+            source = n.wait(lambda: (lambda doc: doc if doc in app.documents()
+                            and n.window_text(doc).startswith("Apis -") else None)(
+                                app.active_document()), "Gdi preview")
+            n.wait(lambda: "HDC" in app.content(source), "loaded Gdi declaration", 45)
+            editor = n.get_item(source, 1203)
+            body = app.content(source)
+            text = body.replace("\r\n", "\r")
+            assert len(text.encode("utf-16-le")) // 2 > 70000
+            assert app.focused() == app.results
+            assert editor_selection(app, editor) == (0, 0)
+            assert n.send(editor, win32con.EM_GETFIRSTVISIBLELINE) == 0
+            # A real Gdi handle reference well beyond the first screen, not the caret.
+            match = next(match for match in re.finditer(r"\bHDC\b", text) if match.start() > 10000)
+            index = len(text[:match.start()].encode("utf-16-le")) // 2 + 1
+            line = n.send(editor, win32con.WM_USER + 54, 0, index)  # EM_EXLINEFROMCHAR
+            assert line > 10
+            n.send(editor, win32con.EM_LINESCROLL, 0, line - 3)
+            top = n.send(editor, win32con.EM_GETFIRSTVISIBLELINE)
+            assert top > 0
+            with n.window_dpi_context(app.frame):
+                screen = character_point(app, editor, index)
+                point = (n.c.c_short(screen & 0xffff).value, n.c.c_short(screen >> 16).value)
+                left, above, right, bottom = n.rectangle(editor)
+                assert left <= point[0] < right and above <= point[1] < bottom
+            assert editor_selection(app, editor) == (0, 0)
+            assert app.focused() == app.results
+            assert foreground(), "first link gesture requires foreground ownership"
+            if gesture == "ctrl-click":
+                inputs.state["held"].extend((win32con.VK_CONTROL, "mouse"))
+                inputs.save()
+                win32api.keybd_event(win32con.VK_CONTROL, 0, 0, 0)
+                try:
+                    win32api.SetCursorPos(point)
+                    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0)
+                    def tracking():
+                        info = ThreadInfo()
+                        info.size = n.c.sizeof(info)
+                        assert n.api(n.user, "GetGUIThreadInfo", n.w.BOOL, n.w.DWORD,
+                                     n.c.POINTER(ThreadInfo))(n.get_pid(app.frame, None), n.c.byref(info))
+                        return (app.focused() == editor and info.capture == editor
+                                and win32api.GetAsyncKeyState(win32con.VK_CONTROL) & 0x8000
+                                and win32api.GetAsyncKeyState(win32con.VK_LBUTTON) & 0x8000)
+                    n.wait(tracking, "first Ctrl-click acquired editor focus and capture")
+                    expected_selection = editor_selection(app, editor)
+                    assert n.send(editor, win32con.EM_GETFIRSTVISIBLELINE) == top
+                    assert foreground(), "Ctrl-click release requires foreground ownership"
+                    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0)
+                    inputs.state["held"].remove("mouse")
+                    inputs.save()
+                    assert destination(app, source, "HDC", "x86") == source
+                finally:
+                    if "mouse" in inputs.state["held"]:
+                        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0)
+                        inputs.state["held"].remove("mouse")
+                    win32api.keybd_event(win32con.VK_CONTROL, 0, win32con.KEYEVENTF_KEYUP, 0)
+                    inputs.state["held"].remove(win32con.VK_CONTROL)
+                    inputs.save()
+            else:
+                win32api.SetCursorPos(point)
+                # InputState recovery owns left mouse releases, so deliver the right pair together.
+                win32api.mouse_event(win32con.MOUSEEVENTF_RIGHTDOWN | win32con.MOUSEEVENTF_RIGHTUP, 0, 0)
+                menu, _ = find_popup(app)
+                def menu_positioned():
+                    rect = n.w.RECT()
+                    return (n.api(n.user, "GetMenuItemRect", n.w.BOOL, n.w.HWND, n.w.HMENU,
+                                  n.w.UINT, n.c.POINTER(n.w.RECT))(
+                                      app.frame, menu, 0, n.c.byref(rect))
+                            and rect.right > rect.left and rect.bottom > rect.top)
+                n.wait(menu_positioned, "reference menu positioned")
+                assert menu_label(menu) in ("Go to declaration", "转到声明")
+                expected_selection = editor_selection(app, editor)
+                assert n.send(editor, win32con.EM_GETFIRSTVISIBLELINE) == top, (
+                    "context menu must preserve the scrolled hit viewport", expected_selection, app.focused())
+                assert foreground(), "context menu requires foreground ownership"
+                inputs.key(win32con.VK_DOWN)
+                inputs.key(win32con.VK_RETURN)
+                wait_closed(editor)
+            assert destination(app, source, "HDC", "x86") == source
+            assert app.documents() == [source]
+            assert app.tab_descriptions()[0].startswith(("Preview · ", "预览 · "))
+            assert foreground(), "navigation retains foreground ownership"
+            app.command(1055)
+            n.wait(lambda: n.window_text(source).startswith("Apis -") and app.content(source) == body,
+                   "Back restores Gdi declaration", 45)
+            n.wait(lambda: editor_selection(app, editor) == expected_selection,
+                   "Back restores source selection", 45)
+            n.wait(lambda: n.send(editor, win32con.EM_GETFIRSTVISIBLELINE) == top,
+                   "Back restores scrolled source top", 45)
+            assert app.documents() == [source]
+            assert app.tab_descriptions()[0].startswith(("Preview · ", "预览 · "))
 
 
 def test_real_ctrl_click_and_drag_do_not_confuse_navigation_with_selection(request, launch, settings):
@@ -387,14 +572,15 @@ def test_real_ctrl_click_and_drag_do_not_confuse_navigation_with_selection(reque
                        and not win32api.GetAsyncKeyState(win32con.VK_LBUTTON) & 0x8000,
                        "physical release acknowledged")
 
+            pin_active_tab(app)
             app.focus(app.search)
             foreground(app.search)
-            assert app.tab_descriptions()[0].startswith(("Preview · ", "预览 · "))
             press(final_glyph)
             unpress()
             target = destination(app, source, "SECURITY_ATTRIBUTES", "x86")
-            assert not any(value.startswith(("Preview · ", "预览 · "))
-                           for value in app.tab_descriptions())
+            assert sum(value.startswith(("Preview · ", "预览 · "))
+                       for value in app.tab_descriptions()) == 1
+            pin_active_tab(app)
             n.send(app.mdi, win32con.WM_MDIACTIVATE, source)
             app.focus(editor)
             with n.window_dpi_context(app.frame):
