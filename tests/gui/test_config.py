@@ -67,9 +67,7 @@ def test_language_option_round_trip(launch, profile, index, name, label):
                                    else ["System default", "English", "简体中文"])
     n.send(control, win32con.CB_SETCURSEL, index)
     app.close_settings(sheet)
-    # Selecting the existing value does not require a write.
-    if name != profile.get("Language"):
-        assert profile.get("Preferences") == name + ":7"
+    assert profile.get("Preferences") == name + ":7"
     sheet = app.settings()
     general = app.settings_page(sheet, 0)
     assert n.send(n.get_item(general, 1300), win32con.CB_GETCURSEL) == index

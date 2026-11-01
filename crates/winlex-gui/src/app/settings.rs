@@ -70,15 +70,11 @@ pub(super) struct Settings {
 impl Settings {
     pub fn load(config: &Config) -> Self {
         let key = config.key.as_ref();
-        let language = key
-            .and_then(|k| k.text("Language"))
-            .and_then(|name| Language::from_name(&name))
-            .unwrap_or_default();
         let preferences = key
             .and_then(|k| k.text("Preferences"))
             .and_then(|value| Preferences::parse(&value))
             .unwrap_or(Preferences {
-                language,
+                language: Language::Auto,
                 categories: EntityCategory::DEFAULT,
             });
         let preferred_architecture = key

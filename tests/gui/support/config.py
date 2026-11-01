@@ -13,7 +13,7 @@ class ConfigProfile:
             Path(ledger).mkdir(parents=True, exist_ok=True)
             (Path(ledger) / (self.root.rsplit("\\", 1)[-1] + ".profile")).write_text(self.root, encoding="utf-8")
         self.set("Version", winreg.REG_DWORD, 1)
-        self.set("Language", winreg.REG_SZ, language)
+        self.set("Preferences", winreg.REG_SZ, language + ":7")
 
     def set(self, name, kind, value):
         with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, self.root, 0, winreg.KEY_SET_VALUE) as key:
