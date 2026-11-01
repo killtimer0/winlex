@@ -31,6 +31,41 @@ def test_large_api_document_stays_responsive(launch, settings):
     assert n.send(editor, win32con.EM_GETFIRSTVISIBLELINE) == first
 
 
+def test_declaration_wheel_is_synchronous_and_preserves_fine_input(launch, settings):
+    app = launch([settings[1]])
+    app.query("Windows.Win32.Graphics.Gdi.Apis")
+    doc = app.open_row()
+    n.wait(lambda: "EnumDisplayMonitors(" in app.content(doc), "complete Gdi declaration", 45)
+    editor = n.get_item(doc, 1203)
+    app.focus(editor)
+    n.send(editor, win32con.EM_SETSEL, 2, 8)
+
+    def top():
+        n.send(editor, win32con.EM_LINESCROLL, 0, -1_000_000)
+        assert n.send(editor, win32con.EM_GETFIRSTVISIBLELINE) == 0
+
+    def wheel(delta):
+        n.send(editor, win32con.WM_MOUSEWHEEL, (delta & 0xffff) << 16)
+
+    lines = n.w.UINT()
+    spi = n.api(n.user, "SystemParametersInfoW", n.w.BOOL,
+                n.w.UINT, n.w.UINT, n.c.c_void_p, n.w.UINT)
+    assert spi(0x0068, 0, n.c.byref(lines), 0)
+    top()
+    wheel(-120)
+    whole = n.send(editor, win32con.EM_GETFIRSTVISIBLELINE)
+    assert (whole > 0) == (lines.value != 0)
+    top()
+    for _ in range(120):
+        wheel(-1)
+    assert n.send(editor, win32con.EM_GETFIRSTVISIBLELINE) == whole
+    wheel(120)
+    assert n.send(editor, win32con.EM_GETFIRSTVISIBLELINE) == 0
+    wheel(120)
+    assert n.send(editor, win32con.EM_GETFIRSTVISIBLELINE) == 0
+    assert n.send(editor, win32con.EM_GETSEL) == (8 << 16) | 2
+
+
 def test_online_button_tracks_document_metadata(launch, settings):
     from support.accessibility import client
 

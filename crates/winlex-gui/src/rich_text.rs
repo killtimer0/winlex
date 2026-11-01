@@ -11,6 +11,7 @@ use windows::Win32::UI::Controls::RichEdit::{
 use winlex_format::declaration::{NumberRegion, Rendered};
 
 mod rtf;
+mod scroll;
 mod word_break;
 
 pub struct Content {
@@ -146,6 +147,10 @@ pub fn create(parent: HWND, id: u16) -> anyhow::Result<HWND> {
             id,
         )
     }?;
+    if let Err(error) = scroll::install(hwnd) {
+        unsafe { DestroyWindow(hwnd) };
+        return Err(error);
+    }
     send(hwnd, EM_SETLIMITTEXT, 0x7ffffffe, 0);
     send(
         hwnd,
