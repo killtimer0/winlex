@@ -1,27 +1,93 @@
 import shutil
+import json
 import pytest
 import winreg
+import win32api
 import win32con
 import win32gui
+import win32process
 import struct
 from support.diagnostics import screenshot
 from support import native as n
 
 
+def button_text_size(control):
+    get_dc = n.api(n.user, "GetDC", n.w.HDC, n.w.HWND)
+    release = n.api(n.user, "ReleaseDC", n.c.c_int, n.w.HWND, n.w.HDC)
+    gdi = n.c.WinDLL("gdi32", use_last_error=True)
+    select = n.api(gdi, "SelectObject", n.w.HANDLE, n.w.HDC, n.w.HANDLE)
+    get_font = n.api(gdi, "GetObjectW", n.c.c_int, n.w.HANDLE, n.c.c_int, n.c.c_void_p)
+    create_font = n.api(gdi, "CreateFontIndirectW", n.w.HANDLE, n.c.c_void_p)
+    delete = n.api(gdi, "DeleteObject", n.w.BOOL, n.w.HANDLE)
+    draw = n.api(n.user, "DrawTextW", n.c.c_int, n.w.HDC, n.w.LPWSTR,
+                 n.c.c_int, n.c.POINTER(n.w.RECT), n.w.UINT)
+    dc = get_dc(control)
+    assert dc
+    previous = None
+    local_font = None
+    try:
+        font = n.send(control, win32con.WM_GETFONT)
+        assert font
+        definition = n.c.create_string_buffer(92)  # LOGFONTW, identical on x86/x64.
+        assert get_font(font, len(definition), definition) == len(definition)
+        # XP permits reading a foreign font's attributes, but not selecting its handle.
+        local_font = create_font(definition)
+        assert local_font
+        previous = select(dc, local_font)
+        assert previous
+        value = n.window_text(control)
+        buffer = n.c.create_unicode_buffer(value)
+        bounds = n.w.RECT()
+        assert draw(dc, buffer, len(value), n.c.byref(bounds),
+                    win32con.DT_CALCRECT | win32con.DT_SINGLELINE)
+        return bounds.right - bounds.left, bounds.bottom - bounds.top
+    finally:
+        if previous:
+            select(dc, previous)
+        if local_font:
+            delete(local_font)
+        release(control, dc)
+
+
 @pytest.mark.parametrize("sidebar_width", [140, 480])
-def test_source_buttons_share_native_group_size_and_wrap(launch, profile, sidebar_width):
+def test_source_buttons_share_native_group_size_and_wrap(launch, profile, settings, sidebar_width):
     profile.set("SidebarWidth", winreg.REG_DWORD, sidebar_width)
     app = launch()
     app.command(1021)
     controls = [n.get_item(app.frame, ident) for ident in (1020, 1044, 1022)]
     with n.window_dpi_context(app.frame):
         ideals = []
-        for control in controls:
-            assert n.write_memory(app.handle, app.memory, bytes(8), 8, None)
-            assert n.send(control, 0x1601, 0, app.memory)
-            raw = n.c.create_string_buffer(8)
-            assert n.read_memory(app.handle, app.memory, raw, 8, None)
-            ideals.append(struct.unpack("<ii", raw.raw))
+        measurements = []
+        process = win32api.OpenProcess(0x410, False, app.process.pid)
+        get_module = n.api(n.user, "GetClassLongPtrW" if hasattr(n.user, "GetClassLongPtrW")
+                           else "GetClassLongW", n.c.c_size_t, n.w.HWND, n.c.c_int)
+        try:
+            for control in controls:
+                module = get_module(control, -16)  # GCLP_HMODULE
+                assert module
+                path = win32process.GetModuleFileNameEx(process, module)
+                version = win32api.GetFileVersionInfo(path, "\\")["FileVersionMS"] >> 16
+                v6 = path.lower().endswith("comctl32.dll") and version == 6
+                assert v6 or path.lower().endswith("user32.dll"), path
+                assert n.write_memory(app.handle, app.memory, bytes(8), 8, None)
+                supported = bool(n.send(control, 0x1601, 0, app.memory))  # BCM_GETIDEALSIZE
+                measurements.append({"id": n.get_id(control), "module": path,
+                                     "module_major_version": version, "query_supported": supported,
+                                     "expected_path": "native" if v6 else "text"})
+                assert supported == v6, measurements[-1]
+                if supported:
+                    raw = n.c.create_string_buffer(8)
+                    assert n.read_memory(app.handle, app.memory, raw, 8, None)
+                    size = struct.unpack("<ii", raw.raw)
+                else:
+                    size = button_text_size(control)
+                assert size[0] > 0 and size[1] > 0
+                ideals.append(size)
+                measurements[-1]["minimum_size"] = size
+        finally:
+            process.Close()
+            (settings[2] / ("source-button-sizes-%d.json" % sidebar_width)).write_text(
+                json.dumps(measurements, indent=2), encoding="utf-8")
         bounds = n.rectangle(app.sources)
         rectangles = [n.rectangle(control) for control in controls]
         assert len({(r[2] - r[0], r[3] - r[1]) for r in rectangles}) == 1

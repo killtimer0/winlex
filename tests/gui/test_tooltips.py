@@ -11,6 +11,44 @@ from support.diagnostics import screenshot
 from support import messages
 
 
+def test_search_tooltip_registers_and_tracks_mode_without_hover(launch, settings):
+    app = launch()
+    pointer = "<Q" if app.is64 else "<I"
+
+    def tool_info():
+        data = bytearray(128)
+        struct.pack_into("<I", data, 0, 64 if app.is64 else 44)
+        struct.pack_into(pointer, data, 8, app.search)
+        struct.pack_into(pointer, data, 16 if app.is64 else 12, app.search)
+        struct.pack_into(pointer, data, 48 if app.is64 else 36, app.memory + 128)
+        assert n.write_memory(app.handle, app.memory, bytes(data), len(data), None)
+
+    tooltip = None
+    for hwnd in n.windows():
+        if (n.class_name(hwnd) == "tooltips_class32"
+                and win32gui.GetWindow(hwnd, win32con.GW_OWNER) == app.frame):
+            tool_info()
+            if n.send(hwnd, win32con.WM_USER + 53, 0, app.memory):  # TTM_GETTOOLINFOW
+                tooltip = hwnd
+                break
+    assert tooltip, "search input has a registered tooltip"
+
+    def text():
+        tool_info()
+        assert n.write_memory(app.handle, app.memory + 128, bytes(4096), 4096, None)
+        n.send(tooltip, win32con.WM_USER + 56, 0, app.memory)  # TTM_GETTEXTW
+        return app.remote_text(app.memory + 128, 4096)
+
+    initial = text()
+    assert initial
+    selector = n.get_item(app.frame, 1114)
+    for index in [1, 0]:
+        n.send(selector, win32con.CB_SETCURSEL, index)
+        app.command(1114, code=win32con.CBN_SELENDOK)
+        actual = text()
+        assert actual and (actual == initial) == (index == 0)
+
+
 def test_toolbar_names_on_hover(launch, settings):
     app = launch()
     if not app.real_input:
