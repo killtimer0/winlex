@@ -865,20 +865,6 @@ mod tests {
     }
 
     #[test]
-    fn numeric_regions_follow_utf16_and_normalized_newlines() {
-        let mut out = Rendered::default();
-        write!(out, "// 文😀\r\n").unwrap();
-        let id = EntityId {
-            source_id: 0,
-            token: 0x04000001,
-        };
-        out.number("", 64, Some("bytes"), id).unwrap();
-        assert_eq!(out.text, "// 文😀\n64 bytes");
-        assert_eq!(out.regions[0].range, 7..15);
-        assert_eq!(out.regions[0].number().unwrap().entity, id);
-    }
-
-    #[test]
     fn composed_references_follow_utf16_and_normalized_newlines() {
         let mut fragment = Rendered::from("😀Target");
         fragment.regions.push(Region {

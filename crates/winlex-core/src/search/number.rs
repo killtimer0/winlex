@@ -259,9 +259,9 @@ mod tests {
             assert!(NumberQuery::compile(text).is_ok(), "{text}");
         }
         for text in [
-            ".", ".e2", "1..0e2", "1e", "1e+", "1e-", "1e2e3", "1e+2E-3", "1e１２", "1e 2",
-            "1..0e+", "1_0.0", "1.0_0", "1e1_0", "１２.0", " 1.0", "1.0 ", "--1.0", "+-1.0",
-            "0x1.0", "0x1p2", "NaN.0", "inf.0", "Infinity",
+            ".", ".e2", "1.2.3", "1..0e2", "1e", "1e+", "1e-", "1e2e3", "1e+2E-3", "1e１２",
+            "1e 2", "1..0e+", "1_0.0", "1.0_0", "1e1_0", "１２.0", " 1.0", "1.0 ", "--1.0",
+            "+-1.0", "0x1.0", "0x1p2", "NaN.0", "inf.0", "Infinity",
         ] {
             assert!(NumberQuery::compile(text).is_err(), "{text}");
         }
@@ -306,9 +306,6 @@ mod tests {
         assert!(hit("5e-324", Value::F64(f64::from_bits(1))));
         assert!(!hit("5e-324", Value::F32(0.0)));
         assert!(!hit("1e100", Value::F32(f32::INFINITY)));
-        for query in [".", "1.2.3", "1e", "1e2e3", "Infinity", "1e9999", "1e-9999"] {
-            assert!(NumberQuery::compile(query).is_err(), "{query}");
-        }
     }
     #[test]
     fn special_float_literals_classify_nan_and_preserve_infinity_sign() {

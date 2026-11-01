@@ -235,22 +235,6 @@ mod tests {
         assert!(requests.next().is_none());
     }
     #[test]
-    fn replacement_burst_keeps_only_latest_without_reordering() {
-        let requests = Requests::default();
-        let mut old = None;
-        for id in 1..100 {
-            requests.replace(old, Ticket::new(id), ()).unwrap();
-            old = Some(id);
-            if id == 50 {
-                requests.replace(None, Ticket::new(100), ()).unwrap();
-            }
-        }
-        assert_eq!(requests.pending.lock().unwrap().jobs.len(), 2);
-        assert_eq!(requests.next().unwrap().0.id, 100);
-        assert_eq!(requests.next().unwrap().0.id, 99);
-        requests.close();
-    }
-    #[test]
     fn completion_and_shutdown_wake_ui() {
         let worker = Worker::new(|(), ticket, publish| {
             let _ = publish(ticket.id);

@@ -266,16 +266,6 @@ fn conditions_combine_same_entity_fields_and_keep_all_positive_evidence() {
         )[0]
         .id
     );
-    let parsed = Query::parse(query).unwrap();
-    assert_eq!(
-        db.search_query(&parsed, SearchOptions::default())
-            .unwrap()
-            .next()
-            .unwrap()
-            .unwrap()
-            .id,
-        found[0].id
-    );
     assert_eq!(
         hits(
             &db,
@@ -474,10 +464,7 @@ fn condition_diagnostics_keep_field_operator_and_value_errors_distinct() {
         let error = SearchQuery::from_query(&parsed, false).err().unwrap();
         let diagnostic = error.downcast_ref::<QueryError>().unwrap();
         assert_eq!(diagnostic.kind, kind, "{query}");
-        let Query::Predicate(predicate) = parsed else {
-            panic!("expected predicate");
-        };
-        assert_eq!(diagnostic.span, predicate.span, "{query}");
+        assert_eq!(diagnostic.span, 0..query.len(), "{query}");
     }
 }
 

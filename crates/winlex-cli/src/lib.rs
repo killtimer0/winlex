@@ -610,10 +610,9 @@ mod tests {
             winlex_core::Declaration::Type(_)
         ));
         assert_eq!(select(&db, name, None, false).unwrap(), ty);
-        assert_eq!(
-            select(&db, &format!("0x{:08X}", ty.token), None, true).unwrap(),
-            ty
-        );
+        for token in [format!("0x{:08X}", ty.token), ty.to_string()] {
+            assert_eq!(select(&db, &token, None, true).unwrap(), ty);
+        }
 
         let name = "Windows.Win32.Security.SECURITY_ATTRIBUTES.nLength";
         let field = select(&db, name, None, false).unwrap();

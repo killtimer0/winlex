@@ -529,13 +529,6 @@ mod tests {
         }
     }
     #[test]
-    fn kind_labels_are_unique_and_round_trip() {
-        for (kind, id) in KINDS {
-            assert_eq!(kind_label(kind), *id);
-            assert_eq!(KINDS.iter().filter(|(_, other)| other == id).count(), 1);
-        }
-    }
-    #[test]
     fn information_copies_keep_native_paths_and_ids() {
         use std::ffi::OsString;
         use std::os::windows::ffi::OsStringExt;

@@ -245,6 +245,7 @@ def test_document_source_and_responsive_reading_layout(launch, settings):
     editor = n.get_item(doc, 1203)
     source = n.get_item(doc, 1205)
     selector = n.get_item(doc, 1047)
+    buttons = [n.get_item(doc, control) for control in (1206, 1211)]
     assert path.name in n.window_text(source)
     assert not win32gui.IsWindowVisible(n.get_item(doc, 1204))
 
@@ -264,42 +265,28 @@ def test_document_source_and_responsive_reading_layout(launch, settings):
             else:
                 assert sr[2] < ar[0]
             assert er[1] >= max(sr[3], ar[3]) and er[3] > er[1]
+            previous = ar
+            for button in buttons:
+                assert n.is_visible(button)
+                bounds = n.rectangle(button)
+                if width == 320:
+                    assert bounds[0] >= previous[2] or bounds[1] >= previous[3]
+                else:
+                    assert bounds[0] >= previous[2]
+                previous = bounds
             n.send(editor, win32con.EM_SETSEL, 0, -1)
             assert n.send(editor, win32con.EM_GETSEL) != 0
             n.send(editor, win32con.EM_SETSEL, -1, -1)
             n.send(editor, win32con.EM_SCROLLCARET)
             left, top = win32gui.ClientToScreen(doc, (0, 0))
             _, _, right, bottom = win32gui.GetClientRect(doc)
-            for control in [source, selector, editor]:
+            for control in [source, selector, editor, *buttons]:
                 x1, y1, x2, y2 = n.rectangle(control)
-                assert left <= x1 <= x2 <= left + right
-                assert top <= y1 <= y2 <= top + bottom
+                assert left <= x1 < x2 <= left + right
+                assert top <= y1 < y2 <= top + bottom
             counts.append(n.send(editor, win32con.EM_GETLINECOUNT))
         assert counts[1] > counts[0]
         assert counts[2] == counts[0]
-
-
-def test_document_buttons_are_visible_without_overlap_or_clipping(launch, settings):
-    app = launch([settings[1]])
-    app.query("CreateFileW")
-    doc = app.open_row()
-    n.wait(lambda: "CreateFileW(" in app.content(doc), "declaration", 45)
-    combo = app.architecture(doc)
-    with n.window_dpi_context(app.frame):
-        n.send(app.mdi, win32con.WM_MDIRESTORE, doc)
-        dpi = n.api(n.user, "GetDpiForWindow", n.w.UINT, n.w.HWND)(doc) if hasattr(n.user, "GetDpiForWindow") else 96
-        assert n.set_pos(doc, None, 0, 0, 850 * dpi // 96, 450 * dpi // 96, RESIZE_NO_MOVE)
-        previous = n.rectangle(combo)
-        client = n.rectangle(doc, client=True)
-        origin = win32gui.ClientToScreen(doc, (0, 0))
-        for control in (1206, 1211):
-            button = n.get_item(doc, control)
-            assert n.is_visible(button)
-            bounds = n.rectangle(button)
-            assert bounds[0] >= previous[2]
-            assert origin[0] <= bounds[0] < bounds[2] <= origin[0] + client[2]
-            assert origin[1] <= bounds[1] < bounds[3] <= origin[1] + client[3]
-            previous = bounds
 
 
 def test_constant_summary_pseudocode_and_information_copy(launch, settings):

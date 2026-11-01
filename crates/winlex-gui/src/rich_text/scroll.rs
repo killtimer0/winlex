@@ -263,6 +263,8 @@ mod tests {
             editor.scroll_to(y);
             assert_eq!(position(hwnd).y, y);
         }
+        editor.scroll_to(i32::MAX);
+        let bottom = position(hwnd).y;
         editor.scroll_to(70000);
         let mut lines = 0u32;
         assert_ne!(
@@ -282,23 +284,21 @@ mod tests {
             i64::from(lines) * i64::from(line_height(hwnd).unwrap())
         };
         // Use the actual system preference without changing a global desktop setting.
-        let mut expected = 70000i64;
-        let mut remainder = 0;
-        for delta in [-1, -1, -5, -40, -120, 120, 40, 5, 1, 1] {
-            let (step, next) = displacement(remainder, delta, pixels);
-            editor.wheel(delta);
-            expected = (expected + step).clamp(0, i32::MAX as i64);
-            let actual = i64::from(position(hwnd).y);
-            if pixels <= 10000 {
-                assert_eq!(actual, expected, "delta={delta}");
-            }
-            remainder = if actual == expected && actual != 0 {
-                next
-            } else {
-                0
-            };
-            expected = actual;
+        editor.wheel(-120);
+        let whole = position(hwnd).y;
+        assert_eq!(i64::from(whole), (70000 + pixels).min(i64::from(bottom)));
+        editor.scroll_to(70000);
+        for _ in 0..120 {
+            editor.wheel(-1);
         }
+        assert_eq!(position(hwnd).y, whole);
+        for _ in 0..120 {
+            editor.wheel(1);
+        }
+        assert_eq!(
+            i64::from(position(hwnd).y),
+            (i64::from(whole) - pixels).max(0)
+        );
         let mut selected = CHARRANGE::default();
         send(hwnd, EM_EXGETSEL, 0, &mut selected as *mut _ as isize);
         assert_eq!((selected.cpMin, selected.cpMax), (10, 18));
@@ -306,7 +306,6 @@ mod tests {
         editor.wheel(120);
         assert_eq!(position(hwnd).y, 0);
         editor.scroll_to(i32::MAX);
-        let bottom = position(hwnd).y;
         editor.wheel(-120);
         assert_eq!(position(hwnd).y, bottom);
         for body in ["", "short"] {

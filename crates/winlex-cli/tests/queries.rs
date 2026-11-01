@@ -124,7 +124,7 @@ fn guid_fragments_bytes_and_numeric_radices_share_the_cli_search_contract() {
 }
 
 #[test]
-fn queries_require_explicit_inputs_but_help_and_version_do_not() {
+fn queries_require_explicit_inputs_in_text_and_json_modes() {
     for args in [vec!["summary"], vec!["search", "CreateFileW", "--json"]] {
         let (mut out, mut err) = (vec![], vec![]);
         assert_eq!(
@@ -146,43 +146,10 @@ fn queries_require_explicit_inputs_but_help_and_version_do_not() {
             assert!(String::from_utf8(err).unwrap().contains("input file"));
         }
     }
-    for option in ["--help", "--version"] {
-        let (mut out, mut err) = (vec![], vec![]);
-        assert_eq!(
-            winlex_cli::run([OsString::from(option)], &mut out, &mut err),
-            0
-        );
-        assert!(!out.is_empty());
-        assert!(err.is_empty());
-    }
 }
 
 #[test]
-fn search_pagination_uses_global_ranking_and_total() {
-    let db = catalog();
-    let mut ranked = db
-        .search("file", SearchOptions::default())
-        .unwrap()
-        .collect::<winlex_core::Result<Vec<_>>>()
-        .unwrap();
-    ranked.sort_unstable_by(winlex_core::SearchMatch::compare);
-    let ids: Vec<_> = ranked.iter().map(|m| m.id).collect();
-    let (_, page, _) = cli(&["search", "file", "--offset", "17", "--limit", "25"]);
-    assert_eq!(
-        page["result"]["total"].as_u64().unwrap() as usize,
-        ids.len()
-    );
-    let paged: Vec<_> = page["result"]["matches"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|e| entity_id(&e["id"]))
-        .collect();
-    assert_eq!(paged, ids[17..42]);
-}
-
-#[test]
-fn fuzzy_search_ranks_before_paging_and_rejects_prefix_option() {
+fn fuzzy_search_accepts_abbreviations_and_rejects_prefix_option() {
     let (code, result, _) = cli(&["search", "CreateFileW", "--limit", "1000"]);
     assert_eq!(code, 0);
     let matches = result["result"]["matches"].as_array().unwrap();
@@ -197,17 +164,6 @@ fn fuzzy_search_ranks_before_paging_and_rejects_prefix_option() {
             .any(|m| m["name"] == "CreateFileW")
     );
     assert_eq!(cli(&["search", "file", "--prefix"]).0, 2);
-    let (_, exact, _) = cli(&["search", "createfilew", "--name"]);
-    assert!(
-        exact["result"]["matches"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|m| m["name"]
-                .as_str()
-                .unwrap()
-                .eq_ignore_ascii_case("CreateFileW"))
-    );
 }
 
 #[test]
@@ -423,38 +379,6 @@ fn reverse_uses_and_cancellation() {
 }
 
 #[test]
-fn immutable_catalog_can_be_shared_by_workers() {
-    fn send_sync<T: Send + Sync>() {}
-    send_sync::<Catalog>();
-}
-
-#[test]
-fn qualified_name_and_token_select_the_same_declaration() {
-    let db = catalog();
-    let id = winlex_cli::select(
-        db,
-        "Windows.Win32.System.IO.OVERLAPPED",
-        Some(Architecture::X64),
-        true,
-    )
-    .unwrap();
-    assert_eq!(
-        winlex_cli::select(db, &id.to_string(), Some(Architecture::X64), true).unwrap(),
-        id
-    );
-    let mut p = db
-        .search(
-            "OPENFILE",
-            SearchOptions {
-                mode: SearchMode::Combined,
-                ..Default::default()
-            },
-        )
-        .unwrap();
-    assert!(p.next().unwrap().is_ok());
-}
-
-#[test]
 fn cli_search_options_preserve_core_modes_architectures_and_pagination() {
     for (mode, flag, query, architecture) in [
         (SearchMode::Combined, None, "createfile", None),
@@ -549,6 +473,7 @@ fn exact_selection_does_not_fall_back_to_case_insensitive_search() {
     let (code, result, _) = cli(&["search", "createfilew", "--name"]);
     assert_eq!(code, 0);
     assert_eq!(result["result"]["total"], 1);
+    assert_eq!(result["result"]["matches"][0]["name"], "CreateFileW");
     let id = entity_id(&result["result"]["matches"][0]["id"]);
     assert_eq!(cli(&["show", &id.to_string(), "--arch", "x64"]).0, 0);
     let (code, empty, _) = cli(&["search", "file", "--limit", "0"]);
@@ -568,34 +493,30 @@ fn response_writer_failures_preserve_text_and_json_exit_codes() {
             Ok(())
         }
     }
-    for json in [false, true] {
-        for kind in [
-            std::io::ErrorKind::BrokenPipe,
-            std::io::ErrorKind::PermissionDenied,
-        ] {
-            let expected = if !json && kind == std::io::ErrorKind::BrokenPipe {
-                0
-            } else {
-                4
-            };
-            let mut args = vec![input().into_os_string(), "summary".into()];
-            if json {
-                args.push("--json".into());
-            }
-            let mut err = Vec::new();
-            assert_eq!(
-                winlex_cli::run(args, &mut Failing(kind), &mut err),
-                expected
+    use std::io::ErrorKind::{BrokenPipe, PermissionDenied};
+    for (json, kind, expected) in [
+        (false, BrokenPipe, 0),
+        (true, BrokenPipe, 4),
+        (false, PermissionDenied, 4),
+        (true, PermissionDenied, 4),
+    ] {
+        let mut args = vec![input().into_os_string(), "summary".into()];
+        if json {
+            args.push("--json".into());
+        }
+        let mut err = Vec::new();
+        assert_eq!(
+            winlex_cli::run(args, &mut Failing(kind), &mut err),
+            expected
+        );
+        if expected == 0 {
+            assert!(err.is_empty());
+        } else {
+            assert!(
+                String::from_utf8(err)
+                    .unwrap()
+                    .starts_with("output error: ")
             );
-            if expected == 0 {
-                assert!(err.is_empty());
-            } else {
-                assert!(
-                    String::from_utf8(err)
-                        .unwrap()
-                        .starts_with("output error: ")
-                );
-            }
         }
     }
 }

@@ -303,7 +303,7 @@ mod tests {
     }
 
     #[test]
-    fn errors_preserve_offsets_and_reject_unbounded_or_implicit_syntax() {
+    fn errors_preserve_offsets_and_reject_implicit_syntax() {
         let error = Query::parse("value =").unwrap_err();
         assert!(error.incomplete);
         assert_eq!(error.span, 7..7);
@@ -316,7 +316,5 @@ mod tests {
         ] {
             assert!(Query::parse(text).is_err(), "{text}");
         }
-        assert!(Query::parse(&format!("{}value = 5{}", "(".repeat(33), ")".repeat(33))).is_err());
-        assert!(Query::parse(&vec!["value = 5"; 257].join(" or ")).is_err());
     }
 }

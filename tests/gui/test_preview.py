@@ -1,4 +1,5 @@
 """Transient documents: single-click previews, explicit opens keep them."""
+import pytest
 import win32con
 
 from support import native as n
@@ -12,7 +13,8 @@ def body(app, doc):
     return n.get_item(doc, 1203)
 
 
-def test_single_click_replaces_preview_preserving_architecture_and_focus(launch, settings):
+@pytest.mark.parametrize("gesture", ["click", "space"])
+def test_preview_replacement_preserves_architecture_and_focus(launch, settings, gesture):
     app = launch([settings[1]])
     app.query("CreateFileW")
     name = title(app)
@@ -27,7 +29,13 @@ def test_single_click_replaces_preview_preserving_architecture_and_focus(launch,
     app.query("CloseHandle")
     name = title(app)
     app.focus(app.results)
-    second = app.preview_row()
+    if gesture == "click":
+        second = app.preview_row()
+    else:
+        app.select(0)
+        n.key_message(app.results, win32con.VK_SPACE)
+        n.wait(lambda: n.window_text(first) == name + " - x64", "space preview")
+        second = app.active_document()
     n.wait(lambda: app.focused() == app.results, "replacement keeps the list focus")
     assert second == first
     assert len(app.documents()) == 1
@@ -80,24 +88,6 @@ def test_preview_inherits_the_architecture_being_read(launch, profile, settings)
     n.wait(lambda: app.choice(preview) == "arm64", "preview inherits the current architecture")
     assert profile.get("PreferredArchitecture") == "x64"
     assert "x64" in n.window_text(doc)
-
-
-def test_space_previews_without_leaving_the_list(launch, settings):
-    app = launch([settings[1]])
-    app.query("CreateFileW")
-    doc = app.preview_row()
-    n.wait(lambda: "CreateFileW(" in app.content(doc), "declaration", 45)
-
-    app.query("CloseHandle")
-    name = title(app)
-    app.focus(app.results)
-    app.select(0)
-    n.key_message(app.results, win32con.VK_SPACE)
-    n.wait(lambda: n.window_text(doc) == name + " - x86", "space preview")
-    assert len(app.documents()) == 1
-    assert app.tab_labels()[0] == name + " - x86"
-    assert app.tab_descriptions()[0].startswith(("Preview · ", "预览 · "))
-    assert app.focused() == app.results
 
 
 def test_arrow_keys_only_move_the_selection(launch, settings):

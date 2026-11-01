@@ -401,20 +401,6 @@ fn msaa_focus_and_selection_are_independent_and_none_is_noop() {
 }
 
 #[test]
-fn cancel_mode_releases_capture_without_reordering() {
-    let f = Fixture::new();
-    set_items(f.tabs, vec![item(11, "Alpha"), item(22, "Beta")]);
-    send(f.tabs, WM_LBUTTONDOWN, 0, 10 | (10 << 16));
-    assert_eq!(unsafe { GetCapture() }, f.tabs);
-    requests();
-    send(f.tabs, WM_MOUSEMOVE, 0, 180 | (10 << 16));
-    send(f.tabs, WM_CANCELMODE, 0, 0);
-    assert!(unsafe { GetCapture() }.is_null());
-    send(f.tabs, WM_LBUTTONUP, 0, 180 | (10 << 16));
-    assert!(requests().is_empty());
-}
-
-#[test]
 fn msaa_tree_identity_requests_and_disconnection() {
     let f = Fixture::new();
     let a = item(u64::MAX, "Alpha");

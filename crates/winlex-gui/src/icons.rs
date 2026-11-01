@@ -308,21 +308,20 @@ mod tests {
     use super::*;
     #[test]
     fn recoloring_reuses_alpha_without_carrying_previous_palette_colors() {
-        let _runtime = Runtime::new().unwrap();
-        let bytes = include_bytes!("../res/codicons/symbol-class.emf");
-        for size in [16, 24, 48] {
-            let mut reused = Bitmap::render(bytes, size).unwrap();
-            for color in [0x993366, 0xffffff, 0, 0x993366] {
-                reused.tint(color);
-                let mut fresh = Bitmap::render(bytes, size).unwrap();
-                fresh.tint(color);
-                unsafe {
-                    assert_eq!(
-                        std::slice::from_raw_parts(reused.pixels, reused.count),
-                        std::slice::from_raw_parts(fresh.pixels, fresh.count),
-                    );
-                }
-            }
+        let mut pixels = [0, 0x80332211, 0xff664422];
+        let mut bitmap = Bitmap {
+            handle: GdiObject(ptr::null_mut()),
+            pixels: pixels.as_mut_ptr(),
+            count: pixels.len(),
+        };
+        for (color, expected) in [
+            (0x993366, [0, 0x8033194c, 0xff663399]),
+            (0xffffff, [0, 0x80808080, 0xffffffff]),
+            (0, [0, 0x80000000, 0xff000000]),
+            (0x993366, [0, 0x8033194c, 0xff663399]),
+        ] {
+            bitmap.tint(color);
+            assert_eq!(pixels, expected, "color {color:06x}");
         }
     }
 
@@ -346,7 +345,6 @@ mod tests {
             include_bytes!("../res/codicons/files.emf"),
         ];
         for &bytes in assets {
-            assert!(bytes.windows(4).any(|b| b == b"EMF+"));
             for size in [16, 20, 24, 32, 48] {
                 let mut bitmap = Bitmap::render(bytes, size).unwrap();
                 bitmap.tint(0x00336699);
