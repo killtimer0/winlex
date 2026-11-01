@@ -48,8 +48,40 @@ Missing fields do not match a predicate; NOT also includes entries missing that 
 GUID bytes: 239,254 (decimal), FF 0A (hex), or 0xBC,0xAB (explicit hex).
 "#;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Command {
+    Summary,
+    Search,
+    Show,
+    Layout,
+    Vtable,
+    References,
+}
+impl Command {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Summary => "summary",
+            Self::Search => "search",
+            Self::Show => "show",
+            Self::Layout => "layout",
+            Self::Vtable => "vtable",
+            Self::References => "references",
+        }
+    }
+    fn parse(value: &str) -> Option<Self> {
+        Some(match value {
+            "summary" => Self::Summary,
+            "search" => Self::Search,
+            "show" => Self::Show,
+            "layout" => Self::Layout,
+            "vtable" => Self::Vtable,
+            "references" => Self::References,
+            _ => return None,
+        })
+    }
+}
 struct Options {
-    command: String,
+    command: Command,
     query: Option<String>,
     paths: Vec<PathBuf>,
     source: Option<String>,
@@ -111,17 +143,7 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
                 });
             }
             _ if a.starts_with("--") => return Err(format!("unknown option {a}")),
-            _ if positional.is_empty()
-                && ![
-                    "summary",
-                    "search",
-                    "show",
-                    "layout",
-                    "vtable",
-                    "references",
-                ]
-                .contains(&a) =>
-            {
+            _ if positional.is_empty() && Command::parse(a).is_none() => {
                 paths.push(PathBuf::from(arg))
             }
             _ => positional.push(text(arg)?),
@@ -130,23 +152,28 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
     if limit > 1000 {
         return Err("limit must be <= 1000".into());
     }
-    let command = positional.first().ok_or("missing command")?.clone();
-    let count = if command == "summary" || expression.is_some() {
+    let name = positional.first().ok_or("missing command")?;
+    let command = Command::parse(name).ok_or("missing command")?;
+    let count = if command == Command::Summary || expression.is_some() {
         1
     } else {
         2
     };
     if positional.len() != count {
-        return Err(format!("{command} expects {} query argument(s)", count - 1));
+        return Err(format!("{name} expects {} query argument(s)", count - 1));
     }
-    if mode.is_some() && command != "search" {
+    if mode.is_some() && command != Command::Search {
         return Err("--name/--value/--guid/--where apply only to search".into());
     }
-    if ["layout", "vtable", "references"].contains(&command.as_str()) && arch.is_none() {
-        return Err(format!("{command} requires --arch"));
+    if matches!(
+        command,
+        Command::Layout | Command::Vtable | Command::References
+    ) && arch.is_none()
+    {
+        return Err(format!("{name} requires --arch"));
     }
     if source.is_some()
-        && (command == "summary" || positional.get(1).is_some_and(|q| q.contains("::")))
+        && (command == Command::Summary || positional.get(1).is_some_and(|q| q.contains("::")))
     {
         return Err(
             "--source applies to queries; do not combine it with SOURCE:: selectors".into(),
@@ -214,9 +241,9 @@ pub fn run(
         .as_ref()
         .map_or_else(|| q.to_owned(), |s| format!("{s}::{q}"));
     let result: winlex_core::Result<Query> = (|| {
-        Ok(match o.command.as_str() {
-            "summary" => Query::Summary,
-            "search" => {
+        Ok(match o.command {
+            Command::Summary => Query::Summary,
+            Command::Search => {
                 let options = SearchOptions {
                     source: o
                         .source
@@ -233,21 +260,20 @@ pub fn run(
                 let result = page(matches.into_iter().map(Ok), o.offset, o.limit)?;
                 Query::Matches(result)
             }
-            "show" => Query::Show(select(&db, &selector, o.arch, false)?),
-            "layout" => {
+            Command::Show => Query::Show(select(&db, &selector, o.arch, false)?),
+            Command::Layout => {
                 Query::Layout(db.layout(select(&db, &selector, o.arch, true)?, o.arch.unwrap())?)
             }
-            "vtable" => {
+            Command::Vtable => {
                 Query::Vtable(db.vtable(select(&db, &selector, o.arch, true)?, o.arch.unwrap())?)
             }
-            "references" => {
+            Command::References => {
                 let target = select(&db, &selector, o.arch, true)?;
                 let arch = o.arch.unwrap();
                 let mut results = db.references(target, arch, None)?;
                 let page = page(results.by_ref(), o.offset, o.limit)?;
                 Query::References(target, page, results.unresolved_type_uses())
             }
-            _ => unreachable!(),
         })
     })();
     let result = match result {
@@ -273,7 +299,7 @@ pub fn run(
             "schema": "winlex-cli-7",
             "ok": true,
             "sources": db.sources(),
-            "command": o.command,
+            "command": o.command.as_str(),
             "result": result,
         });
         serde_json::to_writer_pretty(&mut *out, &response)

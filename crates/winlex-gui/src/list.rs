@@ -238,13 +238,15 @@ impl List {
         open: Option<fn(isize, bool)>,
         version: WindowsVersion,
     ) -> anyhow::Result<Self> {
-        let hwnd = child(
-            frame,
-            w!("SysListView32"),
-            &[0],
-            WS_TABSTOP | LVS_REPORT | LVS_OWNERDATA | LVS_SINGLESEL | LVS_NOCOLUMNHEADER,
-            id,
-        )?;
+        let hwnd = unsafe {
+            child(
+                frame,
+                w!("SysListView32"),
+                &[0],
+                WS_TABSTOP | LVS_REPORT | LVS_OWNERDATA | LVS_SINGLESEL | LVS_NOCOLUMNHEADER,
+                id,
+            )
+        }?;
         unsafe {
             SetWindowTheme(hwnd, w!("Explorer"), ptr::null());
         }

@@ -65,6 +65,7 @@ struct State {
     hwnd: HWND,
     items: Vec<Tab>,
     selected: Option<u64>,
+    focused: Option<u64>,
     font: HFONT,
     italic_font: ItalicFont,
     unit: i32,
@@ -154,13 +155,15 @@ pub fn create(parent: HWND, id: u16, name: String, select_label: String) -> anyh
             return Err(error("Register tabs"));
         }
     }
-    let hwnd = child(
-        parent,
-        CLASS,
-        &wide(&name),
-        WS_TABSTOP | WS_CLIPSIBLINGS,
-        id,
-    )?;
+    let hwnd = unsafe {
+        child(
+            parent,
+            CLASS,
+            &wide(&name),
+            WS_TABSTOP | WS_CLIPSIBLINGS,
+            id,
+        )
+    }?;
     if let Some(s) = state(hwnd) {
         let mut s = s.borrow_mut();
         s.name = name;
@@ -210,6 +213,11 @@ pub fn set_items(hwnd: HWND, items: Vec<Item>) {
         if !s.items.iter().any(|i| Some(i.id) == s.selected) {
             s.selected = None;
         }
+        if s.focused
+            .is_some_and(|id| !s.items.iter().any(|i| i.id == id))
+        {
+            s.focused = s.selected;
+        }
         (old, added, renamed, described, reordered)
     };
     layout(&s, true);
@@ -240,6 +248,9 @@ pub fn select(hwnd: HWND, id: Option<u64>) {
         let mut s = s.borrow_mut();
         let old = s.selected;
         s.selected = id;
+        if old != id {
+            s.focused = id;
+        }
         old
     };
     layout(&s, true);
@@ -272,6 +283,21 @@ fn event(hwnd: HWND, event: u32, id: Option<u64>) {
         None => 0,
     };
     event_child(hwnd, event, child);
+}
+fn focus_item(shared: &Rc<RefCell<State>>, id: Option<u64>) {
+    let (hwnd, changed) = {
+        let mut s = shared.borrow_mut();
+        let changed = s.focused != id;
+        s.focused = id;
+        (s.hwnd, changed)
+    };
+    if changed && unsafe { GetFocus() } == hwnd {
+        event(hwnd, EVENT_OBJECT_FOCUS, id);
+    }
+    focus(hwnd);
+    unsafe {
+        InvalidateRect(hwnd, ptr::null(), 0);
+    }
 }
 fn event_child(hwnd: HWND, event: u32, child: i32) {
     unsafe {
@@ -467,7 +493,10 @@ fn paint(shared: &Rc<RefCell<State>>) {
             SelectObject(dc, s.item_font(item.italic));
             let title = &title[..title.len() - 1];
             draw_title(dc, title, text_rect, title_overhang(dc, title));
-            if selected && GetFocus() == s.hwnd {
+            if s.focused == Some(item.id)
+                && GetFocus() == s.hwnd
+                && send(s.hwnd, WM_QUERYUISTATE, 0, 0) & UISF_HIDEFOCUS as isize == 0
+            {
                 let mut r = *rect;
                 InflateRect(&mut r, -3, -4);
                 DrawFocusRect(dc, &r);
@@ -582,10 +611,15 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, w: usize, l: isize) 
                 InvalidateRect(hwnd, ptr::null(), 0);
                 return 0;
             }
+            WM_UPDATEUISTATE => {
+                let result = DefWindowProcW(hwnd, msg, w, l);
+                InvalidateRect(hwnd, ptr::null(), 0);
+                return result;
+            }
             WM_GETDLGCODE => return DLGC_WANTARROWS as isize,
             WM_SETFOCUS | WM_KILLFOCUS => {
                 InvalidateRect(hwnd, ptr::null(), 0);
-                let selected = shared.borrow().selected;
+                let selected = shared.borrow().focused;
                 if msg == WM_SETFOCUS {
                     event(hwnd, EVENT_OBJECT_FOCUS, selected);
                 }
@@ -650,7 +684,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, w: usize, l: isize) 
                     s.drag_origin_x = p.x;
                     s.dragging = false;
                 }
-                focus(hwnd);
+                focus_item(&shared, hit);
                 SetCapture(hwnd);
                 if let Some(hit) = hit {
                     request(hwnd, SELECT, hit, 0, p);
@@ -681,6 +715,9 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, w: usize, l: isize) 
                     s.pressed = None;
                     s.dragging = false;
                 }
+                if msg == WM_CANCELMODE && GetCapture() == hwnd {
+                    ReleaseCapture();
+                }
                 InvalidateRect(hwnd, ptr::null(), 0);
                 return 0;
             }
@@ -710,8 +747,8 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, w: usize, l: isize) 
                 let (id, point) = if l == -1 {
                     let s = shared.borrow();
                     (
-                        s.selected,
-                        s.selected
+                        s.focused,
+                        s.focused
                             .and_then(|id| s.rect(id))
                             .map(|r| POINT {
                                 x: r.left.max(0),
@@ -741,7 +778,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, w: usize, l: isize) 
                     let index = s
                         .items
                         .iter()
-                        .position(|i| Some(i.id) == s.selected)
+                        .position(|i| Some(i.id) == s.focused)
                         .unwrap_or(0);
                     let next = match w as u16 {
                         VK_LEFT => index.saturating_sub(1),
@@ -750,7 +787,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, w: usize, l: isize) 
                         VK_END => s.items.len().saturating_sub(1),
                         _ => index,
                     };
-                    (s.items.get(next).map(|i| i.id), s.selected, next)
+                    (s.items.get(next).map(|i| i.id), s.focused, next)
                 };
                 if matches!(w as u16, VK_LEFT | VK_RIGHT | VK_HOME | VK_END) {
                     if GetKeyState(VK_CONTROL as i32) < 0 && GetKeyState(VK_SHIFT as i32) < 0 {

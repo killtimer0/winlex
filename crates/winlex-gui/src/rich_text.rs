@@ -132,14 +132,20 @@ fn copy_text(hwnd: HWND, value: &str) -> anyhow::Result<()> {
 pub fn create(parent: HWND, id: u16) -> anyhow::Result<HWND> {
     // Keep the module loaded for the lifetime of every control.
     static LOADED: OnceLock<Result<(), u32>> = OnceLock::new();
-    load_module(&LOADED, w!("riched20.dll")).context("Load RichEdit")?;
-    let hwnd = child(
-        parent,
-        w!("RichEdit20W"),
-        &[0],
-        WS_TABSTOP | WS_VSCROLL | ES_MULTILINE as u32 | ES_READONLY as u32 | ES_AUTOVSCROLL as u32,
-        id,
-    )?;
+    load_module(&LOADED, "riched20.dll").context("Load RichEdit")?;
+    let hwnd = unsafe {
+        child(
+            parent,
+            w!("RichEdit20W"),
+            &[0],
+            WS_TABSTOP
+                | WS_VSCROLL
+                | ES_MULTILINE as u32
+                | ES_READONLY as u32
+                | ES_AUTOVSCROLL as u32,
+            id,
+        )
+    }?;
     send(hwnd, EM_SETLIMITTEXT, 0x7ffffffe, 0);
     send(
         hwnd,
@@ -150,10 +156,31 @@ pub fn create(parent: HWND, id: u16) -> anyhow::Result<HWND> {
     Ok(hwnd)
 }
 
-fn load_module(cache: &OnceLock<Result<(), u32>>, name: *const u16) -> std::io::Result<()> {
+fn load_module(cache: &OnceLock<Result<(), u32>>, name: &str) -> std::io::Result<()> {
     cache
         .get_or_init(|| {
-            if unsafe { LoadLibraryW(name) }.is_null() {
+            use std::{
+                ffi::OsString,
+                os::windows::ffi::{OsStrExt, OsStringExt},
+                path::PathBuf,
+            };
+            use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
+            let mut directory = vec![0u16; 260];
+            loop {
+                let len =
+                    unsafe { GetSystemDirectoryW(directory.as_mut_ptr(), directory.len() as u32) };
+                if len == 0 {
+                    return Err(unsafe { GetLastError() });
+                }
+                if (len as usize) < directory.len() {
+                    directory.truncate(len as usize);
+                    break;
+                }
+                directory.resize(len as usize + 1, 0);
+            }
+            let path = PathBuf::from(OsString::from_wide(&directory)).join(name);
+            let path: Vec<_> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+            if unsafe { LoadLibraryW(path.as_ptr()) }.is_null() {
                 Err(unsafe { GetLastError() })
             } else {
                 Ok(())
@@ -702,13 +729,13 @@ mod tests {
     fn cached_module_failure_preserves_original_error_code() {
         use super::*;
         let cache = OnceLock::new();
-        let failure = load_module(&cache, w!("Winlex.Test.Missing.RichEdit.dll"))
+        let failure = load_module(&cache, "Winlex.Test.Missing.RichEdit.dll")
             .context("Load RichEdit")
             .unwrap_err();
         unsafe {
             SetLastError(ERROR_ACCESS_DENIED);
         }
-        let cached = load_module(&cache, w!("Winlex.Test.Missing.RichEdit.dll"))
+        let cached = load_module(&cache, "Winlex.Test.Missing.RichEdit.dll")
             .context("Load RichEdit")
             .unwrap_err();
         for error in [failure, cached] {

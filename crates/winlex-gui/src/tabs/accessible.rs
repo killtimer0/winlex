@@ -9,6 +9,8 @@ use windows::{
     },
     core::*,
 };
+mod abi;
+use abi::Msaa;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) enum Node {
@@ -16,7 +18,7 @@ pub(super) enum Node {
     Tab(u64),
 }
 
-#[implement(IAccessible, IEnumVARIANT)]
+#[implement(Msaa, IEnumVARIANT)]
 struct Accessible {
     state: Weak<RefCell<State>>,
     node: Node,
@@ -26,12 +28,13 @@ fn object(s: &Rc<RefCell<State>>, node: Node) -> IAccessible {
     if let Some(Some(value)) = s.borrow_mut().object_slot(node) {
         return value.clone();
     }
-    let value: IAccessible = Accessible {
+    let value: Msaa = Accessible {
         state: Rc::downgrade(s),
         node,
         cursor: Cell::new(0),
     }
     .into();
+    let value: IAccessible = value.cast().expect("MSAA interface identity");
     if let Some(slot) = s.borrow_mut().object_slot(node) {
         *slot = Some(value.clone());
     }
@@ -212,7 +215,7 @@ impl IAccessible_Impl for Accessible_Impl {
         match node {
             Node::Root => {
                 flags |= STATE_SYSTEM_FOCUSABLE;
-                if unsafe { GetFocus() } == s.hwnd && s.selected.is_none() {
+                if unsafe { GetFocus() } == s.hwnd && s.focused.is_none() {
                     flags |= STATE_SYSTEM_FOCUSED;
                 }
             }
@@ -220,9 +223,9 @@ impl IAccessible_Impl for Accessible_Impl {
                 flags |= STATE_SYSTEM_FOCUSABLE | STATE_SYSTEM_SELECTABLE;
                 if s.selected == Some(id) {
                     flags |= STATE_SYSTEM_SELECTED;
-                    if unsafe { GetFocus() } == s.hwnd {
-                        flags |= STATE_SYSTEM_FOCUSED;
-                    }
+                }
+                if s.focused == Some(id) && unsafe { GetFocus() } == s.hwnd {
+                    flags |= STATE_SYSTEM_FOCUSED;
                 }
                 if let Some(r) = s.rect(id)
                     && (r.left < 0 || r.right > client(s.hwnd).right)
@@ -237,13 +240,8 @@ impl IAccessible_Impl for Accessible_Impl {
         self.resolve(child)?;
         Err(S_FALSE.into())
     }
-    fn get_accHelpTopic(&self, file: *mut BSTR, child: &VARIANT) -> Result<i32> {
+    fn get_accHelpTopic(&self, _file: *mut BSTR, child: &VARIANT) -> Result<i32> {
         self.resolve(child)?;
-        if !file.is_null() {
-            unsafe {
-                file.write(BSTR::new());
-            }
-        }
         Err(S_FALSE.into())
     }
     fn get_accKeyboardShortcut(&self, child: &VARIANT) -> Result<BSTR> {
@@ -254,7 +252,7 @@ impl IAccessible_Impl for Accessible_Impl {
         let s = self.live()?;
         let (focused, id) = {
             let s = s.borrow();
-            (unsafe { GetFocus() } == s.hwnd, s.selected)
+            (unsafe { GetFocus() } == s.hwnd, s.focused)
         };
         if !focused {
             return Ok(VARIANT::new());
@@ -281,18 +279,24 @@ impl IAccessible_Impl for Accessible_Impl {
         }
     }
     fn accSelect(&self, flags: i32, child: &VARIANT) -> Result<()> {
-        if flags == 0 || flags & !((SELFLAG_TAKEFOCUS | SELFLAG_TAKESELECTION) as i32) != 0 {
+        if flags & !((SELFLAG_TAKEFOCUS | SELFLAG_TAKESELECTION) as i32) != 0 {
             return Err(E_INVALIDARG.into());
         }
         let node = self.resolve(child)?;
-        let hwnd = self.live()?.borrow().hwnd;
-        if let Node::Tab(id) = node {
+        let shared = self.live()?;
+        let hwnd = shared.borrow().hwnd;
+        if flags & SELFLAG_TAKESELECTION as i32 != 0 {
+            let Node::Tab(id) = node else {
+                return Err(E_INVALIDARG.into());
+            };
             request(hwnd, SELECT, id, 0, POINT { x: 0, y: 0 });
-        } else if flags & SELFLAG_TAKESELECTION as i32 != 0 {
-            return Err(E_INVALIDARG.into());
         }
         if flags & SELFLAG_TAKEFOCUS as i32 != 0 {
-            focus(hwnd);
+            let id = match node {
+                Node::Root => None,
+                Node::Tab(id) => Some(id),
+            };
+            focus_item(&shared, id);
         }
         Ok(())
     }

@@ -69,18 +69,20 @@ pub(super) fn focus() {
     }
 }
 pub(super) fn create(frame: HWND) -> anyhow::Result<()> {
-    let toolbar = child(
-        frame,
-        w!("ToolbarWindow32"),
-        &[0],
-        WS_TABSTOP
-            | TBSTYLE_FLAT
-            | TBSTYLE_TOOLTIPS
-            | TBSTYLE_WRAPABLE
-            | (CCS_NORESIZE | CCS_NOPARENTALIGN | CCS_NODIVIDER) as u32,
-        PANEL_TOOLBAR,
-    )?;
-    let splitter = child(frame, w!("Winlex.Splitter"), &[0], 0, 0)?;
+    let toolbar = unsafe {
+        child(
+            frame,
+            w!("ToolbarWindow32"),
+            &[0],
+            WS_TABSTOP
+                | TBSTYLE_FLAT
+                | TBSTYLE_TOOLTIPS
+                | TBSTYLE_WRAPABLE
+                | (CCS_NORESIZE | CCS_NOPARENTALIGN | CCS_NODIVIDER) as u32,
+            PANEL_TOOLBAR,
+        )
+    }?;
+    let splitter = unsafe { child(frame, w!("Winlex.Splitter"), &[0], 0, 0) }?;
     write(|a| {
         a.sidebar.toolbar = toolbar;
         a.sidebar.splitter = splitter;

@@ -38,16 +38,20 @@ pub fn high_contrast() -> bool {
     }
 }
 
-pub fn child(
+/// # Safety
+/// `class` must point to a terminated UTF-16 class name or a valid class atom.
+pub unsafe fn child(
     parent: HWND,
     class: *const u16,
     text: &[u16],
     style: u32,
     id: u16,
 ) -> anyhow::Result<HWND> {
-    child_ex(parent, class, text, style, 0, id)
+    unsafe { child_ex(parent, class, text, style, 0, id) }
 }
-pub fn child_ex(
+/// # Safety
+/// `class` must point to a terminated UTF-16 class name or a valid class atom.
+pub unsafe fn child_ex(
     parent: HWND,
     class: *const u16,
     text: &[u16],
@@ -55,6 +59,7 @@ pub fn child_ex(
     ex_style: u32,
     id: u16,
 ) -> anyhow::Result<HWND> {
+    anyhow::ensure!(text.contains(&0), "Child text must be NUL-terminated");
     let hwnd = unsafe {
         CreateWindowExW(
             ex_style,
@@ -261,6 +266,7 @@ impl Popup {
         Ok(Self(menu))
     }
     pub fn item(&self, id: u16, label: &[u16], enabled: bool) -> anyhow::Result<()> {
+        anyhow::ensure!(label.contains(&0), "Menu label must be NUL-terminated");
         self.append(
             MF_STRING | if enabled { 0 } else { MF_GRAYED },
             id,
@@ -553,13 +559,15 @@ mod tests {
 
     #[test]
     fn child_creation_preserves_error_before_later_native_calls() {
-        let failure = child(
-            unsafe { GetDesktopWindow() },
-            w!("Winlex.Test.UnregisteredControl"),
-            &[0],
-            0,
-            123,
-        )
+        let failure = unsafe {
+            child(
+                GetDesktopWindow(),
+                w!("Winlex.Test.UnregisteredControl"),
+                &[0],
+                0,
+                123,
+            )
+        }
         .unwrap_err();
         unsafe {
             SetLastError(ERROR_ACCESS_DENIED);
@@ -572,5 +580,16 @@ mod tests {
             Some(ERROR_CANNOT_FIND_WND_CLASS as i32)
         );
         assert!(format!("{failure:#}").starts_with("Create child control 123: "));
+    }
+}
+#[test]
+fn native_text_inputs_reject_unterminated_slices() {
+    let parent = unsafe { GetDesktopWindow() };
+    for text in [&[][..], &[b'x' as u16][..]] {
+        assert!(unsafe { child(parent, w!("STATIC"), text, 0, 1) }.is_err());
+        assert!(unsafe { child_ex(parent, w!("STATIC"), text, 0, 0, 1) }.is_err());
+        let menu = Popup::new().unwrap();
+        assert!(menu.item(1, text, true).is_err());
+        menu.item(1, &[0], true).unwrap();
     }
 }

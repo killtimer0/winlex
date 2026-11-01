@@ -88,7 +88,7 @@ pub(super) struct Info {
 impl Info {
     pub fn create(&mut self, owner: HWND, editor: HWND) -> anyhow::Result<()> {
         self.editor = editor;
-        let edit = |id| {
+        let edit = |id| unsafe {
             child(
                 owner,
                 w!("EDIT"),
@@ -98,45 +98,55 @@ impl Info {
             )
         };
         self.name = edit(DOCUMENT_NAME)?;
-        self.kind = child(owner, w!("STATIC"), &[0], 0, DOCUMENT_KIND)?;
+        self.kind = unsafe { child(owner, w!("STATIC"), &[0], 0, DOCUMENT_KIND) }?;
         self.scope = edit(DOCUMENT_SCOPE)?;
-        self.source_label = child(
-            owner,
-            w!("STATIC"),
-            resources::wide_text(IDS_DOCUMENT_SOURCE),
-            0,
-            0,
-        )?;
+        self.source_label = unsafe {
+            child(
+                owner,
+                w!("STATIC"),
+                resources::wide_text(IDS_DOCUMENT_SOURCE),
+                0,
+                0,
+            )
+        }?;
         self.source = edit(DOCUMENT_SOURCE)?;
-        self.architecture_label = child(
-            owner,
-            w!("STATIC"),
-            resources::wide_text(IDS_ARCHITECTURE),
-            0,
-            0,
-        )?;
-        self.architecture = child(
-            owner,
-            w!("COMBOBOX"),
-            &[0],
-            WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST as u32,
-            SELECT_ARCH,
-        )?;
-        self.more = child(
-            owner,
-            w!("BUTTON"),
-            resources::wide_text(IDS_DOCUMENT_MORE),
-            WS_TABSTOP | BS_PUSHBUTTON as u32,
-            DOCUMENT_MORE,
-        )?;
-        self.line = child(owner, w!("STATIC"), &[0], SS_ETCHEDHORZ, 0)?;
-        self.online = child(
-            owner,
-            w!("BUTTON"),
-            resources::wide_text(IDS_ONLINE_SEARCH),
-            WS_TABSTOP | BS_PUSHBUTTON as u32,
-            DOCUMENT_ONLINE,
-        )?;
+        self.architecture_label = unsafe {
+            child(
+                owner,
+                w!("STATIC"),
+                resources::wide_text(IDS_ARCHITECTURE),
+                0,
+                0,
+            )
+        }?;
+        self.architecture = unsafe {
+            child(
+                owner,
+                w!("COMBOBOX"),
+                &[0],
+                WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST as u32,
+                SELECT_ARCH,
+            )
+        }?;
+        self.more = unsafe {
+            child(
+                owner,
+                w!("BUTTON"),
+                resources::wide_text(IDS_DOCUMENT_MORE),
+                WS_TABSTOP | BS_PUSHBUTTON as u32,
+                DOCUMENT_MORE,
+            )
+        }?;
+        self.line = unsafe { child(owner, w!("STATIC"), &[0], SS_ETCHEDHORZ, 0) }?;
+        self.online = unsafe {
+            child(
+                owner,
+                w!("BUTTON"),
+                resources::wide_text(IDS_ONLINE_SEARCH),
+                WS_TABSTOP | BS_PUSHBUTTON as u32,
+                DOCUMENT_ONLINE,
+            )
+        }?;
         let services: IAccPropServices =
             unsafe { CoCreateInstance(&CLSID_AccPropServices, None, CLSCTX_INPROC_SERVER)? };
         self.accessibility.replace(Some(services.clone()));

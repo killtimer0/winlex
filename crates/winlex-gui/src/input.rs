@@ -7,7 +7,7 @@ use crate::{
 use anyhow::Context;
 use std::{ffi::OsString, os::windows::ffi::OsStringExt, path::PathBuf, ptr};
 use windows_sys::Win32::UI::Controls::Dialogs::*;
-pub struct Apartment;
+pub struct Apartment(std::marker::PhantomData<std::rc::Rc<()>>);
 impl Apartment {
     pub fn initialize() -> anyhow::Result<Self> {
         unsafe {
@@ -18,7 +18,7 @@ impl Apartment {
             .ok()
         }
         .context("Initialize COM")?;
-        Ok(Self)
+        Ok(Self(std::marker::PhantomData))
     }
 }
 impl Drop for Apartment {

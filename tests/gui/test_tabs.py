@@ -1,7 +1,10 @@
 """Content-independent tab input and MSAA exposed by the running application."""
+import ctypes as c
+from ctypes import wintypes as w
 import win32con
 from support import native as n
-from support.accessibility import client
+from support.accessibility import client, child_id, Variant
+from support.session import ThreadInfo
 
 
 def test_msaa_nested_clients_preserve_retained_objects(launch, settings):
@@ -65,3 +68,38 @@ def test_tabs_msaa_activation_close_and_reorder(launch, settings):
         n.wait(lambda: app.focused() == tabs, "close keeps tab focus")
         n.key_message(tabs, win32con.VK_RETURN)
         n.wait(lambda: app.focused() == n.get_item(first, 1203), "enter focuses content")
+
+
+def test_tabs_focus_only_selection_none_and_cancel_capture(launch, settings):
+    app = launch([settings[1]])
+    app.query("CreateFileW")
+    app.open_row()
+    app.query("CloseHandle")
+    active = app.open_row()
+    tabs = n.get_item(app.frame, 1104)
+    with client(tabs) as root, root.children() as pages:
+        assert pages[0].call(21, (c.c_long, Variant), 1, child_id()) == 0
+        assert app.active_document() == active, "TAKEFOCUS must not select"
+        assert pages[0].state & 4 and not pages[0].state & 2
+        assert pages[1].state & 2 and not pages[1].state & 4
+        assert root.call(21, (c.c_long, Variant), 0, child_id()) == 0
+        assert pages[0].state & 4 and app.active_document() == active
+        get_info = n.api(n.user, "GetGUIThreadInfo", w.BOOL, w.DWORD, c.POINTER(ThreadInfo))
+
+        def capture():
+            info = ThreadInfo()
+            info.size = c.sizeof(info)
+            assert get_info(n.get_pid(app.frame, None), c.byref(info))
+            return info.capture
+
+        origin = n.rectangle(tabs)
+        x, y, width, height = pages[0].location()
+        point = ((x - origin[0] + min(20, width // 2)) & 0xffff) | (
+            ((y - origin[1] + height // 2) & 0xffff) << 16)
+        names = app.tab_labels()
+        n.send(tabs, win32con.WM_LBUTTONDOWN, win32con.MK_LBUTTON, point)
+        assert capture() == tabs
+        n.send(tabs, win32con.WM_CANCELMODE)
+        assert not capture()
+        n.send(tabs, win32con.WM_LBUTTONUP, 0, point)
+        assert app.tab_labels() == names

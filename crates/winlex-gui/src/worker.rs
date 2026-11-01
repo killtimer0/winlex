@@ -2,6 +2,7 @@
 use anyhow::Context;
 use std::{
     collections::VecDeque,
+    os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
     sync::{
         Arc, Condvar, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -10,22 +11,15 @@ use std::{
     thread,
 };
 use windows_sys::Win32::{
-    Foundation::{CloseHandle, HANDLE},
+    Foundation::HANDLE,
     System::Threading::{CreateEventW, SetEvent},
 };
 
-struct ReadyEvent(usize);
+struct ReadyEvent(OwnedHandle);
 impl ReadyEvent {
     fn signal(&self) {
         unsafe {
-            SetEvent(self.0 as HANDLE);
-        }
-    }
-}
-impl Drop for ReadyEvent {
-    fn drop(&mut self) {
-        unsafe {
-            CloseHandle(self.0 as HANDLE);
+            SetEvent(self.0.as_raw_handle() as HANDLE);
         }
     }
 }
@@ -154,7 +148,7 @@ impl<J: Send + 'static, O: Send + 'static> Worker<J, O> {
         if handle.is_null() {
             return Err(crate::native::error("Create completion event"));
         }
-        let ready = Arc::new(ReadyEvent(handle as usize));
+        let ready = Arc::new(ReadyEvent(unsafe { OwnedHandle::from_raw_handle(handle) }));
         let results = Results {
             tx: Some(tx),
             ready: ready.clone(),
@@ -186,7 +180,7 @@ impl<J: Send + 'static, O: Send + 'static> Worker<J, O> {
         self.ready.signal();
     }
     pub fn event(&self) -> HANDLE {
-        self.ready.0 as HANDLE
+        self.ready.0.as_raw_handle() as HANDLE
     }
 }
 impl<J, O> Drop for Worker<J, O> {

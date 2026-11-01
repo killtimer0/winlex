@@ -93,24 +93,28 @@ pub(super) fn debounce(input: HWND) -> anyhow::Result<()> {
     Ok(())
 }
 pub(super) fn create(frame: HWND) -> anyhow::Result<([Rc<Panel>; 2], Rc<Search>)> {
-    let input = child_ex(
-        frame,
-        w!("EDIT"),
-        &[0],
-        WS_TABSTOP | ES_AUTOHSCROLL as u32,
-        WS_EX_CLIENTEDGE,
-        SEARCH,
-    )?;
+    let input = unsafe {
+        child_ex(
+            frame,
+            w!("EDIT"),
+            &[0],
+            WS_TABSTOP | ES_AUTOHSCROLL as u32,
+            WS_EX_CLIENTEDGE,
+            SEARCH,
+        )
+    }?;
     if unsafe { set_subclass(input, Some(edit_proc), 1, 0) } == 0 {
         anyhow::bail!("Subclass search input failed");
     }
-    let mode = child(
-        frame,
-        w!("COMBOBOX"),
-        &[0],
-        WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST as u32,
-        SEARCH_MODE,
-    )?;
+    let mode = unsafe {
+        child(
+            frame,
+            w!("COMBOBOX"),
+            &[0],
+            WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST as u32,
+            SEARCH_MODE,
+        )
+    }?;
     for &(label, _, _) in SEARCH_MODES {
         send(
             mode,
@@ -157,13 +161,15 @@ pub(super) fn create(frame: HWND) -> anyhow::Result<([Rc<Panel>; 2], Rc<Search>)
         (RELOAD_SOURCE, IDS_RELOAD),
         (REMOVE_SOURCE, IDS_UNLOAD),
     ] {
-        controls.push(child(
-            frame,
-            w!("BUTTON"),
-            resources::wide_text(label),
-            WS_TABSTOP,
-            id,
-        )?);
+        controls.push(unsafe {
+            child(
+                frame,
+                w!("BUTTON"),
+                resources::wide_text(label),
+                WS_TABSTOP,
+                id,
+            )
+        }?);
     }
     sources::update_actions();
     Ok(([search_panel, Rc::new(Panel { controls, list })], search))

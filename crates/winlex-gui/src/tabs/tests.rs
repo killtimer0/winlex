@@ -273,6 +273,157 @@ fn italic_titles_keep_overhang_without_painting_outside_their_bounds() {
 }
 
 #[test]
+fn focus_cue_changes_repaint_without_changing_accessible_focus() {
+    let f = Fixture::new();
+    unsafe {
+        SetWindowPos(
+            f.parent,
+            ptr::null_mut(),
+            -10000,
+            -10000,
+            0,
+            0,
+            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+        );
+        ShowWindow(f.parent, SW_SHOWNOACTIVATE);
+    }
+    set_items(f.tabs, vec![item(11, "Alpha")]);
+    select(f.tabs, Some(11));
+    focus(f.tabs);
+    let root = f.accessible();
+    for action in [UIS_SET, UIS_CLEAR] {
+        unsafe {
+            ValidateRect(f.tabs, ptr::null());
+        }
+        send(
+            f.tabs,
+            WM_UPDATEUISTATE,
+            action as usize | ((UISF_HIDEFOCUS as usize) << 16),
+            0,
+        );
+        assert_eq!(
+            send(f.tabs, WM_QUERYUISTATE, 0, 0) & UISF_HIDEFOCUS as isize != 0,
+            action == UIS_SET
+        );
+        assert_ne!(unsafe { GetUpdateRect(f.tabs, ptr::null_mut(), 0) }, 0);
+        let page: IAccessible = IDispatch::try_from(&unsafe { root.accFocus() }.unwrap())
+            .unwrap()
+            .cast()
+            .unwrap();
+        assert_eq!(
+            unsafe { page.get_accName(&0i32.into()) }
+                .unwrap()
+                .to_string(),
+            "Alpha"
+        );
+        assert!(requests().is_empty());
+    }
+}
+
+#[test]
+fn msaa_false_results_initialize_real_abi_outputs() {
+    use std::mem::MaybeUninit;
+    use windows::Win32::Foundation::S_FALSE;
+    let f = Fixture::new();
+    let root = f.accessible();
+    let dispatch: IDispatch = root.cast().unwrap();
+    assert_eq!(
+        root.cast::<windows::core::IUnknown>().unwrap().as_raw(),
+        dispatch.cast::<windows::core::IUnknown>().unwrap().as_raw()
+    );
+    unsafe {
+        let table = root.vtable();
+        for method in [
+            table.get_accValue,
+            table.get_accHelp,
+            table.get_accKeyboardShortcut,
+            table.get_accDefaultAction,
+        ] {
+            let mut out = MaybeUninit::<BSTR>::uninit();
+            std::ptr::write_bytes(out.as_mut_ptr(), 0x55, 1);
+            assert_eq!(
+                method(root.as_raw(), MaybeUninit::new(0i32.into()), &mut out),
+                S_FALSE
+            );
+            assert!(out.as_ptr().cast::<*const u16>().read().is_null());
+            assert!(out.assume_init().is_empty());
+        }
+        let mut file = MaybeUninit::<BSTR>::uninit();
+        std::ptr::write_bytes(file.as_mut_ptr(), 0x55, 1);
+        let mut topic = 123;
+        assert_eq!(
+            (table.get_accHelpTopic)(
+                root.as_raw(),
+                &mut file,
+                MaybeUninit::new(0i32.into()),
+                &mut topic
+            ),
+            S_FALSE
+        );
+        assert!(file.as_ptr().cast::<*const u16>().read().is_null());
+        assert!(file.assume_init().is_empty());
+        assert_eq!(topic, 0);
+        let mut out = MaybeUninit::<VARIANT>::uninit();
+        std::ptr::write_bytes(out.as_mut_ptr(), 0x55, 1);
+        assert_eq!(
+            (table.accNavigate)(
+                root.as_raw(),
+                NAVDIR_NEXT as i32,
+                MaybeUninit::new(0i32.into()),
+                &mut out
+            ),
+            S_FALSE
+        );
+        assert!(out.assume_init().is_empty());
+    }
+}
+
+#[test]
+fn msaa_focus_and_selection_are_independent_and_none_is_noop() {
+    let f = Fixture::new();
+    set_items(f.tabs, vec![item(11, "Alpha"), item(22, "Beta")]);
+    select(f.tabs, Some(11));
+    let root = f.accessible();
+    let self_id = VARIANT::from(0i32);
+    unsafe {
+        let beta: IAccessible = root.get_accChild(&2i32.into()).unwrap().cast().unwrap();
+        beta.accSelect(SELFLAG_NONE as i32, &self_id).unwrap();
+        assert!(requests().is_empty());
+        beta.accSelect(SELFLAG_TAKEFOCUS as i32, &self_id).unwrap();
+        assert!(
+            requests().is_empty(),
+            "focus alone must not activate a document"
+        );
+        let title = |value: VARIANT| {
+            let page: IAccessible = IDispatch::try_from(&value).unwrap().cast().unwrap();
+            page.get_accName(&self_id).unwrap().to_string()
+        };
+        assert_eq!(title(root.accSelection().unwrap()), "Alpha");
+        assert_eq!(title(root.accFocus().unwrap()), "Beta");
+        let flags = i32::try_from(&beta.get_accState(&self_id).unwrap()).unwrap() as u32;
+        assert_ne!(flags & STATE_SYSTEM_FOCUSED, 0);
+        assert_eq!(flags & STATE_SYSTEM_SELECTED, 0);
+        beta.accSelect(SELFLAG_TAKESELECTION as i32, &self_id)
+            .unwrap();
+        assert_eq!(requests(), vec![(SELECT, 22, 0)]);
+    }
+}
+
+#[test]
+fn cancel_mode_releases_capture_without_reordering() {
+    let f = Fixture::new();
+    set_items(f.tabs, vec![item(11, "Alpha"), item(22, "Beta")]);
+    send(f.tabs, WM_LBUTTONDOWN, 0, 10 | (10 << 16));
+    assert_eq!(unsafe { GetCapture() }, f.tabs);
+    requests();
+    send(f.tabs, WM_MOUSEMOVE, 0, 180 | (10 << 16));
+    send(f.tabs, WM_CANCELMODE, 0, 0);
+    assert!(unsafe { GetCapture() }.is_null());
+    send(f.tabs, WM_LBUTTONUP, 0, 180 | (10 << 16));
+    assert!(requests().is_empty());
+}
+
+#[test]
 fn msaa_tree_identity_requests_and_disconnection() {
     let f = Fixture::new();
     let a = item(u64::MAX, "Alpha");

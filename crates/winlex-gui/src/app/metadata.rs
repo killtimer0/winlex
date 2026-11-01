@@ -251,13 +251,15 @@ impl MetadataView {
     pub(super) fn create(&mut self, hwnd: HWND) -> anyhow::Result<()> {
         self.hwnd = hwnd;
         self.editor = crate::rich_text::create(hwnd, DECLARATION)?;
-        self.header = child(
-            hwnd,
-            w!("STATIC"),
-            resources::wide_text(IDS_OLD_VERSION),
-            0,
-            DOCUMENT_HEADER,
-        )?;
+        self.header = unsafe {
+            child(
+                hwnd,
+                w!("STATIC"),
+                resources::wide_text(IDS_OLD_VERSION),
+                0,
+                DOCUMENT_HEADER,
+            )
+        }?;
         document::track_editor(hwnd, self.editor)?;
         show(self.header, false);
         self.info.create(hwnd, self.editor)?;
