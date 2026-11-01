@@ -1,6 +1,6 @@
 mod condition;
 mod guid;
-use condition::{Candidate, Condition, Hit, TextQuery};
+use condition::{Candidate, Condition, Hit, LiteralQuery, TextQuery};
 pub use condition::{EvidenceField, MatchEvidence};
 mod number;
 mod syntax;
@@ -115,118 +115,111 @@ impl MatchQuality {
     }
 }
 
-struct NameQuery {
-    text: String,
-    case_sensitive: bool,
+pub(super) struct NameQuery {
+    literal: LiteralQuery,
     field: MatchField,
     scope: bool,
-    fuzzy: Option<NameMatcher>,
+    fuzzy: Option<TextQuery>,
 }
 impl NameQuery {
     fn compile(text: &str, fuzzy: bool, case_sensitive: bool) -> Self {
         let scope = text.ends_with(['.', '+']);
         Self {
-            text: if case_sensitive {
-                text.to_owned()
-            } else {
-                text.to_lowercase()
-            },
-            case_sensitive,
+            literal: LiteralQuery::new(
+                text,
+                if scope {
+                    Operator::StartsWith
+                } else {
+                    Operator::Equal
+                },
+                case_sensitive,
+            ),
             field: MatchField::for_query(text),
             scope,
-            fuzzy: (fuzzy && !scope).then(|| NameMatcher::new(text, case_sensitive)),
+            fuzzy: (fuzzy && !scope).then(|| TextQuery::new(text, Operator::Fuzzy, case_sensitive)),
         }
     }
-    fn matches(&mut self, name: &str, full_name: &str) -> Option<MatchQuality> {
+    fn matches(&mut self, name: &str, full_name: &str) -> Option<Hit> {
         let text = self.field.text(name, full_name);
-        let normalized;
-        let comparable = if self.case_sensitive {
-            text
+        let field = if self.field == MatchField::Name {
+            EvidenceField::Name
         } else {
-            normalized = text.to_lowercase();
-            &normalized
+            EvidenceField::FullName
         };
-        if self.scope {
-            return (self.text.len() > 1 && comparable.starts_with(&self.text))
-                .then_some(MatchQuality::NameScope);
+        if let Some(mut hit) = self.literal.matches(text, field) {
+            if self.scope {
+                if self.literal.text.len() <= 1 {
+                    return None;
+                }
+                hit.quality = MatchQuality::NameScope;
+            }
+            return Some(hit);
         }
-        if comparable == self.text {
-            return Some(MatchQuality::NameExact(self.field));
-        }
-        self.fuzzy
-            .as_mut()?
-            .score(name, full_name)
-            .map(|(score, field)| MatchQuality::Fuzzy { score, field })
+        self.fuzzy.as_mut()?.matches(text, field)
     }
 }
 
 pub struct SearchQuery {
-    matching: Matching,
+    condition: Condition,
+    filter_quality: bool,
     context_needed: bool,
     value_needed: bool,
     guid_needed: bool,
-}
-enum Matching {
-    Simple {
-        name: Option<NameQuery>,
-        number: Option<number::NumberQuery>,
-        guid: Option<guid::GuidQuery>,
-        string: Option<TextQuery>,
-    },
-    Condition(Condition),
 }
 impl SearchQuery {
     pub fn compile(text: &str, mode: SearchMode, case_sensitive: bool) -> anyhow::Result<Self> {
         anyhow::ensure!(!text.is_empty(), "empty search query");
         anyhow::ensure!(text.len() <= syntax::MAX_QUERY_BYTES, "query is too long");
-        let (name, number, guid, string) = match mode {
-            SearchMode::Combined => (
-                Some(NameQuery::compile(text, true, case_sensitive)),
-                number::NumberQuery::compile(text).ok(),
-                guid::GuidQuery::compile(text)
-                    .ok()
-                    .filter(|guid| guid.digit_count() >= 4),
-                Some(TextQuery::new(text, Operator::Contains, case_sensitive)),
-            ),
+        let condition = match mode {
+            SearchMode::Combined => {
+                let mut terms = vec![Condition::Name(NameQuery::compile(
+                    text,
+                    true,
+                    case_sensitive,
+                ))];
+                if let Ok(number) = number::NumberQuery::compile(text) {
+                    terms.push(Condition::Number(number, Comparison::Equal));
+                }
+                terms.push(Condition::Text(
+                    EvidenceField::Value,
+                    TextQuery::new(text, Operator::Contains, case_sensitive),
+                ));
+                if let Ok(guid) = guid::GuidQuery::compile(text)
+                    && guid.digit_count() >= 4
+                {
+                    terms.push(Condition::Guid(guid));
+                }
+                Condition::Any(terms)
+            }
             SearchMode::Name => {
                 anyhow::ensure!(
                     text != "." && text != "+",
                     "name scope requires a parent name"
                 );
-                (
-                    Some(NameQuery::compile(text, false, case_sensitive)),
-                    None,
-                    None,
-                    None,
-                )
+                Condition::Name(NameQuery::compile(text, false, case_sensitive))
             }
-            SearchMode::Value => (None, Some(number::NumberQuery::compile(text)?), None, None),
-            SearchMode::Guid => (None, None, Some(guid::GuidQuery::compile(text)?), None),
+            SearchMode::Value => {
+                Condition::Number(number::NumberQuery::compile(text)?, Comparison::Equal)
+            }
+            SearchMode::Guid => Condition::Guid(guid::GuidQuery::compile(text)?),
             SearchMode::Condition => return Self::from_query(&Query::parse(text)?, case_sensitive),
         };
-        Ok(Self {
-            context_needed: name
-                .as_ref()
-                .is_some_and(|q| q.field == MatchField::FullName),
-            value_needed: number.is_some() || string.is_some(),
-            guid_needed: guid.is_some(),
-            matching: Matching::Simple {
-                name,
-                number,
-                guid,
-                string,
-            },
-        })
+        Ok(Self::new(condition, false))
     }
     pub fn from_query(query: &Query, case_sensitive: bool) -> anyhow::Result<Self> {
         let condition = Condition::compile(query, case_sensitive)?;
-        Ok(Self {
+        let filter_quality = !matches!(condition, Condition::Text(_, _));
+        Ok(Self::new(condition, filter_quality))
+    }
+    fn new(condition: Condition, filter_quality: bool) -> Self {
+        Self {
             context_needed: condition.needs(EvidenceField::FullName)
                 || condition.needs(EvidenceField::Namespace),
             value_needed: condition.needs(EvidenceField::Value),
             guid_needed: condition.needs(EvidenceField::Guid),
-            matching: Matching::Condition(condition),
-        })
+            condition,
+            filter_quality,
+        }
     }
     pub fn needs_full_name(&self) -> bool {
         self.context_needed
@@ -239,126 +232,25 @@ impl SearchQuery {
         source: usize,
         architecture: Option<Architecture>,
     ) -> Option<(MatchQuality, Vec<MatchEvidence>)> {
-        let value = if self.value_needed {
-            match row {
-                Declaration::Field(field) => field.constant().map(|v| v.value()),
-                _ => None,
-            }
-        } else {
-            None
+        let value = self.value_needed.then(|| row.constant_value()).flatten();
+        let guid = self.guid_needed.then(|| row.guid()).flatten();
+        let candidate = Candidate {
+            row,
+            full_name,
+            namespace,
+            source,
+            architecture,
+            value,
+            guid,
         };
-        let guid = if self.guid_needed {
-            match row {
-                Declaration::Type(row) => crate::guid(*row),
-                Declaration::Field(row) => crate::guid(*row),
-                _ => None,
-            }
-        } else {
-            None
-        };
-        let (name, number, guid_query, string) = match &mut self.matching {
-            Matching::Simple {
-                name,
-                number,
-                guid,
-                string,
-            } => (name, number, guid, string),
-            Matching::Condition(condition) => {
-                let string = value.as_ref().and_then(condition::string_value);
-                let candidate = Candidate {
-                    row,
-                    full_name,
-                    namespace,
-                    source,
-                    architecture,
-                    value,
-                    string,
-                    guid,
-                };
-                return condition.matches(&candidate).map(|mut hit| {
-                    if !matches!(condition, Condition::Text(_, _)) {
-                        hit.quality = MatchQuality::Filter;
-                    }
-                    (hit.quality, hit.evidence)
-                });
-            }
-        };
-        let quality = name
-            .as_mut()
-            .and_then(|query| query.matches(row.name(), full_name));
-        let mut hit = quality.map(|quality| {
-            let query = name.as_mut().unwrap();
-            let text = query.field.text(row.name(), full_name);
-            let mut indices = Vec::new();
-            match quality {
-                MatchQuality::Fuzzy { .. } => {
-                    query.fuzzy.as_mut().unwrap().indices(text, &mut indices);
-                }
-                MatchQuality::NameScope => {
-                    let mut bytes = 0;
-                    for (i, ch) in text.chars().enumerate() {
-                        if bytes >= query.text.len() {
-                            break;
-                        }
-                        indices.push(i as u32);
-                        bytes += if query.case_sensitive {
-                            ch.len_utf8()
-                        } else {
-                            ch.to_lowercase().map(char::len_utf8).sum()
-                        };
-                    }
-                }
-                _ => indices.extend(0..text.chars().count() as u32),
-            }
-            Hit {
-                quality,
-                evidence: vec![MatchEvidence {
-                    field: if query.field == MatchField::Name {
-                        EvidenceField::Name
-                    } else {
-                        EvidenceField::FullName
-                    },
-                    indices: Some(indices),
-                }],
-            }
-        });
-        let mut accept = |found: Option<Hit>| {
-            if let Some(found) = found {
-                hit.get_or_insert_with(Hit::filter).merge(found);
-            }
-        };
-        if let Some(query) = number
-            && let Some(value) = &value
-        {
-            accept(
-                query
-                    .matches(value, architecture, row.architecture_mask())
-                    .map(|quality| Hit {
-                        quality,
-                        evidence: vec![MatchEvidence {
-                            field: EvidenceField::Value,
-                            indices: None,
-                        }],
-                    }),
-            );
-        }
-        if let Some(query) = string
-            && let Some(value) = value.as_ref().and_then(condition::string_value)
-        {
-            accept(query.matches(&value, EvidenceField::Value));
-        }
-        if let Some(query) = guid_query
-            && let Some(value) = &guid
-        {
-            accept(query.matches(value).map(|quality| Hit {
-                quality,
-                evidence: vec![MatchEvidence {
-                    field: EvidenceField::Guid,
-                    indices: None,
-                }],
-            }));
-        }
-        hit.map(|hit| (hit.quality, hit.evidence))
+        self.condition.matches(&candidate).map(|hit| {
+            let quality = if self.filter_quality {
+                MatchQuality::Filter
+            } else {
+                hit.quality
+            };
+            (quality, hit.evidence)
+        })
     }
 }
 

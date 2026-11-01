@@ -1,5 +1,5 @@
 //! Content-independent tab strip. Notifications are requests; setters never notify the host.
-use crate::native::*;
+use crate::{icons::WindowIcon as OwnedIcon, native::*};
 use std::{cell::RefCell, ptr, rc::Rc};
 mod accessible;
 #[cfg(test)]
@@ -31,17 +31,7 @@ pub struct Item {
     pub icon: HICON,
 }
 
-struct OwnedIcon(HICON);
-impl Drop for OwnedIcon {
-    fn drop(&mut self) {
-        if !self.0.is_null() {
-            unsafe {
-                DestroyIcon(self.0);
-            }
-        }
-    }
-}
-
+#[derive(Default)]
 struct ItalicFont(HFONT);
 impl ItalicFont {
     fn new(base: HFONT) -> Self {
@@ -70,30 +60,53 @@ impl Drop for ItalicFont {
     }
 }
 
+#[derive(Default)]
 struct State {
     hwnd: HWND,
-    items: Vec<Item>,
-    icons: Vec<OwnedIcon>,
+    items: Vec<Tab>,
     selected: Option<u64>,
     font: HFONT,
     italic_font: ItalicFont,
     unit: i32,
-    rects: Vec<RECT>,
     offset: i32,
     hot: Option<u64>,
     pressed: Option<u64>,
-    origin: POINT,
+    drag_origin_x: i32,
     dragging: bool,
     tooltip: HWND,
     tip: Vec<u16>,
     name: String,
     select_label: String,
-    objects:
-        std::collections::HashMap<accessible::Node, windows::Win32::UI::Accessibility::IAccessible>,
-    child_ids: std::collections::HashMap<u64, i32>,
+    object: Option<windows::Win32::UI::Accessibility::IAccessible>,
     next_child: i32,
 }
+struct Tab {
+    item: Item,
+    icon: OwnedIcon,
+    rect: RECT,
+    child: i32,
+    object: Option<windows::Win32::UI::Accessibility::IAccessible>,
+}
+impl std::ops::Deref for Tab {
+    type Target = Item;
+    fn deref(&self) -> &Item {
+        &self.item
+    }
+}
 impl State {
+    fn object_slot(
+        &mut self,
+        node: accessible::Node,
+    ) -> Option<&mut Option<windows::Win32::UI::Accessibility::IAccessible>> {
+        match node {
+            accessible::Node::Root => Some(&mut self.object),
+            accessible::Node::Tab(id) => self
+                .items
+                .iter_mut()
+                .find(|i| i.id == id)
+                .map(|i| &mut i.object),
+        }
+    }
     fn item_font(&self, italic: bool) -> HFONT {
         if italic && !self.italic_font.0.is_null() {
             self.italic_font.0
@@ -102,8 +115,10 @@ impl State {
         }
     }
     fn rect(&self, id: u64) -> Option<RECT> {
-        let index = self.items.iter().position(|item| item.id == id)?;
-        self.rects.get(index).copied()
+        self.items
+            .iter()
+            .find(|item| item.id == id)
+            .map(|item| item.rect)
     }
     fn hit(&self, p: POINT) -> Option<u64> {
         if !contains(client(self.hwnd), p) {
@@ -111,8 +126,7 @@ impl State {
         }
         self.items
             .iter()
-            .zip(&self.rects)
-            .find_map(|(item, r)| contains(*r, p).then_some(item.id))
+            .find_map(|item| contains(item.rect, p).then_some(item.id))
     }
 }
 fn contains(r: RECT, p: POINT) -> bool {
@@ -157,69 +171,50 @@ pub fn create(parent: HWND, id: u16, name: String, select_label: String) -> anyh
 pub fn set_items(hwnd: HWND, items: Vec<Item>) {
     let Some(s) = state(hwnd) else { return };
     let previous_selection = s.borrow().selected;
-    let icons = items
-        .iter()
-        .map(|item| {
-            OwnedIcon(if item.icon.is_null() {
+    let (removed, added, renamed, described, reordered) = {
+        let mut s = s.borrow_mut();
+        let reordered = s.items.iter().map(|i| i.id).ne(items.iter().map(|i| i.id));
+        let mut old = std::mem::take(&mut s.items);
+        let (mut added, mut renamed, mut described) = (Vec::new(), Vec::new(), Vec::new());
+        for item in items {
+            let icon = OwnedIcon(if item.icon.is_null() {
                 ptr::null_mut()
             } else {
                 unsafe { CopyIcon(item.icon) }
-            })
-        })
-        .collect();
-    let (removed, added, renamed, described, reordered) = {
-        let mut s = s.borrow_mut();
-        let removed = s
-            .items
-            .iter()
-            .filter(|old| !items.iter().any(|new| new.id == old.id))
-            .map(|i| i.id)
-            .collect::<Vec<_>>();
-        let added = items
-            .iter()
-            .filter(|new| !s.items.iter().any(|old| new.id == old.id))
-            .map(|i| i.id)
-            .collect::<Vec<_>>();
-        let renamed = items
-            .iter()
-            .filter(|new| {
-                s.items
-                    .iter()
-                    .any(|old| old.id == new.id && old.title != new.title)
-            })
-            .map(|i| i.id)
-            .collect::<Vec<_>>();
-        let described = items
-            .iter()
-            .filter(|new| {
-                s.items
-                    .iter()
-                    .any(|old| old.id == new.id && old.description != new.description)
-            })
-            .map(|i| i.id)
-            .collect::<Vec<_>>();
-        let reordered = s.items.iter().map(|i| i.id).ne(items.iter().map(|i| i.id));
-        for id in &added {
-            s.next_child += 1;
-            let child = s.next_child;
-            s.child_ids.insert(*id, child);
+            });
+            let tab = if let Some(index) = old.iter().position(|i| i.id == item.id) {
+                let mut tab = old.remove(index);
+                if tab.title != item.title {
+                    renamed.push(item.id);
+                }
+                if tab.description != item.description {
+                    described.push(item.id);
+                }
+                tab.item = item;
+                tab.icon = icon;
+                tab
+            } else {
+                s.next_child += 1;
+                added.push(item.id);
+                Tab {
+                    item,
+                    icon,
+                    rect: unsafe { std::mem::zeroed() },
+                    child: s.next_child,
+                    object: None,
+                }
+            };
+            s.items.push(tab);
         }
-        s.items = items;
-        s.icons = icons;
         s.hot = None;
         if !s.items.iter().any(|i| Some(i.id) == s.selected) {
             s.selected = None;
         }
-        s.objects.retain(|node, _| match node {
-            accessible::Node::Root => true,
-            accessible::Node::Tab(id) => !removed.contains(id),
-        });
-        (removed, added, renamed, described, reordered)
+        (old, added, renamed, described, reordered)
     };
     layout(&s, true);
-    for id in removed {
-        event(hwnd, EVENT_OBJECT_DESTROY, Some(id));
-        s.borrow_mut().child_ids.remove(&id);
+    for tab in removed {
+        event_child(hwnd, EVENT_OBJECT_DESTROY, tab.child);
     }
     for id in added {
         event(hwnd, EVENT_OBJECT_CREATE, Some(id));
@@ -263,14 +258,22 @@ pub fn select(hwnd: HWND, id: Option<u64>) {
 fn event(hwnd: HWND, event: u32, id: Option<u64>) {
     let child = match id {
         Some(id) => {
-            let Some(child) = state(hwnd).and_then(|s| s.borrow().child_ids.get(&id).copied())
-            else {
+            let Some(child) = state(hwnd).and_then(|s| {
+                s.borrow()
+                    .items
+                    .iter()
+                    .find(|i| i.id == id)
+                    .map(|i| i.child)
+            }) else {
                 return;
             };
             child
         }
         None => 0,
     };
+    event_child(hwnd, event, child);
+}
+fn event_child(hwnd: HWND, event: u32, child: i32) {
     unsafe {
         windows_sys::Win32::UI::Accessibility::NotifyWinEvent(event, hwnd, OBJID_CLIENT, child);
     }
@@ -334,40 +337,40 @@ fn layout(shared: &Rc<RefCell<State>>, reveal: bool) {
     let area = client(hwnd);
     let (font, items) = {
         let s = shared.borrow();
-        (s.font, s.items.clone())
+        (
+            s.font,
+            s.items.iter().map(|i| i.item.clone()).collect::<Vec<_>>(),
+        )
     };
-    let dc = unsafe { GetDC(hwnd) };
-    let old = unsafe { SelectObject(dc, font) };
-    let mut tm: TEXTMETRICW = unsafe { std::mem::zeroed() };
-    unsafe {
-        GetTextMetricsW(dc, &mut tm);
-    }
-    let unit = (tm.tmHeight / 2).max(6);
-    let widths = items
-        .iter()
-        .map(|i| {
-            let text = wide(&i.title);
-            let mut size = SIZE { cx: 0, cy: 0 };
-            unsafe {
-                SelectObject(dc, shared.borrow().item_font(i.italic));
-                GetTextExtentPoint32W(dc, text.as_ptr(), text.len() as i32 - 1, &mut size);
-            }
-            let overhang = title_overhang(dc, &text[..text.len() - 1]);
-            (size.cx
-                + overhang
-                + unit * 2
-                + if i.icon.is_null() {
-                    0
-                } else {
-                    unit * 2 + unit / 2
-                })
-            .clamp(unit * 10, unit * 28)
-        })
-        .collect::<Vec<_>>();
-    unsafe {
-        SelectObject(dc, old);
-        ReleaseDC(hwnd, dc);
-    }
+    let (unit, widths) = with_window_font(hwnd, font, |dc| {
+        let mut tm: TEXTMETRICW = unsafe { std::mem::zeroed() };
+        unsafe {
+            GetTextMetricsW(dc, &mut tm);
+        }
+        let unit = (tm.tmHeight / 2).max(6);
+        let widths = items
+            .iter()
+            .map(|i| {
+                let text = wide(&i.title);
+                let mut size = SIZE { cx: 0, cy: 0 };
+                unsafe {
+                    SelectObject(dc, shared.borrow().item_font(i.italic));
+                    GetTextExtentPoint32W(dc, text.as_ptr(), text.len() as i32 - 1, &mut size);
+                }
+                let overhang = title_overhang(dc, &text[..text.len() - 1]);
+                (size.cx
+                    + overhang
+                    + unit * 2
+                    + if i.icon.is_null() {
+                        0
+                    } else {
+                        unit * 2 + unit / 2
+                    })
+                .clamp(unit * 10, unit * 28)
+            })
+            .collect::<Vec<_>>();
+        (unit, widths)
+    });
     let moved = {
         let mut s = shared.borrow_mut();
         s.unit = unit;
@@ -384,9 +387,10 @@ fn layout(shared: &Rc<RefCell<State>>, reveal: bool) {
         }
         s.offset = s.offset.clamp(0, (total - area.right).max(0));
         let mut x = -s.offset;
-        let rects: Vec<_> = widths
-            .into_iter()
-            .map(|width| {
+        s.items
+            .iter_mut()
+            .zip(widths)
+            .filter_map(|(item, width)| {
                 let r = RECT {
                     left: x,
                     top: 0,
@@ -394,23 +398,13 @@ fn layout(shared: &Rc<RefCell<State>>, reveal: bool) {
                     bottom: area.bottom,
                 };
                 x += width;
-                r
-            })
-            .collect();
-        let moved = s
-            .items
-            .iter()
-            .zip(&rects)
-            .enumerate()
-            .filter_map(|(index, (item, r))| {
-                let changed = s.rects.get(index).is_none_or(|old| {
-                    (old.left, old.top, old.right, old.bottom) != (r.left, r.top, r.right, r.bottom)
-                });
+                let old = item.rect;
+                let changed = (old.left, old.top, old.right, old.bottom)
+                    != (r.left, r.top, r.right, r.bottom);
+                item.rect = r;
                 changed.then_some(item.id)
             })
-            .collect::<Vec<_>>();
-        s.rects = rects;
-        moved
+            .collect::<Vec<_>>()
     };
     unsafe {
         InvalidateRect(hwnd, ptr::null(), 0);
@@ -430,7 +424,9 @@ fn paint(shared: &Rc<RefCell<State>>) {
         FillRect(dc, &client(s.hwnd), GetSysColorBrush(COLOR_BTNFACE));
         let old = SelectObject(dc, s.font);
         SetBkMode(dc, TRANSPARENT as i32);
-        for ((item, rect), icon) in s.items.iter().zip(&s.rects).zip(&s.icons) {
+        for item in &s.items {
+            let rect = &item.rect;
+            let icon = &item.icon;
             let selected = Some(item.id) == s.selected;
             let hot = s.hot == Some(item.id);
             FillRect(
@@ -485,7 +481,7 @@ fn paint(shared: &Rc<RefCell<State>>) {
             if let (Some(from), Some(to)) = (from, to)
                 && from != to
             {
-                let mut marker = s.rects[to];
+                let mut marker = s.items[to].rect;
                 let x = if from < to {
                     marker.right - 3
                 } else {
@@ -528,25 +524,11 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, w: usize, l: isize) 
         if msg == WM_NCCREATE {
             let s = Rc::new(RefCell::new(State {
                 hwnd,
-                items: vec![],
-                icons: vec![],
-                selected: None,
                 font: GetStockObject(DEFAULT_GUI_FONT),
                 italic_font: ItalicFont::new(GetStockObject(DEFAULT_GUI_FONT)),
                 unit: 8,
-                rects: vec![],
-                offset: 0,
-                hot: None,
-                pressed: None,
-                origin: POINT { x: 0, y: 0 },
-                dragging: false,
-                tooltip: ptr::null_mut(),
                 tip: vec![0],
-                name: String::new(),
-                select_label: String::new(),
-                objects: Default::default(),
-                child_ids: Default::default(),
-                next_child: 0,
+                ..State::default()
             }));
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(Box::new(s)) as _);
         }
@@ -559,33 +541,16 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, w: usize, l: isize) 
         };
         match msg {
             WM_CREATE => {
-                let tip = CreateWindowExW(
-                    WS_EX_TOPMOST,
-                    w!("tooltips_class32"),
-                    ptr::null(),
-                    WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX,
-                    0,
-                    0,
-                    0,
-                    0,
-                    hwnd,
-                    ptr::null_mut(),
-                    instance(),
-                    ptr::null(),
-                );
-                shared.borrow_mut().tooltip = tip;
-                if tip.is_null() {
-                    return -1;
-                }
                 let mut info: TTTOOLINFOW = std::mem::zeroed();
                 info.cbSize = TOOLINFO_SIZE;
                 info.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
                 info.hwnd = hwnd;
                 info.uId = hwnd as usize;
                 info.lpszText = shared.borrow_mut().tip.as_mut_ptr();
-                if send(tip, TTM_ADDTOOLW, 0, &info as *const _ as isize) == 0 {
+                let Ok(tip) = crate::native::tooltip(hwnd, &info) else {
                     return -1;
-                }
+                };
+                shared.borrow_mut().tooltip = tip;
                 return 0;
             }
             WM_GETOBJECT if l as i32 == OBJID_CLIENT => return accessible::result(&shared, w),
@@ -632,7 +597,8 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, w: usize, l: isize) 
                     let mut s = shared.borrow_mut();
                     let changed = s.hot != hit;
                     s.hot = hit;
-                    if s.pressed.is_some() && (p.x - s.origin.x).abs() > GetSystemMetrics(SM_CXDRAG)
+                    if s.pressed.is_some()
+                        && (p.x - s.drag_origin_x).abs() > GetSystemMetrics(SM_CXDRAG)
                     {
                         s.dragging = true;
                     }
@@ -681,7 +647,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, w: usize, l: isize) 
                 {
                     let mut s = shared.borrow_mut();
                     s.pressed = hit;
-                    s.origin = p;
+                    s.drag_origin_x = p.x;
                     s.dragging = false;
                 }
                 focus(hwnd);

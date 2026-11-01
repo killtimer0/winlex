@@ -3,7 +3,7 @@ use super::{catalog, read, write};
 use crate::{
     icons::Icon,
     input,
-    list::{Display, Fold, FoldKind, tooltip_field},
+    list::{Display, FoldKind, TextLine, TextSegment, tooltip_field},
     native::*,
     resources::{self, *},
 };
@@ -49,17 +49,17 @@ fn rows() -> Vec<Row> {
                 } else {
                     IDS_LOADED
                 });
-                let mut detail: Vec<u16> = format!("{status} · {} · ", size(source.len()))
-                    .encode_utf16()
-                    .collect();
-                let path_start = detail.len();
+                let mut detail = TextLine::default();
+                detail.push(TextSegment::plain(&format!(
+                    "{status} · {} · ",
+                    size(source.len())
+                )));
                 if let Some(parent) = path.parent() {
-                    detail.extend(parent.as_os_str().encode_wide());
+                    detail.push(TextSegment::new(
+                        parent.as_os_str().encode_wide(),
+                        FoldKind::Path,
+                    ));
                 }
-                let detail_folds = vec![Fold {
-                    range: path_start..detail.len(),
-                    kind: FoldKind::Path,
-                }];
                 let exact =
                     resources::text(IDS_SIZE_BYTES).replace("{size}", &source.len().to_string());
                 let mut info: Vec<u16> = path
@@ -87,7 +87,6 @@ fn rows() -> Vec<Row> {
                         title: path.file_name().unwrap_or_default().encode_wide().collect(),
                         detail,
                         icon: Some(Icon::File),
-                        detail_folds,
                         tooltip,
                         ..Default::default()
                     },
@@ -233,7 +232,9 @@ pub(super) fn refresh() {
     let count = rows.len();
     write(|a| a.sources.rows = rows);
     state.apply(list, count);
-    read(|a| a.sidebar.panel(super::panel::SOURCES_PANEL)).refresh_tooltip();
+    read(|a| a.sidebar.panel(super::panel::SOURCES_PANEL))
+        .list
+        .refresh_tooltip();
     update_actions();
 }
 
@@ -295,44 +296,21 @@ pub(super) fn context_menu(hwnd: HWND, location: isize) -> anyhow::Result<()> {
     };
     let pending = read(|a| a.session.pending(&path));
     unsafe {
-        let menu = CreatePopupMenu();
-        if menu.is_null() {
-            return Err(error("Create source menu"));
-        }
+        let menu = Popup::new()?;
         for (id, label) in [
             (RELOAD_SOURCE, IDS_RELOAD),
             (REMOVE_SOURCE, IDS_UNLOAD),
             (COPY_SOURCE_PATH, IDS_COPY_SOURCE_PATH),
         ] {
-            if AppendMenuW(
-                menu,
-                MF_STRING
-                    | if id == RELOAD_SOURCE && pending {
-                        MF_GRAYED
-                    } else {
-                        0
-                    },
-                id as usize,
-                resources::wide_text(label).as_ptr(),
-            ) == 0
-            {
-                let failure = error("Append source action");
-                DestroyMenu(menu);
-                return Err(failure);
-            }
+            menu.item(
+                id,
+                resources::wide_text(label),
+                id != RELOAD_SOURCE || !pending,
+            )?;
         }
-        let command = TrackPopupMenu(
-            menu,
-            TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
-            point.x,
-            point.y,
-            0,
-            hwnd,
-            std::ptr::null(),
-        );
-        DestroyMenu(menu);
+        let command = menu.track(hwnd, point);
         if command != 0 && IsWindow(hwnd) != 0 {
-            action_path(command as u16, path);
+            action_path(command, path);
         }
     }
     Ok(())

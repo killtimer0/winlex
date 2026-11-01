@@ -1,7 +1,7 @@
-//! Registered panel host: visibility, toolbar, width and focus handoff.
+//! Sidebar visibility, toolbar, width and focus handoff.
 use super::{
     bind, dpi,
-    panel::{PANELS, Panel, Registration},
+    panel::{self, Panel, PanelId, Search},
     read, write,
 };
 use crate::{
@@ -17,26 +17,22 @@ pub(super) struct Sidebar {
     toolbar: HWND,
     images: Option<Images>,
     splitter: HWND,
-    panels: Vec<(&'static Registration, Rc<Panel>)>,
-    pub active: u32,
+    panels: Vec<Rc<Panel>>,
+    pub search: Option<Rc<Search>>,
+    pub active: PanelId,
     pub collapsed: bool,
     pub width: i32,
 }
 impl Sidebar {
     pub fn new(config: &Config) -> Self {
         let key = config.key.as_ref();
-        let selected = key.and_then(|k| k.number("ActivePanel")).unwrap_or(0);
-        let active = PANELS
-            .iter()
-            .find(|r| r.id == selected)
-            .unwrap_or(&PANELS[0])
-            .id;
         Self {
             toolbar: ptr::null_mut(),
             images: None,
             splitter: ptr::null_mut(),
             panels: vec![],
-            active,
+            search: None,
+            active: PanelId::from_saved(key.and_then(|k| k.number("ActivePanel")).unwrap_or(0)),
             collapsed: key.and_then(|k| k.number("PanelCollapsed")) == Some(1),
             width: key
                 .and_then(|k| k.number("SidebarWidth"))
@@ -46,22 +42,17 @@ impl Sidebar {
     }
     pub fn save(&self, key: &crate::config::Key) -> anyhow::Result<()> {
         key.set_number("SidebarWidth", self.width as u32)?;
-        key.set_number("ActivePanel", self.active)?;
+        key.set_number("ActivePanel", self.active as u32)?;
         key.set_number("PanelCollapsed", u32::from(self.collapsed))
     }
-    pub fn panel(&self, id: u32) -> Rc<Panel> {
-        self.panels
-            .iter()
-            .find(|(r, _)| r.id == id)
-            .unwrap()
-            .1
-            .clone()
+    pub fn panel(&self, id: PanelId) -> Rc<Panel> {
+        self.panels[id as usize].clone()
     }
     pub fn owner(&self, hwnd: HWND) -> Option<Rc<Panel>> {
         self.panels
             .iter()
-            .find(|(_, p)| p.controls().contains(&hwnd))
-            .map(|(_, p)| p.clone())
+            .find(|p| p.controls.contains(&hwnd))
+            .cloned()
     }
 }
 pub(super) fn focus() {
@@ -101,16 +92,17 @@ pub(super) fn create(frame: HWND) -> anyhow::Result<()> {
         0,
     );
     send(toolbar, TB_SETMAXTEXTROWS, 0, 0);
-    for (image, registration) in PANELS.iter().enumerate() {
-        let mut text = resources::wide_text(registration.label).to_vec();
+    for id in PanelId::ALL {
+        let (command, label, _) = id.presentation();
+        let mut text = resources::wide_text(label).to_vec();
         text.push(0);
         let index = send(toolbar, TB_ADDSTRINGW, 0, text.as_ptr() as isize);
         if index < 0 {
             anyhow::bail!("Add panel toolbar string failed");
         }
         let button = TBBUTTON {
-            iBitmap: image as i32,
-            idCommand: registration.command as i32,
+            iBitmap: id as i32,
+            idCommand: command as i32,
             fsState: TBSTATE_ENABLED as u8,
             fsStyle: BTNS_CHECK as u8,
             iString: index,
@@ -119,13 +111,16 @@ pub(super) fn create(frame: HWND) -> anyhow::Result<()> {
         if send(toolbar, TB_ADDBUTTONSW, 1, &button as *const _ as isize) == 0 {
             anyhow::bail!("Add panel toolbar button failed");
         }
-        let panel = (registration.create)(frame)?;
-        write(|a| a.sidebar.panels.push((registration, panel)));
     }
+    let (panels, search) = panel::create(frame)?;
+    write(|a| {
+        a.sidebar.panels = panels.into();
+        a.sidebar.search = Some(search);
+    });
     sync_visibility();
     Ok(())
 }
-pub(super) fn show(id: u32, toggle: bool) {
+pub(super) fn show(id: PanelId, toggle: bool) {
     write(|a| {
         let s = &mut a.sidebar;
         s.collapsed = toggle && s.active == id && !s.collapsed;
@@ -146,15 +141,15 @@ fn sync_visibility() {
             s.panels.clone(),
         )
     });
-    for (registration, panel) in panels {
-        let visible = !collapsed && active == registration.id;
+    for (id, panel) in PanelId::ALL.into_iter().zip(panels) {
+        let visible = !collapsed && active == id;
         send(
             toolbar,
             TB_CHECKBUTTON,
-            registration.command as usize,
+            id.presentation().0 as usize,
             isize::from(visible),
         );
-        for &control in panel.controls() {
+        for &control in &panel.controls {
             crate::native::show(control, visible);
         }
     }
@@ -165,32 +160,21 @@ pub(super) fn prepare() {
     let m = super::metrics(frame);
     bind(toolbar, m.font);
     update_images(toolbar, m.px(24));
-    let padding = m.px(12) as u32;
-    send(
-        toolbar,
-        TB_SETPADDING,
-        0,
-        (padding | (padding << 16)) as isize,
-    );
-    let width = m.px(36) as u32;
-    send(
-        toolbar,
-        TB_SETBUTTONWIDTH,
-        0,
-        (width | (width << 16)) as isize,
-    );
-    send(
-        toolbar,
-        TB_SETBUTTONSIZE,
-        0,
-        (width | (width << 16)) as isize,
-    );
-    for (_, panel) in panels {
+    for (message, size) in [
+        (TB_SETPADDING, 12),
+        (TB_SETBUTTONWIDTH, 36),
+        (TB_SETBUTTONSIZE, 36),
+    ] {
+        let size = m.px(size) as u32;
+        send(toolbar, message, 0, (size | (size << 16)) as isize);
+    }
+    for panel in panels {
         panel.prepare(&m);
     }
+    panel::search().prepare(&m);
 }
 fn update_images(toolbar: HWND, size: i32) {
-    match Images::toolbar(size, PANELS.iter().map(|r| r.icon)) {
+    match Images::toolbar(size, PanelId::ALL.into_iter().map(|id| id.presentation().2)) {
         Ok(images) => {
             send(toolbar, TB_SETIMAGELIST, 0, images.handle());
             write(|a| a.sidebar.images = Some(images));
@@ -201,7 +185,7 @@ fn update_images(toolbar: HWND, size: i32) {
 pub(super) fn recolor() {
     let (frame, toolbar, panels) = read(|a| (a.frame, a.sidebar.toolbar, a.sidebar.panels.clone()));
     update_images(toolbar, layout::scale(24, dpi().window(frame)));
-    for (_, panel) in panels {
+    for panel in panels {
         panel.recolor();
     }
 }
@@ -224,32 +208,14 @@ pub(super) fn layout(bottom: i32, positions: &mut Vec<(HWND, RECT)>) -> i32 {
     let Some(panel) = panel else {
         return x;
     };
-    panel.layout(layout::rect(x, 0, width, bottom), &m, positions);
+    let mut area = layout::inset(layout::rect(x, 0, width, bottom), m.px(4));
+    match read(|a| a.sidebar.active) {
+        PanelId::Search => panel::search().layout(&mut area, &m, positions),
+        PanelId::Sources => m.buttons(&mut area, panel.controls[1..].iter().copied(), positions),
+    }
+    positions.push((panel.list.hwnd, area));
     positions.push((splitter, layout::rect(x + width, 0, s(3), bottom)));
     x + width + s(3)
-}
-pub(super) fn command(w: usize, control: HWND) -> bool {
-    let id = w as u16;
-    if let Some(r) = PANELS.iter().find(|r| r.command == id) {
-        show(r.id, true);
-        return true;
-    }
-    let code = (w >> 16) as u32;
-    if !control.is_null() {
-        let owner = read(|a| a.sidebar.owner(control));
-        return owner.is_some_and(|panel| panel.command(id, code));
-    }
-    let panels = read(|a| a.sidebar.panels.clone());
-    panels.iter().any(|(_, panel)| panel.command(id, code))
-}
-pub(super) fn context_menu(control: HWND, location: isize) -> bool {
-    let owner = read(|a| a.sidebar.owner(control));
-    owner.is_some_and(|panel| panel.context_menu(control, location))
-}
-pub(super) unsafe fn notify(l: isize) -> Option<isize> {
-    let hwnd = unsafe { (*(l as *const NMHDR)).hwndFrom };
-    let panel = read(|a| a.sidebar.owner(hwnd))?;
-    unsafe { panel.notify(l) }
 }
 pub(super) unsafe fn translate(frame: HWND, msg: &MSG) -> bool {
     let (toolbar, panel) = read(|a| (a.sidebar.toolbar, a.sidebar.owner(msg.hwnd)));

@@ -45,6 +45,33 @@ mod snapshot_tests {
         .id
     }
     #[test]
+    fn source_descriptions_keep_input_order_paths_and_assembly_names() {
+        let first = data("甲", writer::File::new("First"));
+        let mut second = data("乙", writer::File::new("Second"));
+        second.path = format!("\\\\server\\share\\{}\\😀.winmd", "long".repeat(80)).into();
+        let inputs = [first.clone(), second, first];
+        let db = crate::Catalog::from_inputs(inputs.clone()).unwrap();
+        for (id, (input, source)) in inputs.iter().zip(db.sources()).enumerate() {
+            assert_eq!(source.id, id);
+            assert_eq!(source.path, input.path);
+            let assembly = source.assembly.as_ref().unwrap();
+            assert_eq!(assembly.name, if id == 1 { "Second" } else { "First" });
+        }
+        let invalid = SourceData {
+            path: "坏😀.winmd".into(),
+            bytes: vec![0; 16].into(),
+        };
+        let error = crate::Catalog::from_inputs([inputs[0].clone(), invalid])
+            .err()
+            .unwrap();
+        assert_eq!(error.to_string(), "invalid metadata: 坏😀.winmd");
+        assert_eq!(
+            crate::Catalog::from_inputs([]).err().unwrap().to_string(),
+            "at least one WinMD is required"
+        );
+    }
+
+    #[test]
     fn duplicate_inputs_keep_independent_catalog_local_ids() {
         let original = dependency(Type::I32);
         let db = crate::Catalog::from_inputs([original.clone(), original.clone()]).unwrap();

@@ -129,6 +129,90 @@ fn hits(db: &Catalog, query: &str, mode: SearchMode) -> Vec<SearchMatch> {
     hits
 }
 
+#[test]
+fn quick_and_conditional_trees_preserve_quality_and_evidence_order() {
+    let db = Catalog::from_inputs([fixture(), conditions_fixture()]).unwrap();
+    for (quick, mode, condition) in [
+        ("257", SearchMode::Value, "value = 257"),
+        ("1.5", SearchMode::Value, "value = 1.5"),
+        ("NaN", SearchMode::Value, "value = NaN"),
+        ("12345678", SearchMode::Guid, "guid contains \"12345678\""),
+        (
+            "Fixture.",
+            SearchMode::Name,
+            "fullname starts_with \"Fixture.\"",
+        ),
+    ] {
+        let mut quick = hits(&db, quick, mode);
+        let mut conditional = hits(&db, condition, SearchMode::Condition);
+        assert!(!quick.is_empty());
+        quick.sort_unstable_by_key(|hit| hit.id);
+        conditional.sort_unstable_by_key(|hit| hit.id);
+        assert_eq!(quick.len(), conditional.len());
+        for (quick, conditional) in quick.iter().zip(&conditional) {
+            assert_eq!(quick.id, conditional.id);
+            assert_eq!(quick.evidence, conditional.evidence);
+            assert_ne!(quick.quality, MatchQuality::Filter);
+            if mode != SearchMode::Name {
+                assert_eq!(conditional.quality, MatchQuality::Filter);
+            }
+        }
+    }
+    let combined = hits(&db, "257", SearchMode::Combined);
+    let hit = combined.iter().find(|hit| hit.name == "257").unwrap();
+    assert_eq!(hit.quality, MatchQuality::NameExact(MatchField::Name));
+    assert_eq!(
+        hit.evidence,
+        [
+            MatchEvidence {
+                field: EvidenceField::Name,
+                indices: Some(vec![0, 1, 2])
+            },
+            MatchEvidence {
+                field: EvidenceField::Value,
+                indices: None
+            },
+        ]
+    );
+    let filtered = hits(&db, "name = \"257\" and value = 257", SearchMode::Condition);
+    assert_eq!(filtered.len(), 1);
+    assert_eq!(filtered[0].quality, MatchQuality::Filter);
+    assert_eq!(filtered[0].evidence, hit.evidence);
+}
+
+#[test]
+fn quick_and_conditional_text_keep_original_unicode_evidence() {
+    let mut file = writer::File::new("Unicode");
+    let object = file.TypeRef("System", "Object");
+    file.TypeDef(
+        "İScope",
+        "İ😀Widget",
+        writer::TypeDefOrRef::TypeRef(object),
+        TypeAttributes::Public,
+    );
+    let db = Catalog::from_inputs([SourceData {
+        path: "Unicode.winmd".into(),
+        bytes: file.into_stream().into(),
+    }])
+    .unwrap();
+    for (quick, condition, expected) in [
+        ("i\u{307}😀widget", "name = \"i\u{307}😀widget\"", 0..8),
+        (
+            "i\u{307}scope.",
+            "fullname starts_with \"i\u{307}scope.\"",
+            0..7,
+        ),
+    ] {
+        let quick = hits(&db, quick, SearchMode::Name);
+        let conditional = hits(&db, condition, SearchMode::Condition);
+        assert_eq!(quick.len(), 1);
+        assert_eq!(conditional.len(), 1);
+        assert_eq!(quick[0].id, conditional[0].id);
+        assert_eq!(quick[0].evidence, conditional[0].evidence);
+        assert_eq!(quick[0].evidence[0].indices, Some(expected.collect()));
+    }
+}
+
 fn conditions_fixture() -> SourceData {
     let mut file = writer::File::new("Conditions");
     let object = file.TypeRef("System", "Object");
@@ -226,6 +310,95 @@ fn conditions_combine_same_entity_fields_and_keep_all_positive_evidence() {
         .next()
         .is_none()
     );
+}
+
+#[test]
+fn text_operator_matrix_preserves_acceptance_and_diagnostic_precedence() {
+    use Operator::*;
+    for (field, accepted) in [
+        ("name", vec![Equal, Contains, StartsWith, Fuzzy]),
+        ("fullname", vec![Equal, Contains, StartsWith, Fuzzy]),
+        ("value", vec![Equal, Contains, StartsWith]),
+        ("namespace", vec![Equal, Within]),
+    ] {
+        for operator in [
+            Equal,
+            Less,
+            LessEqual,
+            Greater,
+            GreaterEqual,
+            Contains,
+            StartsWith,
+            Fuzzy,
+            Within,
+        ] {
+            for value in [
+                Literal::Text("".into()),
+                Literal::Text("窗口😀".into()),
+                Literal::Number("5".into()),
+            ] {
+                let query = Query::Predicate(Predicate {
+                    field: field.into(),
+                    operator,
+                    value: value.clone(),
+                    span: 7..29,
+                });
+                let result = SearchQuery::from_query(&query, false);
+                let quoted = matches!(value, Literal::Text(_));
+                if (quoted && accepted.contains(&operator))
+                    || (field == "value"
+                        && !quoted
+                        && [Equal, Less, LessEqual, Greater, GreaterEqual].contains(&operator))
+                {
+                    assert!(result.is_ok(), "{query:?}");
+                } else {
+                    let error = result.err().unwrap();
+                    let diagnostic = error.downcast_ref::<QueryError>().unwrap();
+                    assert_eq!(diagnostic.span, 7..29);
+                    assert!(!diagnostic.incomplete);
+                    if !quoted && field != "value" {
+                        assert_eq!(diagnostic.kind, QueryErrorKind::Value);
+                        assert_eq!(diagnostic.message, "field requires a quoted string");
+                    } else {
+                        assert_eq!(diagnostic.kind, QueryErrorKind::Operator);
+                        assert_eq!(
+                            diagnostic.message,
+                            if quoted {
+                                "operator is not supported for this field"
+                            } else {
+                                "number requires a comparison operator"
+                            }
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn numeric_conditions_keep_filter_ranking_for_each_operator_and_group() {
+    let db = Catalog::from_inputs([conditions_fixture()]).unwrap();
+    for bound in ["5", "5.0"] {
+        for op in ["=", "<", "<=", ">", ">="] {
+            let predicate = format!("value {op} {bound}");
+            for query in [
+                predicate.clone(),
+                format!("({predicate}) or name = \"ACCESS_DENIED\""),
+                format!("({predicate}) and category = \"constant\""),
+                format!("not not ({predicate})"),
+            ] {
+                let found = hits(&db, &query, SearchMode::Condition);
+                if query.contains(" or ") {
+                    assert!(!found.is_empty(), "{query}");
+                }
+                assert!(
+                    found.iter().all(|hit| hit.quality == MatchQuality::Filter),
+                    "{query}"
+                );
+            }
+        }
+    }
 }
 
 #[test]
@@ -387,6 +560,85 @@ fn combined_union_is_unique_and_uses_strongest_quality() {
 }
 
 #[test]
+fn search_entry_points_preserve_scan_order_quality_evidence_and_filters() {
+    let db = Catalog::from_inputs([fixture(), conditions_fixture()]).unwrap();
+    let snapshot = |search: crate::Search<'_>| {
+        format!("{:?}", search.collect::<anyhow::Result<Vec<_>>>().unwrap())
+    };
+    for (text, mode) in [
+        ("257", SearchMode::Combined),
+        ("Fixture.", SearchMode::Name),
+        ("257", SearchMode::Value),
+        ("12345678", SearchMode::Guid),
+        (
+            r#"value = 5 or value contains "Windows""#,
+            SearchMode::Condition,
+        ),
+    ] {
+        for source in [None, Some(0), Some(1)] {
+            for categories in [None, Some(EntityCategory::Constant as u32)] {
+                let options = || SearchOptions {
+                    source,
+                    categories,
+                    mode,
+                    architecture: Some(crate::Architecture::X86),
+                    ..Default::default()
+                };
+                let direct = snapshot(db.search(text, options()).unwrap());
+                let compiled = SearchQuery::compile(text, mode, false).unwrap();
+                assert_eq!(
+                    direct,
+                    snapshot(db.search_compiled(compiled, options()).unwrap())
+                );
+                if mode == SearchMode::Condition {
+                    let parsed = Query::parse(text).unwrap();
+                    assert_eq!(
+                        direct,
+                        snapshot(db.search_query(&parsed, options()).unwrap())
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn search_entry_points_preserve_input_diagnostic_wrappers() {
+    let db = Catalog::from_inputs([fixture()]).unwrap();
+    for text in ["", "value =", "unknown = 1"] {
+        let error = db
+            .search(
+                text,
+                SearchOptions {
+                    mode: SearchMode::Condition,
+                    ..Default::default()
+                },
+            )
+            .err()
+            .unwrap();
+        assert_eq!(
+            error.downcast_ref::<crate::InvalidSearchInput>().is_some(),
+            !text.is_empty()
+        );
+        if text.is_empty() {
+            assert_eq!(error.to_string(), "empty search query");
+        } else {
+            assert!(error.downcast_ref::<QueryError>().is_some());
+        }
+    }
+    let parsed = Query::parse("unknown = 1").unwrap();
+    let error = db
+        .search_query(&parsed, SearchOptions::default())
+        .err()
+        .unwrap();
+    assert!(error.downcast_ref::<crate::InvalidSearchInput>().is_none());
+    assert_eq!(
+        error.downcast_ref::<QueryError>().unwrap().kind,
+        QueryErrorKind::Field
+    );
+}
+
+#[test]
 fn compiled_search_applies_external_source_filter() {
     let db = Catalog::from_inputs([fixture(), fixture()]).unwrap();
     let compiled = SearchQuery::compile("ValueOnly", SearchMode::Name, false).unwrap();
@@ -405,6 +657,77 @@ fn compiled_search_applies_external_source_filter() {
     assert_eq!(found[0].id.source_id, 1);
     assert_eq!(found[0].full_name, "Fixture.Outer.ValueOnly");
     assert_eq!(found[0].quality, MatchQuality::NameExact(MatchField::Name));
+}
+
+#[test]
+fn namespace_filters_and_entity_context_agree_for_nested_and_global_declarations() {
+    let mut file = writer::File::new("NamespaceFixture");
+    let object = file.TypeRef("System", "Object");
+    file.TypeRef("", "GlobalReference");
+    for namespace in ["", "命名.空间"] {
+        let outer = file.TypeDef(
+            namespace,
+            "Outer",
+            writer::TypeDefOrRef::TypeRef(object),
+            TypeAttributes::Public,
+        );
+        file.Field("TopMember", &Type::I32, FieldAttributes::Public);
+        let inner = file.TypeDef(
+            "",
+            "Inner",
+            writer::TypeDefOrRef::TypeRef(object),
+            TypeAttributes::NestedPublic,
+        );
+        file.NestedClass(inner, outer);
+        file.Field("NestedMember", &Type::I32, FieldAttributes::Public);
+    }
+    let db = Catalog::from_inputs([SourceData {
+        path: "NamespaceFixture.winmd".into(),
+        bytes: file.into_stream().into(),
+    }])
+    .unwrap();
+    let mut covered = 0;
+    for namespace in ["", "命名.空间", "System"] {
+        let found = db
+            .search(
+                &format!("namespace = {namespace:?}"),
+                SearchOptions {
+                    mode: SearchMode::Condition,
+                    categories: Some(EntityCategory::ALL),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .collect::<anyhow::Result<Vec<_>>>()
+            .unwrap();
+        assert!(!found.is_empty(), "{namespace}");
+        for hit in found {
+            covered += 1;
+            let context = db.entity_context(hit.id).unwrap();
+            assert_eq!(context.namespace, namespace, "{}", hit.full_name);
+            assert_eq!(
+                context.owner.as_deref(),
+                match hit.name.as_str() {
+                    "TopMember" => Some("Outer"),
+                    "NestedMember" => Some("Outer+Inner"),
+                    _ => None,
+                }
+            );
+        }
+    }
+    let all = db
+        .search(
+            "not namespace = \"missing\"",
+            SearchOptions {
+                mode: SearchMode::Condition,
+                categories: Some(EntityCategory::ALL),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .collect::<anyhow::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(covered, all.len());
 }
 
 #[test]

@@ -1,5 +1,5 @@
-//! Registered sidebar views and their shared owner-data list presentation.
-use super::{bind, catalog, dpi, keys, read, sidebar, sources};
+//! The two sidebar views and their shared owner-data list presentation.
+use super::{bind, catalog, dpi, read, sidebar, sources};
 use crate::list::List;
 use crate::{
     layout,
@@ -23,57 +23,46 @@ const SEARCH_MODES: &[(u16, SearchMode, u16)] = &[
 ];
 
 pub(super) fn search_mode() -> SearchMode {
-    search(|s| SEARCH_MODES[s.mode.get()].1)
+    SEARCH_MODES[search().mode.get()].1
 }
 
-pub(super) struct Registration {
-    pub id: u32,
-    pub command: u16,
-    pub label: u16,
-    pub icon: u16,
-    pub create: fn(HWND) -> anyhow::Result<Rc<Panel>>,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
+pub(super) enum PanelId {
+    Search = 0,
+    Sources = 1,
 }
-pub(super) const SEARCH_PANEL: u32 = 0;
-pub(super) const SOURCES_PANEL: u32 = 1;
-pub(super) static PANELS: &[Registration] = &[
-    Registration {
-        id: SEARCH_PANEL,
-        command: PANEL_SEARCH,
-        label: IDS_PANEL_SEARCH,
-        icon: IDR_SEARCH,
-        create: Panel::search,
-    },
-    Registration {
-        id: SOURCES_PANEL,
-        command: MANAGE_SOURCES,
-        label: IDS_PANEL_SOURCES,
-        icon: IDR_FILES,
-        create: Panel::sources,
-    },
-];
+pub(super) const SEARCH_PANEL: PanelId = PanelId::Search;
+pub(super) const SOURCES_PANEL: PanelId = PanelId::Sources;
+impl PanelId {
+    pub const ALL: [Self; 2] = [Self::Search, Self::Sources];
+    pub fn from_saved(value: u32) -> Self {
+        Self::ALL
+            .into_iter()
+            .find(|&id| id as u32 == value)
+            .unwrap_or(Self::Search)
+    }
+    pub fn presentation(self) -> (u16, u16, u16) {
+        match self {
+            Self::Search => (PANEL_SEARCH, IDS_PANEL_SEARCH, IDR_SEARCH),
+            Self::Sources => (MANAGE_SOURCES, IDS_PANEL_SOURCES, IDR_FILES),
+        }
+    }
+}
 pub(super) struct Panel {
-    controls: Vec<HWND>,
-    list: List,
-    content: Content,
+    pub controls: Vec<HWND>,
+    pub list: List,
 }
-enum Content {
-    Search(Search),
-    Sources,
-}
-struct Search {
-    input: HWND,
+pub(super) struct Search {
+    pub input: HWND,
     tooltip: HWND,
     selector: HWND,
     mode: Cell<usize>,
-    composing: Cell<bool>,
+    pub composing: Cell<bool>,
     deadline: Cell<Option<std::time::Instant>>,
 }
-fn search<T>(f: impl FnOnce(&Search) -> T) -> T {
-    let panel = read(|a| a.sidebar.panel(SEARCH_PANEL));
-    let Content::Search(search) = &panel.content else {
-        unreachable!("registered search panel")
-    };
-    f(search)
+pub(super) fn search() -> Rc<Search> {
+    read(|a| a.sidebar.search.as_ref().unwrap().clone())
 }
 const SEARCH_TIMER: usize = 1;
 fn search_tool(input: HWND, label: u16) -> TTTOOLINFOW {
@@ -87,147 +76,103 @@ fn search_tool(input: HWND, label: u16) -> TTTOOLINFOW {
     }
 }
 pub(super) fn cancel_debounce() -> (HWND, bool) {
-    let state = search(|s| {
-        s.deadline.set(None);
-        (s.input, s.composing.get())
-    });
+    let search = search();
+    search.deadline.set(None);
     unsafe {
-        KillTimer(state.0, SEARCH_TIMER);
+        KillTimer(search.input, SEARCH_TIMER);
     }
-    state
+    (search.input, search.composing.get())
 }
 pub(super) fn debounce(input: HWND) -> anyhow::Result<()> {
     if unsafe { SetTimer(input, SEARCH_TIMER, 200, None) } == 0 {
         return Err(error("Search debounce"));
     }
-    search(|s| {
-        s.deadline.set(Some(
-            std::time::Instant::now() + std::time::Duration::from_millis(200),
-        ))
-    });
+    search().deadline.set(Some(
+        std::time::Instant::now() + std::time::Duration::from_millis(200),
+    ));
     Ok(())
 }
+pub(super) fn create(frame: HWND) -> anyhow::Result<([Rc<Panel>; 2], Rc<Search>)> {
+    let input = child_ex(
+        frame,
+        w!("EDIT"),
+        &[0],
+        WS_TABSTOP | ES_AUTOHSCROLL as u32,
+        WS_EX_CLIENTEDGE,
+        SEARCH,
+    )?;
+    if unsafe { set_subclass(input, Some(edit_proc), 1, 0) } == 0 {
+        anyhow::bail!("Subclass search input failed");
+    }
+    let mode = child(
+        frame,
+        w!("COMBOBOX"),
+        &[0],
+        WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST as u32,
+        SEARCH_MODE,
+    )?;
+    for &(label, _, _) in SEARCH_MODES {
+        send(
+            mode,
+            CB_ADDSTRING,
+            0,
+            resources::wide_text(label).as_ptr() as isize,
+        );
+    }
+    send(mode, CB_SETCURSEL, 0, 0);
+    let tool = search_tool(input, SEARCH_MODES[0].2);
+    let tooltip = tooltip(frame, &tool).map_err(|error| error.context("Search tooltip"))?;
+    send(tooltip, TTM_SETMAXTIPWIDTH, 0, 480);
+    let list = List::new(
+        frame,
+        RESULTS,
+        catalog::row,
+        catalog::row_text,
+        Some(catalog::activate),
+        read(|a| a.system_version),
+    )?;
+    let search_panel = Rc::new(Panel {
+        controls: vec![input, list.hwnd, mode],
+        list,
+    });
+    let search = Rc::new(Search {
+        input,
+        tooltip,
+        selector: mode,
+        mode: Cell::new(0),
+        composing: Cell::new(false),
+        deadline: Cell::new(None),
+    });
+    let list = List::new(
+        frame,
+        SOURCE_LIST,
+        sources::row,
+        sources::row_text,
+        None,
+        read(|a| a.system_version),
+    )?;
+    let mut controls = vec![list.hwnd];
+    for (id, label) in [
+        (LOAD_METADATA, IDS_LOAD_METADATA),
+        (RELOAD_SOURCE, IDS_RELOAD),
+        (REMOVE_SOURCE, IDS_UNLOAD),
+    ] {
+        controls.push(child(
+            frame,
+            w!("BUTTON"),
+            resources::wide_text(label),
+            WS_TABSTOP,
+            id,
+        )?);
+    }
+    sources::update_actions();
+    Ok(([search_panel, Rc::new(Panel { controls, list })], search))
+}
 impl Panel {
-    fn search(frame: HWND) -> anyhow::Result<Rc<Self>> {
-        let input = child_ex(
-            frame,
-            w!("EDIT"),
-            &[0],
-            WS_TABSTOP | ES_AUTOHSCROLL as u32,
-            WS_EX_CLIENTEDGE,
-            SEARCH,
-        )?;
-        if unsafe { set_subclass(input, Some(edit_proc), 1, 0) } == 0 {
-            anyhow::bail!("Subclass search input failed");
-        }
-        let mode = child(
-            frame,
-            w!("COMBOBOX"),
-            &[0],
-            WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST as u32,
-            SEARCH_MODE,
-        )?;
-        for &(label, _, _) in SEARCH_MODES {
-            send(
-                mode,
-                CB_ADDSTRING,
-                0,
-                resources::wide_text(label).as_ptr() as isize,
-            );
-        }
-        send(mode, CB_SETCURSEL, 0, 0);
-        let tooltip = unsafe {
-            CreateWindowExW(
-                WS_EX_TOPMOST,
-                TOOLTIPS_CLASSW,
-                std::ptr::null(),
-                WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX,
-                0,
-                0,
-                0,
-                0,
-                frame,
-                std::ptr::null_mut(),
-                instance(),
-                std::ptr::null(),
-            )
-        };
-        if tooltip.is_null() {
-            return Err(error("Create search tooltip"));
-        }
-        let tool = search_tool(input, SEARCH_MODES[0].2);
-        if send(tooltip, TTM_ADDTOOLW, 0, &tool as *const _ as isize) == 0 {
-            unsafe {
-                DestroyWindow(tooltip);
-            }
-            anyhow::bail!("Register search tooltip failed");
-        }
-        send(tooltip, TTM_SETMAXTIPWIDTH, 0, 480);
-        let list = List::new(
-            frame,
-            RESULTS,
-            catalog::row,
-            catalog::row_text,
-            Some(catalog::activate),
-            read(|a| a.system_version),
-        )?;
-        Ok(Rc::new(Self {
-            controls: vec![input, list.hwnd, mode],
-            content: Content::Search(Search {
-                input,
-                tooltip,
-                selector: mode,
-                mode: Cell::new(0),
-                composing: Cell::new(false),
-                deadline: Cell::new(None),
-            }),
-            list,
-        }))
-    }
-    fn sources(frame: HWND) -> anyhow::Result<Rc<Self>> {
-        let list = List::new(
-            frame,
-            SOURCE_LIST,
-            sources::row,
-            sources::row_text,
-            None,
-            read(|a| a.system_version),
-        )?;
-        let mut controls = vec![list.hwnd];
-        for (id, label) in [
-            (LOAD_METADATA, IDS_LOAD_METADATA),
-            (RELOAD_SOURCE, IDS_RELOAD),
-            (REMOVE_SOURCE, IDS_UNLOAD),
-        ] {
-            controls.push(child(
-                frame,
-                w!("BUTTON"),
-                resources::wide_text(label),
-                WS_TABSTOP,
-                id,
-            )?);
-        }
-        sources::update_actions();
-        Ok(Rc::new(Self {
-            controls,
-            list,
-            content: Content::Sources,
-        }))
-    }
-    pub fn controls(&self) -> &[HWND] {
-        &self.controls
-    }
-    pub fn refresh_tooltip(&self) {
-        self.list.refresh_tooltip();
-    }
     pub fn focus(&self) {
         focus(self.controls[0]);
     }
     pub fn prepare(&self, m: &layout::Metrics) {
-        if let Content::Search(search) = &self.content {
-            bind(search.tooltip, m.font);
-            send(search.tooltip, TTM_SETMAXTIPWIDTH, 0, m.px(480) as isize);
-        }
         for &h in &self.controls {
             bind(h, m.font);
         }
@@ -240,77 +185,32 @@ impl Panel {
             super::write(|a| a.failure = Some(error));
         }
     }
-    pub unsafe fn notify(&self, l: isize) -> Option<isize> {
-        unsafe {
-            let hdr = &*(l as *const NMHDR);
-            if hdr.hwndFrom == self.list.hwnd
-                && hdr.code == LVN_ITEMCHANGED
-                && matches!(self.content, Content::Sources)
-            {
-                sources::update_actions();
-                return Some(0);
-            }
-            self.list.notify(l)
-        }
-    }
-    pub fn layout(&self, area: RECT, m: &layout::Metrics, positions: &mut Vec<(HWND, RECT)>) {
-        let mut area = layout::inset(area, m.px(4));
-        match &self.content {
-            Content::Search(s) => {
-                let outer = dpi().child_outer(s.input, layout::rect(0, 0, 1, m.height + m.px(4)));
-                let mut row = layout::take_top(&mut area, outer.bottom - outer.top);
-                let width = m
-                    .label_width(
-                        SEARCH_MODES
-                            .iter()
-                            .map(|&(label, _, _)| resources::wide_text(label)),
-                        60,
-                    )
-                    .min((row.right - row.left) / 2);
-                let right = row.right;
-                row.right = (right - width - m.px(4)).max(row.left);
-                positions.push((s.input, row));
-                positions.push((
-                    s.selector,
-                    layout::rect(right - width, row.top, width, m.row() * 6),
-                ));
-                layout::take_top(&mut area, m.px(4));
-            }
-            Content::Sources => m.buttons(&mut area, self.controls[1..].iter().copied(), positions),
-        }
-        positions.push((self.list.hwnd, area));
-    }
-    pub fn fit_list(&self) {
-        crate::list::fit(self.list.hwnd);
-    }
-    pub fn region(&self, hwnd: HWND) -> Option<keys::Region> {
-        match &self.content {
-            Content::Search(s) if hwnd == s.input => Some(keys::Region::SearchEntry {
-                composing: s.composing.get(),
-            }),
-            Content::Search(_) => (hwnd == self.list.hwnd).then_some(keys::Region::Results),
-            Content::Sources => None,
-        }
-    }
-    pub fn command(&self, id: u16, code: u32) -> bool {
-        match &self.content {
-            Content::Search(s) => s.command(id, code),
-            Content::Sources => sources::command(id),
-        }
-    }
-    pub fn context_menu(&self, hwnd: HWND, location: isize) -> bool {
-        match &self.content {
-            Content::Sources if hwnd == self.list.hwnd => {
-                if let Err(error) = sources::context_menu(hwnd, location) {
-                    catalog::set_status(format!("{error:#}"));
-                }
-                true
-            }
-            Content::Search(_) | Content::Sources => false,
-        }
-    }
 }
 impl Search {
+    pub fn prepare(&self, m: &layout::Metrics) {
+        bind(self.tooltip, m.font);
+        send(self.tooltip, TTM_SETMAXTIPWIDTH, 0, m.px(480) as isize);
+    }
+    pub fn layout(&self, area: &mut RECT, m: &layout::Metrics, positions: &mut Vec<(HWND, RECT)>) {
+        let outer = dpi().child_outer(self.input, layout::rect(0, 0, 1, m.height + m.px(4)));
+        let mut row = layout::take_top(area, outer.bottom - outer.top);
+        let width = m
+            .label_width(
+                SEARCH_MODES
+                    .iter()
+                    .map(|&(label, _, _)| resources::wide_text(label)),
+                60,
+            )
+            .min((row.right - row.left) / 2);
+        let right = row.right;
+        row.right = (right - width - m.px(4)).max(row.left);
+        positions.push((self.input, row));
+        positions.push((
+            self.selector,
+            layout::rect(right - width, row.top, width, m.row() * 6),
+        ));
+        layout::take_top(area, m.px(4));
+    }
     fn command(&self, id: u16, code: u32) -> bool {
         match id {
             SEARCH if code == EN_CHANGE => catalog::input_changed(),
@@ -340,6 +240,18 @@ impl Search {
         true
     }
 }
+pub(super) fn command(w: usize, control: HWND) -> bool {
+    let id = w as u16;
+    if let Some(panel) = PanelId::ALL.into_iter().find(|p| p.presentation().0 == id) {
+        sidebar::show(panel, true);
+        return true;
+    }
+    // Ignore notifications from controls that have not finished initialization.
+    if !control.is_null() && read(|a| a.sidebar.owner(control)).is_none() {
+        return false;
+    }
+    search().command(id, (w >> 16) as u32) || sources::command(id)
+}
 unsafe extern "system" fn edit_proc(
     h: HWND,
     msg: u32,
@@ -350,27 +262,50 @@ unsafe extern "system" fn edit_proc(
 ) -> isize {
     unsafe {
         if msg == WM_TIMER && w == SEARCH_TIMER {
-            if search(|s| {
-                s.deadline
-                    .get()
-                    .is_some_and(|deadline| std::time::Instant::now() >= deadline)
-            }) {
+            if search()
+                .deadline
+                .get()
+                .is_some_and(|deadline| std::time::Instant::now() >= deadline)
+            {
                 catalog::search();
             }
             return 0;
         }
         if msg == WM_IME_STARTCOMPOSITION {
-            search(|s| s.composing.set(true));
+            search().composing.set(true);
             catalog::input_changed();
         }
         let result = default_subclass(h, msg, w, l);
         if msg == WM_IME_ENDCOMPOSITION {
-            search(|s| s.composing.set(false));
+            search().composing.set(false);
             catalog::input_changed();
         }
         if msg == WM_NCDESTROY {
             remove_subclass(h, Some(edit_proc), 1);
         }
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn panel_ids_preserve_saved_values_and_unique_presentations() {
+        assert_eq!(PanelId::Search as u32, 0);
+        assert_eq!(PanelId::Sources as u32, 1);
+        for (index, id) in PanelId::ALL.into_iter().enumerate() {
+            assert_eq!(index, id as usize);
+            assert_eq!(PanelId::from_saved(id as u32), id);
+            let (command, label, icon) = id.presentation();
+            for other in PanelId::ALL.into_iter().filter(|other| *other != id) {
+                let (other_command, other_label, other_icon) = other.presentation();
+                assert_ne!(command, other_command);
+                assert_ne!(label, other_label);
+                assert_ne!(icon, other_icon);
+            }
+        }
+        assert_eq!(PanelId::from_saved(u32::MAX), PanelId::Search);
     }
 }

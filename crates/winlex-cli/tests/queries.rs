@@ -455,6 +455,64 @@ fn qualified_name_and_token_select_the_same_declaration() {
 }
 
 #[test]
+fn cli_search_options_preserve_core_modes_architectures_and_pagination() {
+    for (mode, flag, query, architecture) in [
+        (SearchMode::Combined, None, "createfile", None),
+        (
+            SearchMode::Name,
+            Some("--name"),
+            "createfile",
+            Some(Architecture::X86),
+        ),
+        (SearchMode::Value, Some("--value"), "5", None),
+        (SearchMode::Guid, Some("--guid"), "0000000c", None),
+        (
+            SearchMode::Condition,
+            Some("--where"),
+            "name contains \"file\"",
+            Some(Architecture::X64),
+        ),
+    ] {
+        let mut args = vec!["search"];
+        if mode == SearchMode::Condition {
+            args.push(flag.unwrap());
+        }
+        args.push(query);
+        if mode != SearchMode::Condition {
+            args.extend(flag);
+        }
+        args.extend(["--source", "0", "--offset", "1", "--limit", "3"]);
+        if let Some(arch) = architecture {
+            args.extend(["--arch", arch.name()]);
+        }
+        let (code, result, _) = cli(&args);
+        assert_eq!(code, 0, "{args:?}: {result}");
+        let mut expected = catalog()
+            .search(
+                query,
+                SearchOptions {
+                    source: Some(0),
+                    mode,
+                    architecture,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .collect::<winlex_core::Result<Vec<_>>>()
+            .unwrap();
+        expected.sort_unstable_by(winlex_core::SearchMatch::compare);
+        assert_eq!(result["result"]["total"], expected.len());
+        assert_eq!(result["result"]["offset"], 1);
+        assert_eq!(result["result"]["limit"], 3);
+        let page: Vec<_> = expected.into_iter().skip(1).take(3).collect();
+        assert_eq!(
+            result["result"]["matches"],
+            serde_json::to_value(page).unwrap()
+        );
+    }
+}
+
+#[test]
 fn duplicate_inputs_and_numeric_source_selectors() {
     let path = input();
     let path = path.to_str().unwrap();
@@ -497,6 +555,93 @@ fn exact_selection_does_not_fall_back_to_case_insensitive_search() {
     assert_eq!(code, 0);
     assert!(empty["result"]["total"].as_u64().unwrap() > 100);
     assert!(empty["result"]["matches"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn response_writer_failures_preserve_text_and_json_exit_codes() {
+    struct Failing(std::io::ErrorKind);
+    impl std::io::Write for Failing {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::new(self.0, "writer probe"))
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    for json in [false, true] {
+        for kind in [
+            std::io::ErrorKind::BrokenPipe,
+            std::io::ErrorKind::PermissionDenied,
+        ] {
+            let expected = if !json && kind == std::io::ErrorKind::BrokenPipe {
+                0
+            } else {
+                4
+            };
+            let mut args = vec![input().into_os_string(), "summary".into()];
+            if json {
+                args.push("--json".into());
+            }
+            let mut err = Vec::new();
+            assert_eq!(
+                winlex_cli::run(args, &mut Failing(kind), &mut err),
+                expected
+            );
+            if expected == 0 {
+                assert!(err.is_empty());
+            } else {
+                assert!(
+                    String::from_utf8(err)
+                        .unwrap()
+                        .starts_with("output error: ")
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn json_commands_preserve_the_envelope_and_paged_result_shapes() {
+    for args in [
+        vec!["summary"],
+        vec!["search", "CreateFileW", "--name"],
+        vec!["show", "CreateFileW", "--arch", "x64"],
+        vec!["layout", "DCB", "--arch", "x64"],
+        vec!["vtable", "IStream", "--arch", "x64"],
+        vec!["references", "LPOFNHOOKPROC", "--arch", "x64"],
+    ] {
+        let (code, response, err) = cli(&args);
+        assert_eq!(code, 0, "{args:?}: {response}");
+        assert!(err.is_empty());
+        let object = response.as_object().unwrap();
+        assert_eq!(object.len(), 5);
+        for field in ["schema", "ok", "sources", "command", "result"] {
+            assert!(object.contains_key(field), "{args:?}: {field}");
+        }
+        assert_eq!(response["schema"], "winlex-cli-7");
+        assert_eq!(response["ok"], true);
+        assert_eq!(response["command"], args[0]);
+        assert_eq!(response["sources"].as_array().unwrap().len(), 1);
+        if matches!(args[0], "search" | "references") {
+            let result = &response["result"];
+            let page = if args[0] == "references" {
+                assert_eq!(result["architecture"], "x64");
+                assert!(result["unresolved_type_uses"].is_u64());
+                assert!(result["scope"].is_string());
+                &result["page"]
+            } else {
+                result
+            };
+            assert_eq!(page["offset"], 0);
+            assert_eq!(page["limit"], 50);
+            assert!(page["total"].as_u64().unwrap() > 0);
+            for row in page["matches"].as_array().unwrap() {
+                assert!(row["id"].is_object());
+                assert!(row["evidence"].is_array());
+                assert!(row.get("quality").is_none());
+            }
+        }
+    }
 }
 
 #[test]

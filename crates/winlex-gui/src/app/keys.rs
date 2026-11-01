@@ -2,7 +2,7 @@
 //!
 //! Semantic keys are resolved before the dialog manager sees them. Controls
 //! keep their default behavior for every key the table does not claim.
-use super::{catalog, document, read, workspace};
+use super::{catalog, panel, read, workspace};
 use crate::native::*;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -47,9 +47,22 @@ pub(super) fn translate(msg: &MSG) -> bool {
 }
 
 fn region(hwnd: HWND) -> Region {
-    let (panel, tabs) = read(|a| (a.sidebar.owner(hwnd), a.workspace.tabs));
-    if let Some(region) = panel.as_ref().and_then(|p| p.region(hwnd)) {
-        return region;
+    let (search, results, tabs) = read(|a| {
+        (
+            a.sidebar.search.clone(),
+            a.sidebar.panel(panel::SEARCH_PANEL).list.hwnd,
+            a.workspace.tabs,
+        )
+    });
+    if let Some(search) = search
+        && hwnd == search.input
+    {
+        return Region::SearchEntry {
+            composing: search.composing.get(),
+        };
+    }
+    if hwnd == results {
+        return Region::Results;
     }
     if hwnd == tabs {
         return Region::Tabs;
@@ -62,7 +75,11 @@ fn dispatch(action: Action) {
         Action::Search => catalog::search(),
         Action::Preview => catalog::open_selected(catalog::Open::Preview),
         Action::Pin => catalog::open_selected(catalog::Open::Pin),
-        Action::FocusDocument => document::focus_document(workspace::active()),
+        Action::FocusDocument => {
+            if let Some(document) = workspace::view(workspace::active()) {
+                document.focus();
+            }
+        }
     }
 }
 

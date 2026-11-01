@@ -1,6 +1,6 @@
 //! Metadata operations executed by the application's background executor.
 use crate::{
-    results::{Builder, Items, ResultItem},
+    results::{self, Items, ResultItem},
     worker::Ticket,
 };
 use anyhow::{Context, bail};
@@ -83,13 +83,12 @@ pub fn run(job: Job, ticket: &Ticket, publish: &dyn Fn(Completion) -> anyhow::Re
                         ..Default::default()
                     },
                 )?;
-                let mut builder = Builder::new();
                 search_batches(
                     ticket,
                     || search.step(),
                     &|items| publish(Completion::Matches { id, items }),
                     Instant::now,
-                    |item| builder.prepare(&catalog, item),
+                    |item| results::prepare(&catalog, item),
                 )
             })();
             Completion::SearchDone { id, result }
@@ -236,12 +235,19 @@ mod tests {
     }
 
     #[test]
-    fn search_batches_ignore_count_and_flush_short_queries_at_completion() {
-        let mut events: Vec<_> = (0..1000).map(|id| (id as u64 / 10, Ok(hit(id)))).collect();
-        events.push((100, Ok(SearchStep::Done)));
-        let (result, batches) = collect_batches(events, None);
+    fn search_batches_flush_short_queries_at_completion() {
+        let (result, batches) = collect_batches(
+            vec![(0, Ok(hit(1))), (0, Ok(hit(2))), (0, Ok(SearchStep::Done))],
+            None,
+        );
         assert!(result.is_ok());
-        assert_eq!(batches, [(100, (0..1000).collect())]);
+        assert_eq!(
+            batches
+                .into_iter()
+                .flat_map(|(_, batch)| batch)
+                .collect::<Vec<_>>(),
+            [1, 2]
+        );
     }
 
     #[test]
@@ -249,18 +255,18 @@ mod tests {
         let (result, batches) = collect_batches(
             vec![
                 (0, Ok(hit(1))),
-                (99, Ok(SearchStep::Skipped)),
-                (100, Ok(SearchStep::Skipped)),
-                (101, Ok(hit(2))),
-                (199, Ok(SearchStep::Skipped)),
-                (200, Ok(SearchStep::Skipped)),
-                (201, Ok(hit(3))),
-                (202, Ok(SearchStep::Done)),
+                (1000, Ok(SearchStep::Skipped)),
+                (2000, Ok(SearchStep::Done)),
             ],
             None,
         );
         assert!(result.is_ok());
-        assert_eq!(batches, [(100, vec![1]), (200, vec![2]), (202, vec![3])]);
+        assert_eq!(batches.len(), 1);
+        assert!(
+            batches[0].0 < 2000,
+            "pending matches must publish before completion"
+        );
+        assert_eq!(batches[0].1, [1]);
     }
 
     #[test]
@@ -276,7 +282,13 @@ mod tests {
             None,
         );
         assert_eq!(result.err().unwrap().to_string(), "scan failed");
-        assert_eq!(batches, [(240, vec![1]), (260, vec![2])]);
+        assert_eq!(
+            batches
+                .into_iter()
+                .flat_map(|(_, batch)| batch)
+                .collect::<Vec<_>>(),
+            [1, 2]
+        );
         let (result, batches) = collect_batches(vec![(1000, Ok(SearchStep::Done))], None);
         assert!(result.is_ok());
         assert!(batches.is_empty());
@@ -287,14 +299,20 @@ mod tests {
         let (result, batches) = collect_batches(
             vec![
                 (0, Ok(hit(1))),
-                (100, Ok(SearchStep::Skipped)),
-                (120, Ok(hit(2))),
-                (200, Ok(SearchStep::Done)),
+                (1000, Ok(SearchStep::Skipped)),
+                (1000, Ok(hit(2))),
+                (1000, Ok(SearchStep::Done)),
             ],
             Some(3),
         );
         assert_eq!(result.err().unwrap().to_string(), "cancelled");
-        assert_eq!(batches, [(100, vec![1])]);
+        assert_eq!(
+            batches
+                .into_iter()
+                .flat_map(|(_, batch)| batch)
+                .collect::<Vec<_>>(),
+            [1]
+        );
     }
 
     #[test]

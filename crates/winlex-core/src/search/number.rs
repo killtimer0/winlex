@@ -82,17 +82,13 @@ impl NumberQuery {
     fn decimal(text: &str, body: &str) -> Result<Self> {
         let mut parts = body.split(['e', 'E']);
         let mantissa = parts.next().unwrap();
-        parts
-            .next()
-            .map(|s| {
-                let digits = s.strip_prefix(['+', '-']).unwrap_or(s);
-                ensure!(
-                    !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()),
-                    "invalid decimal exponent"
-                );
-                Ok::<_, anyhow::Error>(())
-            })
-            .transpose()?;
+        if let Some(exponent) = parts.next() {
+            let digits = exponent.strip_prefix(['+', '-']).unwrap_or(exponent);
+            ensure!(
+                !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()),
+                "invalid decimal exponent"
+            );
+        }
         ensure!(parts.next().is_none(), "invalid decimal exponent");
         let mut digits = 0;
         let mut point = false;
@@ -124,60 +120,13 @@ impl NumberQuery {
         value: &Value,
         architecture: Option<Architecture>,
         mask: i32,
+        op: Comparison,
     ) -> Option<super::MatchQuality> {
-        use Value::*;
-        let (bits, unsigned) = match value {
-            EnumValue(_, value) => return self.matches(value, architecture, mask),
-            F32(_) | F64(_) => {
-                return self
-                    .compare(value, architecture, mask, Comparison::Equal)
-                    .then_some(super::MatchQuality::Float);
-            }
-            U8(v) => (8, *v as u64),
-            I8(v) => (8, *v as u8 as u64),
-            U16(v) => (16, *v as u64),
-            I16(v) => (16, *v as u16 as u64),
-            U32(v) => (32, *v as u64),
-            I32(v) => (32, *v as u32 as u64),
-            U64(v) => (64, *v),
-            I64(v) => (64, *v as u64),
-            USize(_) | ISize(_) => {
-                return [Architecture::X86, Architecture::X64, Architecture::Arm64]
-                    .into_iter()
-                    .filter(|&a| architecture.map_or(a.supports(mask), |selected| a == selected))
-                    .find_map(|a| {
-                        let value = match (value, a) {
-                            (USize(v), Architecture::X86) => U32(u32::try_from(*v).ok()?),
-                            (ISize(v), Architecture::X86) => I32(i32::try_from(*v).ok()?),
-                            (USize(v), _) => U64(*v),
-                            (ISize(v), _) => I64(*v),
-                            _ => unreachable!(),
-                        };
-                        self.matches(&value, Some(a), mask)
-                    });
-            }
-            _ => return None,
-        };
-        let Self::Integer {
-            negative,
-            magnitude,
-        } = self
-        else {
-            return None;
-        };
-        let max = u64::MAX >> (64 - bits);
-        let expected = if *negative {
-            if *magnitude > 1u64 << (bits - 1) {
-                return None;
-            }
-            0u64.wrapping_sub(*magnitude) & max
-        } else {
-            if *magnitude > max {
-                return None;
-            }
-            *magnitude
-        };
-        (unsigned == expected).then_some(super::MatchQuality::Integer)
+        self.compare(value, architecture, mask, op)
+            .then_some(match self {
+                Self::Integer { .. } => super::MatchQuality::Integer,
+                Self::Float { .. } => super::MatchQuality::Float,
+            })
     }
     pub fn is_nan(&self) -> bool {
         matches!(self, Self::Float { wide: Some(value), .. } if value.is_nan())
@@ -213,12 +162,28 @@ impl NumberQuery {
                 }
             });
         }
-        if matches!(value, Value::F32(_) | Value::F64(_)) {
+        if matches!(value, Value::USize(_) | Value::ISize(_)) {
+            return Architecture::ALL
+                .into_iter()
+                .filter(|&a| architecture.map_or(a.supports(mask), |selected| a == selected))
+                .any(|a| {
+                    let value = match (value, a) {
+                        (Value::USize(v), Architecture::X86) => {
+                            u32::try_from(*v).ok().map(Value::U32)
+                        }
+                        (Value::ISize(v), Architecture::X86) => {
+                            i32::try_from(*v).ok().map(Value::I32)
+                        }
+                        (Value::USize(v), _) => Some(Value::U64(*v)),
+                        (Value::ISize(v), _) => Some(Value::I64(*v)),
+                        _ => unreachable!(),
+                    };
+                    value.is_some_and(|value| self.compare(&value, Some(a), mask, op))
+                });
+        }
+        let Some(integer) = crate::integer(value) else {
             return false;
-        }
-        if op == Comparison::Equal {
-            return self.matches(value, architecture, mask).is_some();
-        }
+        };
         let Self::Integer {
             negative,
             magnitude,
@@ -226,50 +191,34 @@ impl NumberQuery {
         else {
             unreachable!()
         };
+        if op == Comparison::Equal {
+            let bits = match value {
+                Value::U8(_) | Value::I8(_) => 8,
+                Value::U16(_) | Value::I16(_) => 16,
+                Value::U32(_) | Value::I32(_) => 32,
+                _ => 64,
+            };
+            let max = u64::MAX >> (64 - bits);
+            let expected = if *negative {
+                if *magnitude > 1u64 << (bits - 1) {
+                    return false;
+                }
+                0u64.wrapping_sub(*magnitude) & max
+            } else {
+                if *magnitude > max {
+                    return false;
+                }
+                *magnitude
+            };
+            return integer as u64 & max == expected;
+        }
         let bound = if *negative {
             -(*magnitude as i128)
         } else {
             *magnitude as i128
         };
-        let integer = match value {
-            Value::I8(v) => *v as i128,
-            Value::U8(v) => *v as i128,
-            Value::I16(v) => *v as i128,
-            Value::U16(v) => *v as i128,
-            Value::I32(v) => *v as i128,
-            Value::U32(v) => *v as i128,
-            Value::I64(v) => *v as i128,
-            Value::U64(v) => *v as i128,
-            Value::ISize(v) => {
-                if !native_fits(*v as i128, true, architecture, mask) {
-                    return false;
-                }
-                *v as i128
-            }
-            Value::USize(v) => {
-                if !native_fits(*v as i128, false, architecture, mask) {
-                    return false;
-                }
-                *v as i128
-            }
-            _ => return false,
-        };
         op.accepts(Some(integer.cmp(&bound)))
     }
-}
-
-fn native_fits(value: i128, signed: bool, architecture: Option<Architecture>, mask: i32) -> bool {
-    [Architecture::X86, Architecture::X64, Architecture::Arm64]
-        .into_iter()
-        .filter(|&a| architecture.map_or(a.supports(mask), |selected| a == selected))
-        .any(|a| {
-            a != Architecture::X86
-                || if signed {
-                    i32::try_from(value).is_ok()
-                } else {
-                    u32::try_from(value).is_ok()
-                }
-        })
 }
 
 #[cfg(test)]
@@ -278,7 +227,7 @@ mod tests {
     fn hit(query: &str, value: Value) -> bool {
         NumberQuery::compile(query)
             .unwrap()
-            .matches(&value, None, Architecture::ALL_MASK)
+            .matches(&value, None, Architecture::ALL_MASK, Comparison::Equal)
             .is_some()
     }
     #[test]
@@ -336,6 +285,36 @@ mod tests {
             assert!(NumberQuery::compile(query).is_err(), "{query}");
         }
     }
+    #[test]
+    fn decimal_exponent_validation_preserves_diagnostics_and_zero_extremes() {
+        for text in [
+            "1e", "1e+", "1e-", "1e2e3", "1e+2E-3", "1e１２", "1e 2", "1..0e+",
+        ] {
+            assert_eq!(
+                NumberQuery::compile(text).err().unwrap().to_string(),
+                "invalid decimal exponent",
+                "{text}"
+            );
+        }
+        for text in ["1..0e2", ".e2"] {
+            assert_eq!(
+                NumberQuery::compile(text).err().unwrap().to_string(),
+                "invalid decimal number",
+                "{text}"
+            );
+        }
+        for text in ["1e9999", "1e-9999"] {
+            assert_eq!(
+                NumberQuery::compile(text).err().unwrap().to_string(),
+                "float out of range",
+                "{text}"
+            );
+        }
+        for text in ["0e9999", "-0E-9999", "+0.0e+9999"] {
+            assert!(hit(text, Value::F64(0.0)), "{text}");
+        }
+    }
+
     #[test]
     fn floats_compare_in_the_declared_type_without_implicit_intervals() {
         assert!(hit("1.5", Value::F64(1.5)));
@@ -423,19 +402,92 @@ mod tests {
         );
     }
     #[test]
+    fn equality_uses_storage_bits_but_ordering_uses_signed_values() {
+        use windows_metadata::TypeName;
+        for (value, text, quality) in [
+            (Value::I8(-1), "255", super::super::MatchQuality::Integer),
+            (
+                Value::ISize(-1),
+                "0xffffffff",
+                super::super::MatchQuality::Integer,
+            ),
+            (Value::F32(1.5), "1.5", super::super::MatchQuality::Float),
+        ] {
+            let query = NumberQuery::compile(text).unwrap();
+            for value in [
+                value.clone(),
+                Value::EnumValue(TypeName::named("N", "E"), Box::new(value)),
+            ] {
+                assert_eq!(
+                    query.matches(&value, Some(Architecture::X86), 7, Comparison::Equal),
+                    Some(quality.clone())
+                );
+                assert!(query.compare(&value, Some(Architecture::X86), 7, Comparison::Equal));
+                if quality == super::super::MatchQuality::Integer {
+                    assert!(query.compare(&value, Some(Architecture::X86), 7, Comparison::Less));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn native_values_must_fit_at_least_one_applicable_architecture_for_every_operator() {
+        let query = NumberQuery::compile("0").unwrap();
+        for value in [
+            Value::ISize(i32::MAX as i64 + 1),
+            Value::USize(u32::MAX as u64 + 1),
+        ] {
+            for mask in 0..8 {
+                for op in [
+                    Comparison::Equal,
+                    Comparison::Less,
+                    Comparison::LessEqual,
+                    Comparison::Greater,
+                    Comparison::GreaterEqual,
+                ] {
+                    let ordered_hit = matches!(op, Comparison::Greater | Comparison::GreaterEqual);
+                    assert_eq!(
+                        query.compare(&value, None, mask, op),
+                        mask & 6 != 0 && ordered_hit
+                    );
+                    assert!(!query.compare(&value, Some(Architecture::X86), mask, op));
+                    for arch in [Architecture::X64, Architecture::Arm64] {
+                        assert_eq!(query.compare(&value, Some(arch), mask, op), ordered_hit);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn native_integer_widths_follow_target_architecture() {
         let q = NumberQuery::compile("0xffffffff").unwrap();
         assert!(
-            q.matches(&Value::ISize(-1), Some(Architecture::X86), 7)
-                .is_some()
+            q.matches(
+                &Value::ISize(-1),
+                Some(Architecture::X86),
+                7,
+                Comparison::Equal
+            )
+            .is_some()
         );
         assert!(
-            q.matches(&Value::ISize(-1), Some(Architecture::X64), 7)
-                .is_none()
+            q.matches(
+                &Value::ISize(-1),
+                Some(Architecture::X64),
+                7,
+                Comparison::Equal
+            )
+            .is_none()
         );
         assert!(
-            q.matches(&Value::ISize(-1), None, Architecture::X64.bit())
-                .is_none()
+            q.matches(
+                &Value::ISize(-1),
+                None,
+                Architecture::X64.bit(),
+                Comparison::Equal
+            )
+            .is_none()
         );
     }
 }

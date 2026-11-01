@@ -27,6 +27,12 @@ pub(super) struct Hit {
     pub evidence: Vec<MatchEvidence>,
 }
 impl Hit {
+    pub fn new(quality: MatchQuality, field: EvidenceField, indices: Option<Vec<u32>>) -> Self {
+        Self {
+            quality,
+            evidence: vec![MatchEvidence { field, indices }],
+        }
+    }
     pub fn filter() -> Self {
         Self {
             quality: MatchQuality::Filter,
@@ -60,18 +66,46 @@ impl Hit {
 
 pub(super) enum TextQuery {
     Fuzzy(NameMatcher),
-    Literal {
-        text: String,
-        op: Operator,
-        case_sensitive: bool,
-    },
+    Literal(LiteralQuery),
+}
+pub(super) struct LiteralQuery {
+    pub text: String,
+    op: Operator,
+    case_sensitive: bool,
 }
 impl TextQuery {
     pub fn new(text: &str, op: Operator, case_sensitive: bool) -> Self {
         if op == Operator::Fuzzy {
             return Self::Fuzzy(NameMatcher::new(text, case_sensitive));
         }
-        Self::Literal {
+        Self::Literal(LiteralQuery::new(text, op, case_sensitive))
+    }
+    pub fn matches(&mut self, text: &str, field: EvidenceField) -> Option<Hit> {
+        match self {
+            Self::Literal(query) => query.matches(text, field),
+            Self::Fuzzy(matcher) => {
+                let match_field = if field == EvidenceField::FullName {
+                    MatchField::FullName
+                } else {
+                    MatchField::Name
+                };
+                let mut indices = Vec::new();
+                let score = matcher.indices(text, &mut indices)?;
+                Some(Hit::new(
+                    MatchQuality::Fuzzy {
+                        score,
+                        field: match_field,
+                    },
+                    field,
+                    Some(indices),
+                ))
+            }
+        }
+    }
+}
+impl LiteralQuery {
+    pub fn new(text: &str, op: Operator, case_sensitive: bool) -> Self {
+        Self {
             text: if case_sensitive {
                 text.into()
             } else {
@@ -81,33 +115,8 @@ impl TextQuery {
             case_sensitive,
         }
     }
-    pub fn matches(&mut self, text: &str, field: EvidenceField) -> Option<Hit> {
-        let (query, op, case_sensitive) = match self {
-            Self::Literal {
-                text,
-                op,
-                case_sensitive,
-            } => (text.as_str(), *op, *case_sensitive),
-            Self::Fuzzy(matcher) => {
-                let match_field = if field == EvidenceField::FullName {
-                    MatchField::FullName
-                } else {
-                    MatchField::Name
-                };
-                let mut indices = Vec::new();
-                let score = matcher.indices(text, &mut indices)?;
-                return Some(Hit {
-                    quality: MatchQuality::Fuzzy {
-                        score,
-                        field: match_field,
-                    },
-                    evidence: vec![MatchEvidence {
-                        field,
-                        indices: Some(indices),
-                    }],
-                });
-            }
-        };
+    pub fn matches(&self, text: &str, field: EvidenceField) -> Option<Hit> {
+        let (query, op, case_sensitive) = (self.text.as_str(), self.op, self.case_sensitive);
         let normalized;
         let value = if case_sensitive {
             text
@@ -150,17 +159,12 @@ impl TextQuery {
             EvidenceField::Value if value == query => MatchQuality::StringExact,
             _ => MatchQuality::Text,
         };
-        Some(Hit {
-            quality,
-            evidence: vec![MatchEvidence {
-                field,
-                indices: Some(indices),
-            }],
-        })
+        Some(Hit::new(quality, field, Some(indices)))
     }
 }
 
 pub(super) enum Condition {
+    Name(super::NameQuery),
     Text(EvidenceField, TextQuery),
     Number(NumberQuery, Comparison),
     Guid(GuidQuery),
@@ -259,21 +263,16 @@ impl Condition {
                                 "value" => EvidenceField::Value,
                                 _ => EvidenceField::Namespace,
                             };
-                            let valid = match field {
-                                EvidenceField::Name | EvidenceField::FullName => matches!(
-                                    op,
-                                    Operator::Equal
-                                        | Operator::Contains
-                                        | Operator::StartsWith
-                                        | Operator::Fuzzy
-                                ),
-                                EvidenceField::Namespace => {
-                                    matches!(op, Operator::Equal | Operator::Within)
+                            let valid = match op {
+                                Operator::Equal => true,
+                                Operator::Contains | Operator::StartsWith => {
+                                    field != EvidenceField::Namespace
                                 }
-                                _ => matches!(
-                                    op,
-                                    Operator::Equal | Operator::Contains | Operator::StartsWith
-                                ),
+                                Operator::Fuzzy => {
+                                    matches!(field, EvidenceField::Name | EvidenceField::FullName)
+                                }
+                                Operator::Within => field == EvidenceField::Namespace,
+                                _ => false,
                             };
                             kind = QueryErrorKind::Operator;
                             anyhow::ensure!(valid, "operator is not supported for this field");
@@ -338,6 +337,14 @@ impl Condition {
     }
     pub fn needs(&self, field: EvidenceField) -> bool {
         match self {
+            Self::Name(query) => {
+                field
+                    == if query.field == MatchField::FullName {
+                        EvidenceField::FullName
+                    } else {
+                        EvidenceField::Name
+                    }
+            }
             Self::Text(own, _) => *own == field,
             Self::Number(_, _) => field == EvidenceField::Value,
             Self::Guid(_) => field == EvidenceField::Guid,
@@ -348,6 +355,7 @@ impl Condition {
     }
     pub fn matches(&mut self, candidate: &Candidate<'_, '_>) -> Option<Hit> {
         match self {
+            Self::Name(query) => query.matches(candidate.row.name(), candidate.full_name),
             Self::All(terms) => {
                 let mut hit = Hit::filter();
                 for term in terms {
@@ -370,34 +378,22 @@ impl Condition {
                     EvidenceField::Name => candidate.row.name(),
                     EvidenceField::FullName => candidate.full_name,
                     EvidenceField::Namespace => candidate.namespace,
-                    EvidenceField::Value => candidate.string.as_deref()?,
+                    EvidenceField::Value => string_value(candidate.value.as_ref()?)?,
                     EvidenceField::Guid => unreachable!(),
                 };
                 query.matches(text, *field)
             }
             Self::Number(query, op) => query
-                .compare(
+                .matches(
                     candidate.value.as_ref()?,
                     candidate.architecture,
                     candidate.row.architecture_mask(),
                     *op,
                 )
-                .then(|| Hit {
-                    quality: MatchQuality::Filter,
-                    evidence: vec![MatchEvidence {
-                        field: EvidenceField::Value,
-                        indices: None,
-                    }],
-                }),
+                .map(|quality| Hit::new(quality, EvidenceField::Value, None)),
             Self::Guid(query) => query
                 .matches(candidate.guid.as_deref()?)
-                .map(|quality| Hit {
-                    quality,
-                    evidence: vec![MatchEvidence {
-                        field: EvidenceField::Guid,
-                        indices: None,
-                    }],
-                }),
+                .map(|quality| Hit::new(quality, EvidenceField::Guid, None)),
             Self::Category(category) => (candidate.row.category() == *category).then(Hit::filter),
             Self::Source(source) => (candidate.source == *source).then(Hit::filter),
             Self::Architecture(arch) => arch
@@ -414,13 +410,12 @@ pub(super) struct Candidate<'a, 'db> {
     pub source: usize,
     pub architecture: Option<Architecture>,
     pub value: Option<Value>,
-    pub string: Option<String>,
     pub guid: Option<String>,
 }
 
-pub(super) fn string_value(value: &Value) -> Option<String> {
+fn string_value(value: &Value) -> Option<&str> {
     match value {
-        Value::Utf8(text) | Value::Utf16(text) => Some(text.clone()),
+        Value::Utf8(text) | Value::Utf16(text) => Some(text),
         Value::EnumValue(_, inner) => string_value(inner),
         _ => None,
     }

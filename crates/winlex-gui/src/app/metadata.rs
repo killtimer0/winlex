@@ -6,7 +6,11 @@ use crate::{
     resources::{self, *},
     tasks::Job,
 };
-use std::{cell::RefCell, rc::Rc, sync::Arc};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+    sync::Arc,
+};
 use winlex_core::{Architecture, Catalog, EntityId};
 
 mod info;
@@ -25,6 +29,10 @@ struct State {
     content: Option<Rc<crate::rich_text::Content>>,
 }
 pub(super) struct MetadataView {
+    pub id: u64,
+    pub hwnd: HWND,
+    pub placement: Cell<Option<layout::Placement>>,
+    pub preview: Cell<bool>,
     state: RefCell<State>,
     icons: RefCell<Option<Rc<crate::icons::WindowIcons>>>,
     editor: HWND,
@@ -32,20 +40,24 @@ pub(super) struct MetadataView {
     info: info::Info,
 }
 pub(super) fn binding(hwnd: HWND) -> Option<Binding> {
-    Some(workspace::view(hwnd)?.state.borrow().binding.clone())
+    Some(workspace::view(hwnd)?.binding())
 }
 pub(super) fn find(binding: &Binding) -> Option<HWND> {
-    workspace::views().into_iter().find_map(|(hwnd, content)| {
+    workspace::views().into_iter().find_map(|content| {
         let state = content.state.borrow();
         let candidate = &state.binding;
         (candidate.id == binding.id
             && candidate.architecture == binding.architecture
             && Arc::ptr_eq(&candidate.catalog, &binding.catalog))
-        .then_some(hwnd)
+        .then_some(content.hwnd)
     })
 }
 pub(super) fn open(name: &str, binding: Binding, preview: bool) -> anyhow::Result<HWND> {
     let content = MetadataView {
+        id: workspace::next_id(),
+        hwnd: std::ptr::null_mut(),
+        placement: Cell::new(None),
+        preview: Cell::new(preview),
         icons: RefCell::new(None),
         state: RefCell::new(State {
             binding,
@@ -58,36 +70,40 @@ pub(super) fn open(name: &str, binding: Binding, preview: bool) -> anyhow::Resul
         info: info::Info::default(),
     };
     let title = content.title();
-    let hwnd = workspace::create_document(&title, content, preview)?;
-    workspace::view(hwnd).unwrap().request(hwnd);
-    Ok(hwnd)
-}
-pub(super) fn rebind(hwnd: HWND, name: &str, binding: Binding) -> bool {
-    let Some(view) = workspace::view(hwnd) else {
-        return false;
-    };
-    {
-        let mut state = view.state.borrow_mut();
-        state.binding = binding;
-        state.name = name.into();
-    }
-    view.fill_architectures();
-    let binding = view.state.borrow().binding.clone();
-    if let Err(error) = view.info.fill(&binding) {
-        write(|a| a.failure = Some(error));
-    }
-    if let Err(error) = view.update_icons(hwnd) {
-        write(|a| a.failure = Some(error));
-    }
-    view.request(hwnd);
-    true
+    let content = workspace::create_document(&title, content)?;
+    content.prepare();
+    content.request();
+    Ok(content.hwnd)
 }
 impl MetadataView {
+    pub(super) fn is_live(&self) -> bool {
+        read(|a| a.workspace.documents.iter().any(|doc| doc.id == self.id))
+    }
+    pub(super) fn binding(&self) -> Binding {
+        self.state.borrow().binding.clone()
+    }
+    pub(super) fn rebind(&self, name: &str, binding: Binding) {
+        {
+            let mut state = self.state.borrow_mut();
+            state.binding = binding;
+            state.name = name.into();
+        }
+        self.fill_architectures();
+        let binding = self.binding();
+        if let Err(error) = self.info.fill(&binding) {
+            write(|a| a.failure = Some(error));
+        }
+        if let Err(error) = self.update_icons() {
+            write(|a| a.failure = Some(error));
+        }
+        self.request();
+    }
     pub(super) fn title(&self) -> String {
         let state = self.state.borrow();
         format!("{} - {}", state.name, state.binding.architecture.name())
     }
-    fn update_icons(&self, hwnd: HWND) -> anyhow::Result<()> {
+    fn update_icons(&self) -> anyhow::Result<()> {
+        let hwnd = self.hwnd;
         let icon = {
             let state = self.state.borrow();
             let entity = state.binding.catalog.entity(state.binding.id)?;
@@ -125,21 +141,21 @@ impl MetadataView {
             }
         }
     }
-    fn request(&self, hwnd: HWND) {
-        let Some(id) = workspace::document(hwnd, |d| d.id) else {
+    fn request(&self) {
+        if !self.is_live() {
             return;
-        };
+        }
         let ticket = write(|a| a.session.ticket());
         let (binding, previous) = {
             let mut state = self.state.borrow_mut();
             let previous = state.ticket.replace(ticket.id);
             (state.binding.clone(), previous)
         };
-        set_text(hwnd, &self.title());
+        set_text(self.hwnd, &self.title());
         workspace::refresh_document_tabs();
-        self.layout(hwnd);
+        self.layout();
         let job = Job::Describe {
-            document: id,
+            document: self.id,
             catalog: binding.catalog,
             entity: binding.id,
             arch: binding.architecture,
@@ -160,7 +176,7 @@ impl MetadataView {
             catalog::set_status(format!("{error:#}"));
         }
     }
-    fn select_architecture(&self, hwnd: HWND, code: u32) {
+    fn select_architecture(&self, code: u32) {
         let binding = self.state.borrow().binding.clone();
         let supported: Vec<_> = super::architecture::supported(binding.architecture_mask).collect();
         if code == CBN_SELENDCANCEL {
@@ -186,7 +202,7 @@ impl MetadataView {
         }
         if arch != binding.architecture {
             self.state.borrow_mut().binding.architecture = arch;
-            self.request(hwnd);
+            self.request();
         }
     }
 }
@@ -233,6 +249,7 @@ impl MetadataView {
         true
     }
     pub(super) fn create(&mut self, hwnd: HWND) -> anyhow::Result<()> {
+        self.hwnd = hwnd;
         self.editor = crate::rich_text::create(hwnd, DECLARATION)?;
         self.header = child(
             hwnd,
@@ -247,11 +264,12 @@ impl MetadataView {
         self.fill_architectures();
         let binding = self.state.borrow().binding.clone();
         self.info.fill(&binding)?;
-        self.update_icons(hwnd)?;
+        self.update_icons()?;
         Ok(())
     }
-    pub(super) fn prepare(&self, hwnd: HWND) {
-        if let Err(error) = self.update_icons(hwnd) {
+    pub(super) fn prepare(&self) {
+        let hwnd = self.hwnd;
+        if let Err(error) = self.update_icons() {
             write(|a| a.failure = Some(error));
         }
         let (font, _) = font_for(dpi().window(hwnd));
@@ -262,7 +280,7 @@ impl MetadataView {
             write(|a| a.failure = Some(error));
         }
         crate::rich_text::font(self.editor);
-        self.layout(hwnd);
+        self.layout();
     }
     pub(super) fn recolor(&self) {
         let content = self.state.borrow().content.clone();
@@ -272,7 +290,8 @@ impl MetadataView {
             catalog::set_status(format!("{error:#}"));
         }
     }
-    pub(super) fn layout(&self, hwnd: HWND) {
+    pub(super) fn layout(&self) {
+        let hwnd = self.hwnd;
         let old = old_version(&self.state.borrow().binding);
         show(self.header, old);
         let m = super::metrics(hwnd);
@@ -287,16 +306,16 @@ impl MetadataView {
             write(|a| a.failure = Some(error));
         }
     }
-    pub(super) fn command(&self, hwnd: HWND, id: u16, code: u32) -> bool {
+    pub(super) fn command(&self, id: u16, code: u32) -> bool {
         match id {
-            SELECT_ARCH => self.select_architecture(hwnd, code),
+            SELECT_ARCH => self.select_architecture(code),
             DOCUMENT_MORE if code == BN_CLICKED => {
-                if let Err(error) = self.info.menu(hwnd) {
+                if let Err(error) = self.info.menu(self.hwnd) {
                     catalog::set_status(format!("{error:#}"));
                 }
             }
             DOCUMENT_ONLINE if code == BN_CLICKED => {
-                if let Err(error) = self.info.open_online(hwnd) {
+                if let Err(error) = self.info.open_online(self.hwnd) {
                     catalog::set_status(format!("{error:#}"));
                 }
             }

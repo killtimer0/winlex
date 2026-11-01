@@ -1,11 +1,10 @@
 //! Document-facing architecture order and default selection policy.
 use winlex_core::Architecture;
 
-/// Canonical display and fallback order; a user preference is applied separately.
-const ORDER: [Architecture; 3] = [Architecture::X86, Architecture::X64, Architecture::Arm64];
-
 pub(super) fn supported(mask: i32) -> impl Iterator<Item = Architecture> {
-    ORDER.into_iter().filter(move |arch| arch.supports(mask))
+    Architecture::ALL
+        .into_iter()
+        .filter(move |arch| arch.supports(mask))
 }
 
 /// The preferred architecture when supported, otherwise the first canonical one.

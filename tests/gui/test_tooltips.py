@@ -101,5 +101,17 @@ def test_infotips_include_values_and_full_guids(launch, settings):
         assert app.count() > 0
         tip = infotip(app, app.results, 0, settings[2] / ('value-tooltip-%d.bmp' % index))
         assert any(label in tip for label in labels), tip
+        prefixes = [
+            ('Type: ', '类型：'), ('Namespace: ', '命名空间：'),
+            ('Owner: ', '所属对象：'), ('Value: ', '值：'),
+            ('GUID: ', 'GUID：'), ('Architecture: ', '架构：'),
+            ('Path: ', '路径：'),
+        ]
+        lines = tip.split('\r\n')
+        assert lines[1] == '', tip
+        fields = [next(i for i, names in enumerate(prefixes) if line.startswith(names))
+                  for line in lines[2:]]
+        assert fields == sorted(set(fields)), tip
+        assert fields[0] == 0 and fields[-1] == 6, tip
         if query.startswith('guid'):
             assert '0000000c-0000-0000-c000-000000000046' in tip.lower()

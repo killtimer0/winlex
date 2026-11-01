@@ -69,30 +69,19 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
     let mut offset = 0;
     let mut positional = vec![];
     let mut expression = None;
-    let mut i = 0;
+    let mut args = args.iter();
     let text = |s: &OsString| {
         s.to_str()
             .map(str::to_owned)
             .ok_or("argument must be valid Unicode".to_owned())
     };
-    while i < args.len() {
-        let arg = &args[i];
+    while let Some(arg) = args.next() {
         let a = arg.to_str().unwrap_or("");
-        i += 1;
         match a {
-            "--where" => {
-                if mode.is_some() {
-                    return Err("choose only one search mode".into());
-                }
-                mode = Some(SearchMode::Condition);
-                expression = Some(text(args.get(i).ok_or("missing value for --where")?)?);
-                i += 1;
-            }
             "--source" | "--arch" | "--limit" | "--offset" => {
                 let v = args
-                    .get(i)
+                    .next()
                     .ok_or_else(|| format!("missing value for {a}"))?;
-                i += 1;
                 match a {
                     "--source" => source = Some(text(v)?),
                     "--arch" => {
@@ -107,14 +96,18 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
                 }
             }
             "--json" => json = true,
-            "--name" | "--value" | "--guid" => {
+            "--name" | "--value" | "--guid" | "--where" => {
                 if mode.is_some() {
                     return Err("choose only one search mode".into());
                 }
                 mode = Some(match a {
                     "--name" => SearchMode::Name,
                     "--value" => SearchMode::Value,
-                    _ => SearchMode::Guid,
+                    "--guid" => SearchMode::Guid,
+                    _ => {
+                        expression = Some(text(args.next().ok_or("missing value for --where")?)?);
+                        SearchMode::Condition
+                    }
                 });
             }
             _ if a.starts_with("--") => return Err(format!("unknown option {a}")),
@@ -220,25 +213,21 @@ pub fn run(
         .source
         .as_ref()
         .map_or_else(|| q.to_owned(), |s| format!("{s}::{q}"));
-    let options = || SearchOptions {
-        source: None,
-        case_sensitive: false,
-        mode: o.mode,
-        architecture: o.arch,
-        categories: None,
-        cancel: None,
-    };
     let result: winlex_core::Result<Query> = (|| {
         Ok(match o.command.as_str() {
             "summary" => Query::Summary,
             "search" => {
-                let mut opt = options();
-                opt.source = o
-                    .source
-                    .as_deref()
-                    .map(|s| source_index(&db, s))
-                    .transpose()?;
-                let matches = db.search(q, opt)?;
+                let options = SearchOptions {
+                    source: o
+                        .source
+                        .as_deref()
+                        .map(|s| source_index(&db, s))
+                        .transpose()?,
+                    mode: o.mode,
+                    architecture: o.arch,
+                    ..Default::default()
+                };
+                let matches = db.search(q, options)?;
                 let mut matches = matches.collect::<winlex_core::Result<Vec<_>>>()?;
                 matches.sort_unstable_by(winlex_core::SearchMatch::compare);
                 let result = page(matches.into_iter().map(Ok), o.offset, o.limit)?;
@@ -280,13 +269,13 @@ pub fn run(
             Ok(result) => result,
             Err(e) => return error(out, err, true, 3, "query_error", &e.to_string()),
         };
-        let response = Response {
-            schema: "winlex-cli-7",
-            ok: true,
-            sources: db.sources(),
-            command: &o.command,
-            result,
-        };
+        let response = serde_json::json!({
+            "schema": "winlex-cli-7",
+            "ok": true,
+            "sources": db.sources(),
+            "command": o.command,
+            "result": result,
+        });
         serde_json::to_writer_pretty(&mut *out, &response)
             .map_err(std::io::Error::other)
             .and_then(|_| writeln!(out))
@@ -307,14 +296,6 @@ pub fn run(
 }
 mod text;
 #[derive(serde::Serialize)]
-struct Response<'a, T> {
-    schema: &'static str,
-    ok: bool,
-    sources: &'a [winlex_core::Source],
-    command: &'a str,
-    result: T,
-}
-#[derive(serde::Serialize)]
 struct Page {
     total: usize,
     offset: usize,
@@ -330,39 +311,22 @@ enum Query {
     References(winlex_core::EntityId, Page, usize),
 }
 impl Query {
-    fn json(
-        &self,
-        db: &Catalog,
-        arch: Option<Architecture>,
-    ) -> winlex_core::Result<JsonResult<'_>> {
+    fn json(&self, db: &Catalog, arch: Option<Architecture>) -> winlex_core::Result<Value> {
         Ok(match self {
-            Self::Summary => JsonResult::Presentation(winlex_format::summary(db)),
-            Self::Matches(p) => JsonResult::Page(p),
-            Self::Show(id) => JsonResult::Presentation(winlex_format::describe(db, *id, arch)?),
-            Self::Layout(l) => JsonResult::Presentation(winlex_format::layout(l)),
-            Self::Vtable(v) => JsonResult::Presentation(winlex_format::vtable(v)),
-            Self::References(id, p, unresolved) => JsonResult::References {
-                target_id: *id,
-                architecture: arch.unwrap(),
-                page: p,
-                unresolved_type_uses: *unresolved,
-                scope: "field/method/property/event signatures and interface requirements",
-            },
+            Self::Summary => winlex_format::summary(db),
+            Self::Matches(p) => serde_json::to_value(p)?,
+            Self::Show(id) => winlex_format::describe(db, *id, arch)?,
+            Self::Layout(l) => winlex_format::layout(l),
+            Self::Vtable(v) => winlex_format::vtable(v),
+            Self::References(id, p, unresolved) => serde_json::json!({
+                "target_id": id,
+                "architecture": arch.unwrap(),
+                "page": p,
+                "unresolved_type_uses": unresolved,
+                "scope": "field/method/property/event signatures and interface requirements",
+            }),
         })
     }
-}
-#[derive(serde::Serialize)]
-#[serde(untagged)]
-enum JsonResult<'a> {
-    Presentation(Value),
-    Page(&'a Page),
-    References {
-        target_id: winlex_core::EntityId,
-        architecture: Architecture,
-        page: &'a Page,
-        unresolved_type_uses: usize,
-        scope: &'static str,
-    },
 }
 fn page(
     items: impl IntoIterator<Item = winlex_core::Result<winlex_core::SearchMatch>>,
@@ -499,6 +463,94 @@ fn error_detail(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn invoke(args: impl IntoIterator<Item = OsString>) -> (u8, String, String) {
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let exit = run(args, &mut out, &mut err);
+        (
+            exit,
+            String::from_utf8(out).unwrap(),
+            String::from_utf8(err).unwrap(),
+        )
+    }
+
+    #[test]
+    fn search_mode_options_remain_mutually_exclusive_in_both_orders() {
+        for first in ["--name", "--value", "--guid", "--where"] {
+            for second in ["--name", "--value", "--guid", "--where"] {
+                let mut args = vec!["missing.winmd", "search", first];
+                if first == "--where" {
+                    args.push("name = \"X\"");
+                }
+                args.push(second);
+                let (exit, out, err) = invoke(args.into_iter().map(Into::into));
+                assert_eq!(exit, 2, "{first} {second}");
+                assert!(out.is_empty());
+                assert_eq!(err, "invalid_arguments: choose only one search mode\n");
+            }
+        }
+    }
+
+    #[test]
+    fn value_options_consume_one_argument_and_preserve_diagnostics() {
+        for option in ["--where", "--source", "--arch", "--limit", "--offset"] {
+            let (exit, _, err) = invoke(["missing.winmd", "search", option].map(Into::into));
+            assert_eq!(exit, 2);
+            assert_eq!(
+                err,
+                format!("invalid_arguments: missing value for {option}\n")
+            );
+            let (exit, out, err) =
+                invoke(["missing.winmd", "search", option, "--json"].map(Into::into));
+            assert_eq!(exit, if option == "--where" { 3 } else { 2 });
+            if option == "--where" {
+                assert!(out.is_empty());
+                assert!(err.starts_with("input_error: "));
+            } else {
+                assert!(err.is_empty());
+                let out: Value = serde_json::from_str(&out).unwrap();
+                assert_eq!(out["ok"], false);
+            }
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::ffi::OsStringExt;
+            for option in ["--where", "--source", "--arch", "--limit", "--offset"] {
+                let (exit, _, err) = invoke([
+                    "missing.winmd".into(),
+                    "search".into(),
+                    option.into(),
+                    OsString::from_wide(&[0xd800]),
+                ]);
+                assert_eq!(exit, 2);
+                assert_eq!(err, "invalid_arguments: argument must be valid Unicode\n");
+            }
+        }
+    }
+
+    #[test]
+    fn conditional_search_options_may_precede_or_follow_the_command() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../inputs/Windows.Win32.winmd")
+            .into_os_string();
+        let query = "name = \"CreateFileW\"";
+        let before = invoke([
+            "--where".into(),
+            query.into(),
+            path.clone(),
+            "search".into(),
+            "--json".into(),
+        ]);
+        let after = invoke([
+            path,
+            "search".into(),
+            "--json".into(),
+            "--where".into(),
+            query.into(),
+        ]);
+        assert_eq!(before.0, 0, "{}", before.2);
+        assert_eq!(before, after);
+    }
 
     #[test]
     fn type_selection_uses_the_same_category_for_names_and_tokens() {

@@ -23,7 +23,7 @@ struct Accessible {
     cursor: Cell<usize>,
 }
 fn object(s: &Rc<RefCell<State>>, node: Node) -> IAccessible {
-    if let Some(value) = s.borrow().objects.get(&node) {
+    if let Some(Some(value)) = s.borrow_mut().object_slot(node) {
         return value.clone();
     }
     let value: IAccessible = Accessible {
@@ -32,7 +32,9 @@ fn object(s: &Rc<RefCell<State>>, node: Node) -> IAccessible {
         cursor: Cell::new(0),
     }
     .into();
-    s.borrow_mut().objects.insert(node, value.clone());
+    if let Some(slot) = s.borrow_mut().object_slot(node) {
+        *slot = Some(value.clone());
+    }
     value
 }
 pub(super) fn result(s: &Rc<RefCell<State>>, w: usize) -> isize {
@@ -76,7 +78,7 @@ impl Accessible {
                 .borrow()
                 .items
                 .iter()
-                .find(|i| s.borrow().child_ids.get(&i.id) == Some(&id))
+                .find(|i| i.child == id)
                 .map(|i| Node::Tab(i.id))
                 .ok_or_else(|| E_INVALIDARG.into()),
             _ => Err(E_INVALIDARG.into()),

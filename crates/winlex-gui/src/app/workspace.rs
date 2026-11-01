@@ -1,4 +1,5 @@
 //! MDI lifecycle, activation projection and one-shot arrangement commands.
+use super::metadata::MetadataView;
 use super::{document as host, dpi, read, write};
 use crate::{
     layout::{Arrangement, Placement},
@@ -6,11 +7,12 @@ use crate::{
     resources::{self, IDS_PREVIEW, IDS_TAB_CLOSE, IDS_TAB_PIN},
     tabs,
 };
+use std::rc::Rc;
 
 pub(super) struct Workspace {
     pub mdi: HWND,
     pub tabs: HWND,
-    pub documents: Vec<DocumentHost>,
+    pub documents: Vec<Rc<MetadataView>>,
     pub icons: crate::icons::DocumentIcons,
     maximized: bool,
     serial: u64,
@@ -26,30 +28,6 @@ impl Default for Workspace {
             serial: 0,
         }
     }
-}
-pub(super) struct DocumentHost {
-    pub id: u64,
-    pub hwnd: HWND,
-    pub content: std::rc::Rc<super::metadata::MetadataView>,
-    pub placement: Option<Placement>,
-    /// A transient document that the next preview request may replace in place.
-    pub preview: bool,
-}
-pub(super) fn document<T>(hwnd: HWND, inspect: impl FnOnce(&DocumentHost) -> T) -> Option<T> {
-    read(|a| {
-        a.workspace
-            .documents
-            .iter()
-            .find(|d| d.hwnd == hwnd)
-            .map(inspect)
-    })
-}
-pub(super) fn edit_document(hwnd: HWND, edit: impl FnOnce(&mut DocumentHost)) {
-    write(|a| {
-        if let Some(doc) = a.workspace.documents.iter_mut().find(|d| d.hwnd == hwnd) {
-            edit(doc);
-        }
-    });
 }
 
 pub(super) fn active() -> HWND {
@@ -76,7 +54,7 @@ pub(super) fn keep_focus(open: impl FnOnce()) {
         focus(previous);
     }
 }
-pub(super) fn register_document(doc: DocumentHost) {
+pub(super) fn register_document(doc: Rc<MetadataView>) {
     write(|a| a.workspace.documents.push(doc));
 }
 pub(super) fn unregister_document(hwnd: HWND) {
@@ -87,12 +65,12 @@ pub(super) fn unregister_document(hwnd: HWND) {
             .map(|index| docs.remove(index))
     });
     if let Some(doc) = removed {
-        doc.content.cancel();
+        doc.cancel();
     }
 }
 pub(super) fn close_document(hwnd: HWND) {
     let mdi = read(|a| a.workspace.mdi);
-    if document(hwnd, |_| ()).is_some() {
+    if view(hwnd).is_some() {
         let tabs = read(|a| a.workspace.tabs);
         let previous = unsafe { GetFocus() };
         let tab_focus = previous == tabs;
@@ -129,19 +107,12 @@ pub(super) fn preview_document() -> Option<HWND> {
         a.workspace
             .documents
             .iter()
-            .find(|d| d.preview)
+            .find(|d| d.preview.get())
             .map(|d| d.hwnd)
     })
 }
 pub(super) fn pin_document(hwnd: HWND) {
-    let changed = write(|a| {
-        let Some(doc) = a.workspace.documents.iter_mut().find(|d| d.hwnd == hwnd) else {
-            return false;
-        };
-        let was_preview = doc.preview;
-        doc.preview = false;
-        was_preview
-    });
+    let changed = view(hwnd).is_some_and(|doc| doc.preview.replace(false));
     if changed {
         refresh_document_tabs();
     }
@@ -161,20 +132,14 @@ pub(super) fn sync_document_selection() {
     tabs::select(tabs, selected);
 }
 pub(super) fn refresh_document_tabs() {
-    let (tabs, docs) = read(|a| {
-        (
-            a.workspace.tabs,
-            a.workspace
-                .documents
-                .iter()
-                .map(|d| (d.id, d.hwnd, d.content.clone(), d.preview))
-                .collect::<Vec<_>>(),
-        )
-    });
+    let (tabs, docs) = read(|a| (a.workspace.tabs, a.workspace.documents.clone()));
     let mut ordinals = std::collections::HashMap::new();
     let items = docs
         .iter()
-        .map(|(id, hwnd, content, preview)| {
+        .map(|content| {
+            let MetadataView {
+                id, hwnd, preview, ..
+            } = &**content;
             let title = content.title();
             let ordinal = ordinals.entry(title.clone()).or_insert(0);
             *ordinal += 1;
@@ -184,21 +149,18 @@ pub(super) fn refresh_document_tabs() {
                 String::new()
             };
             let title = format!("{title}{suffix}");
-            let mut description = super::metadata::binding(*hwnd)
-                .map(|b| {
-                    format!(
-                        "{} · {:08X}",
-                        b.catalog.sources()[b.id.source_id].path.display(),
-                        b.id.token
-                    )
-                })
-                .unwrap_or_default();
-            if *preview {
+            let b = content.binding();
+            let mut description = format!(
+                "{} · {:08X}",
+                b.catalog.sources()[b.id.source_id].path.display(),
+                b.id.token
+            );
+            if preview.get() {
                 description = format!("{} · {description}", resources::text(IDS_PREVIEW));
             }
             tabs::Item {
                 id: *id,
-                italic: *preview,
+                italic: preview.get(),
                 title,
                 description,
                 icon: send(*hwnd, WM_GETICON, ICON_SMALL as usize, 0) as HICON,
@@ -231,50 +193,33 @@ pub(super) fn tab_notification(n: &tabs::Notification) {
             });
             refresh_document_tabs();
         }
-        tabs::CONTEXT => unsafe {
-            let menu = CreatePopupMenu();
-            if menu.is_null() {
-                return;
+        tabs::CONTEXT => {
+            if let Err(error) = tab_menu(hwnd, n.point) {
+                super::catalog::set_status(format!("{error:#}"));
             }
-            AppendMenuW(
-                menu,
-                MF_STRING,
-                1,
-                resources::wide_text(IDS_TAB_CLOSE).as_ptr(),
-            );
-            if document(hwnd, |d| d.preview) == Some(true) {
-                AppendMenuW(
-                    menu,
-                    MF_STRING,
-                    2,
-                    resources::wide_text(IDS_TAB_PIN).as_ptr(),
-                );
-            }
-            let command = TrackPopupMenu(
-                menu,
-                TPM_RETURNCMD | TPM_RIGHTBUTTON,
-                n.point.x,
-                n.point.y,
-                0,
-                read(|a| a.frame),
-                std::ptr::null(),
-            );
-            DestroyMenu(menu);
-            match command {
-                1 => close_document(hwnd),
-                2 => pin_document(hwnd),
-                _ => {}
-            }
-        },
+        }
         _ => {}
     }
+}
+fn tab_menu(hwnd: HWND, point: POINT) -> anyhow::Result<()> {
+    let menu = Popup::new()?;
+    menu.item(1, resources::wide_text(IDS_TAB_CLOSE), true)?;
+    if view(hwnd).is_some_and(|d| d.preview.get()) {
+        menu.item(2, resources::wide_text(IDS_TAB_PIN), true)?;
+    }
+    match menu.track(read(|a| a.frame), point) {
+        1 => close_document(hwnd),
+        2 => pin_document(hwnd),
+        _ => {}
+    }
+    Ok(())
 }
 pub(super) fn scale_documents() {
     let docs = read(|a| {
         a.workspace
             .documents
             .iter()
-            .filter_map(|d| d.placement.map(|p| (d.hwnd, p)))
+            .filter_map(|d| d.placement.get().map(|p| (d.hwnd, p)))
             .collect::<Vec<_>>()
     });
     for (hwnd, placement) in docs {
@@ -284,17 +229,9 @@ pub(super) fn scale_documents() {
     }
 }
 pub(super) fn capture_placements() {
-    let (mdi, docs) = read(|a| {
-        (
-            a.workspace.mdi,
-            a.workspace
-                .documents
-                .iter()
-                .map(|d| d.hwnd)
-                .collect::<Vec<_>>(),
-        )
-    });
-    for hwnd in docs {
+    let mdi = read(|a| a.workspace.mdi);
+    for doc in views() {
+        let hwnd = doc.hwnd;
         if unsafe { IsZoomed(hwnd) != 0 || IsIconic(hwnd) != 0 } {
             continue;
         }
@@ -302,7 +239,7 @@ pub(super) fn capture_placements() {
             bounds: bounds(hwnd, mdi),
             dpi: dpi().window(hwnd),
         };
-        edit_document(hwnd, |d| d.placement = Some(p));
+        doc.placement.set(Some(p));
     }
 }
 pub(super) fn set_arrangement(arrangement: Arrangement) {
@@ -349,12 +286,10 @@ pub(super) fn next_id() -> u64 {
 pub(super) fn create_document(
     title: &str,
     content: super::metadata::MetadataView,
-    preview: bool,
-) -> anyhow::Result<HWND> {
+) -> anyhow::Result<Rc<MetadataView>> {
     let (mdi, maximized) = read(|a| (a.workspace.mdi, a.workspace.maximized));
     let mut init = host::Init {
         content: Some(content),
-        preview,
         error: None,
     };
     // CreateMDIWindowW consumes this pointer synchronously in WM_CREATE.
@@ -382,34 +317,23 @@ pub(super) fn create_document(
             return Err(error);
         }
     };
-    edit_document(hwnd, |d| d.placement = Some(placement));
+    let doc = view(hwnd).expect("created document");
+    doc.placement.set(Some(placement));
     refresh_document_tabs();
-    if let Some(content) = view(hwnd) {
-        content.prepare(hwnd);
-    }
-    Ok(hwnd)
+    Ok(doc)
 }
-pub(super) fn view(hwnd: HWND) -> Option<std::rc::Rc<super::metadata::MetadataView>> {
-    document(hwnd, |d| d.content.clone())
-}
-pub(super) fn views() -> Vec<(HWND, std::rc::Rc<super::metadata::MetadataView>)> {
+pub(super) fn view(hwnd: HWND) -> Option<Rc<MetadataView>> {
     read(|a| {
         a.workspace
             .documents
             .iter()
-            .map(|d| (d.hwnd, d.content.clone()))
-            .collect()
+            .find(|d| d.hwnd == hwnd)
+            .cloned()
     })
 }
-pub(super) fn complete(id: u64, ticket: u64, result: anyhow::Result<crate::rich_text::Content>) {
-    let target = read(|a| {
-        a.workspace
-            .documents
-            .iter()
-            .find(|d| d.id == id)
-            .map(|d| d.content.clone())
-    });
-    if let Some(view) = target {
-        view.complete(ticket, result);
-    }
+pub(super) fn views() -> Vec<Rc<MetadataView>> {
+    read(|a| a.workspace.documents.clone())
+}
+pub(super) fn by_id(id: u64) -> Option<Rc<MetadataView>> {
+    read(|a| a.workspace.documents.iter().find(|d| d.id == id).cloned())
 }

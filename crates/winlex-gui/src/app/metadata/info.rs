@@ -402,23 +402,17 @@ impl Info {
         };
         let copies = snapshot.copies();
         unsafe {
-            let menu = CreatePopupMenu();
-            if menu.is_null() {
-                return Err(error("Create document information menu"));
-            }
+            let menu = Popup::new()?;
             let m = super::super::metrics(owner);
-            let dc = GetDC(owner);
-            if dc.is_null() {
-                DestroyMenu(menu);
-                return Err(error("Measure document information menu"));
-            }
-            let previous = SelectObject(dc, m.font);
-            let measure = |value: &[u16]| {
-                let mut size = SIZE { cx: 0, cy: 0 };
-                GetTextExtentPoint32W(dc, value.as_ptr(), value.len() as i32, &mut size);
-                size.cx
-            };
-            let result = (|| {
+            with_window_font(owner, m.font, |dc| {
+                if dc.is_null() {
+                    return Err(error("Measure document information menu"));
+                }
+                let measure = |value: &[u16]| {
+                    let mut size = SIZE { cx: 0, cy: 0 };
+                    GetTextExtentPoint32W(dc, value.as_ptr(), value.len() as i32, &mut size);
+                    size.cx
+                };
                 let mut monitor: MONITORINFO = std::mem::zeroed();
                 monitor.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
                 if GetMonitorInfoW(
@@ -433,49 +427,31 @@ impl Info {
                     .min((monitor.rcWork.right - monitor.rcWork.left) / 2);
                 for (id, value) in &copies {
                     if *id == IDS_COPY_SYMBOL_NAME {
-                        AppendMenuW(menu, MF_SEPARATOR, 0, ptr::null());
+                        menu.separator()?;
                     }
                     let kind = if *id == IDS_COPY_SOURCE_PATH {
                         crate::list::FoldKind::Path
                     } else {
                         crate::list::FoldKind::Text
                     };
-                    let (shown, _) = crate::list::fold_text(
-                        value,
-                        &[],
-                        &[crate::list::Fold {
-                            range: 0..value.len(),
-                            kind,
-                        }],
-                        width,
-                        measure,
-                    );
-                    let label = menu_label(resources::wide_text(*id), &shown);
-                    if AppendMenuW(menu, MF_STRING, *id as usize, label.as_ptr()) == 0 {
-                        return Err(error("Append document information"));
-                    }
+                    let segment = crate::list::TextSegment::new(value.iter().copied(), kind);
+                    let shown = segment.fold(width, &measure).map(|(shown, _)| shown);
+                    let label =
+                        menu_label(resources::wide_text(*id), shown.as_deref().unwrap_or(value));
+                    menu.item(*id, &label, true)?;
                 }
                 Ok(())
-            })();
-            SelectObject(dc, previous);
-            ReleaseDC(owner, dc);
-            if let Err(failure) = result {
-                DestroyMenu(menu);
-                return Err(failure);
-            }
+            })?;
             let button = bounds(self.more, ptr::null_mut());
-            let selected = TrackPopupMenu(
-                menu,
-                TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
-                button.left,
-                button.bottom,
-                0,
+            let selected = menu.track(
                 owner,
-                ptr::null(),
+                POINT {
+                    x: button.left,
+                    y: button.bottom,
+                },
             );
-            DestroyMenu(menu);
             if IsWindow(owner) != 0
-                && let Some((_, value)) = copies.iter().find(|(id, _)| *id as i32 == selected)
+                && let Some((_, value)) = copies.iter().find(|(id, _)| *id == selected)
             {
                 copy_unicode(owner, value)?;
             }

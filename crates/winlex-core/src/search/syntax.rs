@@ -1,8 +1,8 @@
 use std::ops::Range;
 use winnow::{
     ModalResult, Parser,
-    ascii::{Caseless, multispace0},
-    combinator::{alt, cut_err, delimited, fail, not, opt, preceded, repeat, terminated},
+    ascii::{Caseless, escaped, multispace0},
+    combinator::{alt, cut_err, delimited, fail, not, opt, preceded, separated, terminated},
     error::StrContext,
     token::{any, take_while},
 };
@@ -115,14 +115,12 @@ fn expression(
     depth: usize,
     nodes: &mut usize,
 ) -> ModalResult<Query> {
-    let first = conjunction(input, length, depth, nodes)?;
-    let mut terms = vec![first];
-    while opt(delimited(multispace0, keyword("or"), multispace0))
-        .parse_next(input)?
-        .is_some()
-    {
-        terms.push(cut_err(|i: &mut &str| conjunction(i, length, depth, nodes)).parse_next(input)?);
-    }
+    let mut terms: Vec<_> = separated(
+        1..,
+        cut_err(|i: &mut &str| conjunction(i, length, depth, nodes)),
+        delimited(multispace0, keyword("or"), multispace0),
+    )
+    .parse_next(input)?;
     Ok(if terms.len() == 1 {
         terms.pop().unwrap()
     } else {
@@ -136,14 +134,12 @@ fn conjunction(
     depth: usize,
     nodes: &mut usize,
 ) -> ModalResult<Query> {
-    let first = unary(input, length, depth, nodes)?;
-    let mut terms = vec![first];
-    while opt(delimited(multispace0, keyword("and"), multispace0))
-        .parse_next(input)?
-        .is_some()
-    {
-        terms.push(cut_err(|i: &mut &str| unary(i, length, depth, nodes)).parse_next(input)?);
-    }
+    let mut terms: Vec<_> = separated(
+        1..,
+        cut_err(|i: &mut &str| unary(i, length, depth, nodes)),
+        delimited(multispace0, keyword("and"), multispace0),
+    )
+    .parse_next(input)?;
     Ok(if terms.len() == 1 {
         terms.pop().unwrap()
     } else {
@@ -214,29 +210,19 @@ fn quoted(input: &mut &str) -> ModalResult<String> {
     preceded(
         '"',
         cut_err(terminated(
-            repeat(
-                0..,
-                alt((
-                    take_while(1.., |c: char| c != '"' && c != '\\' && !c.is_control())
-                        .map(str::to_owned),
-                    preceded(
-                        '\\',
-                        cut_err(any.verify_map(|c| match c {
-                            '"' => Some("\"".to_owned()),
-                            '\\' => Some("\\".to_owned()),
-                            'n' => Some("\n".to_owned()),
-                            'r' => Some("\r".to_owned()),
-                            't' => Some("\t".to_owned()),
-                            '0' => Some("\0".to_owned()),
-                            _ => None,
-                        })),
-                    ),
-                )),
+            escaped(
+                take_while(1.., |c: char| c != '"' && c != '\\' && !c.is_control()),
+                '\\',
+                cut_err(any.verify_map(|c| match c {
+                    '"' | '\\' => Some(c),
+                    'n' => Some('\n'),
+                    'r' => Some('\r'),
+                    't' => Some('\t'),
+                    '0' => Some('\0'),
+                    _ => None,
+                })),
             )
-            .fold(String::new, |mut text, part| {
-                text.push_str(&part);
-                text
-            }),
+            .map(|text: String| text.into_boxed_str().into_string()),
             '"',
         )),
     )
@@ -263,6 +249,58 @@ mod tests {
         };
         assert!(matches!(&terms[1], Query::Not(_)));
         assert!(Query::parse("NAME = \"\" AND VALUE = NaN").is_ok());
+    }
+
+    #[test]
+    fn quoted_literals_accumulate_unicode_and_each_supported_escape() {
+        for (literal, expected) in [
+            (r#""""#, ""),
+            (r#""中😀\n\r\t\0\"\\end""#, "中😀\n\r\t\0\"\\end"),
+        ] {
+            let Query::Predicate(p) = Query::parse(&format!("name = {literal}")).unwrap() else {
+                panic!("predicate expected");
+            };
+            assert_eq!(p.value, Literal::Text(expected.into()));
+            assert_eq!(p.span, 0..7 + literal.len());
+        }
+        for literal in ["\"abc\\", "\"abc", r#""\q""#, "\"中\n\"", "\"中\0\""] {
+            assert!(Query::parse(&format!("name = {literal}")).is_err());
+        }
+    }
+
+    #[test]
+    fn junction_lists_preserve_flat_groups_and_complexity_boundaries() {
+        for (operator, any) in [("and", false), ("or", true)] {
+            let query =
+                Query::parse(&vec!["value = 1"; MAX_QUERY_NODES].join(&format!(" {operator} ")))
+                    .unwrap();
+            let terms = match query {
+                Query::Any(terms) if any => terms,
+                Query::All(terms) if !any => terms,
+                _ => panic!("flat junction expected"),
+            };
+            assert_eq!(terms.len(), MAX_QUERY_NODES);
+            assert!(terms.iter().all(|q| matches!(q, Query::Predicate(_))));
+            assert!(
+                Query::parse(
+                    &vec!["value = 1"; MAX_QUERY_NODES + 1].join(&format!(" {operator} "))
+                )
+                .is_err()
+            );
+            let error = Query::parse(&format!("name = \"😀\" {operator}")).unwrap_err();
+            assert!(error.incomplete);
+            assert_eq!(error.span, 14 + operator.len()..14 + operator.len());
+        }
+        for n in [MAX_QUERY_DEPTH - 1, MAX_QUERY_DEPTH] {
+            assert_eq!(
+                Query::parse(&format!("{}value = 1{}", "(".repeat(n), ")".repeat(n))).is_ok(),
+                n < MAX_QUERY_DEPTH
+            );
+            assert_eq!(
+                Query::parse(&format!("{}value = 1", "not ".repeat(n))).is_ok(),
+                n < MAX_QUERY_DEPTH
+            );
+        }
     }
 
     #[test]

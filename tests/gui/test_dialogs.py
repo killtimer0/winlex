@@ -1,9 +1,16 @@
 import win32con
+import pytest
 from support import native as n
 
 
-def test_native_picker_cancel_keeps_application_state(launch, profile):
-    app = launch()
+@pytest.mark.parametrize('loaded', [False, True])
+def test_native_picker_cancel_keeps_application_state(launch, profile, settings, loaded):
+    app = launch([settings[1]] if loaded else [])
+    if loaded:
+        app.query('CreateFileW')
+        assert app.count() > 0
+    before = (app.status_text(), app.count(), app.count(app.sources))
+    first = app.cell(0) if loaded else None
     owner = n.api(n.user, "GetWindow", n.w.HWND, n.w.HWND, n.w.UINT)
     enabled = n.api(n.user, "IsWindowEnabled", n.w.BOOL, n.w.HWND)
 
@@ -17,5 +24,8 @@ def test_native_picker_cancel_keeps_application_state(launch, profile):
     assert n.post(dialog, win32con.WM_COMMAND, win32con.IDCANCEL, 0)
     n.wait(lambda: not dialogs() and enabled(app.frame), "picker cancellation")
     assert not app.documents()
+    assert (app.status_text(), app.count(), app.count(app.sources)) == before
+    if loaded:
+        assert app.cell(0) == first
     assert profile.get("AutoLoad") is None
     n.send(app.frame, win32con.WM_NULL)  # the owner remains responsive; no error or fallback dialog

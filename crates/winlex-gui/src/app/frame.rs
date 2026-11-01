@@ -1,6 +1,6 @@
 //! Native frame orchestration; sidebar owns its controls and notifications.
 use super::workspace::{self, active};
-use super::{catalog, dpi, read, sidebar, sources, write};
+use super::{catalog, dpi, panel, read, sidebar, sources, write};
 use crate::{
     layout::{self, Arrangement},
     native::*,
@@ -24,8 +24,8 @@ fn prepare() {
     super::bind(status, font);
     sidebar::prepare();
     layout_frame();
-    for (hwnd, content) in docs {
-        content.prepare(hwnd);
+    for content in docs {
+        content.prepare();
     }
     workspace::refresh_document_tabs();
 }
@@ -34,7 +34,7 @@ fn recolor() {
         InvalidateRect(read(|a| a.workspace.tabs), ptr::null(), 0);
     }
     sidebar::recolor();
-    for (_, content) in workspace::views() {
+    for content in workspace::views() {
         content.recolor();
     }
 }
@@ -61,7 +61,7 @@ pub(super) fn layout_frame() {
             (!s.collapsed).then(|| s.panel(s.active))
         });
         if let Some(panel) = panel {
-            panel.fit_list();
+            crate::list::fit(panel.list.hwnd);
         }
     }
 }
@@ -86,7 +86,9 @@ pub(super) fn command(id: u16) -> bool {
                 if d.is_null() {
                     sidebar::focus();
                 } else {
-                    super::document::focus_document(d);
+                    if let Some(document) = workspace::view(d) {
+                        document.focus();
+                    }
                 }
             } else {
                 focus(read(|a| a.workspace.tabs));
@@ -202,7 +204,7 @@ pub(super) unsafe extern "system" fn frame_proc(hwnd: HWND, msg: u32, w: usize, 
             }
             WM_SYSCOLORCHANGE | WM_THEMECHANGED => recolor(),
             WM_COMMAND => {
-                if sidebar::command(w, l as HWND) || command(w as u16) {
+                if panel::command(w, l as HWND) || command(w as u16) {
                     return 0;
                 }
             }
@@ -212,11 +214,20 @@ pub(super) unsafe extern "system" fn frame_proc(hwnd: HWND, msg: u32, w: usize, 
                     workspace::tab_notification(&*(l as *const crate::tabs::Notification));
                     return 0;
                 }
-                if let Some(result) = sidebar::notify(l) {
-                    return result;
+                if let Some(panel) = read(|a| a.sidebar.owner(hdr.hwndFrom)) {
+                    if hdr.idFrom == SOURCE_LIST as usize && hdr.code == LVN_ITEMCHANGED {
+                        sources::update_actions();
+                        return 0;
+                    }
+                    if let Some(result) = panel.list.notify(l) {
+                        return result;
+                    }
                 }
             }
-            WM_CONTEXTMENU if sidebar::context_menu(w as HWND, l) => {
+            WM_CONTEXTMENU if w as HWND == GetDlgItem(hwnd, SOURCE_LIST as i32) => {
+                if let Err(error) = sources::context_menu(w as HWND, l) {
+                    catalog::set_status(format!("{error:#}"));
+                }
                 return 0;
             }
             // A top-level WM_GETMINMAXINFO minimum can block a DPI downscale.

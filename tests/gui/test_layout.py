@@ -49,7 +49,6 @@ def check_toolbar_and_search(app):
     toolbar = n.get_item(app.frame, 1113)
     assert n.class_name(toolbar) == "ToolbarWindow32"
     assert n.send(toolbar, messages.TB_BUTTONCOUNT) == 2
-
     def button_rect(index):
         assert n.send(toolbar, messages.TB_GETITEMRECT, index, app.memory)
         buffer = n.c.create_string_buffer(16)

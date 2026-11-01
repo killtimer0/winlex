@@ -78,6 +78,49 @@ pub fn child_ex(
         Ok(hwnd)
     }
 }
+pub fn tooltip(owner: HWND, tool: &TTTOOLINFOW) -> anyhow::Result<HWND> {
+    let hwnd = unsafe {
+        CreateWindowExW(
+            WS_EX_TOPMOST,
+            TOOLTIPS_CLASSW,
+            ptr::null(),
+            WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX,
+            0,
+            0,
+            0,
+            0,
+            owner,
+            ptr::null_mut(),
+            instance(),
+            ptr::null(),
+        )
+    };
+    if hwnd.is_null() {
+        return Err(error("Create tooltip"));
+    }
+    if send(hwnd, TTM_ADDTOOLW, 0, tool as *const _ as isize) == 0 {
+        unsafe { DestroyWindow(hwnd) };
+        anyhow::bail!("Register tooltip failed");
+    }
+    Ok(hwnd)
+}
+
+pub fn with_window_font<T>(hwnd: HWND, font: HFONT, action: impl FnOnce(HDC) -> T) -> T {
+    unsafe {
+        let dc = GetDC(hwnd);
+        let previous = if dc.is_null() {
+            ptr::null_mut()
+        } else {
+            SelectObject(dc, font)
+        };
+        let result = action(dc);
+        if !dc.is_null() {
+            SelectObject(dc, previous);
+            ReleaseDC(hwnd, dc);
+        }
+        result
+    }
+}
 pub fn client(hwnd: HWND) -> RECT {
     let mut r = unsafe { std::mem::zeroed() };
     unsafe {
@@ -207,6 +250,53 @@ pub fn copy_unicode(hwnd: HWND, text: &[u16]) -> anyhow::Result<()> {
 pub fn send(hwnd: HWND, msg: u32, w: usize, l: isize) -> isize {
     unsafe { SendMessageW(hwnd, msg, w, l) }
 }
+
+pub struct Popup(HMENU);
+impl Popup {
+    pub fn new() -> anyhow::Result<Self> {
+        let menu = unsafe { CreatePopupMenu() };
+        if menu.is_null() {
+            return Err(error("Create popup menu"));
+        }
+        Ok(Self(menu))
+    }
+    pub fn item(&self, id: u16, label: &[u16], enabled: bool) -> anyhow::Result<()> {
+        self.append(
+            MF_STRING | if enabled { 0 } else { MF_GRAYED },
+            id,
+            label.as_ptr(),
+        )
+    }
+    pub fn separator(&self) -> anyhow::Result<()> {
+        self.append(MF_SEPARATOR, 0, ptr::null())
+    }
+    fn append(&self, flags: u32, id: u16, label: *const u16) -> anyhow::Result<()> {
+        if unsafe { AppendMenuW(self.0, flags, id as usize, label) } == 0 {
+            return Err(error("Append popup item"));
+        }
+        Ok(())
+    }
+    pub fn track(&self, owner: HWND, point: POINT) -> u16 {
+        unsafe {
+            TrackPopupMenu(
+                self.0,
+                TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
+                point.x,
+                point.y,
+                0,
+                owner,
+                ptr::null(),
+            ) as u16
+        }
+    }
+}
+impl Drop for Popup {
+    fn drop(&mut self) {
+        unsafe {
+            DestroyMenu(self.0);
+        }
+    }
+}
 pub fn focus(hwnd: HWND) {
     if !hwnd.is_null() {
         unsafe {
@@ -234,6 +324,155 @@ pub fn list_column(hwnd: HWND, index: usize, title: &str, width: i32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct ResourceWindow(HWND);
+    impl ResourceWindow {
+        fn new() -> Self {
+            unsafe {
+                let class = WNDCLASSW {
+                    style: CS_OWNDC,
+                    lpfnWndProc: Some(DefWindowProcW),
+                    hInstance: instance(),
+                    lpszClassName: w!("Winlex.Test.ResourceWindow"),
+                    ..std::mem::zeroed()
+                };
+                assert!(
+                    RegisterClassW(&class) != 0 || GetLastError() == ERROR_CLASS_ALREADY_EXISTS
+                );
+                let hwnd = CreateWindowExW(
+                    0,
+                    class.lpszClassName,
+                    ptr::null(),
+                    WS_POPUP,
+                    0,
+                    0,
+                    300,
+                    200,
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                    instance(),
+                    ptr::null(),
+                );
+                assert!(!hwnd.is_null());
+                Self(hwnd)
+            }
+        }
+        fn tooltips(&self) -> Vec<HWND> {
+            unsafe extern "system" fn collect(hwnd: HWND, data: isize) -> i32 {
+                unsafe {
+                    let (owner, windows) = &mut *(data as *mut (HWND, Vec<HWND>));
+                    let mut class = [0; 64];
+                    let length = GetClassNameW(hwnd, class.as_mut_ptr(), class.len() as i32);
+                    if GetWindow(hwnd, GW_OWNER) == *owner
+                        && class[..length as usize]
+                            == "tooltips_class32".encode_utf16().collect::<Vec<_>>()
+                    {
+                        windows.push(hwnd);
+                    }
+                    1
+                }
+            }
+            let mut data = (self.0, Vec::new());
+            unsafe {
+                EnumThreadWindows(
+                    windows_sys::Win32::System::Threading::GetCurrentThreadId(),
+                    Some(collect),
+                    &mut data as *mut _ as isize,
+                );
+            }
+            data.1
+        }
+    }
+    impl Drop for ResourceWindow {
+        fn drop(&mut self) {
+            unsafe { DestroyWindow(self.0) };
+        }
+    }
+
+    #[test]
+    fn window_font_restores_selection_and_retains_callback_errors() {
+        let window = ResourceWindow::new();
+        unsafe {
+            let baseline = GetStockObject(SYSTEM_FONT);
+            let selected = GetStockObject(DEFAULT_GUI_FONT);
+            let dc = GetDC(window.0);
+            let original = SelectObject(dc, baseline);
+            ReleaseDC(window.0, dc);
+            let failure = with_window_font(window.0, selected, |dc| -> anyhow::Result<()> {
+                assert_eq!(GetCurrentObject(dc, OBJ_FONT as u32), selected);
+                with_window_font(window.0, baseline, |nested| {
+                    assert_eq!(GetCurrentObject(nested, OBJ_FONT as u32), baseline);
+                });
+                assert_eq!(GetCurrentObject(dc, OBJ_FONT as u32), selected);
+                SelectObject(dc, GetStockObject(SYSTEM_FIXED_FONT));
+                SetLastError(ERROR_ACCESS_DENIED);
+                Err(error("Measure test label"))
+            })
+            .unwrap_err();
+            assert_eq!(
+                failure
+                    .downcast_ref::<std::io::Error>()
+                    .unwrap()
+                    .raw_os_error(),
+                Some(ERROR_ACCESS_DENIED as i32)
+            );
+            assert!(format!("{failure:#}").starts_with("Measure test label: "));
+            let dc = GetDC(window.0);
+            assert_eq!(GetCurrentObject(dc, OBJ_FONT as u32), baseline);
+            SelectObject(dc, original);
+            ReleaseDC(window.0, dc);
+        }
+    }
+
+    #[test]
+    fn tooltip_registration_retains_size_and_owner_and_cleans_up_failure() {
+        let window = ResourceWindow::new();
+        unsafe {
+            let controls = INITCOMMONCONTROLSEX {
+                dwSize: std::mem::size_of::<INITCOMMONCONTROLSEX>() as u32,
+                dwICC: ICC_WIN95_CLASSES,
+            };
+            assert_ne!(InitCommonControlsEx(&controls), 0);
+            for size in [
+                std::mem::offset_of!(TTTOOLINFOW, lParam) as u32,
+                std::mem::offset_of!(TTTOOLINFOW, lpReserved) as u32,
+            ] {
+                let mut tool = TTTOOLINFOW {
+                    cbSize: size,
+                    uFlags: TTF_IDISHWND | TTF_SUBCLASS,
+                    hwnd: window.0,
+                    uId: window.0 as usize,
+                    lpszText: w!("resource test").cast_mut(),
+                    ..std::mem::zeroed()
+                };
+                let tip = tooltip(window.0, &tool).unwrap();
+                assert_eq!(window.tooltips(), [tip]);
+                assert_eq!(send(tip, TTM_GETTOOLCOUNT, 0, 0), 1);
+                assert_eq!(
+                    GetWindowLongW(tip, GWL_STYLE) as u32
+                        & (WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX),
+                    WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX
+                );
+                assert_ne!(GetWindowLongW(tip, GWL_EXSTYLE) as u32 & WS_EX_TOPMOST, 0);
+                assert_ne!(DestroyWindow(tip), 0);
+                tool.cbSize = u32::MAX;
+                let failure = tooltip(window.0, &tool).unwrap_err();
+                assert_eq!(format!("{failure:#}"), "Register tooltip failed");
+                assert!(window.tooltips().is_empty());
+            }
+            let tool = TTTOOLINFOW {
+                cbSize: std::mem::offset_of!(TTTOOLINFOW, lpReserved) as u32,
+                uFlags: TTF_IDISHWND | TTF_SUBCLASS,
+                hwnd: window.0,
+                uId: window.0 as usize,
+                lpszText: w!("owned tooltip").cast_mut(),
+                ..std::mem::zeroed()
+            };
+            let tip = tooltip(window.0, &tool).unwrap();
+            drop(window);
+            assert_eq!(IsWindow(tip), 0);
+        }
+    }
 
     #[test]
     fn sibling_layout_is_committed_before_resize_notifications() {

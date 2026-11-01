@@ -1,22 +1,11 @@
-//! MDI document host. Content owns its controls, commands and asynchronous work.
-use super::{dpi, read, workspace};
+//! Native entry points and MDI messages for declaration documents.
+use super::{dpi, metadata::MetadataView, read, workspace};
 use crate::native::*;
 use std::rc::Rc;
 
 pub(super) struct Init {
     pub content: Option<super::metadata::MetadataView>,
-    pub preview: bool,
     pub error: Option<anyhow::Error>,
-}
-pub(super) fn layout_document(hwnd: HWND) {
-    if let Some(content) = workspace::view(hwnd) {
-        content.layout(hwnd);
-    }
-}
-pub(super) fn focus_document(hwnd: HWND) {
-    if let Some(view) = workspace::view(hwnd) {
-        view.focus();
-    }
 }
 pub(super) fn track_editor(owner: HWND, editor: HWND) -> anyhow::Result<()> {
     if unsafe { set_subclass(editor, Some(editor_proc), 1, owner as usize) } == 0 {
@@ -33,35 +22,6 @@ pub(super) unsafe extern "system" fn document_proc(
 ) -> isize {
     unsafe {
         match msg {
-            WM_CLOSE => {
-                workspace::close_document(hwnd);
-                return 0;
-            }
-            WM_CREATE => {
-                let create = &*(l as *const CREATESTRUCTW);
-                let mdi_create = &*(create.lpCreateParams as *const MDICREATESTRUCTW);
-                let init = &mut *(mdi_create.lParam as *mut Init);
-                let mut content = init.content.take().unwrap();
-                if let Err(error) = content.create(hwnd) {
-                    init.error = Some(error);
-                    return -1;
-                }
-                workspace::register_document(workspace::DocumentHost {
-                    id: workspace::next_id(),
-                    hwnd,
-                    content: Rc::new(content),
-                    placement: None,
-                    preview: init.preview,
-                });
-                return 0;
-            }
-            WM_SIZE => {
-                let result = DefMDIChildProcW(hwnd, msg, w, l);
-                if w != SIZE_MINIMIZED as usize {
-                    layout_document(hwnd);
-                }
-                return result;
-            }
             WM_GETMINMAXINFO => {
                 let result = DefMDIChildProcW(hwnd, msg, w, l);
                 if IsZoomed(hwnd) == 0 && IsIconic(hwnd) == 0 {
@@ -74,8 +34,8 @@ pub(super) unsafe extern "system" fn document_proc(
             }
             WM_WINDOWPOSCHANGING => {
                 let result = DefMDIChildProcW(hwnd, msg, w, l);
-                // Native MDI uses system DPI for maximized bounds, including MDICLIENT
-                // resizing. Match the PMv2 child's nonclient metrics before positioning.
+                // These messages also arrive before WM_CREATE registers the document.
+                // Native MDI uses system DPI; match the PMv2 child's nonclient metrics.
                 if dpi().mode == crate::dpi::Mode::Pmv2 && IsZoomed(hwnd) != 0 {
                     let r = dpi().child_outer(hwnd, client(read(|a| a.workspace.mdi)));
                     let p = &mut *(l as *mut WINDOWPOS);
@@ -90,50 +50,17 @@ pub(super) unsafe extern "system" fn document_proc(
                 }
                 return result;
             }
-            WM_SYSCOMMAND if matches!((w & 0xfff0) as u32, SC_MAXIMIZE | SC_RESTORE) => {
-                let result = DefMDIChildProcW(hwnd, msg, w, l);
-                workspace::set_maximized(IsZoomed(hwnd) != 0);
-                workspace::capture_placements();
-                return result;
-            }
-            WM_EXITSIZEMOVE => workspace::capture_placements(),
-            WM_SETFOCUS => {
-                let result = DefMDIChildProcW(hwnd, msg, w, l);
-                focus_document(hwnd);
-                return result;
-            }
-            WM_MDIACTIVATE => {
-                let result = DefMDIChildProcW(hwnd, msg, w, l);
-                workspace::sync_document_selection();
-                return result;
-            }
-            WM_COMMAND => {
-                let id = (w & 0xffff) as u16;
-                let code = (w >> 16) as u32;
-                if let Some(content) = workspace::view(hwnd)
-                    && content.command(hwnd, id, code)
-                {
-                    return 0;
+            WM_CREATE => {
+                let create = &*(l as *const CREATESTRUCTW);
+                let mdi_create = &*(create.lpCreateParams as *const MDICREATESTRUCTW);
+                let init = &mut *(mdi_create.lParam as *mut Init);
+                let mut content = init.content.take().unwrap();
+                if let Err(error) = content.create(hwnd) {
+                    init.error = Some(error);
+                    return -1;
                 }
-            }
-            WM_CONTEXTMENU => {
-                if let Some(view) = workspace::view(hwnd)
-                    && view.context_menu(w as HWND, l)
-                {
-                    return 0;
-                }
-            }
-            WM_CTLCOLORSTATIC => {
-                if let Some(view) = workspace::view(hwnd)
-                    && let Some(brush) = view.color(l as HWND, w as HDC)
-                {
-                    return brush;
-                }
-            }
-            WM_DESTROY => {
-                if let Some(view) = workspace::view(hwnd) {
-                    view.destroy();
-                }
+                workspace::register_document(Rc::new(content));
+                return 0;
             }
             WM_NCDESTROY => {
                 let content = workspace::view(hwnd);
@@ -145,7 +72,70 @@ pub(super) unsafe extern "system" fn document_proc(
             }
             _ => {}
         }
-        DefMDIChildProcW(hwnd, msg, w, l)
+        if let Some(document) = workspace::view(hwnd) {
+            document.message(msg, w, l)
+        } else {
+            DefMDIChildProcW(hwnd, msg, w, l)
+        }
+    }
+}
+impl MetadataView {
+    unsafe fn message(&self, msg: u32, w: usize, l: isize) -> isize {
+        let hwnd = self.hwnd;
+        unsafe {
+            match msg {
+                WM_CLOSE => {
+                    workspace::close_document(hwnd);
+                    return 0;
+                }
+                WM_SIZE => {
+                    let result = DefMDIChildProcW(hwnd, msg, w, l);
+                    if w != SIZE_MINIMIZED as usize && self.is_live() {
+                        self.layout();
+                    }
+                    return result;
+                }
+                WM_SYSCOMMAND if matches!((w & 0xfff0) as u32, SC_MAXIMIZE | SC_RESTORE) => {
+                    let result = DefMDIChildProcW(hwnd, msg, w, l);
+                    workspace::set_maximized(IsZoomed(hwnd) != 0);
+                    workspace::capture_placements();
+                    return result;
+                }
+                WM_EXITSIZEMOVE => workspace::capture_placements(),
+                WM_SETFOCUS => {
+                    let result = DefMDIChildProcW(hwnd, msg, w, l);
+                    if self.is_live() {
+                        self.focus();
+                    }
+                    return result;
+                }
+                WM_MDIACTIVATE => {
+                    let result = DefMDIChildProcW(hwnd, msg, w, l);
+                    workspace::sync_document_selection();
+                    return result;
+                }
+                WM_COMMAND => {
+                    let id = (w & 0xffff) as u16;
+                    let code = (w >> 16) as u32;
+                    if self.command(id, code) {
+                        return 0;
+                    }
+                }
+                WM_CONTEXTMENU => {
+                    if self.context_menu(w as HWND, l) {
+                        return 0;
+                    }
+                }
+                WM_CTLCOLORSTATIC => {
+                    if let Some(brush) = self.color(l as HWND, w as HDC) {
+                        return brush;
+                    }
+                }
+                WM_DESTROY => self.destroy(),
+                _ => {}
+            }
+            DefMDIChildProcW(hwnd, msg, w, l)
+        }
     }
 }
 unsafe extern "system" fn editor_proc(

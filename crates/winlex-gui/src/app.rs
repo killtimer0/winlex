@@ -98,9 +98,8 @@ pub fn run(
     let _graphics = crate::icons::Runtime::new()?;
     let settings = settings::Settings::load(&config);
     resources::initialize(settings.preferences.language)?;
-    let mut session = catalog::Session::new();
+    let session = catalog::Session::new(paths.is_empty());
     let worker = crate::worker::Worker::new(crate::tasks::run)?;
-    session.remember_sources = paths.is_empty();
     let paths = if paths.is_empty() {
         config
             .key
@@ -274,7 +273,11 @@ fn poll_completions() {
                         id,
                         document,
                         result,
-                    } => workspace::complete(document, id, result),
+                    } => {
+                        if let Some(view) = workspace::by_id(document) {
+                            view.complete(id, result);
+                        }
+                    }
                 }
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => {
@@ -284,7 +287,7 @@ fn poll_completions() {
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 catalog::flush_results();
                 catalog::worker_stopped();
-                for (_, view) in workspace::views() {
+                for view in workspace::views() {
                     view.worker_stopped();
                 }
                 panel::cancel_debounce();

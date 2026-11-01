@@ -93,13 +93,10 @@ pub fn context_menu(hwnd: HWND, location: isize, numbers: &[NumberRegion]) -> an
     }
     actions.push((IDS_COPY_SELECTION, selected));
     unsafe {
-        let menu = CreatePopupMenu();
-        if menu.is_null() {
-            return Err(error("Create context menu"));
-        }
+        let menu = Popup::new()?;
         for (id, value) in &actions {
             if *id == IDS_COPY_SELECTION && number.is_some() {
-                AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
+                menu.separator()?;
             }
             let label = if *id == IDS_COPY_SELECTION {
                 resources::text(*id)
@@ -110,30 +107,11 @@ pub fn context_menu(hwnd: HWND, location: isize, numbers: &[NumberRegion]) -> an
                     value.as_deref().unwrap_or_default()
                 )
             };
-            if AppendMenuW(
-                menu,
-                MF_STRING | if value.is_some() { 0 } else { MF_GRAYED },
-                *id as usize,
-                wide(&label).as_ptr(),
-            ) == 0
-            {
-                let failure = error("Append context action");
-                DestroyMenu(menu);
-                return Err(failure);
-            }
+            menu.item(*id, &wide(&label), value.is_some())?;
         }
-        let command = TrackPopupMenu(
-            menu,
-            TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
-            point.x,
-            point.y,
-            0,
-            hwnd,
-            std::ptr::null(),
-        );
-        DestroyMenu(menu);
+        let command = menu.track(hwnd, point);
         if IsWindow(hwnd) != 0
-            && let Some((_, Some(value))) = actions.iter().find(|(id, _)| *id as i32 == command)
+            && let Some((_, Some(value))) = actions.iter().find(|(id, _)| *id == command)
         {
             copy_text(hwnd, value)?;
         }
@@ -347,13 +325,10 @@ fn spans(text: &[u16]) -> Vec<(usize, usize, u32)> {
             Some(0x008000)
         } else if ch == b'/' as u16 && text.get(i) == Some(&(b'*' as u16)) {
             i += 1;
-            while i < text.len() {
-                if text[i] == b'*' as u16 && text.get(i + 1) == Some(&(b'/' as u16)) {
-                    i += 2;
-                    break;
-                }
-                i += 1;
-            }
+            i = text[i..]
+                .windows(2)
+                .position(|pair| pair == [b'*' as u16, b'/' as u16])
+                .map_or(text.len(), |end| i + end + 2);
             Some(0x008000)
         } else if ch == b'"' as u16 || ch == b'\'' as u16 {
             while i < text.len() {
@@ -366,58 +341,56 @@ fn spans(text: &[u16]) -> Vec<(usize, usize, u32)> {
                 }
             }
             Some(0x000080)
-        } else if ch <= 127 && (ch as u8).is_ascii_digit() {
+        } else if ch <= 127 && ((ch as u8).is_ascii_alphanumeric() || ch == b'_' as u16) {
+            let number = (ch as u8).is_ascii_digit();
+            let extra = if number { b'.' } else { b'_' } as u16;
             while i < text.len()
                 && text[i] <= 127
-                && ((text[i] as u8).is_ascii_alphanumeric() || text[i] == b'.' as u16)
+                && ((text[i] as u8).is_ascii_alphanumeric() || text[i] == extra)
             {
                 i += 1;
             }
-            Some(0x800080)
-        } else if ch <= 127 && ((ch as u8).is_ascii_alphabetic() || ch == b'_' as u16) {
-            while i < text.len()
-                && text[i] <= 127
-                && ((text[i] as u8).is_ascii_alphanumeric() || text[i] == b'_' as u16)
-            {
-                i += 1;
+            if number {
+                Some(0x800080)
+            } else {
+                let word = String::from_utf16_lossy(&text[start..i]);
+                matches!(
+                    word.as_str(),
+                    "struct"
+                        | "class"
+                        | "delegate"
+                        | "union"
+                        | "enum"
+                        | "typedef"
+                        | "const"
+                        | "void"
+                        | "interface"
+                        | "unsigned"
+                        | "signed"
+                        | "int"
+                        | "long"
+                        | "short"
+                        | "char"
+                        | "float"
+                        | "double"
+                        | "bool"
+                        | "return"
+                        | "INT8"
+                        | "UINT8"
+                        | "INT16"
+                        | "UINT16"
+                        | "INT32"
+                        | "UINT32"
+                        | "INT64"
+                        | "UINT64"
+                        | "INT_PTR"
+                        | "UINT_PTR"
+                        | "char16_t"
+                        | "string"
+                        | "object"
+                )
+                .then_some(0x800000)
             }
-            let word = String::from_utf16_lossy(&text[start..i]);
-            matches!(
-                word.as_str(),
-                "struct"
-                    | "class"
-                    | "delegate"
-                    | "union"
-                    | "enum"
-                    | "typedef"
-                    | "const"
-                    | "void"
-                    | "interface"
-                    | "unsigned"
-                    | "signed"
-                    | "int"
-                    | "long"
-                    | "short"
-                    | "char"
-                    | "float"
-                    | "double"
-                    | "bool"
-                    | "return"
-                    | "INT8"
-                    | "UINT8"
-                    | "INT16"
-                    | "UINT16"
-                    | "INT32"
-                    | "UINT32"
-                    | "INT64"
-                    | "UINT64"
-                    | "INT_PTR"
-                    | "UINT_PTR"
-                    | "char16_t"
-                    | "string"
-                    | "object"
-            )
-            .then_some(0x800000)
         } else {
             None
         };
@@ -748,6 +721,43 @@ mod tests {
             );
             assert!(format!("{error:#}").starts_with("Load RichEdit: "));
         }
+    }
+
+    #[test]
+    fn highlighting_keeps_numeric_identifier_and_comment_boundaries() {
+        for (body, expected) in [
+            ("int1 _int UINT32_ 0xAf", vec![("0xAf", 0x800080)]),
+            ("/*/ int", vec![("/*/ int", 0x008000)]),
+            ("/**/int", vec![("/**/", 0x008000), ("int", 0x800000)]),
+            ("/* **/42", vec![("/* **/", 0x008000), ("42", 0x800080)]),
+            (
+                "/*\r😀*/UINT32",
+                vec![("/*\r😀*/", 0x008000), ("UINT32", 0x800000)],
+            ),
+            (
+                "\"int 123\" // UINT32\rconst",
+                vec![
+                    ("\"int 123\"", 0x000080),
+                    ("// UINT32", 0x008000),
+                    ("const", 0x800000),
+                ],
+            ),
+        ] {
+            let text: Vec<_> = body.encode_utf16().collect();
+            let found: Vec<_> = spans(&text)
+                .into_iter()
+                .map(|(start, end, color)| (String::from_utf16(&text[start..end]).unwrap(), color))
+                .collect();
+            let expected: Vec<_> = expected
+                .into_iter()
+                .map(|(token, color)| (token.to_owned(), color))
+                .collect();
+            assert_eq!(found, expected, "{body}");
+        }
+        assert_eq!(
+            spans(&[b'1' as u16, 0xd800, b'2' as u16, 0xdc00]),
+            [(0, 1, 0x800080), (2, 3, 0x800080)]
+        );
     }
 
     #[test]

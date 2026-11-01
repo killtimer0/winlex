@@ -15,17 +15,21 @@ use windows_sys::Win32::UI::Shell::GetWindowSubclass;
 #[derive(Default)]
 pub struct Display {
     pub title: Vec<u16>,
-    pub detail: Vec<u16>,
+    pub detail: TextLine,
     pub title_matches: Vec<Range<usize>>,
-    pub detail_matches: Vec<Range<usize>>,
     pub icon: Option<Icon>,
-    pub detail_folds: Vec<Fold>,
     pub tooltip: Vec<u16>,
 }
 
-pub struct Fold {
-    pub range: Range<usize>,
-    pub kind: FoldKind,
+#[derive(Default)]
+pub struct TextLine {
+    segments: Vec<TextSegment>,
+}
+
+pub struct TextSegment {
+    pub text: Vec<u16>,
+    pub matches: Vec<Range<usize>>,
+    kind: FoldKind,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -35,135 +39,177 @@ pub enum FoldKind {
     Text,
 }
 
-pub(crate) fn fold_text(
-    text: &[u16],
-    matches: &[Range<usize>],
-    folds: &[Fold],
-    width: i32,
-    measure: impl Fn(&[u16]) -> i32,
-) -> (Vec<u16>, Vec<Range<usize>>) {
-    let mut shown = text.to_vec();
-    let mut highlighted = matches.to_vec();
-    let mut replacements: Vec<(Range<usize>, usize)> = Vec::new();
-    let mut ordered: Vec<&Fold> = folds.iter().collect();
-    ordered.sort_by_key(|fold| fold.range.start);
-    let mut ordinary = Vec::new();
-    let mut start = 0;
-    for fold in &ordered {
-        if start < fold.range.start {
-            ordinary.push(Fold {
-                range: start..fold.range.start,
-                kind: FoldKind::Text,
-            });
+impl TextLine {
+    pub fn push(&mut self, segment: TextSegment) {
+        if segment.text.is_empty() {
+            return;
         }
-        start = fold.range.end;
-    }
-    if start < text.len() {
-        ordinary.push(Fold {
-            range: start..text.len(),
-            kind: FoldKind::Text,
-        });
-    }
-    for kind in [FoldKind::Guid, FoldKind::Path, FoldKind::Text] {
-        for fold in folds
-            .iter()
-            .chain(ordinary.iter().rev())
-            .filter(|fold| fold.kind == kind)
+        if segment.kind == FoldKind::Text
+            && let Some(last) = self
+                .segments
+                .last_mut()
+                .filter(|s| s.kind == FoldKind::Text)
         {
-            if measure(&shown) <= width {
-                return (shown, highlighted);
-            }
-            let shift: usize = replacements
-                .iter()
-                .filter(|(range, _)| range.end <= fold.range.start)
-                .map(|(range, length)| range.len() - length)
-                .sum();
-            let range = fold.range.start - shift..fold.range.end - shift;
-            let value = &shown[range.clone()];
-            let replacement = match kind {
-                FoldKind::Guid => "{…}".encode_utf16().collect::<Vec<_>>(),
-                FoldKind::Text => {
-                    let outside = measure(&shown[..range.start]) + measure(&shown[range.end..]);
-                    let mut end = value.len();
-                    loop {
-                        let candidate: Vec<u16> = value[..end]
-                            .iter()
-                            .copied()
-                            .chain("…".encode_utf16())
-                            .collect();
-                        if outside + measure(&candidate) <= width || end == 0 {
-                            break candidate;
-                        }
-                        end -= 1;
-                        if end > 0 && (0xDC00..=0xDFFF).contains(&value[end]) {
-                            end -= 1;
-                        }
-                    }
-                }
-                FoldKind::Path => {
-                    let separator = |ch: &u16| *ch == b'\\' as u16 || *ch == b'/' as u16;
-                    let Some(last) = value.iter().rposition(separator) else {
-                        continue;
-                    };
-                    let first = if value.starts_with(&[b'\\' as u16, b'\\' as u16]) {
-                        1
-                    } else {
-                        value.iter().position(separator).unwrap()
-                    };
-                    if first >= last {
-                        continue;
-                    }
-                    let outside = measure(&shown[..range.start]) + measure(&shown[range.end..]);
-                    let mut end = first + 1;
-                    loop {
-                        let candidate: Vec<u16> = value[..first + 1]
-                            .iter()
-                            .copied()
-                            .chain("…".encode_utf16())
-                            .chain(value[end..].iter().copied())
-                            .collect();
-                        if measure(&candidate) + outside <= width || end == last {
-                            break candidate;
-                        }
-                        end += 1;
-                        if end < last && (0xDC00..=0xDFFF).contains(&value[end]) {
-                            end += 1;
-                        }
-                    }
-                }
-            };
-            if replacement.len() >= range.len() {
-                continue;
-            }
-            let prefix = value
-                .iter()
-                .zip(&replacement)
-                .take_while(|(a, b)| a == b)
-                .count();
-            let suffix = value[prefix..]
-                .iter()
-                .rev()
-                .zip(replacement[prefix..].iter().rev())
-                .take_while(|(a, b)| a == b)
-                .count();
-            let changed = range.start + prefix..range.end - suffix;
-            let removed = range.len() - replacement.len();
-            highlighted = highlighted
-                .into_iter()
-                .flat_map(|matched| {
-                    let before = matched.start..matched.end.min(changed.start);
-                    let after = matched.start.max(changed.end) - removed
-                        ..matched.end.saturating_sub(removed);
-                    [before, after]
-                        .into_iter()
-                        .filter(|part| part.start < part.end)
-                })
+            let offset = last.text.len();
+            last.matches.extend(
+                segment
+                    .matches
+                    .into_iter()
+                    .map(|r| offset + r.start..offset + r.end),
+            );
+            last.text.extend(segment.text);
+        } else {
+            self.segments.push(segment);
+        }
+        let matches = &mut self.segments.last_mut().unwrap().matches;
+        matches.sort_unstable_by_key(|r| (r.start, r.end));
+    }
+    pub fn field(&mut self, segment: TextSegment) {
+        if segment.text.is_empty() {
+            return;
+        }
+        if !self.segments.is_empty() {
+            self.push(TextSegment::plain(" · "));
+        }
+        self.push(segment);
+    }
+    pub fn text(&self) -> Vec<u16> {
+        self.segments
+            .iter()
+            .flat_map(|s| s.text.iter().copied())
+            .collect()
+    }
+    pub fn fit(
+        &self,
+        width: i32,
+        measure: impl Fn(&[u16]) -> i32,
+    ) -> (Vec<u16>, Vec<Range<usize>>) {
+        let mut line = self.text();
+        let mut cuts = vec![0..0; self.segments.len()];
+        for kind in [FoldKind::Guid, FoldKind::Path, FoldKind::Text] {
+            let mut order: Vec<_> = (0..cuts.len())
+                .filter(|&i| self.segments[i].kind == kind)
                 .collect();
-            replacements.push((fold.range.clone(), replacement.len()));
-            shown.splice(range, replacement);
+            if kind == FoldKind::Text {
+                order.reverse();
+            }
+            for index in order {
+                if measure(&line) <= width {
+                    break;
+                }
+                let start: usize = self.segments[..index]
+                    .iter()
+                    .zip(&cuts[..index])
+                    .map(|(s, cut)| s.text.len() - cut.len() + usize::from(!cut.is_empty()))
+                    .sum();
+                let end = start + self.segments[index].text.len();
+                let outside = measure(&line[..start]) + measure(&line[end..]);
+                if let Some((replacement, cut)) =
+                    self.segments[index].fold(width - outside, &measure)
+                {
+                    line.splice(start..end, replacement);
+                    cuts[index] = cut;
+                }
+            }
+        }
+        let mut highlighted: Vec<Range<usize>> = Vec::new();
+        let mut offset = 0;
+        for (segment, cut) in self.segments.iter().zip(cuts) {
+            let marker = usize::from(!cut.is_empty());
+            for (kept, output) in [
+                (0..cut.start, offset),
+                (cut.end..segment.text.len(), offset + cut.start + marker),
+            ] {
+                for matched in &segment.matches {
+                    let start = kept.start.max(matched.start);
+                    let end = kept.end.min(matched.end);
+                    if start < end {
+                        let range = output + start - kept.start..output + end - kept.start;
+                        if let Some(last) = highlighted.last_mut()
+                            && range.start <= last.end
+                        {
+                            last.end = last.end.max(range.end);
+                        } else {
+                            highlighted.push(range);
+                        }
+                    }
+                }
+            }
+            offset += segment.text.len() - cut.len() + marker;
+        }
+        (line, highlighted)
+    }
+}
+impl TextSegment {
+    pub fn new(text: impl IntoIterator<Item = u16>, kind: FoldKind) -> Self {
+        Self {
+            text: text.into_iter().collect(),
+            matches: Vec::new(),
+            kind,
         }
     }
-    (shown, highlighted)
+    pub fn plain(text: &str) -> Self {
+        Self::new(text.encode_utf16(), FoldKind::Text)
+    }
+    pub fn highlight(&mut self) {
+        self.matches.push(0..self.text.len());
+    }
+    /// Returns the display text and the segment-local range replaced by the ellipsis.
+    pub fn fold(
+        &self,
+        width: i32,
+        measure: &impl Fn(&[u16]) -> i32,
+    ) -> Option<(Vec<u16>, Range<usize>)> {
+        let value = &self.text;
+        if measure(value) <= width {
+            return None;
+        }
+        if self.kind == FoldKind::Guid {
+            return (value.len() > 3).then(|| ("{…}".encode_utf16().collect(), 1..value.len() - 1));
+        }
+        let (mut omitted, limit) = if self.kind == FoldKind::Path {
+            let separator = |ch: &u16| *ch == b'\\' as u16 || *ch == b'/' as u16;
+            let last = value.iter().rposition(separator)?;
+            let first = if value.starts_with(&[b'\\' as u16, b'\\' as u16]) {
+                1
+            } else {
+                value.iter().position(separator)?
+            };
+            if first >= last {
+                return None;
+            }
+            (first + 1..first + 1, last)
+        } else {
+            (value.len()..value.len(), 0)
+        };
+        loop {
+            let candidate: Vec<_> = value[..omitted.start]
+                .iter()
+                .copied()
+                .chain("…".encode_utf16())
+                .chain(value[omitted.end..].iter().copied())
+                .collect();
+            let done = if self.kind == FoldKind::Path {
+                omitted.end == limit
+            } else {
+                omitted.start == 0
+            };
+            if measure(&candidate) <= width || done {
+                return (candidate.len() < value.len()).then_some((candidate, omitted));
+            }
+            if self.kind == FoldKind::Path {
+                omitted.end += 1;
+                if omitted.end < limit && (0xDC00..=0xDFFF).contains(&value[omitted.end]) {
+                    omitted.end += 1;
+                }
+            } else {
+                omitted.start -= 1;
+                if omitted.start > 0 && (0xDC00..=0xDFFF).contains(&value[omitted.start]) {
+                    omitted.start -= 1;
+                }
+            }
+        }
+    }
 }
 
 pub fn tooltip_field(text: &mut Vec<u16>, label: u16, value: impl IntoIterator<Item = u16>) {
@@ -656,38 +702,26 @@ impl Visuals {
             } else {
                 blend(text, GetSysColor(COLOR_WINDOW))
             };
-            for (index, (value, matches)) in [
-                (&display.title, &display.title_matches),
-                (&display.detail, &display.detail_matches),
-            ]
-            .into_iter()
-            .enumerate()
-            {
-                let (font, height, color) = if index == 0 {
-                    (self.heading.handle, height, text)
-                } else {
-                    (self.body, self.body_height, secondary)
-                };
-                area.bottom = area.top + height;
-                SelectObject(dc, font);
-                if index == 1 && !display.detail_folds.is_empty() {
-                    let (shown, matches) = fold_text(
-                        value,
-                        matches,
-                        &display.detail_folds,
-                        (area.right - area.left).max(0),
-                        |text| {
-                            let mut size: SIZE = std::mem::zeroed();
-                            GetTextExtentPoint32W(dc, text.as_ptr(), text.len() as i32, &mut size);
-                            size.cx
-                        },
-                    );
-                    draw_text(dc, area, &shown, &matches, color, accent, system);
-                } else {
-                    draw_text(dc, area, value, matches, color, accent, system);
-                }
-                area.top = area.bottom + self.gap;
-            }
+            area.bottom = area.top + height;
+            SelectObject(dc, self.heading.handle);
+            draw_text(
+                dc,
+                area,
+                &display.title,
+                &display.title_matches,
+                text,
+                accent,
+                system,
+            );
+            area.top = area.bottom + self.gap;
+            area.bottom = area.top + self.body_height;
+            SelectObject(dc, self.body);
+            let (shown, matches) = display.detail.fit((area.right - area.left).max(0), |text| {
+                let mut size: SIZE = std::mem::zeroed();
+                GetTextExtentPoint32W(dc, text.as_ptr(), text.len() as i32, &mut size);
+                size.cx
+            });
+            draw_text(dc, area, &shown, &matches, secondary, accent, system);
         }
     }
 }
@@ -780,43 +814,63 @@ mod tests {
     use super::*;
 
     #[test]
+    fn folds_preserve_evidence_across_adjacent_segments() {
+        let mut line = TextLine::default();
+        for (text, kind, matched) in [
+            ("ab", FoldKind::Text, 1..2),
+            ("{12345678}", FoldKind::Guid, 0..10),
+            ("cd", FoldKind::Text, 0..1),
+        ] {
+            let mut segment = TextSegment::new(text.encode_utf16(), kind);
+            segment.matches.push(matched);
+            line.push(segment);
+        }
+        let (shown, matches) = line.fit(8, |s| s.len() as i32);
+        assert_eq!(String::from_utf16(&shown).unwrap(), "ab{…}cd");
+        assert_eq!(matches, [1..3, 4..6]);
+        assert_eq!(String::from_utf16(&line.text()).unwrap(), "ab{12345678}cd");
+    }
+
+    #[test]
     fn detail_folds_follow_priority_and_preserve_surviving_matches() {
-        let text: Vec<u16> = "label {12345678-9abc-def0-1234-56789abcdef0} C:\\long\\folder\\tail"
-            .encode_utf16()
-            .collect();
-        let folds = [
-            Fold {
-                range: 45..text.len(),
-                kind: FoldKind::Path,
-            },
-            Fold {
-                range: 6..44,
-                kind: FoldKind::Guid,
-            },
-        ];
+        let sample = |highlight_tail| {
+            let mut line = TextLine::default();
+            let mut label = TextSegment::plain("label ");
+            label.matches.push(0..5);
+            line.push(label);
+            let mut guid = TextSegment::new(
+                "{12345678-9abc-def0-1234-56789abcdef0}".encode_utf16(),
+                FoldKind::Guid,
+            );
+            guid.highlight();
+            line.push(guid);
+            line.push(TextSegment::plain(" "));
+            let mut path = TextSegment::new(r"C:\long\folder\tail".encode_utf16(), FoldKind::Path);
+            if highlight_tail {
+                path.matches.push(path.text.len() - 4..path.text.len());
+            }
+            line.push(path);
+            line
+        };
+        let line = sample(false);
+        let text = line.text();
         let measure = |value: &[u16]| value.len() as i32;
-        let (wide, matches) = fold_text(&text, &[0..5, 6..44], &folds, 100, measure);
+        let (wide, matches) = line.fit(100, measure);
         assert_eq!(wide, text);
         assert_eq!(matches, [0..5, 6..44]);
-        let (medium, matches) = fold_text(&text, &[0..5, 6..44], &folds, 40, measure);
+        let (medium, matches) = line.fit(40, measure);
         assert_eq!(
             String::from_utf16(&medium).unwrap(),
             "label {…} C:\\long\\folder\\tail"
         );
         assert_eq!(matches, [0..5, 6..7, 8..9]);
-        let (narrow, _) = fold_text(&text, &[], &folds, 20, measure);
+        let (narrow, _) = line.fit(20, measure);
         assert!(String::from_utf16(&narrow).unwrap().ends_with("\\tail"));
         assert!(narrow.len() <= 20);
-        let (small, _) = fold_text(&text, &[], &folds, 14, measure);
+        let (small, _) = line.fit(14, measure);
         assert!(String::from_utf16(&small).unwrap().ends_with("\\tail"));
         assert!(small.len() <= 14);
-        let (shown, matches) = fold_text(
-            &text,
-            &[0..5, text.len() - 4..text.len()],
-            &folds,
-            16,
-            measure,
-        );
+        let (shown, matches) = sample(true).fit(16, measure);
         assert_eq!(&shown[matches[0].clone()], &text[..matches[0].len()]);
         assert_eq!(
             String::from_utf16(&shown[matches.last().unwrap().clone()]).unwrap(),
@@ -827,19 +881,96 @@ mod tests {
     #[test]
     fn folded_paths_preserve_unc_prefixes_and_utf16_boundaries() {
         for path in [r"\\server\😀目录\文件.winmd", r"\\?\C:\😀目录\文件.winmd"] {
-            let text: Vec<u16> = path.encode_utf16().collect();
-            let folds = [Fold {
-                range: 0..text.len(),
-                kind: FoldKind::Path,
-            }];
-            for width in 0..text.len() {
-                let (shown, _) =
-                    fold_text(&text, &[], &folds, width as i32, |text| text.len() as i32);
+            let mut line = TextLine::default();
+            line.push(TextSegment::new(path.encode_utf16(), FoldKind::Path));
+            for width in 0..path.encode_utf16().count() {
+                let (shown, _) = line.fit(width as i32, |text| text.len() as i32);
                 let shown = String::from_utf16(&shown).unwrap();
                 assert!(shown.starts_with(r"\\"));
                 assert!(shown.ends_with(r"\文件.winmd"));
             }
         }
+    }
+
+    #[test]
+    fn guid_folds_before_an_earlier_path_and_long_paths_remain_copyable() {
+        let path = format!(r"\\?\UNC\server\{}\文件.winmd", "😀目录\\".repeat(80));
+        let mut line = TextLine::default();
+        line.push(TextSegment::new(path.encode_utf16(), FoldKind::Path));
+        line.field(TextSegment::new(
+            "{12345678-9abc-def0-1234-56789abcdef0}".encode_utf16(),
+            FoldKind::Guid,
+        ));
+        let full = line.text();
+        let (shown, _) = line.fit(path.encode_utf16().count() as i32 + 6, |s| s.len() as i32);
+        assert_eq!(
+            String::from_utf16(&shown).unwrap(),
+            format!("{path} · {{…}}")
+        );
+        for width in [0, 1, 16, 64] {
+            let (shown, _) = line.fit(width, |s| s.len() as i32);
+            let shown = String::from_utf16(&shown).unwrap();
+            assert!(shown.starts_with(r"\\"));
+            assert!(shown.contains(r"\文件.winmd"));
+            assert_eq!(line.text(), full);
+        }
+    }
+
+    #[test]
+    fn plain_segments_fold_at_utf16_boundaries_and_merge_overlapping_evidence() {
+        let mut line = TextLine::default();
+        let mut segment = TextSegment::plain("A😀B😀C");
+        segment.matches = vec![3..7, 0..4, 1..3];
+        line.push(segment);
+        for width in 0..=7 {
+            let (shown, matches) = line.fit(width, |s| s.len() as i32);
+            let text = String::from_utf16(&shown).unwrap();
+            for matched in matches {
+                assert!(!String::from_utf16(&shown[matched]).unwrap().contains('…'));
+            }
+            assert!(text.encode_utf16().count() <= width as usize || width == 0);
+        }
+        assert_eq!(
+            line.fit(100, |s| s.len() as i32).1.as_slice(),
+            std::slice::from_ref(&(0..7))
+        );
+    }
+
+    #[test]
+    fn empty_and_native_utf16_segments_preserve_copy_text() {
+        let mut line = TextLine::default();
+        line.field(TextSegment::plain(""));
+        assert_eq!(line.fit(0, |_| 0), (Vec::new(), Vec::new()));
+        let path = [92, 92, 115, 92, 0xD800, 92, 102];
+        line.push(TextSegment::new(path, FoldKind::Path));
+        assert_eq!(line.text(), path);
+        let (shown, _) = line.fit(5, |s| s.len() as i32);
+        assert_eq!(shown, [92, 92, 0x2026, 92, 102]);
+        assert_eq!(line.text(), path);
+        for (text, kind) in [
+            ("A", FoldKind::Text),
+            ("…", FoldKind::Text),
+            ("{}", FoldKind::Guid),
+            ("{…}", FoldKind::Guid),
+        ] {
+            let segment = TextSegment::new(text.encode_utf16(), kind);
+            assert!(segment.fold(0, &|s| s.len() as i32).is_none());
+        }
+    }
+
+    #[test]
+    fn adjacent_text_fields_elide_as_one_block_without_losing_local_evidence() {
+        let mut line = TextLine::default();
+        let mut first = TextSegment::plain("first");
+        first.matches.push(1..4);
+        line.field(first);
+        let mut second = TextSegment::plain("😀last");
+        second.highlight();
+        line.field(second);
+        let (shown, matches) = line.fit(6, |s| s.len() as i32);
+        assert_eq!(String::from_utf16(&shown).unwrap(), "first…");
+        assert_eq!(matches.as_slice(), std::slice::from_ref(&(1..4)));
+        assert_eq!(String::from_utf16(&line.text()).unwrap(), "first · 😀last");
     }
 
     #[test]

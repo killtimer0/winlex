@@ -127,6 +127,46 @@ fn requests() -> Vec<(u32, u64, usize)> {
 }
 
 #[test]
+fn empty_tabs_start_usable_and_can_add_remove_the_first_child() {
+    let f = Fixture::new();
+    let root = f.accessible();
+    let child = VARIANT::from(0i32);
+    unsafe {
+        assert_eq!(root.accChildCount().unwrap(), 0);
+        assert_eq!(root.get_accName(&child).unwrap(), BSTR::from("Pages"));
+        assert_eq!(
+            i32::try_from(&root.get_accRole(&child).unwrap()).unwrap(),
+            ROLE_SYSTEM_PAGETABLIST as i32
+        );
+        assert_eq!(
+            root.accSelection().unwrap().as_raw().Anonymous.Anonymous.vt,
+            windows::Win32::System::Variant::VT_EMPTY.0
+        );
+        let font = send(f.tabs, WM_GETFONT, 0, 0) as HFONT;
+        assert!(!font.is_null());
+        assert_eq!(GetObjectType(font), OBJ_FONT as u32);
+    }
+    for key in [VK_LEFT, VK_RIGHT, VK_HOME, VK_END] {
+        send(f.tabs, WM_KEYDOWN, key as usize, 0);
+    }
+    send(f.tabs, WM_LBUTTONDOWN, 0, 0);
+    send(f.tabs, WM_LBUTTONUP, 0, 0);
+    send(f.tabs, WM_MOUSELEAVE, 0, 0);
+    assert!(requests().is_empty());
+    set_items(f.tabs, vec![item(7, "First")]);
+    let first = children(&root);
+    assert_eq!(first.len(), 1);
+    unsafe {
+        assert_eq!(first[0].get_accName(&child).unwrap(), BSTR::from("First"));
+    }
+    set_items(f.tabs, vec![]);
+    unsafe {
+        assert_eq!(root.accChildCount().unwrap(), 0);
+        assert!(first[0].get_accName(&child).is_err());
+    }
+}
+
+#[test]
 fn italic_titles_keep_overhang_without_painting_outside_their_bounds() {
     unsafe {
         for dpi in [96, 144, 192] {
@@ -336,6 +376,54 @@ fn msaa_tree_identity_requests_and_disconnection() {
         drop(f);
         assert!(root.accChildCount().is_err());
         assert!(original[1].accDoDefaultAction(&self_id).is_err());
+    }
+}
+
+#[test]
+fn tab_drag_threshold_uses_horizontal_motion_and_capture_cancellation() {
+    let f = Fixture::new();
+    set_items(f.tabs, vec![item(1, "First"), item(2, "Second")]);
+    let root = f.accessible();
+    let pages = children(&root);
+    let point = |page: &IAccessible| unsafe {
+        let (mut x, mut y, mut width, mut height) = (0, 0, 0, 0);
+        page.accLocation(
+            &mut x,
+            &mut y,
+            &mut width,
+            &mut height,
+            &VARIANT::from(0i32),
+        )
+        .unwrap();
+        let mut p = POINT {
+            x: x + width / 2,
+            y: y + height / 2,
+        };
+        ScreenToClient(f.tabs, &mut p);
+        p
+    };
+    let first = point(&pages[0]);
+    let second = point(&pages[1]);
+    let packed = |x: i32, y: i32| ((x as u16 as u32) | ((y as u16 as u32) << 16)) as isize;
+    let down = packed(second.x, second.y);
+    send(f.tabs, WM_LBUTTONDOWN, 0, down);
+    send(f.tabs, WM_MOUSEMOVE, 0, packed(second.x, second.y + 100));
+    send(f.tabs, WM_LBUTTONUP, 0, down);
+    assert_eq!(requests(), [(SELECT, 2, 0)]);
+    assert!((second.x - first.x).abs() > unsafe { GetSystemMetrics(SM_CXDRAG) });
+    for cancel in [false, true] {
+        send(f.tabs, WM_LBUTTONDOWN, 0, down);
+        send(f.tabs, WM_MOUSEMOVE, 0, packed(first.x, first.y));
+        if cancel {
+            send(f.tabs, WM_CANCELMODE, 0, 0);
+        }
+        send(f.tabs, WM_LBUTTONUP, 0, packed(first.x, first.y));
+        let expected = if cancel {
+            vec![(SELECT, 2, 0)]
+        } else {
+            vec![(SELECT, 2, 0), (REORDER, 2, 0)]
+        };
+        assert_eq!(requests(), expected);
     }
 }
 

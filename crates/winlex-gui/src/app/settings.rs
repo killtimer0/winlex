@@ -86,12 +86,11 @@ impl Settings {
             .and_then(|value| value.parse::<Architecture>().ok());
         let window = key.and_then(|k| k.bytes("Window")).and_then(|bytes| {
             let bytes: [u8; 24] = bytes.try_into().ok()?;
-            let v: Vec<_> = bytes
+            let v = bytes
                 .as_chunks::<4>()
                 .0
-                .iter()
-                .map(|b| i32::from_le_bytes(*b))
-                .collect();
+                .first_chunk::<6>()?
+                .map(i32::from_le_bytes);
             if !(USER_DEFAULT_SCREEN_DPI as i32..=USER_DEFAULT_SCREEN_DPI as i32 * 10)
                 .contains(&v[4])
                 || !(1..=100000).contains(&v[2])
@@ -206,24 +205,18 @@ pub(super) fn save_window(hwnd: HWND) -> anyhow::Result<()> {
             r.top += y;
             r.bottom += y;
         }
-        let window = Window {
-            x: r.left,
-            y: r.top,
-            width: r.right - r.left,
-            height: r.bottom - r.top,
-            dpi: dpi().window(hwnd),
-            maximized: IsZoomed(hwnd) != 0
-                || (IsIconic(hwnd) != 0 && placement.flags & WPF_RESTORETOMAXIMIZED != 0),
-        };
+        let dpi = dpi().window(hwnd);
+        let maximized = IsZoomed(hwnd) != 0
+            || (IsIconic(hwnd) != 0 && placement.flags & WPF_RESTORETOMAXIMIZED != 0);
         read(|a| {
             let key = a.config.write_key()?;
             let bytes: Vec<_> = [
-                window.x,
-                window.y,
-                window.width,
-                window.height,
-                window.dpi as i32,
-                i32::from(window.maximized),
+                r.left,
+                r.top,
+                r.right - r.left,
+                r.bottom - r.top,
+                dpi as i32,
+                i32::from(maximized),
             ]
             .into_iter()
             .flat_map(i32::to_le_bytes)

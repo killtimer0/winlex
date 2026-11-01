@@ -4,6 +4,9 @@ use anyhow::{Result, bail, ensure};
 use std::collections::HashSet;
 use windows_metadata::{reader::*, *};
 
+#[cfg(test)]
+mod tests;
+
 pub struct Db {
     pub inputs: Vec<crate::SourceData>,
     pub index: Index,
@@ -57,34 +60,32 @@ impl Db {
     pub fn from_inputs(data: impl IntoIterator<Item = crate::SourceData>) -> Result<Self> {
         let inputs: Vec<_> = data.into_iter().collect();
         ensure!(!inputs.is_empty(), "at least one WinMD is required");
-        let mut files = vec![];
-        let mut sources = vec![];
-        for (id, input) in inputs.iter().enumerate() {
-            let path = &input.path;
-            files.push(
+        let files = inputs
+            .iter()
+            .map(|input| {
                 File::new_shared(input.bytes.clone())
-                    .ok_or_else(|| anyhow::anyhow!("invalid metadata: {}", path.display()))?,
-            );
-            sources.push(Source {
-                id,
-                path: path.clone(),
-                assembly: None,
-                references: vec![],
-            });
-        }
+                    .ok_or_else(|| anyhow::anyhow!("invalid metadata: {}", input.path.display()))
+            })
+            .collect::<Result<Vec<_>>>()?;
         let index = Index::new(files);
-        for (file, source) in sources.iter_mut().enumerate() {
-            let mut assemblies = index.rows::<Assembly>(file);
-            source.assembly = assemblies.next().map(AssemblyIdentity::definition);
+        let mut sources = Vec::new();
+        for (id, input) in inputs.iter().enumerate() {
+            let mut assemblies = index.rows::<Assembly>(id);
+            let assembly = assemblies.next().map(AssemblyIdentity::definition);
             ensure!(
                 assemblies.next().is_none(),
                 "multiple Assembly rows in {}",
-                source.path.display()
+                input.path.display()
             );
-            source.references = index
-                .rows::<AssemblyRef>(file)
-                .map(AssemblyIdentity::reference)
-                .collect();
+            sources.push(Source {
+                id,
+                path: input.path.clone(),
+                assembly,
+                references: index
+                    .rows::<AssemblyRef>(id)
+                    .map(AssemblyIdentity::reference)
+                    .collect(),
+            });
         }
         Ok(Self {
             inputs,
@@ -265,7 +266,8 @@ impl Db {
         ensure!(supports(t, bit), "interface unavailable on architecture");
         let name = t.name();
         let mut slots = Vec::new();
-        if t.flags().contains(TypeAttributes::WindowsRuntime) {
+        let windows_runtime = t.flags().contains(TypeAttributes::WindowsRuntime);
+        if windows_runtime {
             ensure!(
                 t.generic_params().next().is_none(),
                 "open generic WinRT vtable ABI is not supported"
@@ -312,53 +314,47 @@ impl Db {
                 !delegate || slots.len() == 4,
                 "WinRT delegate must have one Invoke method"
             );
-            return Ok(Vtable {
-                id: key,
-                name: name.into(),
-                architecture: arch,
-                windows_runtime: true,
-                slots,
-            });
-        }
-        let mut active = HashSet::new();
-        fn visit(
-            db: &Db,
-            t: TypeDef<'_>,
-            bit: i32,
-            active: &mut HashSet<EntityId>,
-            slots: &mut Vec<Slot>,
-        ) -> Result<()> {
-            ensure!(t.category() == TypeCategory::Interface, "not an interface");
-            ensure!(
-                !t.flags().contains(TypeAttributes::WindowsRuntime),
-                "WinRT requirements cannot be used as native COM base interfaces"
-            );
-            ensure!(
-                t.generic_params().next().is_none(),
-                "generic interface vtable ABI is not supported"
-            );
-            ensure!(active.insert(crate::metadata::key(t, 2)), "interface cycle");
-            let bases: Vec<_> = t.interface_impls().collect();
-            ensure!(bases.len() <= 1, "multiple interface bases unsupported");
-            for b in bases {
-                let n = match b.interface(&[]) {
-                    Type::ClassName(n) | Type::ValueName(n) => n,
-                    _ => bail!("unsupported interface reference"),
-                };
-                visit(db, db.resolve(&n, t, bit)?, bit, active, slots)?;
+        } else {
+            let mut active = HashSet::new();
+            fn visit(
+                db: &Db,
+                t: TypeDef<'_>,
+                bit: i32,
+                active: &mut HashSet<EntityId>,
+                slots: &mut Vec<Slot>,
+            ) -> Result<()> {
+                ensure!(t.category() == TypeCategory::Interface, "not an interface");
+                ensure!(
+                    !t.flags().contains(TypeAttributes::WindowsRuntime),
+                    "WinRT requirements cannot be used as native COM base interfaces"
+                );
+                ensure!(
+                    t.generic_params().next().is_none(),
+                    "generic interface vtable ABI is not supported"
+                );
+                ensure!(active.insert(crate::metadata::key(t, 2)), "interface cycle");
+                let bases: Vec<_> = t.interface_impls().collect();
+                ensure!(bases.len() <= 1, "multiple interface bases unsupported");
+                for b in bases {
+                    let n = match b.interface(&[]) {
+                        Type::ClassName(n) | Type::ValueName(n) => n,
+                        _ => bail!("unsupported interface reference"),
+                    };
+                    visit(db, db.resolve(&n, t, bit)?, bit, active, slots)?;
+                }
+                for m in t.methods().filter(|m| supports(*m, bit)) {
+                    slots.push(method_slot(t, m)?);
+                }
+                active.remove(&crate::metadata::key(t, 2));
+                Ok(())
             }
-            for m in t.methods().filter(|m| supports(*m, bit)) {
-                slots.push(method_slot(t, m)?);
-            }
-            active.remove(&crate::metadata::key(t, 2));
-            Ok(())
+            visit(self, t, bit, &mut active, &mut slots)?;
         }
-        visit(self, t, bit, &mut active, &mut slots)?;
         Ok(Vtable {
             id: key,
             name: name.into(),
             architecture: arch,
-            windows_runtime: false,
+            windows_runtime,
             slots,
         })
     }

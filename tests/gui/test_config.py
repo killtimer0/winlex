@@ -2,7 +2,25 @@ import struct
 import pytest
 import winreg
 import win32con
+import win32gui
 from support import native as n
+
+
+def test_normal_placement_round_trips_registry_coordinates(launch, profile):
+    app = launch()
+    win32gui.SetWindowPos(app.frame, 0, 70, 80, 740, 520,
+                         win32con.SWP_NOZORDER | win32con.SWP_NOACTIVATE)
+    bounds = n.rectangle(app.frame)
+    app.close()
+    saved = profile.get("Window")
+    x, y, width, height, dpi, maximized = struct.unpack('<6i', saved)
+    assert (x, y, width, height) == (bounds[0], bounds[1],
+                                   bounds[2] - bounds[0], bounds[3] - bounds[1])
+    assert 96 <= dpi <= 960 and maximized == 0
+    restored = launch()
+    assert n.rectangle(restored.frame) == bounds
+    restored.close()
+    assert profile.get("Window") == saved
 
 
 def test_placement_and_sidebar_restart(launch, profile):

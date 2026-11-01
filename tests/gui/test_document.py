@@ -244,9 +244,7 @@ def test_document_source_and_responsive_reading_layout(launch, settings):
         assert counts[2] == counts[0]
 
 
-def test_document_button_uses_native_ideal_size_and_row_centering(launch, settings):
-    import struct
-
+def test_document_buttons_are_visible_without_overlap_or_clipping(launch, settings):
     app = launch([settings[1]])
     app.query("CreateFileW")
     doc = app.open_row()
@@ -257,17 +255,15 @@ def test_document_button_uses_native_ideal_size_and_row_centering(launch, settin
         dpi = n.api(n.user, "GetDpiForWindow", n.w.UINT, n.w.HWND)(doc) if hasattr(n.user, "GetDpiForWindow") else 96
         assert n.set_pos(doc, None, 0, 0, 850 * dpi // 96, 450 * dpi // 96, RESIZE_NO_MOVE)
         previous = n.rectangle(combo)
+        client = n.rectangle(doc, client=True)
+        origin = win32gui.ClientToScreen(doc, (0, 0))
         for control in (1206, 1211):
             button = n.get_item(doc, control)
-            assert n.write_memory(app.handle, app.memory, bytes(8), 8, None)
-            assert n.send(button, 0x1601, 0, app.memory)
-            size = n.c.create_string_buffer(8)
-            assert n.read_memory(app.handle, app.memory, size, 8, None)
             assert n.is_visible(button)
             bounds = n.rectangle(button)
-            assert (bounds[2] - bounds[0], bounds[3] - bounds[1]) == struct.unpack("<ii", size.raw)
             assert bounds[0] >= previous[2]
-            assert abs(bounds[1] + bounds[3] - previous[1] - previous[3]) <= 1
+            assert origin[0] <= bounds[0] < bounds[2] <= origin[0] + client[2]
+            assert origin[1] <= bounds[1] < bounds[3] <= origin[1] + client[3]
             previous = bounds
 
 

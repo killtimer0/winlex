@@ -14,10 +14,12 @@ use windows_sys::Win32::Graphics::GdiPlus::{
 };
 use windows_sys::Win32::UI::HiDpi::GetSystemMetricsForDpi;
 
-struct WindowIcon(HICON);
+pub struct WindowIcon(pub HICON);
 impl Drop for WindowIcon {
     fn drop(&mut self) {
-        unsafe { DestroyIcon(self.0) };
+        if !self.0.is_null() {
+            unsafe { DestroyIcon(self.0) };
+        }
     }
 }
 
@@ -69,15 +71,7 @@ impl DocumentIcons {
         }
         let render = |size| unsafe {
             let (id, color) = ICONS[icon as usize];
-            let mut bitmap = Bitmap::render(resources::binary(id)?, size)?;
-            bitmap.tint(color);
-            let handle = ImageList_Create(size, size, ILC_COLOR32, 1, 0);
-            anyhow::ensure!(handle != 0, "Create document icon list failed");
-            let images = Images(handle);
-            anyhow::ensure!(
-                ImageList_Add(images.0, bitmap.handle, ptr::null_mut()) >= 0,
-                "Cache document icon failed"
-            );
+            let images = Images::build(size, std::iter::once((id, [color])), "document")?;
             let handle = ImageList_GetIcon(images.0, 0, ILD_TRANSPARENT);
             anyhow::ensure!(!handle.is_null(), "Create document icon failed");
             Ok(WindowIcon(handle))
@@ -285,41 +279,43 @@ impl Images {
         size: i32,
         resources: impl ExactSizeIterator<Item = u16>,
     ) -> anyhow::Result<Self> {
-        unsafe {
-            let handle = ImageList_Create(size, size, ILC_COLOR32, resources.len() as i32, 0);
-            anyhow::ensure!(handle != 0, "Create toolbar icon list failed");
-            let images = Self(handle);
-            for id in resources {
-                let mut bitmap = Bitmap::render(resources::binary(id)?, size)?;
-                bitmap.tint(GetSysColor(COLOR_BTNTEXT));
-                anyhow::ensure!(
-                    ImageList_Add(handle, bitmap.handle, ptr::null_mut()) >= 0,
-                    "Cache toolbar icon failed"
-                );
-            }
-            Ok(images)
-        }
+        let color = unsafe { GetSysColor(COLOR_BTNTEXT) };
+        Self::build(size, resources.map(|id| (id, [color])), "toolbar")
     }
     pub fn handle(&self) -> HIMAGELIST {
         self.0
     }
     pub fn new(size: i32) -> anyhow::Result<Self> {
+        let (normal, selected) = unsafe {
+            (
+                GetSysColor(COLOR_WINDOWTEXT),
+                GetSysColor(COLOR_HIGHLIGHTTEXT),
+            )
+        };
+        Self::build(
+            size,
+            ICONS
+                .iter()
+                .map(|&(id, color)| (id, [color, normal, selected])),
+            "result",
+        )
+    }
+    fn build<const N: usize>(
+        size: i32,
+        icons: impl ExactSizeIterator<Item = (u16, [u32; N])>,
+        purpose: &str,
+    ) -> anyhow::Result<Self> {
         unsafe {
-            let handle = ImageList_Create(size, size, ILC_COLOR32, ICONS.len() as i32 * 3, 0);
-            anyhow::ensure!(handle != 0, "Create result icon list failed");
+            let handle = ImageList_Create(size, size, ILC_COLOR32, (icons.len() * N) as i32, 0);
+            anyhow::ensure!(handle != 0, "Create {purpose} icon list failed");
             let images = Self(handle);
-            for &(id, color) in ICONS {
+            for (id, colors) in icons {
                 let mut bitmap = Bitmap::render(resources::binary(id)?, size)?;
-                for variant in 0..3 {
-                    let color = match variant {
-                        1 => GetSysColor(COLOR_WINDOWTEXT),
-                        2 => GetSysColor(COLOR_HIGHLIGHTTEXT),
-                        _ => color,
-                    };
+                for color in colors {
                     bitmap.tint(color);
                     anyhow::ensure!(
                         ImageList_Add(handle, bitmap.handle, ptr::null_mut()) >= 0,
-                        "Cache result icon failed"
+                        "Cache {purpose} icon failed"
                     );
                 }
             }
@@ -352,6 +348,26 @@ impl Drop for Images {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn recoloring_reuses_alpha_without_carrying_previous_palette_colors() {
+        let _runtime = Runtime::new().unwrap();
+        let bytes = include_bytes!("../res/codicons/symbol-class.emf");
+        for size in [16, 24, 48] {
+            let mut reused = Bitmap::render(bytes, size).unwrap();
+            for color in [0x993366, 0xffffff, 0, 0x993366] {
+                reused.tint(color);
+                let mut fresh = Bitmap::render(bytes, size).unwrap();
+                fresh.tint(color);
+                unsafe {
+                    assert_eq!(
+                        std::slice::from_raw_parts(reused.pixels, reused.count),
+                        std::slice::from_raw_parts(fresh.pixels, fresh.count),
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn emf_plus_icons_render_with_alpha_at_each_supported_scale() {
         let _runtime = Runtime::new().unwrap();

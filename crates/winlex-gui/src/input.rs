@@ -30,7 +30,7 @@ impl Drop for Apartment {
 }
 pub fn choose_files(owner: HWND, version: WindowsVersion) -> anyhow::Result<Vec<PathBuf>> {
     if version.at_least(WindowsVersion::VISTA) {
-        return modern_choose(owner);
+        return modern_choose(owner).context("Select files");
     }
     let mut filter = Vec::new();
     for s in [
@@ -90,7 +90,7 @@ pub fn choose_files(owner: HWND, version: WindowsVersion) -> anyhow::Result<Vec<
     }
 }
 
-fn modern_choose(owner: HWND) -> anyhow::Result<Vec<PathBuf>> {
+fn modern_choose(owner: HWND) -> windows::core::Result<Vec<PathBuf>> {
     use windows::{
         Win32::{
             Foundation::{ERROR_CANCELLED, HWND as ComHwnd},
@@ -103,50 +103,47 @@ fn modern_choose(owner: HWND) -> anyhow::Result<Vec<PathBuf>> {
         },
         core::{PCWSTR, w},
     };
-    let result = unsafe {
-        (|| -> windows::core::Result<Vec<PathBuf>> {
-            let dialog: IFileOpenDialog =
-                CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER)?;
-            let options = dialog.GetOptions()?
-                | FOS_FORCEFILESYSTEM
-                | FOS_PATHMUSTEXIST
-                | FOS_NOCHANGEDIR
-                | FOS_DONTADDTORECENT
-                | FOS_FILEMUSTEXIST
-                | FOS_ALLOWMULTISELECT;
-            dialog.SetOptions(options)?;
-            let title = resources::wide_text(IDS_LOAD_METADATA);
-            dialog.SetTitle(PCWSTR(title.as_ptr()))?;
-            let winmd = resources::wide_text(IDS_WINMD_FILES);
-            let all = resources::wide_text(IDS_ALL_FILES);
-            dialog.SetFileTypes(&[
-                COMDLG_FILTERSPEC {
-                    pszName: PCWSTR(winmd.as_ptr()),
-                    pszSpec: w!("*.winmd"),
-                },
-                COMDLG_FILTERSPEC {
-                    pszName: PCWSTR(all.as_ptr()),
-                    pszSpec: w!("*.*"),
-                },
-            ])?;
-            if let Err(error) = dialog.Show(ComHwnd(owner)) {
-                if error.code() == windows::core::HRESULT::from_win32(ERROR_CANCELLED.0) {
-                    return Ok(Vec::new());
-                }
-                return Err(error);
+    unsafe {
+        let dialog: IFileOpenDialog =
+            CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER)?;
+        let options = dialog.GetOptions()?
+            | FOS_FORCEFILESYSTEM
+            | FOS_PATHMUSTEXIST
+            | FOS_NOCHANGEDIR
+            | FOS_DONTADDTORECENT
+            | FOS_FILEMUSTEXIST
+            | FOS_ALLOWMULTISELECT;
+        dialog.SetOptions(options)?;
+        let title = resources::wide_text(IDS_LOAD_METADATA);
+        dialog.SetTitle(PCWSTR(title.as_ptr()))?;
+        let winmd = resources::wide_text(IDS_WINMD_FILES);
+        let all = resources::wide_text(IDS_ALL_FILES);
+        dialog.SetFileTypes(&[
+            COMDLG_FILTERSPEC {
+                pszName: PCWSTR(winmd.as_ptr()),
+                pszSpec: w!("*.winmd"),
+            },
+            COMDLG_FILTERSPEC {
+                pszName: PCWSTR(all.as_ptr()),
+                pszSpec: w!("*.*"),
+            },
+        ])?;
+        if let Err(error) = dialog.Show(ComHwnd(owner)) {
+            if error.code() == windows::core::HRESULT::from_win32(ERROR_CANCELLED.0) {
+                return Ok(Vec::new());
             }
-            let items = dialog.GetResults()?;
-            let mut paths = Vec::new();
-            for index in 0..items.GetCount()? {
-                let path = items.GetItemAt(index)?.GetDisplayName(SIGDN_FILESYSPATH)?;
-                let value = OsString::from_wide(path.as_wide());
-                CoTaskMemFree(Some(path.0.cast()));
-                paths.push(value.into());
-            }
-            Ok(paths)
-        })()
-    };
-    result.context("Select files")
+            return Err(error);
+        }
+        let items = dialog.GetResults()?;
+        let mut paths = Vec::new();
+        for index in 0..items.GetCount()? {
+            let path = items.GetItemAt(index)?.GetDisplayName(SIGDN_FILESYSPATH)?;
+            let value = OsString::from_wide(path.as_wide());
+            CoTaskMemFree(Some(path.0.cast()));
+            paths.push(value.into());
+        }
+        Ok(paths)
+    }
 }
 
 // Explorer drops use the same append operation as the file picker.

@@ -183,6 +183,11 @@ def test_temporary_inputs_preserve_saved_files(launch, profile, settings):
     temporary.command(1022)
     n.wait(lambda: temporary.count(temporary.sources) == 0, "temporary source closed")
     assert profile.get("AutoLoad") == [str(settings[1])]
+    temporary.close()
+    restored = launch()
+    n.wait(lambda: restored.count(restored.sources) == 1, "saved input restored after temporary session", 45)
+    restored.query("CreateFileW")
+    assert restored.count() > 0
 
 
 def test_failed_restore_preserves_saved_files(launch, profile, settings):

@@ -1,6 +1,102 @@
 use winlex_core::{Architecture, Catalog, SearchMode, SearchOptions};
 
 #[test]
+fn parameter_modifiers_preserve_order_and_missing_parameter_names() {
+    use winlex_core::windows_metadata::{writer, *};
+    let mut file = writer::File::new("ParameterModifiers");
+    let object = file.TypeRef("System", "Object");
+    let constructors: Vec<_> = ["ReservedAttribute", "RetValAttribute", "ConstAttribute"]
+        .into_iter()
+        .map(|name| {
+            let ty = file.TypeRef("Windows.Win32.Foundation.Metadata", name);
+            file.MemberRef(
+                ".ctor",
+                &Signature {
+                    flags: MethodCallAttributes::HASTHIS,
+                    return_type: Type::Void,
+                    types: vec![],
+                },
+                writer::MemberRefParent::TypeRef(ty),
+            )
+        })
+        .collect();
+    file.TypeDef(
+        "Fixture",
+        "Api",
+        writer::TypeDefOrRef::TypeRef(object),
+        TypeAttributes::Public,
+    );
+    let cases = [
+        (0, "INT32 值😀,"),
+        (3, "[in, out] INT32 值😀,"),
+        (
+            63,
+            "[in, out, optional, reserved, retval, const] INT32 值😀,",
+        ),
+    ];
+    for (mask, _) in cases {
+        file.MethodDef(
+            &format!("Call{mask}"),
+            &Signature {
+                flags: MethodCallAttributes::default(),
+                return_type: Type::Void,
+                types: vec![Type::I32, Type::I32],
+            },
+            MethodAttributes::Public | MethodAttributes::Static,
+            MethodImplAttributes::default(),
+        );
+        let mut flags = ParamAttributes::default();
+        for (bit, flag) in [
+            (1, ParamAttributes::In),
+            (2, ParamAttributes::Out),
+            (4, ParamAttributes::Optional),
+        ] {
+            if mask & bit != 0 {
+                flags |= flag;
+            }
+        }
+        let param = file.Param("值😀", 1, flags);
+        for (index, &constructor) in constructors.iter().enumerate() {
+            if mask & (8 << index) != 0 {
+                file.Attribute(
+                    writer::HasAttribute::Param(param),
+                    writer::AttributeType::MemberRef(constructor),
+                    &[],
+                );
+            }
+        }
+    }
+    let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tmp");
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join(format!("parameter-modifiers-{}.winmd", std::process::id()));
+    std::fs::write(&path, file.into_stream()).unwrap();
+    let catalog = Catalog::open(&path).unwrap();
+    std::fs::remove_file(path).unwrap();
+    for (mask, expected) in cases {
+        let entity = catalog
+            .search(
+                &format!("Call{mask}"),
+                SearchOptions {
+                    mode: SearchMode::Name,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap();
+        let rendered =
+            winlex_format::declaration::render(&catalog, entity.id, Architecture::X64).unwrap();
+        assert!(
+            rendered.text.lines().any(|line| line.trim() == expected),
+            "{}",
+            rendered.text
+        );
+        assert!(rendered.text.contains("INT32 arg2"), "{}", rendered.text);
+    }
+}
+
+#[test]
 fn declarations_cover_native_signatures_and_architecture_specific_types() {
     let catalog = Catalog::open(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../inputs/Windows.Win32.winmd"),

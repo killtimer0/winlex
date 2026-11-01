@@ -20,6 +20,8 @@ pub enum Architecture {
     Arm64,
 }
 impl Architecture {
+    /// Canonical presentation and fallback order, independent of user preference.
+    pub const ALL: [Self; 3] = [Self::X86, Self::X64, Self::Arm64];
     pub const ALL_MASK: i32 = Self::X86.bit() | Self::X64.bit() | Self::Arm64.bit();
 
     pub const fn bit(self) -> i32 {
@@ -49,12 +51,10 @@ impl Architecture {
 impl std::str::FromStr for Architecture {
     type Err = anyhow::Error;
     fn from_str(s: &str) -> Result<Self> {
-        Ok(match s {
-            "x86" => Self::X86,
-            "x64" => Self::X64,
-            "arm64" => Self::Arm64,
-            _ => bail!("architecture must be x86, x64 or arm64"),
-        })
+        Self::ALL
+            .into_iter()
+            .find(|arch| arch.name() == s)
+            .ok_or_else(|| anyhow::anyhow!("architecture must be x86, x64 or arm64"))
     }
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -152,6 +152,19 @@ pub fn guid<'a>(r: impl HasAttributes<'a>) -> Option<String> {
     ))
 }
 impl<'a> Declaration<'a> {
+    pub(crate) fn constant_value(&self) -> Option<Value> {
+        match self {
+            Self::Field(field) => field.constant().map(|value| value.value()),
+            _ => None,
+        }
+    }
+    pub(crate) fn guid(&self) -> Option<String> {
+        match self {
+            Self::Type(row) => guid(*row),
+            Self::Field(row) => guid(*row),
+            _ => None,
+        }
+    }
     pub fn documentation_url(&self) -> Option<String> {
         fn read<'a>(row: impl HasAttributes<'a>) -> Option<String> {
             row.find_attribute("DocumentationAttribute")?
@@ -377,35 +390,28 @@ impl Catalog {
     /// Metadata-owned context, without interpreting container names or member flags.
     pub fn entity_context(&self, id: EntityId) -> Result<EntityContext> {
         let row = self.declaration(id, None)?;
-        let (namespace, owner) = if let Some(owner) = row.owner() {
+        let (namespace, owner) = self.name_context(&row);
+        Ok(EntityContext {
+            namespace: namespace.to_owned(),
+            owner: owner.map(str::to_owned),
+            constant: row.constant_value(),
+            guid: row.guid(),
+        })
+    }
+    fn name_context<'a>(&'a self, row: &Declaration<'a>) -> (&'a str, Option<&'a str>) {
+        if let Some(owner) = row.owner() {
             let name = &self.names[&key(owner, 2)];
             (
-                name.full[..name.namespace_len].to_owned(),
+                &name.full[..name.namespace_len],
                 (!matches!(row, Declaration::Type(_))).then(|| {
-                    name.full[name.namespace_len + usize::from(name.namespace_len != 0)..]
-                        .to_owned()
+                    &name.full[name.namespace_len + usize::from(name.namespace_len != 0)..]
                 }),
             )
-        } else if let Declaration::Reference(r) = row {
-            (r.namespace().to_owned(), None)
+        } else if let Declaration::Reference(row) = row {
+            (row.namespace(), None)
         } else {
-            unreachable!()
-        };
-        let constant = match row {
-            Declaration::Field(field) => field.constant().map(|value| value.value()),
-            _ => None,
-        };
-        let guid = match row {
-            Declaration::Type(row) => guid(row),
-            Declaration::Field(row) => guid(row),
-            _ => None,
-        };
-        Ok(EntityContext {
-            namespace,
-            owner,
-            constant,
-            guid,
-        })
+            ("", None)
+        }
     }
     pub fn resolve_reference(&self, id: EntityId, arch: Architecture) -> Result<EntityId> {
         let r: TypeRef = self.db.row(id, 1)?;
@@ -430,22 +436,21 @@ impl Catalog {
     }
     pub fn search<'a>(&'a self, query: &str, options: SearchOptions<'a>) -> Result<Search<'a>> {
         ensure!(!query.is_empty(), "empty search query");
-        let matcher = Matcher::Query(Box::new(
+        self.search_compiled(
             SearchQuery::compile(query, options.mode, options.case_sensitive)
                 .with_context(|| InvalidSearchInput(options.mode))?,
-        ));
-        self.iter(matcher, options)
+            options,
+        )
     }
     pub fn search_query<'a>(
         &'a self,
         query: &crate::Query,
         options: SearchOptions<'a>,
     ) -> Result<Search<'a>> {
-        let matcher = Matcher::Query(Box::new(SearchQuery::from_query(
-            query,
-            options.case_sensitive,
-        )?));
-        self.iter(matcher, options)
+        self.search_compiled(
+            SearchQuery::from_query(query, options.case_sensitive)?,
+            options,
+        )
     }
     pub fn search_compiled<'a>(
         &'a self,
@@ -598,14 +603,7 @@ impl Search<'_> {
                         String::new()
                     };
                     let namespace = if query.needs_full_name() {
-                        if let Some(owner) = row.owner() {
-                            let name = &self.catalog.names[&key(owner, 2)];
-                            &name.full[..name.namespace_len]
-                        } else if let Declaration::Reference(r) = &row {
-                            r.namespace()
-                        } else {
-                            ""
-                        }
+                        self.catalog.name_context(&row).0
                     } else {
                         ""
                     };
@@ -727,6 +725,34 @@ mod tests {
     use super::Architecture;
 
     #[test]
+    fn canonical_architectures_preserve_names_bits_widths_and_strict_parsing() {
+        let expected = [
+            (Architecture::X86, "x86", 1, 4),
+            (Architecture::X64, "x64", 2, 8),
+            (Architecture::Arm64, "arm64", 4, 8),
+        ];
+        assert_eq!(Architecture::ALL, expected.map(|(arch, _, _, _)| arch));
+        assert_eq!(Architecture::ALL_MASK, 7);
+        for (arch, name, bit, width) in expected {
+            assert_eq!(arch.name(), name);
+            assert_eq!(name.parse::<Architecture>().unwrap(), arch);
+            assert_eq!(arch.bit(), bit);
+            assert_eq!(arch.pointer_bytes(), width);
+            for mask in -1..=15 {
+                assert_eq!(arch.supports(mask), mask & bit != 0);
+            }
+        }
+        for text in [
+            "", "X86", "X64", "ARM64", " x86", "x86 ", "amd64", "x86\0", "窗口",
+        ] {
+            assert_eq!(
+                text.parse::<Architecture>().unwrap_err().to_string(),
+                "architecture must be x86, x64 or arm64"
+            );
+        }
+    }
+
+    #[test]
     fn documentation_links_are_read_from_each_declaration() {
         use windows_metadata::{reader::*, writer, *};
         let mut file = writer::File::new("DocumentationFixture");
@@ -811,25 +837,5 @@ mod tests {
                 .as_deref(),
             Some("https://example.com/method")
         );
-    }
-
-    #[test]
-    fn architecture_masks_are_domain_values() {
-        assert_eq!(Architecture::ALL_MASK, 7);
-        assert!(Architecture::X86.supports(1));
-        assert!(Architecture::X64.supports(2));
-        assert!(Architecture::Arm64.supports(4));
-        assert!(!Architecture::X86.supports(2));
-    }
-
-    #[test]
-    fn architecture_names_parse_back() {
-        for architecture in [Architecture::X86, Architecture::X64, Architecture::Arm64] {
-            assert_eq!(
-                architecture.name().parse::<Architecture>().unwrap(),
-                architecture
-            );
-        }
-        assert!("ARM64".parse::<Architecture>().is_err());
     }
 }

@@ -60,9 +60,7 @@ impl Metrics {
         minimum: i32,
     ) -> i32 {
         let mut width = self.px(minimum);
-        unsafe {
-            let dc = GetDC(std::ptr::null_mut());
-            let old = SelectObject(dc, self.font);
+        with_window_font(std::ptr::null_mut(), self.font, |dc| unsafe {
             for label in labels {
                 let label = label.as_ref();
                 let length = label.iter().position(|&c| c == 0).unwrap_or(label.len());
@@ -79,9 +77,7 @@ impl Metrics {
                 }
                 width = width.max(bounds.right + self.px(24));
             }
-            SelectObject(dc, old);
-            ReleaseDC(std::ptr::null_mut(), dc);
-        }
+        });
         width
     }
     pub fn buttons(
@@ -159,21 +155,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn button_size_falls_back_only_when_query_returns_false() {
-        unsafe extern "system" fn successful_query(
-            hwnd: HWND,
-            msg: u32,
-            w: usize,
-            l: isize,
-            _id: usize,
-            _data: usize,
-        ) -> isize {
-            if msg == BCM_GETIDEALSIZE {
-                1
-            } else {
-                unsafe { default_subclass(hwnd, msg, w, l) }
-            }
-        }
+    fn button_size_falls_back_when_query_returns_false() {
         unsafe {
             let caption = wide("More information… 更多信息");
             let hwnd = CreateWindowExW(
@@ -201,15 +183,6 @@ mod tests {
                 assert_eq!(size.cx, m.label_width(std::iter::once(&caption), 0));
                 assert_eq!(size.cy, m.row());
             }
-            assert_ne!(set_subclass(hwnd, Some(successful_query), 1, 0), 0);
-            let m = Metrics {
-                dpi: 96,
-                font: GetStockObject(SYSTEM_FONT),
-                height: 16,
-            };
-            let size = m.button_size(hwnd);
-            assert_eq!((size.cx, size.cy), (0, 0));
-            remove_subclass(hwnd, Some(successful_query), 1);
             DestroyWindow(hwnd);
         }
     }

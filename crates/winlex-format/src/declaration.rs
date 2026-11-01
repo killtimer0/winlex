@@ -117,35 +117,47 @@ impl Write for Rendered {
 impl Rendered {
     fn number(
         &mut self,
+        label: &str,
         value: u64,
         unit: Option<&'static str>,
         entity: EntityId,
     ) -> std::fmt::Result {
+        let suffix = unit.map_or(String::new(), |unit| format!(" {unit}"));
+        self.annotated(
+            value.into(),
+            None,
+            unit,
+            entity,
+            format_args!("{label}{value}{suffix}"),
+        )
+    }
+
+    fn annotated(
+        &mut self,
+        value: i128,
+        bits: Option<u32>,
+        unit: Option<&'static str>,
+        entity: EntityId,
+        text: std::fmt::Arguments<'_>,
+    ) -> std::fmt::Result {
         let start = self.position;
-        write!(self, "{value}")?;
-        if let Some(unit) = unit {
-            write!(self, " {unit}")?;
-        }
+        self.write_fmt(text)?;
         self.numbers.push(NumberRegion {
             range: start..self.position,
-            value: value.into(),
-            bits: None,
+            value,
+            bits,
             unit,
             entity,
         });
         Ok(())
     }
 
-    fn bit_position(&mut self, bits: u64, entity: EntityId) -> std::fmt::Result {
+    fn bit_position(&mut self, label: &str, bits: u64, entity: EntityId) -> std::fmt::Result {
         if bits.is_multiple_of(8) {
-            self.number(bits / 8, Some("bytes"), entity)
+            self.number(label, bits / 8, Some("bytes"), entity)
         } else {
-            self.number(bits, Some("bits"), entity)
+            self.number(label, bits, Some("bits"), entity)
         }
-    }
-
-    fn include_label(&mut self, start: usize) {
-        self.numbers.last_mut().unwrap().range.start = start;
     }
 
     fn slot_position(
@@ -154,22 +166,16 @@ impl Rendered {
         arch: Architecture,
         entity: EntityId,
     ) -> std::fmt::Result {
-        let start = self.position;
-        write!(self, "slot ")?;
-        self.number(index as u64, None, entity)?;
-        self.include_label(start);
+        self.number("slot ", index as u64, None, entity)?;
         write!(self, ", ")?;
-        let start = self.position;
         let value = index as i128 * arch.pointer_bytes() as i128;
-        write!(self, "vtable +0x{value:X}")?;
-        self.numbers.push(NumberRegion {
-            range: start..self.position,
+        self.annotated(
             value,
-            bits: None,
-            unit: Some("bytes"),
+            None,
+            Some("bytes"),
             entity,
-        });
-        Ok(())
+            format_args!("vtable +0x{value:X}"),
+        )
     }
 }
 
@@ -210,24 +216,10 @@ fn constant(
         } else {
             raw
         };
-        let start = out.position;
-        write!(out, "{value}")?;
-        let number = NumberRegion {
-            range: start..out.position,
-            value,
-            bits: Some(bits),
-            unit: None,
-            entity,
-        };
-        let hex = number.hexadecimal();
-        out.numbers.push(number.clone());
+        out.annotated(value, Some(bits), None, entity, format_args!("{value}"))?;
+        let hex = out.numbers.last().unwrap().hexadecimal();
         write!(out, "{suffix} // ")?;
-        let start = out.position;
-        write!(out, "{hex}")?;
-        out.numbers.push(NumberRegion {
-            range: start..out.position,
-            ..number
-        });
+        out.annotated(value, Some(bits), None, entity, format_args!("{hex}"))?;
     } else if let Value::Utf8(text) | Value::Utf16(text) = value {
         write!(out, "\"")?;
         for ch in text.chars() {
@@ -242,14 +234,12 @@ fn constant(
             }
         }
         write!(out, "\"{suffix} // ")?;
-        let start = out.position;
-        write!(out, "length: ")?;
         out.number(
+            "length: ",
             text.encode_utf16().count() as u64,
             Some("UTF-16 code units"),
             entity,
         )?;
-        out.include_label(start);
     } else {
         let value = integer(value).map_or_else(|| format!("{value:?}"), |value| value.to_string());
         write!(out, "{value}{suffix}")?;
@@ -297,26 +287,17 @@ fn method(out: &mut Rendered, m: MethodDef<'_>, name: &str, pad: &str) -> Result
                 .unwrap_or_else(|| format!("arg{}", i + 1));
             let mut flags = Vec::new();
             if let Some(p) = p {
-                match p.direction() {
-                    ParamDirection::Input => flags.push("in"),
-                    ParamDirection::Output => flags.push("out"),
-                    ParamDirection::InputOutput => {
-                        flags.push("in");
-                        flags.push("out");
+                for (present, label) in [
+                    (p.flags().contains(ParamAttributes::In), "in"),
+                    (p.flags().contains(ParamAttributes::Out), "out"),
+                    (p.is_optional(), "optional"),
+                    (p.is_reserved(), "reserved"),
+                    (p.is_retval_attribute(), "retval"),
+                    (p.has_attribute("ConstAttribute"), "const"),
+                ] {
+                    if present {
+                        flags.push(label);
                     }
-                    ParamDirection::Unspecified => {}
-                }
-                if p.is_optional() {
-                    flags.push("optional");
-                }
-                if p.is_reserved() {
-                    flags.push("reserved");
-                }
-                if p.is_retval_attribute() {
-                    flags.push("retval");
-                }
-                if p.has_attribute("ConstAttribute") {
-                    flags.push("const");
                 }
             }
             let prefix = if flags.is_empty() {
@@ -358,15 +339,9 @@ fn append(
                 match c.layout(id, arch) {
                     Ok(layout) => {
                         write!(out, "{pad}// [{}] ", arch.name())?;
-                        let start = out.position;
-                        write!(out, "size: ")?;
-                        out.bit_position(layout.size_bits, id)?;
-                        out.include_label(start);
+                        out.bit_position("size: ", layout.size_bits, id)?;
                         write!(out, ", ")?;
-                        let start = out.position;
-                        write!(out, "alignment: ")?;
-                        out.bit_position(layout.alignment_bits, id)?;
-                        out.include_label(start);
+                        out.bit_position("alignment: ", layout.alignment_bits, id)?;
                         writeln!(out)?;
                         Some(layout)
                     }
@@ -386,10 +361,7 @@ fn append(
                 match c.vtable(id, arch) {
                     Ok(vtable) => {
                         write!(out, "{pad}// [{}] ", arch.name())?;
-                        let start = out.position;
-                        write!(out, "vtable: ")?;
-                        out.number(vtable.slots.len() as u64, Some("slots"), id)?;
-                        out.include_label(start);
+                        out.number("vtable: ", vtable.slots.len() as u64, Some("slots"), id)?;
                         writeln!(out)?;
                         Some(vtable)
                     }
@@ -494,33 +466,22 @@ fn append(
                     .and_then(|layout| layout.fields.iter().find(|f| f.id == member))
                 {
                     write!(out, "{inner}// ")?;
-                    let start = out.position;
-                    write!(out, "offset: ")?;
-                    out.bit_position(field.offset_bits, member)?;
-                    out.include_label(start);
+                    out.bit_position("offset: ", field.offset_bits, member)?;
                     write!(out, ", ")?;
-                    let start = out.position;
-                    write!(out, "size: ")?;
-                    out.bit_position(field.size_bits, member)?;
-                    out.include_label(start);
+                    out.bit_position("size: ", field.size_bits, member)?;
                     writeln!(out)?;
                     for bitfield in &field.bitfields {
                         write!(out, "{inner}// {}: ", bitfield.name)?;
-                        let start = out.position;
-                        write!(out, "bit offset ")?;
-                        out.number(
-                            field.offset_bits + bitfield.relative_offset_bits,
+                        let offset = field.offset_bits + bitfield.relative_offset_bits;
+                        out.annotated(
+                            offset.into(),
+                            None,
                             Some("bits"),
                             member,
+                            format_args!("bit offset {offset} bits from struct start"),
                         )?;
-                        write!(out, " from struct start")?;
-                        out.numbers.last_mut().unwrap().range.end = out.position;
-                        out.include_label(start);
                         write!(out, ", ")?;
-                        let start = out.position;
-                        write!(out, "width ")?;
-                        out.number(bitfield.width_bits, Some("bits"), member)?;
-                        out.include_label(start);
+                        out.number("width ", bitfield.width_bits, Some("bits"), member)?;
                         writeln!(out)?;
                     }
                 }
@@ -543,10 +504,7 @@ fn append(
         Declaration::Field(f) => {
             if let Some(offset) = f.explicit_offset() {
                 write!(out, "{pad}// ")?;
-                let start = out.position;
-                write!(out, "Declared offset: ")?;
-                out.number(offset.into(), Some("bytes"), id)?;
-                out.include_label(start);
+                out.number("Declared offset: ", offset.into(), Some("bytes"), id)?;
                 writeln!(out)?;
             }
             write!(out, "{pad}{}", ty(&f.ty(), f.name()))?;
@@ -605,6 +563,37 @@ fn append(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn labeled_positions_capture_complete_regions_without_separators() {
+        let mut out = Rendered::default();
+        write!(out, "😀\r\n").unwrap();
+        out.bit_position("offset: ", 24, entity()).unwrap();
+        write!(out, ", ").unwrap();
+        out.bit_position("size: ", 7, entity()).unwrap();
+        write!(out, "; ").unwrap();
+        out.number("vtable: ", 3, Some("slots"), entity()).unwrap();
+        let units: Vec<_> = out.text.encode_utf16().collect();
+        assert_eq!(
+            out.text,
+            "😀\noffset: 3 bytes, size: 7 bits; vtable: 3 slots"
+        );
+        for (number, (text, value, unit)) in out.numbers.iter().zip([
+            ("offset: 3 bytes", 3, "bytes"),
+            ("size: 7 bits", 7, "bits"),
+            ("vtable: 3 slots", 3, "slots"),
+        ]) {
+            assert_eq!(
+                String::from_utf16(&units[number.range.clone()]).unwrap(),
+                text
+            );
+            assert_eq!(number.value, value);
+            assert_eq!(number.unit, Some(unit));
+            assert_eq!(number.entity, entity());
+        }
+        assert_eq!(out.numbers.len(), 3);
+        assert_eq!(out.numbers[0].range.start, 3);
+    }
 
     fn entity() -> EntityId {
         EntityId {
@@ -775,7 +764,7 @@ mod tests {
             source_id: 0,
             token: 0x04000001,
         };
-        out.number(64, Some("bytes"), id).unwrap();
+        out.number("", 64, Some("bytes"), id).unwrap();
         assert_eq!(out.text, "// 文😀\n64 bytes");
         assert_eq!(out.numbers[0].range, 7..15);
         assert_eq!(out.numbers[0].entity, id);

@@ -26,13 +26,16 @@ impl Load {
         })
     }
 }
+#[derive(Default)]
 enum Search {
+    #[default]
     Idle,
     Waiting,
     Running(u64),
     Done,
     Failed(anyhow::Error),
 }
+#[derive(Default)]
 pub(super) struct Session {
     serial: u64,
     pub catalog: Option<Arc<Catalog>>,
@@ -42,7 +45,6 @@ pub(super) struct Session {
     pub results: Items,
     source_errors: BTreeMap<PathBuf, String>,
     pending_results: Items,
-    merge_buffer: Items,
     pub remember_sources: bool,
     notice: Option<String>,
 }
@@ -50,19 +52,10 @@ impl Session {
     pub fn inputs(&self) -> &[SourceData] {
         self.catalog.as_ref().map_or(&[], |c| c.inputs())
     }
-    pub fn new() -> Self {
+    pub fn new(remember_sources: bool) -> Self {
         Self {
-            serial: 0,
-            catalog: None,
-            load: None,
-            load_error: None,
-            search: Search::Idle,
-            results: vec![],
-            source_errors: BTreeMap::new(),
-            pending_results: vec![],
-            merge_buffer: vec![],
-            remember_sources: true,
-            notice: None,
+            remember_sources,
+            ..Self::default()
         }
     }
     pub fn ticket(&mut self) -> Ticket {
@@ -333,37 +326,23 @@ fn update_results() {
     }
 }
 
-fn merge_results(
-    results: &mut Items,
-    batch: &mut Items,
-    buffer: &mut Items,
-    tracked: &mut [isize; 4],
-) {
+fn merge_results(results: &mut Items, batch: &mut Items, tracked: &mut [isize; 4]) {
+    let original = tracked.map(|index| {
+        results
+            .get(index as usize)
+            .map(|item| std::ptr::from_ref(&**item))
+    });
     batch.sort_unstable_by(|a, b| a.compare(b));
-    buffer.clear();
-    buffer.reserve(results.len() + batch.len());
-    let mut old = results.drain(..).enumerate().peekable();
-    let mut new = batch.drain(..).peekable();
-    let original = *tracked;
-    while old.peek().is_some() || new.peek().is_some() {
-        if new
-            .peek()
-            .is_some_and(|n| old.peek().is_none_or(|(_, o)| n.compare(o).is_lt()))
-        {
-            buffer.push(new.next().unwrap());
-        } else {
-            let (index, item) = old.next().unwrap();
-            for (current, &previous) in tracked.iter_mut().zip(&original) {
-                if previous == index as isize {
-                    *current = buffer.len() as isize;
-                }
-            }
-            buffer.push(item);
+    results.append(batch);
+    results.sort_by(|a, b| a.compare(b));
+    for (index, item) in tracked.iter_mut().zip(original) {
+        if let Some(item) = item {
+            *index = results
+                .iter()
+                .position(|result| std::ptr::eq(&**result, item))
+                .unwrap() as isize;
         }
     }
-    drop(old);
-    drop(new);
-    std::mem::swap(results, buffer);
 }
 
 pub(super) fn flush_results() {
@@ -375,15 +354,12 @@ pub(super) fn flush_results() {
     let mut state = crate::list::State::capture(hwnd);
     write(|a| {
         let s = &mut a.session;
-        merge_results(
-            &mut s.results,
-            &mut s.pending_results,
-            &mut s.merge_buffer,
-            &mut state.indices,
-        );
+        merge_results(&mut s.results, &mut s.pending_results, &mut state.indices);
     });
     state.apply(hwnd, read(|a| a.session.results.len()));
-    read(|a| a.sidebar.panel(super::panel::SEARCH_PANEL)).refresh_tooltip();
+    read(|a| a.sidebar.panel(super::panel::SEARCH_PANEL))
+        .list
+        .refresh_tooltip();
     refresh_status();
 }
 pub(super) fn row(index: usize, visit: &mut dyn FnMut(&crate::list::Display)) {
@@ -406,7 +382,7 @@ pub(super) fn row_text(row: usize) -> Vec<u16> {
             .collect();
         value.extend(source.path.file_name().unwrap_or_default().encode_wide());
         value.extend("\r\n".encode_utf16());
-        value.extend(&e.display.detail);
+        value.extend(e.display.detail.text());
         value.extend("\r\n".encode_utf16());
         value.extend(source.path.as_os_str().encode_wide());
         value.extend(format!("\r\n{}", e.id).encode_utf16());
@@ -437,8 +413,10 @@ pub(super) fn open(row: isize, mode: Open) {
         }),
         // An explicit open enters the document: show it, then focus its body.
         Open::Pin | Open::New => {
-            if let Some(hwnd) = open_now(row, mode) {
-                super::document::focus_document(hwnd);
+            if let Some(hwnd) = open_now(row, mode)
+                && let Some(document) = workspace::view(hwnd)
+            {
+                document.focus();
             }
         }
     }
@@ -483,8 +461,12 @@ fn open_now(row: isize, mode: Open) -> Option<HWND> {
     };
     let existing = (mode != Open::New)
         .then(|| {
-            metadata::find(&binding)
-                .or_else(|| preview.filter(|&hwnd| metadata::rebind(hwnd, &title, binding.clone())))
+            metadata::find(&binding).or_else(|| {
+                preview.and_then(|hwnd| {
+                    workspace::view(hwnd)?.rebind(&title, binding.clone());
+                    Some(hwnd)
+                })
+            })
         })
         .flatten();
     let hwnd = match existing {
@@ -535,8 +517,8 @@ pub(super) fn loaded(id: u64, result: anyhow::Result<Option<Arc<Catalog>>>) {
         }) {
             set_status(format!("{error:#}"));
         }
-        for (hwnd, view) in workspace::views() {
-            view.layout(hwnd);
+        for view in workspace::views() {
+            view.layout();
         }
     }
     super::sources::refresh();
@@ -573,7 +555,7 @@ mod tests {
         std::fs::copy(fixture, &path).unwrap();
         let document = Arc::new(Catalog::open_many([&path]).unwrap());
         std::fs::remove_file(&path).unwrap();
-        let mut session = Session::new();
+        let mut session = Session::new(true);
         session.catalog = Some(document.clone());
         let (_, first, _) = session.begin_load(vec![path.clone()], vec![path.clone()]);
         let (previous, second, job) = session.begin_load(vec![path.clone()], vec![]);
@@ -634,14 +616,13 @@ mod tests {
     fn incremental_merge_matches_global_ranking_for_every_batch_size() {
         for size in 1..=80 {
             let mut results = vec![];
-            let mut buffer = vec![];
             let mut tracked = [-1; 4];
             for chunk in (1..=200).collect::<Vec<u32>>().chunks(size) {
                 let mut batch = chunk
                     .iter()
                     .map(|&id| hit(id, (id * 71 % 23) as u16))
                     .collect();
-                merge_results(&mut results, &mut batch, &mut buffer, &mut tracked);
+                merge_results(&mut results, &mut batch, &mut tracked);
                 assert!(results.windows(2).all(|p| !p[0].compare(&p[1]).is_gt()));
                 assert!(batch.is_empty());
             }
@@ -654,26 +635,50 @@ mod tests {
         }
     }
     #[test]
-    fn merge_migrates_selection_focus_mark_and_scroll_without_identity_lookup() {
+    fn merging_equal_ranked_rows_keeps_existing_order_and_tracked_occurrences() {
+        let tagged = |label: &str| {
+            let mut row = hit(10, 100);
+            row.display.title = label.encode_utf16().collect();
+            row
+        };
+        let mut results = vec![tagged("first"), tagged("second")];
+        let mut tracked = [1, 0, 1, -1];
+        for label in ["third", "fourth"] {
+            let mut batch = vec![tagged(label), hit(1, 120)];
+            merge_results(&mut results, &mut batch, &mut tracked);
+            assert!(batch.is_empty());
+            for (index, expected) in tracked[..3].iter().zip(["second", "first", "second"]) {
+                assert_eq!(
+                    String::from_utf16(&results[*index as usize].display.title).unwrap(),
+                    expected
+                );
+            }
+            assert_eq!(tracked[3], -1);
+        }
+        let equal: Vec<_> = results
+            .iter()
+            .filter(|row| row.id.token == 10)
+            .map(|row| String::from_utf16(&row.display.title).unwrap())
+            .collect();
+        assert_eq!(equal, ["first", "second", "third", "fourth"]);
+    }
+
+    #[test]
+    fn merge_preserves_selection_focus_mark_and_scroll_rows() {
         let mut results = vec![hit(10, 100), hit(20, 80), hit(30, 60)];
         let mut batch = vec![hit(1, 100), hit(2, 70), hit(3, 120)];
         let mut tracked = [1, 2, 1, 0];
-        merge_results(&mut results, &mut batch, &mut vec![], &mut tracked);
+        merge_results(&mut results, &mut batch, &mut tracked);
         for (index, token) in tracked.into_iter().zip([20, 30, 20, 10]) {
             assert_eq!(results[index as usize].id.token, token);
         }
         let mut missing = [-1; 4];
-        merge_results(
-            &mut results,
-            &mut vec![hit(99, 200)],
-            &mut vec![],
-            &mut missing,
-        );
+        merge_results(&mut results, &mut vec![hit(99, 200)], &mut missing);
         assert_eq!(missing, [-1; 4]);
     }
     #[test]
     fn late_search_results_cannot_overwrite_new_search_or_load_failure() {
-        let mut session = Session::new();
+        let mut session = Session::new(true);
         session.search = Search::Running(1);
         assert_eq!(session.reset_search(), Some(1));
         session.search = Search::Running(2);
