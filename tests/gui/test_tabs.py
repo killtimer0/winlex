@@ -4,6 +4,23 @@ from support import native as n
 from support.accessibility import client
 
 
+def test_msaa_nested_clients_preserve_retained_objects(launch, settings):
+    app = launch([settings[1]])
+    app.query("CreateFileW")
+    app.open_row()
+    tabs = n.get_item(app.frame, 1104)
+    with client(tabs) as root, root.children() as pages:
+        name = root.name
+        assert len(pages) == 1
+        title = pages[0].name
+        with client(tabs) as nested, nested.children() as current:
+            assert nested.name == name
+            assert [page.name for page in current] == [title]
+        assert root.name == name
+        assert pages[0].name == title
+        assert pages[0].location()[2] > 0
+
+
 def test_tabs_msaa_activation_close_and_reorder(launch, settings):
     app = launch([settings[1]])
     app.query("CreateFileW")

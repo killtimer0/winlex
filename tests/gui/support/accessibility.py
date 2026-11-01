@@ -3,7 +3,6 @@ import ctypes as c
 from ctypes import wintypes as w
 from contextlib import contextmanager
 import uuid
-import pythoncom
 from . import native as n
 
 
@@ -18,6 +17,9 @@ class Variant(c.Structure):
 
 oleacc = c.WinDLL("oleacc")
 oleaut = c.WinDLL("oleaut32")
+ole = c.WinDLL("ole32")
+initialize = n.api(ole, "CoInitializeEx", c.c_long, c.c_void_p, w.DWORD)
+uninitialize = n.api(ole, "CoUninitialize", None)
 accessible_window = n.api(oleacc, "AccessibleObjectFromWindow", c.c_long,
                           w.HWND, w.DWORD, c.c_void_p, c.POINTER(c.c_void_p))
 accessible_children = n.api(oleacc, "AccessibleChildren", c.c_long, c.c_void_p,
@@ -116,7 +118,7 @@ class Accessible:
 
 @contextmanager
 def client(hwnd):
-    pythoncom.CoInitialize()
+    checked(initialize(None, 2))  # COINIT_APARTMENTTHREADED; balance S_OK and S_FALSE.
     root = None
     try:
         pointer = c.c_void_p()
@@ -126,4 +128,4 @@ def client(hwnd):
     finally:
         if root:
             root.close()
-        pythoncom.CoUninitialize()
+        uninitialize()
