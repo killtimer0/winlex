@@ -1,5 +1,6 @@
 use super::{Preferences, catalog, dpi, read, write};
 use crate::{
+    dialog::{property_sheet, template_size},
     native::*,
     resources::{self, *},
 };
@@ -10,9 +11,6 @@ use std::{
 };
 use winlex_core::EntityCategory;
 
-mod scale;
-
-const PREPARE: u32 = WM_APP + 41;
 const FILTERS: &[(u16, EntityCategory)] = &[
     (FILTER_TYPE, EntityCategory::Type),
     (FILTER_METHOD, EntityCategory::Method),
@@ -26,8 +24,6 @@ const FILTERS: &[(u16, EntityCategory)] = &[
 struct Dialog {
     initial: Preferences,
     pages: Cell<[HWND; 2]>,
-    scales: RefCell<Vec<scale::Scale>>,
-    prepared: Cell<bool>,
     failure: RefCell<Option<anyhow::Error>>,
 }
 impl Dialog {
@@ -48,8 +44,6 @@ fn show() -> anyhow::Result<()> {
     let state = Dialog {
         initial: read(|a| a.settings.preferences),
         pages: Cell::new([ptr::null_mut(); 2]),
-        scales: RefCell::new(Vec::new()),
-        prepared: Cell::new(false),
         failure: RefCell::new(None),
     };
     let mut pages: [PROPSHEETPAGEW; 2] = unsafe { std::mem::zeroed() };
@@ -75,16 +69,12 @@ fn show() -> anyhow::Result<()> {
     header.nPages = pages.len() as u32;
     header.Anonymous3.ppsp = pages.as_mut_ptr();
     header.pfnCallback = Some(sheet_callback);
-    let hook = scale::CreationHook::new()?;
+    let baseline = vec![template_size(general)?, template_size(search)?];
     let previous = CURRENT.with(|current| current.replace(&state));
-    let result = unsafe { PropertySheetW(&mut header) };
-    let failure = (result == -1).then(|| error("Create settings property sheet"));
+    let result = property_sheet::show(&mut header, dpi(), baseline);
     CURRENT.with(|current| current.set(previous));
-    drop(hook);
+    result?;
     if let Some(error) = state.failure.into_inner() {
-        return Err(error);
-    }
-    if let Some(error) = failure {
         return Err(error);
     }
     if state.initial.categories != read(|a| a.settings.preferences.categories) {
@@ -105,10 +95,8 @@ unsafe extern "system" fn sheet_callback(hwnd: HWND, message: u32, _l: isize) ->
                     GetDlgItem(hwnd, IDCANCEL),
                     &resources::text(IDS_SETTINGS_CANCEL),
                 );
-                if set_subclass(hwnd, Some(sheet_proc), 1, current.get() as usize) == 0 {
+                if set_subclass(hwnd, Some(sheet_proc), 2, current.get() as usize) == 0 {
                     state.fail(hwnd, error("Subclass settings property sheet"));
-                } else {
-                    PostMessageW(hwnd, PREPARE, 0, 0);
                 }
             }
             0
@@ -150,9 +138,6 @@ unsafe extern "system" fn page_proc(hwnd: HWND, message: u32, _w: usize, l: isiz
             state.pages.set(pages);
             return 1;
         }
-        if message == WM_NOTIFY && (*(l as *const NMHDR)).code == PSN_SETACTIVE {
-            PostMessageW(GetParent(hwnd), PREPARE, 0, 0);
-        }
         0
     }
 }
@@ -168,29 +153,6 @@ unsafe extern "system" fn sheet_proc(
     unsafe {
         let state = &*(data as *const Dialog);
         match message {
-            PREPARE => {
-                if let Err(error) = prepare(hwnd, state) {
-                    state.fail(hwnd, error);
-                }
-                return 0;
-            }
-            // Native PMv2 property sheets can accumulate height loss across DPI changes:
-            // page and tab adjustments are applied incrementally to the current window size.
-            WM_DPICHANGED if dpi().mode == crate::dpi::Mode::Pmv1 && state.prepared.get() => {
-                if let Err(error) = scale::update(&state.scales, (w & 0xffff) as u32) {
-                    state.fail(hwnd, error);
-                    return 0;
-                }
-                let _ = set_bounds(hwnd, *(l as *const RECT));
-                align_pages(hwnd, state);
-                RedrawWindow(
-                    hwnd,
-                    ptr::null(),
-                    ptr::null_mut(),
-                    RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN,
-                );
-                return 0;
-            }
             WM_COMMAND if w as u16 == IDOK as u16 => match commit(state) {
                 Ok(()) => {}
                 Err(error) => {
@@ -204,70 +166,11 @@ unsafe extern "system" fn sheet_proc(
                 }
             },
             WM_NCDESTROY => {
-                remove_subclass(hwnd, Some(sheet_proc), 1);
+                remove_subclass(hwnd, Some(sheet_proc), 2);
             }
             _ => {}
         }
         default_subclass(hwnd, message, w, l)
-    }
-}
-
-fn prepare(hwnd: HWND, state: &Dialog) -> anyhow::Result<()> {
-    let initial = !state.prepared.replace(true);
-    let manual = dpi().mode == crate::dpi::Mode::Pmv1;
-    if manual {
-        if initial {
-            let mut scales = Vec::new();
-            for page in state.pages.get() {
-                anyhow::ensure!(!page.is_null(), "Settings page was not created");
-                scales.push(scale::Scale::capture(page, &[])?);
-            }
-            scales.push(scale::Scale::capture(hwnd, &state.pages.get())?);
-            *state.scales.borrow_mut() = scales;
-        }
-        scale::update(&state.scales, dpi().window(hwnd))?;
-    }
-    if initial {
-        let owner = bounds(read(|a| a.frame), ptr::null_mut());
-        let r = bounds(hwnd, ptr::null_mut());
-        let size = if manual {
-            state
-                .scales
-                .borrow()
-                .last()
-                .unwrap()
-                .initial_size(dpi().window(hwnd))
-        } else {
-            SIZE {
-                cx: r.right - r.left,
-                cy: r.bottom - r.top,
-            }
-        };
-        let (width, height) = (size.cx, size.cy);
-        let mut x = owner.left + (owner.right - owner.left - width) / 2;
-        let mut y = owner.top + (owner.bottom - owner.top - height) / 2;
-        if let Some(monitor) = super::monitor(read(|a| a.frame)) {
-            let work = monitor.rcWork;
-            x = x.clamp(work.left, (work.right - width).max(work.left));
-            y = y.clamp(work.top, (work.bottom - height).max(work.top));
-        }
-        set_bounds(hwnd, crate::layout::rect(x, y, width, height))?;
-    }
-    if manual {
-        align_pages(hwnd, state);
-    }
-    Ok(())
-}
-
-fn align_pages(hwnd: HWND, state: &Dialog) {
-    let tab = send(hwnd, PSM_GETTABCONTROL, 0, 0) as HWND;
-    let mut area = client(tab);
-    send(tab, TCM_ADJUSTRECT, 0, &mut area as *mut RECT as isize);
-    unsafe {
-        MapWindowPoints(tab, hwnd, (&mut area as *mut RECT).cast(), 2);
-    }
-    for page in state.pages.get() {
-        crate::native::place(page, area);
     }
 }
 

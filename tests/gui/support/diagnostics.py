@@ -7,9 +7,10 @@ from . import native as n
 
 
 @contextmanager
-def capture(hwnd, client=False):
-    win32gui.RedrawWindow(hwnd, None, None,
-                         win32con.RDW_INVALIDATE | win32con.RDW_UPDATENOW | win32con.RDW_ALLCHILDREN)
+def capture(hwnd, client=False, repaint=True):
+    if repaint:
+        win32gui.RedrawWindow(hwnd, None, None,
+                             win32con.RDW_INVALIDATE | win32con.RDW_UPDATENOW | win32con.RDW_ALLCHILDREN)
     gdi = n.c.WinDLL("gdi32", use_last_error=True)
     create_dc = n.api(gdi, "CreateCompatibleDC", n.w.HDC, n.w.HDC)
     delete_dc = n.api(gdi, "DeleteDC", n.w.BOOL, n.w.HDC)
@@ -31,8 +32,15 @@ def capture(hwnd, client=False):
         assert bitmap, "CreateCompatibleBitmap failed"
         previous = select(target, bitmap)
         assert previous, "SelectObject failed"
-        assert n.api(n.user, "PrintWindow", n.w.BOOL, n.w.HWND, n.w.HDC,
-                     n.w.UINT)(hwnd, target, int(client)), "PrintWindow failed"
+        if repaint:
+            assert n.api(n.user, "PrintWindow", n.w.BOOL, n.w.HWND, n.w.HDC,
+                         n.w.UINT)(hwnd, target, int(client)), "PrintWindow failed"
+        else:
+            # Preserve the currently displayed pixels, including stale painting.
+            assert n.api(gdi, "BitBlt", n.w.BOOL, n.w.HDC, n.c.c_int, n.c.c_int,
+                         n.c.c_int, n.c.c_int, n.w.HDC, n.c.c_int, n.c.c_int,
+                         n.w.DWORD)(target, 0, 0, width, height, source, 0, 0,
+                                    win32con.SRCCOPY), "BitBlt failed"
         select(target, previous)
         pixels = n.c.create_string_buffer(width * height * 4)
         assert get_bits(source, bitmap, 0, height, pixels, info, 0) == height, "GetDIBits failed"

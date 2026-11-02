@@ -1,10 +1,13 @@
 from pathlib import Path
 import json
+import struct
+import time
 import pytest
 import win32con
+import win32gui
 import winreg
 from support import native as n
-from support.diagnostics import screenshot
+from support.diagnostics import capture, screenshot
 
 
 def mask(app, sheet, value):
@@ -86,7 +89,8 @@ def test_settings_keyboard_and_close(launch, profile, action):
     sheet = app.settings()
     page = mask(app, sheet, 0)
     first, second = n.get_item(page, 1310), n.get_item(page, 1311)
-    app.focus(first)
+    n.send(sheet, win32con.WM_NEXTDLGCTL, first, 1)
+    n.wait(lambda: app.focused() == first, "settings initial keyboard focus")
     n.key_message(first, win32con.VK_TAB)
     n.wait(lambda: app.focused() == second, "settings Tab order")
     if action == "close":
@@ -222,3 +226,55 @@ def test_settings_dpi_pages(launch, settings, mode):
             screenshot(sheet, settings[2] / ("settings-" + mode + "-" + str(monitor_index) + "-" + name + ".bmp"))
         app.close_settings(sheet, accept=False)
     output.write_text(json.dumps(evidence, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def test_settings_pmv1_initial_paint(request, launch, settings):
+    if not request.config.getoption("--real-input"):
+        pytest.skip("visible desktop capture not requested")
+    if not hasattr(n.user, "GetDpiForWindow"):
+        pytest.skip("per-monitor DPI unavailable")
+    app = launch(dpi="pmv1")
+    get_dpi = n.api(n.user, "GetDpiForWindow", n.w.UINT, n.w.HWND)
+    get_system_dpi = n.api(n.user, "GetDpiForSystem", n.w.UINT)
+    with n.window_dpi_context(app.frame):
+        system_dpi = get_system_dpi()
+        for monitor in n.monitors():
+            n.set_pos(app.frame, win32con.HWND_TOPMOST, monitor[0] + 30, monitor[1] + 30,
+                      0, 0, win32con.SWP_NOSIZE | win32con.SWP_NOACTIVATE)
+            if get_dpi(app.frame) != system_dpi:
+                break
+        else:
+            pytest.skip("no monitor with a different DPI")
+    # Do not select pages or render a screenshot before observing the first paint.
+    assert n.post(app.frame, win32con.WM_COMMAND, 1051, 0)
+    sheet = n.wait(lambda: next((h for h in n.windows()
+        if n.class_name(h) == "#32770" and n.is_visible(h)
+        and win32gui.GetWindow(h, win32con.GW_OWNER) == app.frame), None), "settings visible")
+    assert get_dpi(sheet) != system_dpi
+    page = n.wait(lambda: n.send(sheet, 0x400 + 118), "initial settings page")
+    label = next(h for h in n.windows(page) if n.class_name(h) == "Static" and n.window_text(h))
+
+    def pixels():
+        with n.window_dpi_context(label), capture(label, client=True, repaint=False) as (_, header, raw):
+            return header, raw
+
+    previous, since = None, time.monotonic()
+
+    def stable():
+        nonlocal previous, since
+        current = pixels()
+        if current != previous:
+            previous, since = current, time.monotonic()
+        return current if time.monotonic() - since >= .3 else None
+
+    before = n.wait(stable, "stable initial text paint")
+    assert len(set(before[1][::4])) > 1, "visible text pixels were not captured"
+    win32gui.RedrawWindow(sheet, None, None,
+                         win32con.RDW_INVALIDATE | win32con.RDW_ERASE |
+                         win32con.RDW_ALLCHILDREN | win32con.RDW_UPDATENOW)
+    after = pixels()
+    for name, (header, raw) in (("initial", before), ("repainted", after)):
+        (settings[2] / ("settings-pmv1-" + name + ".bmp")).write_bytes(
+            struct.pack("<2sIHHI", b"BM", 54 + len(raw), 0, 0, 54) + header + raw)
+    assert before == after, "initial text changes after an otherwise redundant repaint"
+    app.close_settings(sheet, accept=False)
