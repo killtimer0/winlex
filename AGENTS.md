@@ -6,6 +6,7 @@
 - 使用宽字符 API；新增系统 API 前确认 VC-LTL／YY-Thunks 回退可用。
 
 ## 构建与验证
+- 默认使用 Debug 构建与验证；Release／Dist 仅在用户明确要求时执行。
 - 发布使用 `scripts/build.ps1`，覆盖 x86/x64；使用 MSVC 工具链及架构匹配的 Hostx64 `link.exe`。
 - 构建前结束待替换的本项目实例；运行相关测试和 Clippy，检查完整日志的 warning/error。
 - 不确定的行为先做最小验证，探针放入 `tmp/`。新增行为或修复优先补充契约测试，不绑定私有状态或偶然时序。
