@@ -343,18 +343,7 @@ impl Info {
         else {
             return Ok(());
         };
-        let result = unsafe {
-            windows_sys::Win32::UI::Shell::ShellExecuteW(
-                owner,
-                w!("open"),
-                wide(&target).as_ptr(),
-                ptr::null(),
-                ptr::null(),
-                SW_SHOWNORMAL,
-            )
-        } as isize;
-        anyhow::ensure!(result > 32, "Open online reference failed ({result})");
-        Ok(())
+        open_url(owner, &target)
     }
     pub fn menu(&self, owner: HWND) -> anyhow::Result<()> {
         let Some(snapshot) = self.snapshot.borrow().clone() else {

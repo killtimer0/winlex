@@ -248,6 +248,21 @@ pub fn set_text(hwnd: HWND, text: &str) {
         SetWindowTextW(hwnd, wide(text).as_ptr());
     }
 }
+
+pub fn open_url(owner: HWND, target: &str) -> anyhow::Result<()> {
+    let result = unsafe {
+        windows_sys::Win32::UI::Shell::ShellExecuteW(
+            owner,
+            w!("open"),
+            wide(target).as_ptr(),
+            ptr::null(),
+            ptr::null(),
+            SW_SHOWNORMAL,
+        )
+    } as isize;
+    anyhow::ensure!(result > 32, "Open online reference failed ({result})");
+    Ok(())
+}
 pub fn set_status_text(hwnd: HWND, text: &str) {
     let text = wide(text);
     send(hwnd, SB_SETTEXTW, 0, text.as_ptr() as isize);

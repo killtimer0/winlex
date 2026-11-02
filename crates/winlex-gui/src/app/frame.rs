@@ -75,15 +75,12 @@ pub(super) fn command(id: u16) -> bool {
             }
         }
         SETTINGS => super::settings::open(),
-        ABOUT => {}
-        SEARCH_HELP => unsafe {
-            MessageBoxW(
-                read(|a| a.frame),
-                wide_text(IDS_SEARCH_HELP).as_ptr(),
-                wide_text(IDS_SEARCH_HELP_TITLE).as_ptr(),
-                MB_OK | MB_ICONINFORMATION,
-            );
-        },
+        ABOUT => {
+            catalog::report(super::help::about());
+        }
+        SEARCH_HELP => {
+            catalog::report(super::help::search());
+        }
         FOCUS_NEXT_REGION => {
             let h = unsafe { GetFocus() };
             let d = active();

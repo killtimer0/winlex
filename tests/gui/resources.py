@@ -75,11 +75,20 @@ def main():
                 assert struct.unpack_from("<HH", data) == (1, 0xffff)
                 style, = struct.unpack_from("<I", data, 12)
                 assert style & 0x40000448 == 0x40000448
+        assert languages(5, ids['IDD_ABOUT']) == [0x409, 0x804]
+        assert languages(5, ids['IDD_SEARCH_HELP']) == [0x409, 0x804]
+        for language in (0x409, 0x804):
+            data = resource(5, ids['IDD_ABOUT'], language)
+            assert struct.unpack_from('<HH', data) == (1, 0xffff)
+            assert b'h\x00t\x00t\x00p\x00s\x00' in data
         assert languages(9, ids["IDR_ACCELERATORS"]) == [0]
         accelerators = list(struct.iter_unpack("<4H", resource(9, ids["IDR_ACCELERATORS"], 0)))
         assert {(flags & 0x7f, key, command) for flags, key, command, _ in accelerators} == {
             (9, ord('O'), ids['LOAD_METADATA']),
             (9, ord('L'), ids['FOCUS_SEARCH']),
+            (9, ord('F'), ids['FIND_DOCUMENT']),
+            (1, 0x72, ids['FIND_NEXT']),
+            (5, 0x72, ids['FIND_PREVIOUS']),
             (9, 0x0D, ids['OPEN_NEW']),
             (1, 0x75, ids['FOCUS_NEXT_REGION']),
             (17, 0x25, ids['HISTORY_BACK']),

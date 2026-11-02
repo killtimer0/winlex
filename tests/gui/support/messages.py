@@ -29,3 +29,4 @@ MN_GETHMENU = 0x01E1  # WinUser.h: not derived from WM_USER
 
 SCF_SELECTION = 1
 PW_CLIENTONLY = 0x00000001
+LM_GETITEM = 0x0703  # commctrl.h: WM_USER + 0x303

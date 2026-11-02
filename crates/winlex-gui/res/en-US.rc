@@ -41,8 +41,29 @@ BEGIN
     BEGIN
         MENUITEM "Search &syntax...", SEARCH_HELP
         MENUITEM SEPARATOR
-        MENUITEM "&About", ABOUT
+        MENUITEM "&About Winlex...", ABOUT
     END
+END
+IDD_ABOUT DIALOGEX 0, 0, 250, 142
+STYLE 0x80C800C0
+CAPTION "About Winlex"
+FONT 8, "MS Shell Dlg"
+BEGIN
+    ICON IDI_APP, ABOUT_ICON, 12, 12, 20, 20
+    LTEXT "Winlex", -1, 48, 12, 190, 10
+    LTEXT VERSION_TEXT, -1, 48, 27, 190, 10
+    LTEXT "Offline Windows API reference and metadata browser.", -1, 48, 45, 190, 26
+    CONTROL "<a href=""https://github.com/killtimer0/winlex"">Project homepage</a>", ABOUT_HOMEPAGE, "SysLink", 0x50010000, 48, 77, 190, 14
+    CONTROL "<a href=""https://github.com/killtimer0/winlex/blob/main/LICENSE"">License (GPL-3.0)</a>", ABOUT_LICENSE, "SysLink", 0x50010000, 48, 95, 190, 14
+    DEFPUSHBUTTON "OK", 1, 188, 116, 50, 14
+END
+IDD_SEARCH_HELP DIALOGEX 0, 0, 350, 250
+STYLE 0x80CC00C0
+CAPTION "Search syntax"
+FONT 8, "MS Shell Dlg"
+BEGIN
+    EDITTEXT SEARCH_HELP_TEXT, 7, 7, 336, 215, 0x50210844
+    DEFPUSHBUTTON "Close", 1, 293, 229, 50, 14
 END
 IDD_SETTINGS_GENERAL DIALOGEX 0, 0, 240, 150
 STYLE 0x40000448

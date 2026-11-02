@@ -2,6 +2,7 @@
 name = "winlex"
 version = "0.1.0"
 edition = "2024"
+license.workspace = true
 build = "build.rs"
 default-run = "winlex"
 
@@ -25,6 +26,9 @@ resolver = "3"
 [dependencies]
 winlex-cli = { path = "crates/winlex-cli" }
 winlex-gui = { path = "crates/winlex-gui" }
+
+[workspace.package]
+license = "GPL-3.0-only"
 
 [workspace.dependencies]
 windows-metadata = "=0.100.0"

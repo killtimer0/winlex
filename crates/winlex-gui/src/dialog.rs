@@ -4,6 +4,7 @@ use crate::{
 };
 use std::{cell::Cell, mem::size_of, ptr};
 
+pub mod modal;
 pub mod property_sheet;
 
 struct Hook {

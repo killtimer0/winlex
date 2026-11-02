@@ -15,6 +15,7 @@ mod architecture;
 mod catalog;
 mod document;
 mod frame;
+mod help;
 mod history;
 mod keys;
 mod metadata;
@@ -136,7 +137,7 @@ unsafe fn run_windows(paths: Vec<std::path::PathBuf>) -> anyhow::Result<()> {
     unsafe {
         let controls = INITCOMMONCONTROLSEX {
             dwSize: std::mem::size_of::<INITCOMMONCONTROLSEX>() as u32,
-            dwICC: ICC_LISTVIEW_CLASSES | ICC_TAB_CLASSES | ICC_BAR_CLASSES,
+            dwICC: ICC_LISTVIEW_CLASSES | ICC_TAB_CLASSES | ICC_BAR_CLASSES | ICC_LINK_CLASS,
         };
         if InitCommonControlsEx(&controls) == 0 {
             anyhow::bail!("Initialize common controls failed");

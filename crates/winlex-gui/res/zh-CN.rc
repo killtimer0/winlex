@@ -41,8 +41,29 @@ BEGIN
     BEGIN
         MENUITEM "搜索语法(&S)...", SEARCH_HELP
         MENUITEM SEPARATOR
-        MENUITEM "关于(&A)", ABOUT
+        MENUITEM "关于 Winlex(&A)...", ABOUT
     END
+END
+IDD_ABOUT DIALOGEX 0, 0, 250, 142
+STYLE 0x80C800C0
+CAPTION "关于 Winlex"
+FONT 8, "MS Shell Dlg"
+BEGIN
+    ICON IDI_APP, ABOUT_ICON, 12, 12, 20, 20
+    LTEXT "Winlex", -1, 48, 12, 190, 10
+    LTEXT VERSION_TEXT, -1, 48, 27, 190, 10
+    LTEXT "离线 Windows API 参考与元数据查询工具。", -1, 48, 45, 190, 26
+    CONTROL "<a href=""https://github.com/killtimer0/winlex"">项目主页</a>", ABOUT_HOMEPAGE, "SysLink", 0x50010000, 48, 77, 190, 14
+    CONTROL "<a href=""https://github.com/killtimer0/winlex/blob/main/LICENSE"">许可证 (GPL-3.0)</a>", ABOUT_LICENSE, "SysLink", 0x50010000, 48, 95, 190, 14
+    DEFPUSHBUTTON "确定", 1, 188, 116, 50, 14
+END
+IDD_SEARCH_HELP DIALOGEX 0, 0, 350, 250
+STYLE 0x80CC00C0
+CAPTION "搜索语法"
+FONT 8, "MS Shell Dlg"
+BEGIN
+    EDITTEXT SEARCH_HELP_TEXT, 7, 7, 336, 215, 0x50210844
+    DEFPUSHBUTTON "关闭", 1, 293, 229, 50, 14
 END
 IDD_SETTINGS_GENERAL DIALOGEX 0, 0, 240, 150
 STYLE 0x40000448
