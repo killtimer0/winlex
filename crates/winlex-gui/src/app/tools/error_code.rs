@@ -342,7 +342,16 @@ impl View {
         }
     }
     fn browse(&self) {
-        match crate::input::choose_message_module(self.hwnd) {
+        match crate::input::choose(
+            self.hwnd,
+            super::super::read(|a| a.system_version),
+            IDS_ERROR_CODE_TOOL,
+            IDS_ERROR_CODE_MODULE_FILES,
+            "*.exe;*.dll;*.mui",
+            false,
+        )
+        .map(|paths| paths.into_iter().next())
+        {
             Ok(Some(path)) => {
                 let value: Vec<_> = path.as_os_str().encode_wide().chain(Some(0)).collect();
                 unsafe { SetWindowTextW(self.module, value.as_ptr()) };

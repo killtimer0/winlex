@@ -28,21 +28,39 @@ impl Drop for Apartment {
         }
     }
 }
-pub fn choose_files(owner: HWND, version: WindowsVersion) -> anyhow::Result<Vec<PathBuf>> {
+pub fn choose(
+    owner: HWND,
+    version: WindowsVersion,
+    title: u16,
+    label: u16,
+    pattern: &str,
+    multiple: bool,
+) -> anyhow::Result<Vec<PathBuf>> {
     if version.at_least(WindowsVersion::VISTA) {
-        return modern_choose(owner).context("Select files");
+        modern_choose(owner, title, label, pattern, multiple).context("Select files")
+    } else {
+        legacy_choose(owner, title, label, pattern, multiple)
     }
+}
+
+fn legacy_choose(
+    owner: HWND,
+    title: u16,
+    label: u16,
+    pattern: &str,
+    multiple: bool,
+) -> anyhow::Result<Vec<PathBuf>> {
     let mut filter = Vec::new();
     for s in [
-        resources::text(IDS_WINMD_FILES),
-        "*.winmd".into(),
+        resources::text(label),
+        pattern.into(),
         resources::text(IDS_ALL_FILES),
         "*.*".into(),
     ] {
         filter.extend(s.encode_utf16().chain(Some(0)));
     }
     filter.push(0);
-    let title = resources::wide_text(IDS_LOAD_METADATA);
+    let title = resources::wide_text(title);
     let mut buffer = vec![0u16; 65536];
     loop {
         let mut ofn: OPENFILENAMEW = unsafe { std::mem::zeroed() };
@@ -57,27 +75,15 @@ pub fn choose_files(owner: HWND, version: WindowsVersion) -> anyhow::Result<Vec<
             | OFN_PATHMUSTEXIST
             | OFN_NOCHANGEDIR
             | OFN_DONTADDTORECENT
-            | OFN_ALLOWMULTISELECT;
+            | if multiple { OFN_ALLOWMULTISELECT } else { 0 };
         if unsafe { GetOpenFileNameW(&mut ofn) } != 0 {
-            let parts: Vec<_> = buffer
-                .split(|c| *c == 0)
-                .take_while(|s| !s.is_empty())
-                .map(OsString::from_wide)
-                .collect();
-            return Ok(match parts.as_slice() {
-                [] => Vec::new(),
-                [path] => vec![PathBuf::from(path)],
-                [directory, names @ ..] => names
-                    .iter()
-                    .map(|name| PathBuf::from(directory).join(name))
-                    .collect(),
-            });
+            return Ok(selected_paths(&buffer, multiple));
         }
         let error = unsafe { CommDlgExtendedError() };
         if error == 0 {
             return Ok(Vec::new());
         }
-        if error != FNERR_BUFFERTOOSMALL {
+        if !multiple || error != FNERR_BUFFERTOOSMALL {
             anyhow::bail!("GetOpenFileNameW: 0x{error:08x}");
         }
         let size = (buffer[0] as usize).max(
@@ -89,44 +95,33 @@ pub fn choose_files(owner: HWND, version: WindowsVersion) -> anyhow::Result<Vec<
         buffer = vec![0; size];
     }
 }
-
-pub fn choose_message_module(owner: HWND) -> anyhow::Result<Option<PathBuf>> {
-    let mut filter = Vec::new();
-    for value in [
-        resources::text(IDS_ERROR_CODE_MODULE_FILES),
-        "*.exe;*.dll;*.mui".into(),
-        resources::text(IDS_ALL_FILES),
-        "*.*".into(),
-    ] {
-        filter.extend(value.encode_utf16().chain(Some(0)));
-    }
-    filter.push(0);
-    let mut buffer = vec![0u16; 65536];
-    let mut ofn: OPENFILENAMEW = unsafe { std::mem::zeroed() };
-    ofn.lStructSize = std::mem::size_of::<OPENFILENAMEW>() as u32;
-    ofn.hwndOwner = owner;
-    ofn.lpstrFilter = filter.as_ptr();
-    ofn.lpstrTitle = resources::wide_text(IDS_ERROR_CODE_TOOL).as_ptr();
-    ofn.lpstrFile = buffer.as_mut_ptr();
-    ofn.nMaxFile = buffer.len() as u32;
-    ofn.Flags = OFN_EXPLORER
-        | OFN_FILEMUSTEXIST
-        | OFN_PATHMUSTEXIST
-        | OFN_NOCHANGEDIR
-        | OFN_DONTADDTORECENT;
-    if unsafe { GetOpenFileNameW(&mut ofn) } != 0 {
+fn selected_paths(buffer: &[u16], multiple: bool) -> Vec<PathBuf> {
+    if !multiple {
         let length = buffer.iter().position(|c| *c == 0).unwrap_or(buffer.len());
-        return Ok(Some(PathBuf::from(OsString::from_wide(&buffer[..length]))));
+        return vec![PathBuf::from(OsString::from_wide(&buffer[..length]))];
     }
-    let error = unsafe { CommDlgExtendedError() };
-    if error == 0 {
-        Ok(None)
-    } else {
-        anyhow::bail!("GetOpenFileNameW: 0x{error:08x}")
+    let parts: Vec<_> = buffer
+        .split(|c| *c == 0)
+        .take_while(|s| !s.is_empty())
+        .map(OsString::from_wide)
+        .collect();
+    match parts.as_slice() {
+        [] => Vec::new(),
+        [path] => vec![PathBuf::from(path)],
+        [directory, names @ ..] => names
+            .iter()
+            .map(|name| PathBuf::from(directory).join(name))
+            .collect(),
     }
 }
 
-fn modern_choose(owner: HWND) -> windows::core::Result<Vec<PathBuf>> {
+fn modern_choose(
+    owner: HWND,
+    title: u16,
+    label: u16,
+    pattern: &str,
+    multiple: bool,
+) -> windows::core::Result<Vec<PathBuf>> {
     use windows::{
         Win32::{
             Foundation::{ERROR_CANCELLED, HWND as ComHwnd},
@@ -142,22 +137,27 @@ fn modern_choose(owner: HWND) -> windows::core::Result<Vec<PathBuf>> {
     unsafe {
         let dialog: IFileOpenDialog =
             CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER)?;
-        let options = dialog.GetOptions()?
+        let options = (dialog.GetOptions()? & !FOS_ALLOWMULTISELECT)
             | FOS_FORCEFILESYSTEM
             | FOS_PATHMUSTEXIST
             | FOS_NOCHANGEDIR
             | FOS_DONTADDTORECENT
             | FOS_FILEMUSTEXIST
-            | FOS_ALLOWMULTISELECT;
+            | if multiple {
+                FOS_ALLOWMULTISELECT
+            } else {
+                Default::default()
+            };
         dialog.SetOptions(options)?;
-        let title = resources::wide_text(IDS_LOAD_METADATA);
+        let title = resources::wide_text(title);
         dialog.SetTitle(PCWSTR(title.as_ptr()))?;
-        let winmd = resources::wide_text(IDS_WINMD_FILES);
+        let label = resources::wide_text(label);
+        let pattern = crate::native::wide(pattern);
         let all = resources::wide_text(IDS_ALL_FILES);
         dialog.SetFileTypes(&[
             COMDLG_FILTERSPEC {
-                pszName: PCWSTR(winmd.as_ptr()),
-                pszSpec: w!("*.winmd"),
+                pszName: PCWSTR(label.as_ptr()),
+                pszSpec: PCWSTR(pattern.as_ptr()),
             },
             COMDLG_FILTERSPEC {
                 pszName: PCWSTR(all.as_ptr()),
@@ -200,5 +200,40 @@ pub unsafe fn dropped_files(drop: windows_sys::Win32::UI::Shell::HDROP) -> Vec<P
         }
         DragFinish(drop);
         paths
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::windows::ffi::OsStrExt;
+
+    #[test]
+    fn legacy_selections_preserve_native_single_and_multiple_paths() {
+        for prefix in [
+            r"C:\",
+            r"\\server\share\",
+            r"\\?\C:\",
+            r"\\?\UNC\server\share\",
+        ] {
+            let directory = format!("{prefix}{}", "directory\\".repeat(40));
+            let mut filename: Vec<_> = "name".encode_utf16().collect();
+            filename.extend([0xd800]);
+            filename.extend(".winmd".encode_utf16());
+            let path = PathBuf::from(&directory).join(OsString::from_wide(&filename));
+            let single: Vec<_> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+            for multiple in [false, true] {
+                assert_eq!(
+                    selected_paths(&single, multiple),
+                    std::slice::from_ref(&path)
+                );
+            }
+            let mut selected = wide(&directory);
+            selected.extend(&filename);
+            selected.extend([0, 0]);
+            assert_eq!(selected_paths(&selected, true), [path]);
+        }
+        assert!(selected_paths(&[0, 0], true).is_empty());
+        assert_eq!(selected_paths(&[0, 0], false), [PathBuf::new()]);
     }
 }

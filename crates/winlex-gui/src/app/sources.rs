@@ -165,9 +165,13 @@ pub(super) fn add(files: Vec<PathBuf>) {
 }
 
 fn choose_add() {
-    if let Some(paths) = catalog::report(input::choose_files(
+    if let Some(paths) = catalog::report(input::choose(
         read(|a| a.frame),
         read(|a| a.system_version),
+        IDS_LOAD_METADATA,
+        IDS_WINMD_FILES,
+        "*.winmd",
+        true,
     )) {
         add(paths);
     }
