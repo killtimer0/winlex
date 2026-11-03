@@ -72,12 +72,13 @@ BEGIN
     END
     POPUP "&Window"
     BEGIN
-        MENUITEM "&Close document\tCtrl+F4", CLOSE
+        MENUITEM "&Always on Top", ALWAYS_ON_TOP
         MENUITEM SEPARATOR
         MENUITEM "Tile &side by side", COLUMNS
         MENUITEM "Tile &top and bottom", ROWS
         MENUITEM "&Free arrangement", FREE
         MENUITEM "&Maximize document", MAXIMIZE
+        MENUITEM "&Close document\tCtrl+F4", CLOSE
     END
     POPUP "&Help"
     BEGIN

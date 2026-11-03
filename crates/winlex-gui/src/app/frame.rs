@@ -156,6 +156,7 @@ pub(super) fn command(id: u16) -> bool {
             | ROWS
             | FREE
             | MAXIMIZE
+            | ALWAYS_ON_TOP
     ) {
         begin_operation();
     }
@@ -166,6 +167,29 @@ pub(super) fn command(id: u16) -> bool {
             }
         }
         SETTINGS => super::settings::open(),
+        ALWAYS_ON_TOP => {
+            let frame = read(|a| a.frame);
+            unsafe {
+                let after = if GetWindowLongW(frame, GWL_EXSTYLE) as u32 & WS_EX_TOPMOST != 0 {
+                    HWND_NOTOPMOST
+                } else {
+                    HWND_TOPMOST
+                };
+                if SetWindowPos(
+                    frame,
+                    after,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                ) == 0
+                {
+                    report::<()>(Err(error("Set window topmost state")));
+                }
+            }
+            update_commands();
+        }
         ABOUT => {
             report(super::help::about());
         }
@@ -218,6 +242,18 @@ pub(super) fn update_commands() {
     let frame = read(|a| a.frame);
     if frame.is_null() {
         return;
+    }
+    unsafe {
+        CheckMenuItem(
+            GetMenu(frame),
+            ALWAYS_ON_TOP as u32,
+            MF_BYCOMMAND
+                | if GetWindowLongW(frame, GWL_EXSTYLE) as u32 & WS_EX_TOPMOST != 0 {
+                    MF_CHECKED
+                } else {
+                    MF_UNCHECKED
+                },
+        );
     }
     for id in [FIND_DOCUMENT, FIND_NEXT, FIND_PREVIOUS] {
         unsafe {

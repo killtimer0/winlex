@@ -113,7 +113,7 @@ def test_environment_refresh_preserves_open_document(launch, settings):
     app.query("CreateFileW")
     doc = app.open_row()
     n.wait(lambda: 'CreateFileW(' in app.content(doc), "declaration", 45)
-    app.command(1012)  # restore before testing ordinary-window wrapping
+    app.command(1013)  # restore before testing ordinary-window wrapping
     app.command(1021)
     editor = n.get_item(doc, 1203)
     button = n.get_item(app.frame, 1020)
@@ -158,7 +158,7 @@ def test_mdi_maximize_inheritance_and_one_shot_arrangement(launch, settings):
                 assert not n.is_zoomed(doc)
                 assert right - left >= (320 * dpi + 48) // 96
                 assert bottom - top >= (400 * dpi + 48) // 96
-    app.command(1010)  # one-shot vertical tile
+    app.command(1011)  # one-shot vertical tile
     assert not any(n.is_zoomed(h) for h in app.documents())
     before = {h: n.rectangle(h) for h in app.documents()}
     assert before[original] != before[other]
@@ -216,10 +216,10 @@ def test_mdi_remembers_last_user_state_after_all_documents_close(launch, setting
     assert n.is_zoomed(doc)
     doc = reopen(doc)
     assert n.is_zoomed(doc)
-    app.command(1010)  # explicit tiling changes the preference to normal
+    app.command(1011)  # explicit tiling changes the preference to normal
     assert not n.is_zoomed(doc)
     doc = reopen(doc)
     assert not n.is_zoomed(doc)
-    app.command(1013)  # application Window > Maximize command
+    app.command(1014)  # application Window > Maximize command
     doc = reopen(doc)
     assert n.is_zoomed(doc)

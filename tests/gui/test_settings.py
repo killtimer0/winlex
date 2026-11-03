@@ -62,9 +62,9 @@ def test_menu_scopes(launch, settings):
     file_ids = [item_id(submenu(menu, 0), i) for i in range(count(submenu(menu, 0)))]
     window_ids = [item_id(window, i) for i in range(count(window))]
     assert 1020 in file_ids and 1051 in file_ids and 1004 in file_ids
-    assert not {1049, 1050, 1003}.intersection(file_ids)
+    assert not {1049, 1050, 1015}.intersection(file_ids)
     assert [item_id(navigation, i) for i in range(count(navigation))] == [1060, 1061, 1062, 0, 1055, 1056]
-    assert 1003 in window_ids
+    assert window_ids == [1010, 0, 1011, 1012, 1013, 1014, 1015]
     documents = []
     for name in ("CreateFileW", "CloseHandle"):
         app.query(name)
@@ -80,6 +80,9 @@ def test_menu_scopes(launch, settings):
         app.command(command)
         n.wait(lambda: app.active_document() == doc, "Window menu activates its document")
         assert get_state(window, command, win32con.MF_BYCOMMAND) & win32con.MF_CHECKED
+    app.command(1015)
+    n.wait(lambda: not n.is_window(doc), "Window menu closes active document")
+    assert n.is_window(documents[0])
 
 
 @pytest.mark.parametrize("action", ["escape", "close", "enter"])

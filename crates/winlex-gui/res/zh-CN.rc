@@ -72,12 +72,13 @@ BEGIN
     END
     POPUP "窗口(&W)"
     BEGIN
-        MENUITEM "关闭文档(&C)\tCtrl+F4", CLOSE
+        MENUITEM "置于顶层(&A)", ALWAYS_ON_TOP
         MENUITEM SEPARATOR
         MENUITEM "左右平铺(&S)", COLUMNS
         MENUITEM "上下平铺(&T)", ROWS
         MENUITEM "自由排列(&F)", FREE
         MENUITEM "最大化文档(&M)", MAXIMIZE
+        MENUITEM "关闭文档(&C)\tCtrl+F4", CLOSE
     END
     POPUP "帮助(&H)"
     BEGIN
