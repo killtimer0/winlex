@@ -1,4 +1,4 @@
-//! Error-code controls and instance-local asynchronous resource queries.
+//! Error-code controls and instance-local asynchronous message queries.
 use super::Descriptor;
 use crate::native::text;
 use crate::{
@@ -27,6 +27,7 @@ const SCOPES: &[(u16, Scope)] = &[
     (IDS_ERROR_CODE_WIN32, Scope::Win32),
     (IDS_ERROR_CODE_HRESULT, Scope::HResult),
     (IDS_ERROR_CODE_NTSTATUS, Scope::NtStatus),
+    (IDS_ERROR_CODE_ERRNO, Scope::Errno),
 ];
 
 enum Completion {
@@ -146,9 +147,14 @@ impl View {
             ERROR_CODE_MODULE if code == EN_KILLFOCUS => self.refresh_module_languages(),
             ERROR_CODE_SCOPE if code == CBN_SELENDOK => {
                 self.changed();
+                let errno = self.scope() == Scope::Errno;
+                unsafe { EnableWindow(self.language, i32::from(!errno)) };
                 if self.custom() {
                     self.set_languages(vec![0], true);
                     self.refresh_module_languages();
+                } else if errno {
+                    self.set_languages(vec![0x409], false);
+                    send(self.language, CB_SETCURSEL, 1, 0);
                 } else {
                     self.system_languages(true);
                 }
@@ -792,14 +798,15 @@ fn order_languages(mut ids: Vec<u16>, interface: u16, user: u16) -> Vec<u16> {
     });
     ids
 }
-fn scope_label(scope: &Scope) -> String {
-    resources::text(match scope {
+fn scope_label(scope: &Scope) -> u16 {
+    match scope {
         Scope::Auto => IDS_ERROR_CODE_AUTO,
         Scope::Win32 => IDS_ERROR_CODE_WIN32,
         Scope::HResult => IDS_ERROR_CODE_HRESULT,
         Scope::NtStatus => IDS_ERROR_CODE_NTSTATUS,
+        Scope::Errno => IDS_ERROR_CODE_ERRNO,
         Scope::Module(_) => IDS_ERROR_CODE_CUSTOM,
-    })
+    }
 }
 fn render(result: &QueryResult) -> String {
     let mut lines = vec![
@@ -815,7 +822,7 @@ fn render(result: &QueryResult) -> String {
         format!(
             "{} {}",
             resources::text(IDS_ERROR_CODE_SCOPE),
-            scope_label(&result.request.scope)
+            resources::text(scope_label(&result.request.scope))
         ),
         format!(
             "{} {}",
@@ -840,6 +847,7 @@ fn render(result: &QueryResult) -> String {
             Scheme::Win32 => IDS_ERROR_CODE_WIN32,
             Scheme::HResult => IDS_ERROR_CODE_HRESULT,
             Scheme::NtStatus => IDS_ERROR_CODE_NTSTATUS,
+            Scheme::Errno => IDS_ERROR_CODE_ERRNO,
             Scheme::Module => IDS_ERROR_CODE_CUSTOM,
         }));
         if let Some(e) = &candidate.encoding {
@@ -876,6 +884,7 @@ fn render_message(lines: &mut Vec<String>, message: &Message) {
     let source = match &message.source {
         Source::System => resources::text(IDS_ERROR_CODE_SYSTEM),
         Source::NtDll => resources::text(IDS_ERROR_CODE_NTDLL),
+        Source::Msvcrt => resources::text(IDS_ERROR_CODE_MSVCRT),
         Source::Module(path) => path.display().to_string(),
     };
     lines.push(format!(
@@ -949,6 +958,7 @@ mod tests {
     #[test]
     fn scopes_have_distinct_resource_and_model_identities() {
         for (i, (label, scope)) in SCOPES.iter().enumerate() {
+            assert_eq!(scope_label(scope), *label);
             for (other_label, other_scope) in &SCOPES[i + 1..] {
                 assert_ne!(label, other_label);
                 assert_ne!(scope, other_scope);

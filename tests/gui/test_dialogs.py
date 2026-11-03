@@ -36,7 +36,7 @@ def test_native_picker_cancel_keeps_application_state(launch, profile, settings,
 def test_module_picker_uses_system_dialog_and_cancel_preserves_request(launch):
     app = launch()
     doc = tool(app)
-    choose_scope(app, doc, 4)
+    choose_scope(app, doc, 5)
     code, module = n.get_item(doc, 1810), n.get_item(doc, 1813)
     n.set_text(code, '0x20000001')
     n.set_text(module, r'C:\unchanged\messages.dll')
@@ -62,7 +62,7 @@ def test_module_picker_accepts_resource_path(launch, settings):
         pytest.skip('bilingual message resource fixture was not deployed')
     app = launch()
     doc = tool(app)
-    choose_scope(app, doc, 4)
+    choose_scope(app, doc, 5)
     assert n.post(doc, win32con.WM_COMMAND, 1814, 0)
     dialog = n.wait(lambda: next((h for h in n.windows()
                                   if n.class_name(h) == '#32770' and n.is_visible(h)

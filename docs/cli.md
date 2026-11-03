@@ -49,12 +49,14 @@ winlex Windows.Win32.winmd Windows.Wdk.winmd show Windows.Wdk.winmd::NtCancelIoF
 winlex error-code 5 --scope win32
 winlex error-code -2147024891 --scope hresult --lang 0x409
 winlex error-code 0xC0000005 --scope ntstatus --json
+winlex error-code 2 --scope errno
 winlex error-code 0x20000001 --module .\messages.dll --lang auto
 ```
 
-- `--scope` 可选 `auto`（默认）、`win32`、`hresult`、`ntstatus`。自动模式分别查询 Win32、HRESULT 和 NTSTATUS，并展示匹配结果。
+- `--scope` 可选 `auto`（默认）、`win32`、`hresult`、`ntstatus`、`errno`。自动模式分别查询 Win32、HRESULT 和 NTSTATUS，不查询 CRT errno。
+- `errno` 查询系统 `msvcrt.dll` 的 Microsoft CRT 消息，不代表 UCRT 或 POSIX 的完整错误码表。消息固定为英文；`--lang auto`、`0` 或 `0x409` 均可，其他 LANGID 返回语言未找到。未知值和表内空缺返回消息未找到，不回退到 Win32。
 - `--module PATH` 指定单个 EXE、DLL 或 MUI 的消息表，与预设 `--scope` 互斥；使用完整消息 ID，不回退到系统消息表。
-- `--lang auto|LANGID`（也可写 `--language`）选择消息语言。`auto` 或 `0` 使用 Windows 的语言选择规则；非零 LANGID 严格请求对应语言。
+- `--lang auto|LANGID`（也可写 `--language`）选择消息语言。除上述 CRT errno 外，`auto` 或 `0` 使用 Windows 的语言选择规则；非零 LANGID 严格请求对应语言。
 - 代码接受 -2147483648 至 4294967295，支持正负号、0x／0o／0b 前缀；前导零为八进制，例如 `010` 为 8。LANGID 为无符号 16 位值。不接受符号名称或浮点数。
 - 结果包含标准化代码、消息来源和语言信息。HRESULT 可附带关联的 Win32 错误。NTSTATUS 和自定义模块展示完整资源模板，保留 `%08lx`、`%s`、`%1!s!` 等占位符，并报告实际资源语言；系统消息自动选择时实际语言未知。
 - `--json` 输出版本化结构化结果。没有找到消息仍退出 0；参数错误退出 2，执行故障退出 3，输出失败退出 4。部分来源失败时保留其它结果并返回 3。

@@ -1,4 +1,4 @@
-//! Message-table queries independent of metadata and presentation.
+//! Error-message queries independent of metadata and presentation.
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
@@ -9,6 +9,7 @@ pub enum Scope {
     Win32,
     HResult,
     NtStatus,
+    Errno,
     Module(#[serde(serialize_with = "serialize_path")] PathBuf),
 }
 
@@ -16,7 +17,7 @@ pub enum Scope {
 pub struct Request {
     pub code: u32,
     pub scope: Scope,
-    /// Zero uses Windows' documented language order; nonzero requests one language.
+    /// Zero uses source defaults; nonzero requests one language.
     pub language: u16,
 }
 
@@ -43,6 +44,7 @@ pub enum Scheme {
     Win32,
     HResult,
     NtStatus,
+    Errno,
     Module,
 }
 
@@ -51,6 +53,7 @@ pub enum Scheme {
 pub enum Source {
     System,
     NtDll,
+    Msvcrt,
     Module(#[serde(serialize_with = "serialize_path")] PathBuf),
 }
 
@@ -185,6 +188,7 @@ pub fn query(request: &Request) -> crate::Result<QueryResult> {
         Scope::Win32 => &[Scheme::Win32],
         Scope::HResult => &[Scheme::HResult],
         Scope::NtStatus => &[Scheme::NtStatus],
+        Scope::Errno => &[Scheme::Errno],
         Scope::Module(_) => &[Scheme::Module],
     };
     let mut result = QueryResult {
@@ -195,6 +199,7 @@ pub fn query(request: &Request) -> crate::Result<QueryResult> {
     for &scheme in schemes {
         let source = match scheme {
             Scheme::NtStatus => Source::NtDll,
+            Scheme::Errno => Source::Msvcrt,
             Scheme::Module => match &request.scope {
                 Scope::Module(p) => Source::Module(p.clone()),
                 _ => unreachable!(),

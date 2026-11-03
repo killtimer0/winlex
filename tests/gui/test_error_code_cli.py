@@ -55,6 +55,35 @@ def test_error_code_cli_text_and_help_without_metadata(settings):
     assert b'--module' in help_result.stdout and b'--lang' in help_result.stdout
 
 
+def test_error_code_cli_errno_is_explicit_english_and_runtime_scoped(settings):
+    for language in ('auto', '0x409'):
+        result = query(settings, 2, '--scope', 'errno', '--lang', language)['result']
+        assert result['request']['scope']['kind'] == 'errno'
+        assert not result['attempts'] and len(result['candidates']) == 1
+        candidate = result['candidates'][0]
+        assert candidate['scheme'] == 'errno'
+        assert candidate['encoding'] is None and not candidate['related']
+        message = candidate['message']
+        assert message['source']['kind'] == 'msvcrt'
+        assert message['status'] == 'found' and message['text'] == 'No such file or directory'
+        assert message['actual_language'] == 0x409
+    assert query(settings, 0, '--scope', 'errno')['result']['candidates'][0]['message']['text'] == 'No error'
+    for value in (15, 26, 35, 37, 43, 100, -1, 2147483648, 4294967295):
+        message = query(settings, value, '--scope', 'errno')['result']['candidates'][0]['message']
+        assert message['status'] == 'not_found' and message['text'] is None
+        assert message['failure'] is None
+    message = query(settings, 2, '--scope', 'errno', '--lang', '0x804')['result']['candidates'][0]['message']
+    assert message['status'] == 'language_not_found' and message['text'] is None
+    auto = query(settings, 2)['result']
+    assert all(c['scheme'] != 'errno' for c in auto['candidates'])
+    assert all(m['source']['kind'] != 'msvcrt' for m in auto['attempts'])
+    query(settings, 2, '--scope', 'errno', '--module', 'ignored.dll', expected=2)
+    text = subprocess.run([str(settings[0].with_name('winlex.exe')), 'error-code', '2',
+                           '--scope', 'errno'], capture_output=True, timeout=30)
+    assert text.returncode == 0
+    assert b'msvcrt.dll' in text.stdout and b'No such file or directory' in text.stdout
+
+
 def test_error_code_cli_missing_and_invalid_are_distinct(settings):
     missing = query(settings, '0x12345678')['result']
     assert not missing['candidates']

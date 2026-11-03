@@ -5,7 +5,7 @@ BEGIN
     IDS_TOOL_OPEN "Open"
     IDS_TOOL_NEW "New instance"
     IDS_ERROR_CODE_TOOL "Error code lookup"
-    IDS_ERROR_CODE_DESCRIPTION "Look up Windows error messages without loading metadata."
+    IDS_ERROR_CODE_DESCRIPTION "Look up messages for error codes without loading metadata."
     IDS_ERROR_CODE_LABEL "Code:"
     IDS_ERROR_CODE_SCOPE "Scope:"
     IDS_ERROR_CODE_LANGUAGE "Language:"
@@ -19,6 +19,8 @@ BEGIN
     IDS_ERROR_CODE_WIN32 "Win32"
     IDS_ERROR_CODE_HRESULT "HRESULT"
     IDS_ERROR_CODE_NTSTATUS "NTSTATUS"
+    IDS_ERROR_CODE_ERRNO "CRT errno"
+    IDS_ERROR_CODE_MSVCRT "Microsoft CRT errno (system msvcrt.dll; English only)"
     IDS_ERROR_CODE_CUSTOM "Custom module"
     IDS_ERROR_CODE_AUTO_LANGUAGE "Automatic (0x0000)"
     IDS_ERROR_CODE_SYSTEM_LANGUAGE "System selection; actual language unknown"
@@ -39,7 +41,7 @@ BEGIN
     IDS_ERROR_CODE_INVALID "Invalid input"
     IDS_ERROR_CODE_LANGUAGES_FAILED "Cannot enumerate module message languages"
     IDS_ERROR_CODE_RESULT_LABEL "Result:"
-    IDS_ERROR_CODE_QUERYING "Querying message resources..."
+    IDS_ERROR_CODE_QUERYING "Querying messages..."
 END
 STRINGTABLE
 BEGIN

@@ -13,8 +13,8 @@ use windows_sys::Win32::{
             FORMAT_MESSAGE_FROM_SYSTEM, FORMAT_MESSAGE_IGNORE_INSERTS, FormatMessageW,
         },
         LibraryLoader::{
-            EnumResourceLanguagesW, EnumResourceNamesW, FindResourceExW, LOAD_LIBRARY_AS_DATAFILE,
-            LoadLibraryExW, LoadResource, LockResource, SizeofResource,
+            EnumResourceLanguagesW, EnumResourceNamesW, FindResourceExW, GetProcAddress,
+            LOAD_LIBRARY_AS_DATAFILE, LoadLibraryExW, LoadResource, LockResource, SizeofResource,
         },
     },
 };
@@ -88,21 +88,8 @@ impl Drop for Module {
 pub fn lookup(code: u32, language: u16, source: &Source) -> Result<(String, Option<u16>), Failure> {
     let module = match source {
         Source::System => None,
-        Source::NtDll => {
-            // Resolve the system copy, never a current-directory ntdll.dll.
-            use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
-            let mut directory = vec![0u16; 32768];
-            let length =
-                unsafe { GetSystemDirectoryW(directory.as_mut_ptr(), directory.len() as u32) }
-                    as usize;
-            if length == 0 || length >= directory.len() {
-                return Err(failure("GetSystemDirectoryW"));
-            }
-            use std::os::windows::ffi::OsStringExt;
-            let path = PathBuf::from(std::ffi::OsString::from_wide(&directory[..length]))
-                .join("ntdll.dll");
-            Some(Module::open(&path)?)
-        }
+        Source::NtDll => Some(Module::open(&system_path("ntdll.dll")?)?),
+        Source::Msvcrt => return crt_message(code, language),
         Source::Module(path) => Some(Module::open(path)?),
     };
     if let Some(module) = module {
@@ -131,6 +118,65 @@ pub fn lookup(code: u32, language: u16, source: &Source) -> Result<(String, Opti
             .to_owned(),
         (language != 0).then_some(language),
     ))
+}
+
+fn system_path(name: &str) -> Result<PathBuf, Failure> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
+    let mut directory = vec![0u16; 32768];
+    let length =
+        unsafe { GetSystemDirectoryW(directory.as_mut_ptr(), directory.len() as u32) } as usize;
+    if length == 0 || length >= directory.len() {
+        return Err(failure("GetSystemDirectoryW"));
+    }
+    Ok(PathBuf::from(std::ffi::OsString::from_wide(&directory[..length])).join(name))
+}
+
+fn crt_message(code: u32, language: u16) -> Result<(String, Option<u16>), Failure> {
+    if !matches!(language, 0 | 0x409) {
+        return Err(resource_error(1815));
+    }
+    let code = i32::try_from(code).map_err(|_| resource_error(317))?;
+    let path: Vec<u16> = system_path("msvcrt.dll")?
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    let module = unsafe { LoadLibraryExW(path.as_ptr(), ptr::null_mut(), 0) };
+    if module.is_null() {
+        return Err(failure("LoadLibraryExW(msvcrt.dll)"));
+    }
+    let module = Module(module);
+    let address = unsafe { GetProcAddress(module.0, c"_wcserror".as_ptr().cast()) }
+        .ok_or_else(|| failure("GetProcAddress(_wcserror)"))?;
+    let wcserror: unsafe extern "C" fn(i32) -> *const u16 = unsafe { std::mem::transmute(address) };
+    let copy = |value| -> Result<String, Failure> {
+        let text = unsafe { wcserror(value) };
+        if text.is_null() {
+            return Err(Failure {
+                operation: "_wcserror".into(),
+                os_code: None,
+                detail: "CRT could not allocate the error message buffer".into(),
+            });
+        }
+        let mut length = 0;
+        unsafe {
+            while *text.add(length) != 0 {
+                length += 1;
+            }
+            Ok(String::from_utf16_lossy(std::slice::from_raw_parts(
+                text, length,
+            )))
+        }
+    };
+    // Copy the thread-local buffer before another call overwrites it. Comparing
+    // the runtime's unknown sentinel also rejects holes in its errno table.
+    let unknown = copy(-1)?;
+    let text = copy(code)?;
+    if text == unknown {
+        return Err(resource_error(317));
+    }
+    Ok((text, Some(0x409)))
 }
 
 fn resource_error(code: u32) -> Failure {

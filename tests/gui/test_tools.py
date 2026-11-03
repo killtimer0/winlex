@@ -62,10 +62,34 @@ def test_tool_host_find_commands_are_disabled_and_harmless(launch):
     assert "0x00000057" in query(app, doc, "87")
 
 
+def test_tool_errno_language_and_scope_switches_are_explicit(launch):
+    app = launch()
+    doc = tool(app)
+    previous = query(app, doc, "2")
+    language = n.get_item(doc, 1812)
+    choose_scope(app, doc, 4)
+    assert body(doc) == previous, "scope initialization must not query"
+    assert not win32gui.IsWindowEnabled(language)
+    assert '0x0409' in n.window_text(language)
+    assert not n.is_visible(n.get_item(doc, 1813))
+    result = query(app, doc, "2")
+    assert 'CRT errno' in result and 'msvcrt.dll' in result
+    assert 'No such file or directory' in result
+    missing = query(app, doc, "15")
+    assert 'No message found.' in missing or '未找到消息' in missing
+    choose_scope(app, doc, 5)
+    assert win32gui.IsWindowEnabled(language)
+    assert n.is_visible(n.get_item(doc, 1813))
+    assert body(doc) == missing
+    choose_scope(app, doc, 0)
+    assert win32gui.IsWindowEnabled(language)
+    assert 'CRT errno' not in query(app, doc, "2")
+
+
 def test_tool_compact_layout_and_narrow_fallback(launch):
     app = launch()
     doc = tool(app)
-    choose_scope(app, doc, 4)
+    choose_scope(app, doc, 5)
     with n.window_dpi_context(doc):
         dpi = (n.api(n.user, "GetDpiForWindow", n.w.UINT, n.w.HWND)(doc)
                if hasattr(n.user, "GetDpiForWindow") else 96)
@@ -282,7 +306,7 @@ def test_tool_history_preserves_current_results_and_skips_closed_instances(launc
 def test_custom_module_scope_candidates_are_not_system_language_promises(launch, settings):
     app = launch()
     doc = tool(app)
-    choose_scope(app, doc, 4)
+    choose_scope(app, doc, 5)
     assert n.is_visible(n.get_item(doc, 1813)) and n.is_visible(n.get_item(doc, 1814))
     assert n.send(n.get_item(doc, 1812), win32con.CB_GETCOUNT) == 1
     missing = settings[2] / "missing-message-module.dll"
@@ -350,7 +374,7 @@ def test_tool_module_languages_and_messages_use_selected_resource(launch, settin
         pytest.skip('bilingual message resource fixture was not deployed')
     app = launch()
     doc = tool(app)
-    choose_scope(app, doc, 4)
+    choose_scope(app, doc, 5)
     n.set_text(n.get_item(doc, 1813), str(module))
     app.command(1813, doc, win32con.EN_KILLFOCUS)
     language = n.get_item(doc, 1812)

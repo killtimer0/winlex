@@ -4,7 +4,7 @@ use winlex_core::{
     tools::error_code::{self, Message, MessageStatus, QueryResult, Request, Scope},
 };
 
-const HELP: &str = "Usage: winlex error-code CODE [options]\n\nOptions:\n  --scope auto|win32|hresult|ntstatus  Query plan (default: auto)\n  --module PATH             EXE, DLL or MUI resource; excludes preset scopes\n  --lang auto|LANGID        Strict language ID; auto or 0 uses Windows defaults\n  --language auto|LANGID    Alias for --lang\n  --json                    Versioned machine-readable output\n  --help, -h                Show this help\n\nCodes accept -2147483648..4294967295. Signs and 0x/0o/0b prefixes are\naccepted; a leading zero means octal (010 = 8). LANGID is unsigned 16-bit.\nModule queries use full message IDs, preserve templates and never fall back to\nsystem resources. Module results report the selected resource language; system\nqueries cannot report their automatic language choice.\n";
+const HELP: &str = "Usage: winlex error-code CODE [options]\n\nOptions:\n  --scope auto|win32|hresult|ntstatus|errno  Query plan (default: auto)\n  --module PATH             EXE, DLL or MUI resource; excludes preset scopes\n  --lang auto|LANGID        Strict language ID; auto or 0 uses source defaults\n  --language auto|LANGID    Alias for --lang\n  --json                    Versioned machine-readable output\n  --help, -h                Show this help\n\nCodes accept -2147483648..4294967295. Signs and 0x/0o/0b prefixes are\naccepted; a leading zero means octal (010 = 8). LANGID is unsigned 16-bit.\nModule queries use full message IDs, preserve templates and never fall back to\nsystem resources. Module results report the selected resource language; system\nqueries cannot report their automatic language choice.\nCRT errno queries use the system msvcrt.dll, not UCRT or POSIX error tables.\nMessages are English (0x0409); other explicit languages return no language match.\nAutomatic scope does not query CRT errno.\n";
 
 fn parse(args: &[OsString]) -> Result<Request, String> {
     let mut code = None;
@@ -55,8 +55,9 @@ fn parse(args: &[OsString]) -> Result<Request, String> {
         "win32" => Scope::Win32,
         "hresult" => Scope::HResult,
         "ntstatus" => Scope::NtStatus,
+        "errno" => Scope::Errno,
         "module" => Scope::Module(module.take().ok_or("module scope requires --module PATH")?),
-        _ => return Err("scope must be auto, win32, hresult, ntstatus or module".into()),
+        _ => return Err("scope must be auto, win32, hresult, ntstatus, errno or module".into()),
     };
     if module.is_some() {
         return Err("--module cannot be combined with a preset --scope".into());
@@ -145,6 +146,9 @@ fn render_message(text: &mut String, message: &Message) {
         "Source: {:?}; message ID: 0x{:08X} ({})",
         message.source, message.code, message.code
     );
+    if message.source == error_code::Source::Msvcrt {
+        text.push_str("Microsoft CRT errno (system msvcrt.dll); English messages only.\n");
+    }
     if message.status == MessageStatus::Found {
         match message.actual_language {
             Some(0) => text.push_str("Actual language: neutral resource (0x0000)\n"),
@@ -160,7 +164,7 @@ fn render_message(text: &mut String, message: &Message) {
         }
         MessageStatus::NotFound => text.push_str("Message not found.\n"),
         MessageStatus::LanguageNotFound => {
-            text.push_str("Requested language not found; retry language 0 for Windows selection.\n")
+            text.push_str("Requested language not found; retry language 0 for source defaults.\n")
         }
         MessageStatus::NoMessageTable => text.push_str("No message-table resource found.\n"),
         MessageStatus::Failed => {}
@@ -216,7 +220,7 @@ mod tests {
                 Scope::Module(PathBuf::from("last.dll"))
             );
         }
-        for scope in ["auto", "win32", "hresult", "ntstatus"] {
+        for scope in ["auto", "win32", "hresult", "ntstatus", "errno"] {
             for args in [
                 vec!["5", "--scope", scope, "--module", "test.dll"],
                 vec!["5", "--module", "test.dll", "--scope", scope],
@@ -233,7 +237,7 @@ mod tests {
         for (args, error) in [
             (
                 vec!["--scope", "invalid"],
-                "scope must be auto, win32, hresult, ntstatus or module",
+                "scope must be auto, win32, hresult, ntstatus, errno or module",
             ),
             (
                 vec!["--scope", "module"],
