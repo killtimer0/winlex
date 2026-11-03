@@ -61,7 +61,10 @@ def main():
             name = "Winlex.Test." + uuid.uuid4().hex
             desktop = win32service.CreateDesktop(name, 0, win32con.GENERIC_ALL, None)
             startup.lpDesktop = name
-        command = subprocess.list2cmdline([sys.executable, "-X", "utf8", "-m", "pytest", str(Path(__file__).parent), "--artifacts", str(output), "--junitxml", str(output / "tests.xml"), *tests])
+        command = subprocess.list2cmdline([
+            sys.executable, "-X", "utf8", "-m", "pytest", str(Path(__file__).parent),
+            "--artifacts", str(output), "--junitxml", str(output / "tests.xml"), *tests,
+        ])
         environment = {**os.environ, "WINLEX_TEST_LEDGER": str(output / "profiles")}
         # Keep redirected standard handles available to pytest.
         process, thread, _, _ = win32process.CreateProcess(None, command, None, None, True,

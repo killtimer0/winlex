@@ -21,7 +21,12 @@ pub fn constant(value: &Value) -> String {
 
 pub fn summary(c: &Catalog) -> Json {
     let (types, fields, methods) = c.row_counts();
-    json!({"sources":c.sources(),"type_rows":types,"field_rows":fields,"method_rows":methods})
+    json!({
+        "sources": c.sources(),
+        "type_rows": types,
+        "field_rows": fields,
+        "method_rows": methods,
+    })
 }
 fn integer_text(v: &Value) -> Option<(String, String, usize)> {
     let n = integer(v)?;
@@ -54,45 +59,137 @@ pub fn attribute_value(v: &Value) -> String {
 }
 fn value(v: &Value) -> Json {
     if let Value::EnumValue(n, x) = v {
-        return json!({"kind":"enum","name":n.name,"namespace":n.namespace,"value":value(x)});
+        return json!({
+            "kind": "enum",
+            "name": n.name,
+            "namespace": n.namespace,
+            "value": value(x),
+        });
     }
     if let Some((decimal, hex, bits)) = integer_text(v) {
-        return json!({"kind":"integer","type":format!("{:?}",v.ty()),"decimal":decimal,"hex":hex,"bits":bits});
+        return json!({
+            "kind": "integer",
+            "type": format!("{:?}", v.ty()),
+            "decimal": decimal,
+            "hex": hex,
+            "bits": bits,
+        });
     }
     match v {
-        Value::Bool(x) => json!({"kind":"boolean","value":x}),
-        Value::F32(x) => json!({"kind":"float","type":"F32","value":x.to_string()}),
-        Value::F64(x) => json!({"kind":"float","type":"F64","value":x.to_string()}),
-        Value::Utf8(x) | Value::Utf16(x) => json!({"kind":"string","value":x}),
-        Value::TypeName(n) => json!({"kind":"type_name","name":n.name,"namespace":n.namespace}),
+        Value::Bool(x) => json!({
+            "kind": "boolean",
+            "value": x,
+        }),
+        Value::F32(x) => json!({
+            "kind": "float",
+            "type": "F32",
+            "value": x.to_string(),
+        }),
+        Value::F64(x) => json!({
+            "kind": "float",
+            "type": "F64",
+            "value": x.to_string(),
+        }),
+        Value::Utf8(x) | Value::Utf16(x) => json!({
+            "kind": "string",
+            "value": x,
+        }),
+        Value::TypeName(n) => json!({
+            "kind": "type_name",
+            "name": n.name,
+            "namespace": n.namespace,
+        }),
         _ => unreachable!(),
     }
 }
 fn attributes<'a>(r: impl HasAttributes<'a>) -> Json {
-    json!(r.attributes().map(|a|json!({"name":a.name(),"arguments":a.value().iter().map(|(n,v)|json!({"name":n,"value":value(v)})).collect::<Vec<_>>()})).collect::<Vec<_>>())
+    json!(
+        r.attributes()
+            .map(|a| {
+                json!({
+                    "name": a.name(),
+                    "arguments": a.value().iter().map(|(n, v)| {
+                        json!({
+                            "name": n,
+                            "value": value(v),
+                        })
+                    }).collect::<Vec<_>>(),
+                })
+            })
+            .collect::<Vec<_>>()
+    )
 }
 fn signature(t: &Type) -> Json {
     match t {
         Type::ClassName(n) | Type::ValueName(n) => {
-            json!({"kind":"named","name":n.name,"namespace":n.namespace,"reference_id":n.identity.map(|(source_id,token)|EntityId{source_id,token}),"arguments":n.generics.iter().map(signature).collect::<Vec<_>>()})
+            json!({
+                "kind": "named",
+                "name": n.name,
+                "namespace": n.namespace,
+                "reference_id": n.identity.map(|(source_id, token)| EntityId {
+                    source_id,
+                    token,
+                }),
+                "arguments": n.generics.iter().map(signature).collect::<Vec<_>>(),
+            })
         }
         pointer @ (Type::PtrMut(t, d) | Type::PtrConst(t, d)) => {
-            json!({"kind":"pointer","depth":d,"const":matches!(pointer, Type::PtrConst(..)),"element":signature(t)})
+            json!({
+                "kind": "pointer",
+                "depth": d,
+                "const": matches!(pointer, Type::PtrConst(..)),
+                "element": signature(t),
+            })
         }
-        Type::ArrayFixed(t, n) => json!({"kind":"array","length":n,"element":signature(t)}),
-        Type::Array(t) => json!({"kind":"array","length":null,"element":signature(t)}),
-        Type::RefMut(t) => json!({"kind":"byref","element":signature(t)}),
-        Type::RefConst(t) => json!({"kind":"const","element":signature(t)}),
-        Type::Generic(n, i) => json!({"kind":"generic","scope":"type","name":n,"index":i}),
-        Type::MethodGeneric(n, i) => json!({"kind":"generic","scope":"method","name":n,"index":i}),
-        other => json!({"kind":"primitive","name":format!("{other:?}")}),
+        Type::ArrayFixed(t, n) => json!({
+            "kind": "array",
+            "length": n,
+            "element": signature(t),
+        }),
+        Type::Array(t) => json!({
+            "kind": "array",
+            "length": null,
+            "element": signature(t),
+        }),
+        Type::RefMut(t) => json!({
+            "kind": "byref",
+            "element": signature(t),
+        }),
+        Type::RefConst(t) => json!({
+            "kind": "const",
+            "element": signature(t),
+        }),
+        Type::Generic(n, i) => json!({
+            "kind": "generic",
+            "scope": "type",
+            "name": n,
+            "index": i,
+        }),
+        Type::MethodGeneric(n, i) => json!({
+            "kind": "generic",
+            "scope": "method",
+            "name": n,
+            "index": i,
+        }),
+        other => json!({
+            "kind": "primitive",
+            "name": format!("{other:?}"),
+        }),
     }
 }
 fn generic(p: GenericParam<'_>) -> Json {
-    json!({"name":p.name(),"index":p.sequence(),"flags":p.flags().0})
+    json!({
+        "name": p.name(),
+        "index": p.sequence(),
+        "flags": p.flags().0,
+    })
 }
 fn accessor(s: MethodSemantics<'_>) -> Json {
-    json!({"semantics":s.flags(),"method_id":key(s.method(),6),"name":s.method().name()})
+    json!({
+        "semantics": s.flags(),
+        "method_id": key(s.method(), 6),
+        "name": s.method().name(),
+    })
 }
 /// Member identities filtered for presentation, preserving metadata order.
 pub fn member_ids<'a, R: HasAttributes<'a> + AsRow<'a>>(
@@ -108,10 +205,47 @@ pub fn describe(c: &Catalog, id: EntityId, arch: Option<Architecture>) -> Result
     let e = c.summarize(id, &row);
     Ok(match row {
         Declaration::Type(t) => {
-            let mut result = json!({"entity":e,"flags":t.flags().0,"guid":guid(t),"attributes":attributes(t),"generic_parameters":t.generic_params().map(generic).collect::<Vec<_>>(),"layout_constraints":t.class_layout().map(|l|json!({"pack_bytes":l.packing_size(),"declared_size_bytes":l.class_size()})),"layout_kind":if t.flags().contains(TypeAttributes::ExplicitLayout){"explicit"}else if t.flags().contains(TypeAttributes::SequentialLayout){"sequential"}else{"auto"},
-                "fields":member_ids(t.fields(),4,arch).map(|id|describe(c,id,arch)).collect::<Result<Vec<_>>>()?,"methods":member_ids(t.methods(),6,arch).map(|id|describe(c,id,arch)).collect::<Result<Vec<_>>>()?,
-                "properties":member_ids(t.properties(),0x17,arch).map(|id|describe(c,id,arch)).collect::<Result<Vec<_>>>()?,"events":member_ids(t.events(),0x14,arch).map(|id|describe(c,id,arch)).collect::<Result<Vec<_>>>()?});
-            result["interface_implementations"]=json!(t.interface_impls().map(|i|json!({"type":signature(&i.interface(&t.generic_types())),"default":i.has_attribute("DefaultAttribute"),"attributes":attributes(i)})).collect::<Vec<_>>());
+            let mut result = json!({
+                "entity": e,
+                "flags": t.flags().0,
+                "guid": guid(t),
+                "attributes": attributes(t),
+                "generic_parameters": t.generic_params().map(generic).collect::<Vec<_>>(),
+                "layout_constraints": t.class_layout().map(|l| json!({
+                    "pack_bytes": l.packing_size(),
+                    "declared_size_bytes": l.class_size(),
+                })),
+                "layout_kind": if t.flags().contains(TypeAttributes::ExplicitLayout) {
+                    "explicit"
+                } else if t.flags().contains(TypeAttributes::SequentialLayout) {
+                    "sequential"
+                } else {
+                    "auto"
+                },
+                "fields": member_ids(t.fields(), 4, arch)
+                    .map(|id| describe(c, id, arch))
+                    .collect::<Result<Vec<_>>>()?,
+                "methods": member_ids(t.methods(), 6, arch)
+                    .map(|id| describe(c, id, arch))
+                    .collect::<Result<Vec<_>>>()?,
+                "properties": member_ids(t.properties(), 0x17, arch)
+                    .map(|id| describe(c, id, arch))
+                    .collect::<Result<Vec<_>>>()?,
+                "events": member_ids(t.events(), 0x14, arch)
+                    .map(|id| describe(c, id, arch))
+                    .collect::<Result<Vec<_>>>()?,
+            });
+            result["interface_implementations"] = json!(
+                t.interface_impls()
+                    .map(|i| {
+                        json!({
+                            "type": signature(&i.interface(&t.generic_types())),
+                            "default": i.has_attribute("DefaultAttribute"),
+                            "attributes": attributes(i),
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            );
             result["base_type"] = t
                 .extends()
                 .map_or(Json::Null, |b| signature(&b.ty(&t.generic_types())));
@@ -120,22 +254,77 @@ pub fn describe(c: &Catalog, id: EntityId, arch: Option<Architecture>) -> Result
         }
         Declaration::Property(p) => {
             let s = p.signature();
-            json!({"entity":e,"parent_id":key(p.parent(),2),"flags":p.flags(),"type":signature(&s.return_type),"index_parameters":s.types.iter().map(signature).collect::<Vec<_>>(),"attributes":attributes(p),"accessors":p.accessors().map(accessor).collect::<Vec<_>>()})
+            json!({
+                "entity": e,
+                "parent_id": key(p.parent(), 2),
+                "flags": p.flags(),
+                "type": signature(&s.return_type),
+                "index_parameters": s.types.iter().map(signature).collect::<Vec<_>>(),
+                "attributes": attributes(p),
+                "accessors": p.accessors().map(accessor).collect::<Vec<_>>(),
+            })
         }
         Declaration::Event(r) => {
-            json!({"entity":e,"parent_id":key(r.parent(),2),"flags":r.flags(),"type":signature(&r.ty()),"attributes":attributes(r),"accessors":r.accessors().map(accessor).collect::<Vec<_>>()})
+            json!({
+                "entity": e,
+                "parent_id": key(r.parent(), 2),
+                "flags": r.flags(),
+                "type": signature(&r.ty()),
+                "attributes": attributes(r),
+                "accessors": r.accessors().map(accessor).collect::<Vec<_>>(),
+            })
         }
         Declaration::Field(f) => {
-            json!({"entity":e,"parent_id":key(f.parent_row::<TypeDef>(4),2),"type":signature(&f.ty()),"declared_offset_bytes":f.explicit_offset(),"bitfields":winlex_core::metadata::bitfields(f)?,"value":f.constant().map(|v|value(&v.value())),"guid":guid(f),"attributes":attributes(f)})
+            json!({
+                "entity": e,
+                "parent_id": key(f.parent_row::<TypeDef>(4), 2),
+                "type": signature(&f.ty()),
+                "declared_offset_bytes": f.explicit_offset(),
+                "bitfields": winlex_core::metadata::bitfields(f)?,
+                "value": f.constant().map(|v| value(&v.value())),
+                "guid": guid(f),
+                "attributes": attributes(f),
+            })
         }
         Declaration::Method(m) => {
             let s = m.signature(&[]);
             let ps = m.params_by_sequence(s.types.len())?;
-            json!({"entity":e,"parent_id":key(m.parent_row::<TypeDef>(5),2),"return_type":signature(&s.return_type),"signature_flags":s.flags.0,"return_attributes":ps.return_param().map(attributes),"attributes":attributes(m),"import":m.impl_map().map(|i|json!({"dll":i.import_scope().name(),"entry_point":i.import_name(),"flags":i.flags().0,"calling_convention":m.calling_convention()})),
-                "generic_parameters":m.generic_params().map(generic).collect::<Vec<_>>(),"parameters":s.types.iter().zip(ps.params()).enumerate().map(|(i,(t,p))|json!({"sequence":i+1,"name":p.map(|p|p.name().to_owned()),"type":signature(t),"flags":p.map(|p|p.flags().0),"direction":p.map(|p|format!("{:?}",p.direction())),"optional":p.map(|p|p.is_optional()),"attributes":p.map(attributes)})).collect::<Vec<_>>()})
+            json!({
+                "entity": e,
+                "parent_id": key(m.parent_row::<TypeDef>(5), 2),
+                "return_type": signature(&s.return_type),
+                "signature_flags": s.flags.0,
+                "return_attributes": ps.return_param().map(attributes),
+                "attributes": attributes(m),
+                "import": m.impl_map().map(|i| json!({
+                    "dll": i.import_scope().name(),
+                    "entry_point": i.import_name(),
+                    "flags": i.flags().0,
+                    "calling_convention": m.calling_convention(),
+                })),
+                "generic_parameters": m.generic_params().map(generic).collect::<Vec<_>>(),
+                "parameters": s.types.iter().zip(ps.params()).enumerate().map(|(i, (t, p))| {
+                    json!({
+                        "sequence": i + 1,
+                        "name": p.map(|p| p.name().to_owned()),
+                        "type": signature(t),
+                        "flags": p.map(|p| p.flags().0),
+                        "direction": p.map(|p| format!("{:?}", p.direction())),
+                        "optional": p.map(|p| p.is_optional()),
+                        "attributes": p.map(attributes),
+                    })
+                }).collect::<Vec<_>>(),
+            })
         }
         Declaration::Reference(r) => {
-            json!({"entity":e,"scope_token":format!("0x{:08x}",r.scope_token()),"resolution":arch.map(|a|match c.resolve_reference(id,a){Ok(id)=>json!({"target_id":id}),Err(e)=>json!({"unresolved":e.to_string()})})})
+            json!({
+                "entity": e,
+                "scope_token": format!("0x{:08x}", r.scope_token()),
+                "resolution": arch.map(|a| match c.resolve_reference(id, a) {
+                    Ok(id) => json!({"target_id": id}),
+                    Err(e) => json!({"unresolved": e.to_string()}),
+                }),
+            })
         }
     })
 }

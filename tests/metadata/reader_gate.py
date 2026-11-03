@@ -39,7 +39,14 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     _, counts = check_reader(ROOT / "inputs/Windows.Win32.winmd", out / "oracle.json",
                              facts_path=out / "reader-facts.json")
-    result = {"passed": True, "compared": counts, "scope": "Named type tokens in field/method signatures; modifiers and TypeSpec expansion are not a lossless AST guarantee"}
+    result = {
+        "passed": True,
+        "compared": counts,
+        "scope": (
+            "Named type tokens in field/method signatures; "
+            "modifiers and TypeSpec expansion are not a lossless AST guarantee"
+        ),
+    }
     (out / "reader-gate.json").write_text(json.dumps(result, indent=2))
     print(json.dumps(result, indent=2))
 

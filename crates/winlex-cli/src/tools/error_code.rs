@@ -4,7 +4,25 @@ use winlex_core::{
     tools::error_code::{self, Message, MessageStatus, QueryResult, Request, Scope},
 };
 
-const HELP: &str = "Usage: winlex error-code CODE [options]\n\nOptions:\n  --scope auto|win32|hresult|ntstatus|errno  Query plan (default: auto)\n  --module PATH             EXE, DLL or MUI resource; excludes preset scopes\n  --lang auto|LANGID        Strict language ID; auto or 0 uses source defaults\n  --language auto|LANGID    Alias for --lang\n  --json                    Versioned machine-readable output\n  --help, -h                Show this help\n\nCodes accept -2147483648..4294967295. Signs and 0x/0o/0b prefixes are\naccepted; a leading zero means octal (010 = 8). LANGID is unsigned 16-bit.\nModule queries use full message IDs, preserve templates and never fall back to\nsystem resources. Module results report the selected resource language; system\nqueries cannot report their automatic language choice.\nCRT errno queries use the system msvcrt.dll, not UCRT or POSIX error tables.\nMessages are English (0x0409); other explicit languages return no language match.\nAutomatic scope does not query CRT errno.\n";
+const HELP: &str = "Usage: winlex error-code CODE [options]
+
+Options:
+  --scope auto|win32|hresult|ntstatus|errno  Query plan (default: auto)
+  --module PATH             EXE, DLL or MUI resource; excludes preset scopes
+  --lang auto|LANGID        Strict language ID; auto or 0 uses source defaults
+  --language auto|LANGID    Alias for --lang
+  --json                    Versioned machine-readable output
+  --help, -h                Show this help
+
+Codes accept -2147483648..4294967295. Signs and 0x/0o/0b prefixes are
+accepted; a leading zero means octal (010 = 8). LANGID is unsigned 16-bit.
+Module queries use full message IDs, preserve templates and never fall back to
+system resources. Module results report the selected resource language; system
+queries cannot report their automatic language choice.
+CRT errno queries use the system msvcrt.dll, not UCRT or POSIX error tables.
+Messages are English (0x0409); other explicit languages return no language match.
+Automatic scope does not query CRT errno.
+";
 
 fn parse(args: &[OsString]) -> Result<Request, String> {
     let mut code = None;
@@ -90,8 +108,17 @@ pub(super) fn run(args: &[OsString], out: &mut dyn Write, err: &mut dyn Write) -
     };
     let failed = result.has_failures();
     let written = if json {
-        serde_json::to_writer_pretty(&mut *out, &serde_json::json!({"schema":"winlex-cli-7", "ok":!failed, "command":"error-code", "result":result}))
-            .map_err(std::io::Error::other).and_then(|_| writeln!(out))
+        serde_json::to_writer_pretty(
+            &mut *out,
+            &serde_json::json!({
+                "schema": "winlex-cli-7",
+                "ok": !failed,
+                "command": "error-code",
+                "result": result,
+            }),
+        )
+        .map_err(std::io::Error::other)
+        .and_then(|_| writeln!(out))
     } else {
         write!(out, "{}", render(&result))
     };

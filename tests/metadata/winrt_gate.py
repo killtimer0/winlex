@@ -53,7 +53,9 @@ def main():
         assert get_at["return_type"]["index"] == 0
         query(files, "vtable", "Windows.Foundation.Collections.IVector`1", error="open generic")
         slots = query(files, "vtable", "Windows.Foundation.IAsyncInfo")["slots"]
-        assert [s["method"] for s in slots[:6]] == ["QueryInterface", "AddRef", "Release", "GetIids", "GetRuntimeClassName", "GetTrustLevel"]
+        assert [s["method"] for s in slots[:6]] == [
+            "QueryInterface", "AddRef", "Release", "GetIids", "GetRuntimeClassName", "GetTrustLevel",
+        ]
         assert slots[6]["method"] == "get_Id" and slots[6]["byte_offset"] == 48
         delegate = query(files, "vtable", "Windows.Foundation.AsyncActionCompletedHandler")["slots"]
         assert len(delegate) == 4 and delegate[3]["method"] == "Invoke"
@@ -93,7 +95,14 @@ def main():
         assert "2 matching definitions" in overlap["resolution"]["unresolved"]
         for file in apps:
             check_reader(file, OUT / (file.stem + "-oracle.json"), capture_output=True)
-    checks = ["generic declarations", "properties/events/accessors", "default interfaces", "interface and delegate ABI slots", "reverse generic uses", "independent raw metadata"]
+    checks = [
+        "generic declarations",
+        "properties/events/accessors",
+        "default interfaces",
+        "interface and delegate ABI slots",
+        "reverse generic uses",
+        "independent raw metadata",
+    ]
     if apps:
         checks.extend(["WinRT namespace resolution", "missing/overlapping sources"])
     report = {"passed": True, "sdk": args.version, "contracts": len(contracts), "app_files": len(apps),

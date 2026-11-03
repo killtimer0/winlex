@@ -1,7 +1,25 @@
 use std::{borrow::Cow, io::Write};
 
-const LIGHT_HEADER: &[u8] = br"{\rtf1\ansi\deff0\uc1{\fonttbl{\f0 Courier New;}}{\colortbl;\red0\green0\blue128;\red0\green128\blue0;\red128\green0\blue0;\red128\green0\blue128;}\pard\f0 ";
-const DARK_HEADER: &[u8] = br"{\rtf1\ansi\deff0\uc1{\fonttbl{\f0 Courier New;}}{\colortbl\red238\green238\blue238;\red86\green156\blue214;\red87\green153\blue106;\red206\green156\blue120;\red181\green206\blue168;}\pard\f0\cf0 ";
+const LIGHT_HEADER: &[u8] = concat!(
+    r"{\rtf1\ansi\deff0\uc1{\fonttbl{\f0 Courier New;}}",
+    r"{\colortbl;",
+    r"\red0\green0\blue128;",
+    r"\red0\green128\blue0;",
+    r"\red128\green0\blue0;",
+    r"\red128\green0\blue128;}",
+    r"\pard\f0 ",
+)
+.as_bytes();
+const DARK_HEADER: &[u8] = concat!(
+    r"{\rtf1\ansi\deff0\uc1{\fonttbl{\f0 Courier New;}}",
+    r"{\colortbl\red238\green238\blue238;",
+    r"\red86\green156\blue214;",
+    r"\red87\green153\blue106;",
+    r"\red206\green156\blue120;",
+    r"\red181\green206\blue168;}",
+    r"\pard\f0\cf0 ",
+)
+.as_bytes();
 
 pub(super) fn themed(data: &[u8], dark: bool) -> Cow<'_, [u8]> {
     match data.strip_prefix(LIGHT_HEADER).filter(|_| dark) {

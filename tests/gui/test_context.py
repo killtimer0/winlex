@@ -138,7 +138,11 @@ def test_numeric_context_and_selection_survive_architecture_changes(launch, sett
     assert items == [2071, 2072, 2073, 0, 2074]
     get_state = n.api(n.user, "GetMenuState", n.w.UINT, n.w.HMENU, n.w.UINT, n.w.UINT)
     n.key_message(editor, win32con.VK_DOWN)  # Down reaches the popup loop, not the editor
-    n.wait(lambda: any(get_state(menu, i, win32con.MF_BYPOSITION) & win32con.MF_HILITE for i in range(len(items))), "menu keyboard navigation")
+    n.wait(
+        lambda: any(get_state(menu, i, win32con.MF_BYPOSITION) & win32con.MF_HILITE
+                    for i in range(len(items))),
+        "menu keyboard navigation",
+    )
     dismiss(editor)
     n.send(editor, win32con.WM_NULL)  # wait for the popup loop to finish
     assert n.send(editor, win32con.EM_GETSEL) == ((index + 2) << 16) | index
@@ -254,7 +258,10 @@ def clipboard_text():
             time.sleep(0.02)
             continue
         try:
-            return clipboard.GetClipboardData(win32con.CF_UNICODETEXT) if clipboard.IsClipboardFormatAvailable(win32con.CF_UNICODETEXT) else None
+            return (
+                clipboard.GetClipboardData(win32con.CF_UNICODETEXT)
+                if clipboard.IsClipboardFormatAvailable(win32con.CF_UNICODETEXT) else None
+            )
         finally:
             clipboard.CloseClipboard()
     return None

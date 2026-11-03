@@ -475,14 +475,24 @@ fn error_detail(
     query: Option<&winlex_core::QueryError>,
 ) -> u8 {
     let result = if json_mode {
-        let mut detail = serde_json::json!({"code":code,"message":message});
+        let mut detail = serde_json::json!({
+            "code": code,
+            "message": message,
+        });
         if let Some(query) = query {
-            detail["span"] = serde_json::json!({"start":query.span.start,"end":query.span.end});
+            detail["span"] = serde_json::json!({
+                "start": query.span.start,
+                "end": query.span.end,
+            });
             detail["incomplete"] = query.incomplete.into();
         }
         serde_json::to_writer(
             &mut *out,
-            &serde_json::json!({"schema":"winlex-cli-7","ok":false,"error":detail}),
+            &serde_json::json!({
+                "schema": "winlex-cli-7",
+                "ok": false,
+                "error": detail,
+            }),
         )
         .map_err(std::io::Error::other)
         .and_then(|_| writeln!(out))

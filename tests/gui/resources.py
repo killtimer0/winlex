@@ -98,7 +98,11 @@ def main():
         tags = [node.tag.rsplit("}", 1)[-1] for node in manifest.iter()]
         assert "dpiAware" not in tags and "dpiAwareness" not in tags, "manifest overrides runtime DPI choice"
         assert any(node.attrib.get("level") == "asInvoker" for node in manifest.iter())
-        assert any(node.attrib.get("name") == "Microsoft.Windows.Common-Controls" and node.attrib.get("version") == "6.0.0.0" for node in manifest.iter())
+        assert any(
+            node.attrib.get("name") == "Microsoft.Windows.Common-Controls"
+            and node.attrib.get("version") == "6.0.0.0"
+            for node in manifest.iter()
+        )
         assert languages(16, 1) == [0]
         version = resource(16, 1, 0)
         signature = version.index(struct.pack("<I", 0xFEEF04BD))
@@ -108,7 +112,12 @@ def main():
         expected = list(map(int, re.search(r'^version\s*=\s*"(\d+\.\d+\.\d+)"', package, re.M)[1].split("."))) + [0]
         assert actual == expected and fields[4:6] == fields[2:4]
         args.artifacts.mkdir(parents=True, exist_ok=True)
-        (args.artifacts / "resources.json").write_text(json.dumps({"exe": str(args.exe), "strings_per_language": len(strings), "languages": ["en-US", "zh-CN"], "version": actual}, indent=2), encoding="utf-8")
+        (args.artifacts / "resources.json").write_text(json.dumps({
+            "exe": str(args.exe),
+            "strings_per_language": len(strings),
+            "languages": ["en-US", "zh-CN"],
+            "version": actual,
+        }, indent=2), encoding="utf-8")
         print(f"PASS resources: {len(strings)} strings per language, bilingual menu, manifest, version {actual}")
     finally:
         free(module)

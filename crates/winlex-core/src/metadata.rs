@@ -209,7 +209,8 @@ impl Db {
                     .collect();
                 ensure!(
                     found.len() == 1,
-                    "external ResolutionScope: AssemblyRef {:?} has {} matching sources (missing dependency, identity mismatch or ambiguous assembly)",
+                    "external ResolutionScope: AssemblyRef {:?} has {} matching sources \
+                     (missing dependency, identity mismatch or ambiguous assembly)",
                     identity,
                     found.len()
                 );

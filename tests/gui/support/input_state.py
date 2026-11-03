@@ -83,7 +83,10 @@ class InputState:
         current = win32service.GetThreadDesktop(win32api.GetCurrentThreadId())
         active = win32service.OpenInputDesktop(0, False, win32con.DESKTOP_READOBJECTS)
         try:
-            assert win32service.GetUserObjectInformation(int(current), win32con.UOI_NAME) == win32service.GetUserObjectInformation(int(active), win32con.UOI_NAME), "actual input requires the input desktop"
+            assert (
+                win32service.GetUserObjectInformation(int(current), win32con.UOI_NAME)
+                == win32service.GetUserObjectInformation(int(active), win32con.UOI_NAME)
+            ), "actual input requires the input desktop"
         finally:
             active.CloseDesktop()
         self.save()

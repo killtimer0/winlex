@@ -12,13 +12,32 @@ OUT = ROOT / "tmp/verify/multisource"
 def build(folder, name, version, code, dependency=None, public_sign=False):
     path = OUT / folder
     path.mkdir(parents=True, exist_ok=True)
-    reference = f'<ItemGroup><Reference Include="Base"><HintPath>{dependency}</HintPath></Reference></ItemGroup>' if dependency else ''
+    reference = (
+        f'<ItemGroup><Reference Include="Base"><HintPath>{dependency}</HintPath></Reference></ItemGroup>'
+        if dependency else ''
+    )
     signing = ''
     if public_sign:
         # Public-only fixture key; no cryptographic signature is produced.
-        (path / 'key.snk').write_bytes(bytes.fromhex('00240000048000009400000006020000002400005253413100040000010001008D56C76F9E8649383049F383C44BE0EC204181822A6C31CF5EB7EF486944D032188EA1D3920763712CCB12D75FB77E9811149E6148E5D32FBAAB37611C1878DDC19E20EF135D0CB2CFF2BFEC3D115810C3D9069638FE4BE215DBF795861920E5AB6F7DB2E2CEEF136AC23D5DD2BF031700AEC232F6C6B1C785B4305C123B37AB'))
-        signing = '<SignAssembly>true</SignAssembly><PublicSign>true</PublicSign><AssemblyOriginatorKeyFile>key.snk</AssemblyOriginatorKeyFile>'
-    (path / "fixture.csproj").write_text(f'<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net8.0</TargetFramework><AssemblyName>{name}</AssemblyName><AssemblyVersion>{version}</AssemblyVersion>{signing}</PropertyGroup>{reference}</Project>')
+        (path / 'key.snk').write_bytes(bytes.fromhex(
+            '0024000004800000940000000602000000240000525341310004000001000100'
+            '8D56C76F9E8649383049F383C44BE0EC204181822A6C31CF5EB7EF486944D0321'
+            '88EA1D3920763712CCB12D75FB77E9811149E6148E5D32FBAAB37611C1878DDC1'
+            '9E20EF135D0CB2CFF2BFEC3D115810C3D9069638FE4BE215DBF795861920E5AB6'
+            'F7DB2E2CEEF136AC23D5DD2BF031700AEC232F6C6B1C785B4305C123B37AB'
+        ))
+        signing = (
+            '<SignAssembly>true</SignAssembly>'
+            '<PublicSign>true</PublicSign>'
+            '<AssemblyOriginatorKeyFile>key.snk</AssemblyOriginatorKeyFile>'
+        )
+    (path / "fixture.csproj").write_text(
+        f'<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup>'
+        f'<TargetFramework>net8.0</TargetFramework>'
+        f'<AssemblyName>{name}</AssemblyName>'
+        f'<AssemblyVersion>{version}</AssemblyVersion>{signing}'
+        f'</PropertyGroup>{reference}</Project>'
+    )
     (path / "Types.cs").write_text(code)
     subprocess.run(["dotnet", "build", path / "fixture.csproj", "-c", "Debug", "-o", path / "out"], check=True, capture_output=True)
     return path / "out" / f"{name}.dll"
@@ -42,12 +61,28 @@ def query(files, command, name=None, *options, error=None):
 
 
 def main():
-    code = 'public struct Global { public int X; } namespace Shared { public struct Item { public long X; } public class Outer { public struct Child { public int X; } } public interface IBase { void First(); } }'
+    code = (
+        'public struct Global { public int X; } '
+        'namespace Shared { '
+        'public struct Item { public long X; } '
+        'public class Outer { public struct Child { public int X; } } '
+        'public interface IBase { void First(); } '
+        '}'
+    )
     base = build("base", "Base", "1.2.300.400", code)
     other = build("other", "Other", "1.0.0.0", code)
     wrong = build("wrong", "Base", "1.2.300.401", code)
     duplicate = build("duplicate", "Base", "1.2.300.400", code + ' public struct Extra { public int X; }')
-    consumer = build("consumer", "Consumer", "1.0.0.0", 'namespace Client { public struct Holder { public Shared.Item A; public Shared.Outer.Child B; public Global C; } public interface IDerived : Shared.IBase { void Second(); } }', base)
+    consumer = build(
+        "consumer", "Consumer", "1.0.0.0",
+        'namespace Client { '
+        'public struct Holder { '
+        'public Shared.Item A; public Shared.Outer.Child B; public Global C; '
+        '} '
+        'public interface IDerived : Shared.IBase { void Second(); } '
+        '}',
+        base,
+    )
     files = [consumer, base, other]
     source = 1
     layout = query(files, "layout", "Holder")["result"]

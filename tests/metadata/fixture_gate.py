@@ -8,7 +8,10 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def layout(source, name):
-    return subprocess.run([executable("host-cli"), source, "--json", "--arch", "x64", "layout", name], capture_output=True, text=True, encoding="utf-8")
+    return subprocess.run(
+        [executable("host-cli"), source, "--json", "--arch", "x64", "layout", name],
+        capture_output=True, text=True, encoding="utf-8",
+    )
 
 
 def main():
@@ -18,7 +21,11 @@ def main():
     source = out / "ReaderFixtures.dll"
     facts, _ = check_reader(source, out / "oracle.json")
     assert any(r["offset"] == 8 for r in facts["layouts"])
-    for name, reason in (("Nonzero", "nonzero/missing explicit offset"), ("SizedOverlay", "declared size"), ("External", "external ResolutionScope")):
+    for name, reason in (
+        ("Nonzero", "nonzero/missing explicit offset"),
+        ("SizedOverlay", "declared size"),
+        ("External", "external ResolutionScope"),
+    ):
         result = layout(source, name)
         assert result.returncode and reason in json.loads(result.stdout)["error"]["message"], result.stdout
     result = layout(source, "Holder")
@@ -55,7 +62,21 @@ def main():
     assert [m["name"] for m in one] == ["One"]
     assert [m["name"] for m in two] == ["Two"]
     assert layout(source, "Fixtures.Box`1").returncode == 3
-    summary = {"passed": True, "checks": ["independent raw offsets/scopes/signature tokens/properties/events", "nonzero offset retained but layout rejected", "declared size rejected", "external assembly scope rejected instead of name binding", "same-name nested TypeDef targets kept distinct", "all-zero overlay layout", "type and method generic parameters", "generic array arguments", "property/event accessor navigation", "open generic ABI rejection"]}
+    summary = {
+        "passed": True,
+        "checks": [
+            "independent raw offsets/scopes/signature tokens/properties/events",
+            "nonzero offset retained but layout rejected",
+            "declared size rejected",
+            "external assembly scope rejected instead of name binding",
+            "same-name nested TypeDef targets kept distinct",
+            "all-zero overlay layout",
+            "type and method generic parameters",
+            "generic array arguments",
+            "property/event accessor navigation",
+            "open generic ABI rejection",
+        ],
+    }
     (out / "report.json").write_text(json.dumps(summary, indent=2))
     print(json.dumps(summary, indent=2))
 

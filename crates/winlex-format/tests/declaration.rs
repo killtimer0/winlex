@@ -224,7 +224,16 @@ fn named_references_keep_identity_through_declarators_generics_and_utf16() {
         "{}",
         rendered.text
     );
-    assert!(rendered.text.contains("Item *Call(\n        [in] const Box<Item> (*参数😀)[3],\n        Unknown missing\n    );"), "{}", rendered.text);
+    assert!(
+        rendered.text.contains(concat!(
+            "Item *Call(\n",
+            "        [in] const Box<Item> (*参数😀)[3],\n",
+            "        Unknown missing\n",
+            "    );",
+        )),
+        "{}",
+        rendered.text,
+    );
     let units: Vec<_> = rendered.text.encode_utf16().collect();
     let links: Vec<_> = rendered
         .regions
@@ -432,7 +441,12 @@ fn declarations_cover_native_signatures_and_architecture_specific_types() {
         assert!(text.contains("UINT32 nLength;"), "{text}");
         assert!(text.contains("BOOL bInheritHandle;"), "{text}");
         let pointer_offset = if arch == Architecture::X86 { "4" } else { "8" };
-        assert!(text.contains(&format!("offset: {pointer_offset} bytes, size: {pointer_offset} bytes\n    void *lpSecurityDescriptor;")), "{text}");
+        assert!(
+            text.contains(&format!(
+                "offset: {pointer_offset} bytes, size: {pointer_offset} bytes\n    void *lpSecurityDescriptor;"
+            )),
+            "{text}",
+        );
         let rendered = render("IUnknown");
         let text = &rendered.text;
         let release_offset = if arch == Architecture::X86 {

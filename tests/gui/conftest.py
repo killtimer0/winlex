@@ -110,5 +110,8 @@ def launch(request, settings, profile):
             (settings[2] / (request.node.name + "-%d-process.json" % index)).write_text(json.dumps({
                 "pid": session.process.pid, "exit_code": session.process.poll(),
                 "actual_dpi": session.actual_dpi, "cleanup_complete": session.cleanup_complete}), encoding="utf-8")
-    (settings[2] / (request.node.name + "-cleanup.json")).write_text(json.dumps({"cleanup_complete": not errors and all(s.cleanup_complete for s in sessions), "errors": errors}), encoding="utf-8")
+    (settings[2] / (request.node.name + "-cleanup.json")).write_text(json.dumps({
+        "cleanup_complete": not errors and all(s.cleanup_complete for s in sessions),
+        "errors": errors,
+    }), encoding="utf-8")
     assert not errors, errors

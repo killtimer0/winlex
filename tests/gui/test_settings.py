@@ -199,8 +199,21 @@ def test_settings_dpi_pages(launch, settings, mode):
                 controls = []
                 for control in n.windows(page):
                     rect = n.rectangle(control)
-                    controls.append({"id": n.get_id(control), "class": n.class_name(control), "rect": rect, "text": n.window_text(control), "font": n.send(control, win32con.WM_GETFONT)})
-                evidence.append({"mode": mode, "monitor": monitor, "dpi": get_dpi(sheet), "sheet": n.rectangle(sheet), "page": outer, "controls": controls})
+                    controls.append({
+                        "id": n.get_id(control),
+                        "class": n.class_name(control),
+                        "rect": rect,
+                        "text": n.window_text(control),
+                        "font": n.send(control, win32con.WM_GETFONT),
+                    })
+                evidence.append({
+                    "mode": mode,
+                    "monitor": monitor,
+                    "dpi": get_dpi(sheet),
+                    "sheet": n.rectangle(sheet),
+                    "page": outer,
+                    "controls": controls,
+                })
                 output.write_text(json.dumps(evidence, ensure_ascii=False, indent=2), encoding="utf-8")
                 for control in controls:
                     rect = control["rect"]

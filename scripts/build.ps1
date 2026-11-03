@@ -29,7 +29,9 @@ if (-not $RcExe) {
     if ($rcCommand) { $RcExe = $rcCommand.Source }
     else {
         $kits = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits/10/bin'
-        $RcExe = Get-ChildItem "$kits/*/x64/rc.exe" -ErrorAction SilentlyContinue | Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
+        $RcExe = Get-ChildItem "$kits/*/x64/rc.exe" -ErrorAction SilentlyContinue |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1 -ExpandProperty FullName
     }
 }
 if (-not $RcExe) { throw 'Microsoft rc.exe was not found. Specify -RcExe from a Windows SDK.' }
@@ -78,7 +80,10 @@ try {
     $env:WINLEX_YY_THUNKS_OBJ = $object
     $env:WINLEX_VC_LTL_ROOT = $ltlRoot
     $env:WINLEX_RC_EXE = $rc
-    $arguments = @('build', '--manifest-path', "$root/Cargo.toml", '--package', 'winlex', '--target', $target, '--locked', '--message-format=json-render-diagnostics')
+    $arguments = @(
+        'build', '--manifest-path', "$root/Cargo.toml", '--package', 'winlex',
+        '--target', $target, '--locked', '--message-format=json-render-diagnostics'
+    )
     if ($Configuration -eq 'Release') { $arguments += '--release' }
     if ($Configuration -eq 'Dist') { $arguments += @('--profile', 'dist') }
     if ($TargetDir) { $arguments += @('--target-dir', $TargetDir) }

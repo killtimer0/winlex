@@ -31,7 +31,10 @@ is_window = api(user, "IsWindow", w.BOOL, w.HWND)
 is_visible = api(user, "IsWindowVisible", w.BOOL, w.HWND)
 is_zoomed = api(user, "IsZoomed", w.BOOL, w.HWND)
 post = api(user, "PostMessageW", w.BOOL, w.HWND, w.UINT, c.c_size_t, c.c_ssize_t)
-send_timeout = api(user, "SendMessageTimeoutW", c.c_ssize_t, w.HWND, w.UINT, c.c_size_t, c.c_ssize_t, w.UINT, w.UINT, c.POINTER(c.c_size_t))
+send_timeout = api(
+    user, "SendMessageTimeoutW", c.c_ssize_t,
+    w.HWND, w.UINT, c.c_size_t, c.c_ssize_t, w.UINT, w.UINT, c.POINTER(c.c_size_t),
+)
 set_pos = api(user, "SetWindowPos", w.BOOL, w.HWND, w.HWND, c.c_int, c.c_int, c.c_int, c.c_int, w.UINT)
 close_handle = api(kernel, "CloseHandle", w.BOOL, c.c_void_p)
 open_process = api(kernel, "OpenProcess", c.c_void_p, w.DWORD, w.BOOL, w.DWORD)

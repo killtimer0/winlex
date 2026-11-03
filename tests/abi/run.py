@@ -62,7 +62,10 @@ def main():
             count += 1
 
         layouts = []
-        for name in ("OPENFILENAMEW", "OPENFILENAMEA", "POINT", "RECT", "FILETIME", "SECURITY_ATTRIBUTES", "WIN32_FIND_DATAW", "OVERLAPPED", "DCB"):
+        for name in (
+            "OPENFILENAMEW", "OPENFILENAMEA", "POINT", "RECT", "FILETIME",
+            "SECURITY_ATTRIBUTES", "WIN32_FIND_DATAW", "OVERLAPPED", "DCB",
+        ):
             layout = query("layout", name, arch)
             layouts.append(layout)
             check(f"sizeof({name}) * 8", layout["size_bits"])
@@ -98,8 +101,17 @@ def main():
         env["PATH"] = str(cl.parent) + os.pathsep + env.get("PATH", "")
         includes = [MSVC / "include", *[SDK / x for x in ("ucrt", "shared", "um", "winrt")]]
         commands = {
-            "msvc": [str(cl), "/nologo", "/TC", "/std:c11", "/c", str(path), f"/Fo{OUT / (arch + '.obj')}", *["/I" + str(p) for p in includes]],
-            "clang": [str(CLANG), "--target=" + {"x86": "i686", "x64": "x86_64", "arm64": "aarch64"}[arch] + "-pc-windows-msvc", "-std=c11", "-fms-extensions", "-fms-compatibility", "-fsyntax-only", str(path), *["-I" + str(p) for p in includes]],
+            "msvc": [
+                str(cl), "/nologo", "/TC", "/std:c11", "/c", str(path),
+                f"/Fo{OUT / (arch + '.obj')}",
+                *["/I" + str(p) for p in includes],
+            ],
+            "clang": [
+                str(CLANG),
+                "--target=" + {"x86": "i686", "x64": "x86_64", "arm64": "aarch64"}[arch] + "-pc-windows-msvc",
+                "-std=c11", "-fms-extensions", "-fms-compatibility", "-fsyntax-only", str(path),
+                *["-I" + str(p) for p in includes],
+            ],
         }
         results = {}
         for name, command in commands.items():
@@ -121,7 +133,18 @@ def main():
         reports.append({"arch": arch, "assertions": count, "compilers": results, "layouts": layouts, "vtables": vtables})
         (OUT / "report.json").write_text(json.dumps(reports, indent=2))
         assert all(r.get("returncode", 0) == 0 for r in results.values()), f"See {OUT}/{arch}-*.log"
-    summary = {"architectures": 3, "assertions": {c: sum(r["assertions"] for r in reports if r["compilers"][c].get("returncode") == 0) for c in ("msvc", "clang")}, "overlapped_promoted_members_checked": True, "msvc_bitfield_byte_checks": sum(r["compilers"]["msvc"].get("bitfield_bytes_match", False) for r in reports), "entrypoint": str(executable("host-cli"))}
+    summary = {
+        "architectures": 3,
+        "assertions": {
+            c: sum(r["assertions"] for r in reports if r["compilers"][c].get("returncode") == 0)
+            for c in ("msvc", "clang")
+        },
+        "overlapped_promoted_members_checked": True,
+        "msvc_bitfield_byte_checks": sum(
+            r["compilers"]["msvc"].get("bitfield_bytes_match", False) for r in reports
+        ),
+        "entrypoint": str(executable("host-cli")),
+    }
     (OUT / "summary.json").write_text(json.dumps(summary, indent=2))
     print(json.dumps(summary, indent=2))
 

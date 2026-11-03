@@ -179,7 +179,9 @@ def main():
     parser.add_argument("--root", type=Path)
     parser.add_argument("--request")
     parser.add_argument("--once", action="store_true")
-    parser.add_argument("action", choices=("worker", "rpc", "start-worker", "capabilities", "submit", "status", "cancel", "collect", "deploy"))
+    parser.add_argument("action", choices=(
+        "worker", "rpc", "start-worker", "capabilities", "submit", "status", "cancel", "collect", "deploy",
+    ))
     parser.add_argument("--source", type=Path)
     parser.add_argument("--destination")
     parser.add_argument("--run-id")
@@ -204,7 +206,9 @@ def main():
                 Path(args.destination).parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(args.source, args.destination)
         else:
-            subprocess.run(connection(config, "scp") + ["-r", str(args.source), config["host"] + ":" + transfer_path(config, args.destination)], check=True)
+            subprocess.run(connection(config, "scp") + [
+                "-r", str(args.source), config["host"] + ":" + transfer_path(config, args.destination),
+            ], check=True)
         print(json.dumps({"deployed": args.destination}))
         return
     request = {"action": args.action, "run_id": args.run_id or uuid.uuid4().hex,
@@ -222,7 +226,9 @@ def main():
         if config["transport"] == "local":
             shutil.copyfile(result["archive"], destination)
         else:
-            subprocess.run(connection(config, "scp") + [config["host"] + ":" + transfer_path(config, result["archive"]), str(destination)], check=True)
+            subprocess.run(connection(config, "scp") + [
+                config["host"] + ":" + transfer_path(config, result["archive"]), str(destination),
+            ], check=True)
         result["local_archive"] = str(destination)
     print(json.dumps(result, indent=2))
 

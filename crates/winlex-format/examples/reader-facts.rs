@@ -28,9 +28,25 @@ fn facts(db: &Db) -> Json {
     let layouts: Vec<_> = db
         .index
         .rows::<FieldLayout>(0)
-        .map(|r| json!({"field":token(r.field(),4),"offset":r.offset()}))
+        .map(|r| {
+            json!({
+                "field": token(r.field(), 4),
+                "offset": r.offset(),
+            })
+        })
         .collect();
-    let scopes:Vec<_>=db.index.rows::<TypeRef>(0).map(|r|json!({"token":token(r,1),"scope":r.scope_token(),"name":r.name(),"namespace":r.namespace()})).collect();
+    let scopes: Vec<_> = db
+        .index
+        .rows::<TypeRef>(0)
+        .map(|r| {
+            json!({
+                "token": token(r, 1),
+                "scope": r.scope_token(),
+                "name": r.name(),
+                "namespace": r.namespace(),
+            })
+        })
+        .collect();
     let mut signatures = std::collections::BTreeMap::new();
     for f in db.index.rows::<Field>(0) {
         let mut r = vec![];
@@ -46,9 +62,45 @@ fn facts(db: &Db) -> Json {
         }
         signatures.insert(token(m, 6).to_string(), r);
     }
-    let properties:Vec<_>=db.index.rows::<Property>(0).map(|p|json!({"token":token(p,0x17),"name":p.name(),"parent":token(p.parent(),2),"accessors":p.accessors().map(|s|json!({"flags":s.flags(),"method":token(s.method(),6)})).collect::<Vec<_>>()})).collect();
-    let events:Vec<_>=db.index.rows::<Event>(0).map(|e|json!({"token":token(e,0x14),"name":e.name(),"parent":token(e.parent(),2),"accessors":e.accessors().map(|s|json!({"flags":s.flags(),"method":token(s.method(),6)})).collect::<Vec<_>>()})).collect();
-    json!({"assembly":db.sources[0].assembly,"references":db.sources[0].references,"layouts":layouts,"scopes":scopes,"signature_type_tokens":signatures,"properties":properties,"events":events})
+    let properties: Vec<_> = db
+        .index
+        .rows::<Property>(0)
+        .map(|p| {
+            json!({
+                "token": token(p, 0x17),
+                "name": p.name(),
+                "parent": token(p.parent(), 2),
+                "accessors": p.accessors().map(|s| json!({
+                    "flags": s.flags(),
+                    "method": token(s.method(), 6),
+                })).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    let events: Vec<_> = db
+        .index
+        .rows::<Event>(0)
+        .map(|e| {
+            json!({
+                "token": token(e, 0x14),
+                "name": e.name(),
+                "parent": token(e.parent(), 2),
+                "accessors": e.accessors().map(|s| json!({
+                    "flags": s.flags(),
+                    "method": token(s.method(), 6),
+                })).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    json!({
+        "assembly": db.sources[0].assembly,
+        "references": db.sources[0].references,
+        "layouts": layouts,
+        "scopes": scopes,
+        "signature_type_tokens": signatures,
+        "properties": properties,
+        "events": events,
+    })
 }
 fn main() -> winlex_core::Result<()> {
     let path = std::env::args_os()
