@@ -31,7 +31,7 @@ def test_large_api_document_stays_responsive(launch, settings):
     assert n.send(editor, win32con.EM_GETFIRSTVISIBLELINE) == first
 
 
-def test_declaration_wheel_is_synchronous_and_preserves_fine_input(launch, settings):
+def test_declaration_wheel_is_synchronous_and_rounds_each_message(launch, settings):
     app = launch([settings[1]])
     app.query("Windows.Win32.Graphics.Gdi.Apis")
     doc = app.open_row()
@@ -58,11 +58,38 @@ def test_declaration_wheel_is_synchronous_and_preserves_fine_input(launch, setti
     top()
     for _ in range(120):
         wheel(-1)
+    units = 1 if lines.value == 0xffffffff else lines.value
+    if units < 60:
+        assert n.send(editor, win32con.EM_GETFIRSTVISIBLELINE) == 0
+    else:
+        # Large preferences can make even a single delta scroll; compare native commands.
+        actual = n.send(editor, win32con.EM_GETFIRSTVISIBLELINE)
+        top()
+        command = win32con.SB_PAGEDOWN if lines.value == 0xffffffff else win32con.SB_LINEDOWN
+        for _ in range(120 * ((units + 60) // 120)):
+            n.send(editor, win32con.WM_VSCROLL, command)
+        assert actual == n.send(editor, win32con.EM_GETFIRSTVISIBLELINE)
+    top()
+    wheel(-120)
     assert n.send(editor, win32con.EM_GETFIRSTVISIBLELINE) == whole
     wheel(120)
     assert n.send(editor, win32con.EM_GETFIRSTVISIBLELINE) == 0
     wheel(120)
     assert n.send(editor, win32con.EM_GETFIRSTVISIBLELINE) == 0
+    assert n.send(editor, win32con.EM_GETSEL) == (8 << 16) | 2
+    n.send(editor, win32con.WM_VSCROLL, win32con.SB_BOTTOM)
+    bottom = n.send(editor, win32con.EM_GETFIRSTVISIBLELINE)
+    for _ in range(5):
+        wheel(-120)
+        assert n.send(editor, win32con.EM_GETFIRSTVISIBLELINE) == bottom
+    wheel(120)
+    previous = n.send(editor, win32con.EM_GETFIRSTVISIBLELINE)
+    for _ in range(3):
+        wheel(-120)
+        current = n.send(editor, win32con.EM_GETFIRSTVISIBLELINE)
+        assert previous <= current <= bottom
+        previous = current
+    assert previous == bottom
     assert n.send(editor, win32con.EM_GETSEL) == (8 << 16) | 2
 
 

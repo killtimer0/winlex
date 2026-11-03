@@ -1,7 +1,6 @@
 use crate::native::*;
-use windows::Win32::UI::Controls::RichEdit::{
-    EM_EXSETSEL, EM_SETCHARFORMAT, EM_SETPARAFORMAT, EM_SETSCROLLPOS, EM_STREAMIN,
-};
+#[cfg(test)]
+use windows::Win32::UI::Controls::RichEdit::EM_SETSCROLLPOS;
 
 pub(super) fn install(hwnd: HWND) -> anyhow::Result<()> {
     if unsafe { set_subclass(hwnd, Some(procedure), 1, 0) } == 0 {
@@ -46,9 +45,19 @@ pub(super) fn line_height(hwnd: HWND) -> Option<i32> {
     (height > 0).then_some(height)
 }
 
-fn displacement(remainder: isize, delta: i16, pixels: i64) -> (i64, isize) {
-    let amount = remainder as i64 - i64::from(delta) * pixels;
-    (amount / 120, (amount % 120) as isize)
+fn wheel(hwnd: HWND, delta: i16, lines: u32) {
+    let pages = lines == u32::MAX;
+    let units = if pages { 1 } else { u64::from(lines) };
+    let count = (u64::from(delta.unsigned_abs()) * units + 60) / 120;
+    let direction = match (pages, delta > 0) {
+        (true, true) => SB_PAGEUP,
+        (true, false) => SB_PAGEDOWN,
+        (false, true) => SB_LINEUP,
+        (false, false) => SB_LINEDOWN,
+    };
+    for _ in 0..count {
+        send(hwnd, WM_VSCROLL, direction as usize, 0);
+    }
 }
 
 unsafe extern "system" fn procedure(
@@ -57,72 +66,24 @@ unsafe extern "system" fn procedure(
     w: usize,
     l: isize,
     id: usize,
-    data: usize,
+    _data: usize,
 ) -> isize {
     unsafe {
         if msg == WM_NCDESTROY {
             remove_subclass(hwnd, Some(procedure), id);
         } else if msg == WM_MOUSEWHEEL && w & 0xffff == 0 && GetKeyState(VK_MENU as i32) >= 0 {
-            let mut lines = 0u32;
-            if SystemParametersInfoW(
-                SPI_GETWHEELSCROLLLINES,
-                0,
-                (&mut lines as *mut u32).cast(),
-                0,
-            ) != 0
-            {
-                let pixels = if lines == u32::MAX {
-                    i64::from(client(hwnd).bottom.max(0))
-                } else {
-                    i64::from(lines) * i64::from(line_height(hwnd).unwrap_or(0))
-                }
-                .min(i64::from(i32::MAX));
-                let (step, mut remainder) = displacement(data as isize, (w >> 16) as i16, pixels);
-                if step != 0 {
-                    let current = position(hwnd);
-                    let target = (i64::from(current.y) + step).clamp(0, i32::MAX as i64) as i32;
-                    let point = POINT {
-                        x: current.x,
-                        y: target,
-                    };
-                    send_ref(hwnd, EM_SETSCROLLPOS, 0, &point);
-                    if target == 0 || position(hwnd).y != target {
-                        remainder = 0;
-                    }
-                }
-                // Subclass reference data holds only a signed subpixel numerator, not a pointer.
-                set_subclass(hwnd, Some(procedure), id, remainder as usize);
-                return 0;
+            let delta = (w >> 16) as i16;
+            if delta != 0 {
+                let mut lines = 3u32;
+                SystemParametersInfoW(
+                    SPI_GETWHEELSCROLLLINES,
+                    0,
+                    (&mut lines as *mut u32).cast(),
+                    0,
+                );
+                wheel(hwnd, delta, lines);
             }
-            set_subclass(hwnd, Some(procedure), id, 0);
-        } else if matches!(
-            msg,
-            WM_MOUSEWHEEL
-                | WM_MOUSEHWHEEL
-                | WM_KEYDOWN
-                | WM_LBUTTONDOWN
-                | WM_RBUTTONDOWN
-                | WM_VSCROLL
-                | WM_HSCROLL
-                | WM_SIZE
-                | WM_SETFONT
-                | WM_SETTINGCHANGE
-                | WM_KILLFOCUS
-                | WM_CANCELMODE
-                | WM_CAPTURECHANGED
-                | WM_DPICHANGED
-                | WM_SETTEXT
-                | EM_SETCHARFORMAT
-                | EM_SETPARAFORMAT
-                | EM_STREAMIN
-                | EM_SETSCROLLPOS
-                | EM_LINESCROLL
-                | EM_SETSEL
-                | EM_SCROLL
-                | EM_SCROLLCARET
-                | EM_EXSETSEL
-        ) {
-            set_subclass(hwnd, Some(procedure), id, 0);
+            return 0;
         }
         default_subclass(hwnd, msg, w, l)
     }
@@ -213,7 +174,51 @@ mod tests {
     }
 
     #[test]
-    fn native_wheel_is_immediate_precise_and_keeps_selection_in_long_documents() {
+    fn wheel_endpoint_matches_native_scrollbar() {
+        for rows in [3, 80, 15000] {
+            let editor = Editor::long_document();
+            let hwnd = editor.1;
+            set_content(hwnd, &Content::new("line\n".repeat(rows))).unwrap();
+            send(hwnd, WM_VSCROLL, SB_BOTTOM as usize, 0);
+            let bottom = position(hwnd).y;
+            if rows == 3 {
+                assert_eq!(bottom, 0);
+            } else {
+                assert!(bottom > 0);
+            }
+            for _ in 0..30 {
+                editor.wheel(-120);
+                assert_eq!(
+                    position(hwnd).y,
+                    bottom,
+                    "rows={rows}: wheel must stay at native bottom"
+                );
+            }
+            editor.wheel(120);
+            let reversed = position(hwnd).y;
+            send(hwnd, WM_VSCROLL, SB_BOTTOM as usize, 0);
+            editor.wheel(120);
+            assert_eq!(
+                position(hwnd).y,
+                reversed,
+                "reversal must start at the native bottom"
+            );
+            editor.wheel(-120);
+            assert!(position(hwnd).y <= bottom);
+            editor.wheel(-120);
+            assert_eq!(position(hwnd).y, bottom);
+            editor.scroll_to((bottom - 1).max(0));
+            wheel(hwnd, -120, u32::MAX);
+            assert_eq!(position(hwnd).y, bottom);
+            wheel(hwnd, 120, u32::MAX);
+            assert!(position(hwnd).y <= bottom);
+            wheel(hwnd, -240, u32::MAX);
+            assert_eq!(position(hwnd).y, bottom);
+        }
+    }
+
+    #[test]
+    fn native_wheel_is_immediate_and_keeps_selection_in_long_documents() {
         let editor = Editor::long_document();
         let hwnd = editor.1;
         editor.select(10, 18);
@@ -221,7 +226,7 @@ mod tests {
             editor.scroll_to(y);
             assert_eq!(position(hwnd).y, y);
         }
-        editor.scroll_to(i32::MAX);
+        send(hwnd, WM_VSCROLL, SB_BOTTOM as usize, 0);
         let bottom = position(hwnd).y;
         editor.scroll_to(70000);
         let mut lines = 0u32;
@@ -236,32 +241,34 @@ mod tests {
             },
             0
         );
-        let pixels = if lines == u32::MAX {
-            i64::from(client(hwnd).bottom)
+        if lines == u32::MAX {
+            send(hwnd, WM_VSCROLL, SB_PAGEDOWN as usize, 0);
         } else {
-            i64::from(lines) * i64::from(line_height(hwnd).unwrap())
-        };
+            for _ in 0..lines {
+                send(hwnd, WM_VSCROLL, SB_LINEDOWN as usize, 0);
+            }
+        }
+        let expected = position(hwnd).y;
+        if lines == u32::MAX {
+            send(hwnd, WM_VSCROLL, SB_PAGEUP as usize, 0);
+        } else {
+            for _ in 0..lines {
+                send(hwnd, WM_VSCROLL, SB_LINEUP as usize, 0);
+            }
+        }
+        let reversed = position(hwnd).y;
+        editor.scroll_to(70000);
         // Use the actual system preference without changing a global desktop setting.
         editor.wheel(-120);
         let whole = position(hwnd).y;
-        assert_eq!(i64::from(whole), (70000 + pixels).min(i64::from(bottom)));
-        editor.scroll_to(70000);
-        for _ in 0..120 {
-            editor.wheel(-1);
-        }
-        assert_eq!(position(hwnd).y, whole);
-        for _ in 0..120 {
-            editor.wheel(1);
-        }
-        assert_eq!(
-            i64::from(position(hwnd).y),
-            (i64::from(whole) - pixels).max(0)
-        );
+        assert_eq!(whole, expected);
+        editor.wheel(120);
+        assert_eq!(position(hwnd).y, reversed);
         assert_eq!(editor.selection(), (10, 18));
         editor.scroll_to(0);
         editor.wheel(120);
         assert_eq!(position(hwnd).y, 0);
-        editor.scroll_to(i32::MAX);
+        send(hwnd, WM_VSCROLL, SB_BOTTOM as usize, 0);
         editor.wheel(-120);
         assert_eq!(position(hwnd).y, bottom);
         for body in ["", "short"] {
@@ -272,29 +279,17 @@ mod tests {
     }
 
     #[test]
-    fn wheel_remeasures_font_and_resets_fraction_on_other_interactions() {
+    fn wheel_uses_current_layout_after_font_changes() {
         let editor = Editor::long_document();
         let hwnd = editor.1;
         let original = line_height(hwnd).unwrap();
         editor.font_size(420);
         assert!(line_height(hwnd).unwrap() > original);
-        editor.scroll_to(1000);
-        let start = position(hwnd).y;
-        editor.wheel(-1);
-        let single_step = position(hwnd).y - start;
-        for message in [WM_SETTINGCHANGE, WM_CANCELMODE, WM_KILLFOCUS] {
-            editor.scroll_to(1000);
-            editor.wheel(-1);
-            send(hwnd, message, 0, 0);
-            let before = position(hwnd).y;
-            editor.wheel(-1);
-            assert_eq!(position(hwnd).y - before, single_step);
-            // Explicit positioning and line navigation must remain native.
-            editor.scroll_to(1000);
-            let before = position(hwnd).y;
-            send(hwnd, EM_LINESCROLL, 0, 1);
-            assert!(position(hwnd).y > before);
-        }
+        send(hwnd, EM_GETLINECOUNT, 0, 0);
+        editor.scroll_to(100 * line_height(hwnd).unwrap());
+        let before = send(hwnd, EM_GETFIRSTVISIBLELINE, 0, 0);
+        wheel(hwnd, -120, 3);
+        assert_eq!(send(hwnd, EM_GETFIRSTVISIBLELINE, 0, 0), before + 3);
         editor.scroll_to(70000);
         send(hwnd, WM_KEYDOWN, VK_HOME as usize, 0);
         send(hwnd, WM_KEYUP, VK_HOME as usize, 0);
@@ -303,26 +298,71 @@ mod tests {
     }
 
     #[test]
-    fn fractional_wheel_input_preserves_distance_and_reversal() {
-        let mut remainder = 0;
-        let mut distance = 0;
-        for delta in [-1; 120] {
-            let (step, next) = displacement(remainder, delta, 105);
-            distance += step;
-            remainder = next;
+    fn wheel_rounds_each_message_and_respects_line_and_page_preferences() {
+        unsafe extern "system" fn observe(
+            hwnd: HWND,
+            msg: u32,
+            w: usize,
+            l: isize,
+            _id: usize,
+            data: usize,
+        ) -> isize {
+            unsafe {
+                if msg == WM_VSCROLL {
+                    assert_eq!(l, 0);
+                    (*(data as *mut Vec<usize>)).push(w);
+                    return 0;
+                }
+                default_subclass(hwnd, msg, w, l)
+            }
         }
-        assert_eq!((distance, remainder), (105, 0));
-        assert_eq!(displacement(105, 1, 105), (0, 0));
-        assert_eq!(displacement(-105, -1, 105), (0, 0));
-        assert_eq!(displacement(0, -120, 636), (636, 0));
-        assert_eq!(displacement(0, 120, 0), (0, 0));
-        assert_eq!(
-            displacement(0, i16::MIN, i64::from(u32::MAX) * 100),
-            (
-                i64::from(u32::MAX) * 100 * 32768 / 120,
-                (i64::from(u32::MAX) * 100 * 32768 % 120) as isize
+        let editor = Editor::long_document();
+        let hwnd = editor.1;
+        let mut commands = Vec::<usize>::new();
+        unsafe {
+            assert_ne!(
+                set_subclass(hwnd, Some(observe), 2, &mut commands as *mut _ as usize),
+                0
             )
-        );
+        };
+        for (delta, lines, direction, count) in [
+            (0, 3, SB_LINEDOWN, 0),
+            (-120, 0, SB_LINEDOWN, 0),
+            (-19, 3, SB_LINEDOWN, 0),
+            (-20, 3, SB_LINEDOWN, 1),
+            (19, 3, SB_LINEUP, 0),
+            (20, 3, SB_LINEUP, 1),
+            (-59, 1, SB_LINEDOWN, 0),
+            (-60, 1, SB_LINEDOWN, 1),
+            (-120, 3, SB_LINEDOWN, 3),
+            (120, 3, SB_LINEUP, 3),
+            (-240, 3, SB_LINEDOWN, 6),
+            (240, 3, SB_LINEUP, 6),
+            (-59, u32::MAX, SB_PAGEDOWN, 0),
+            (-60, u32::MAX, SB_PAGEDOWN, 1),
+            (60, u32::MAX, SB_PAGEUP, 1),
+            (-240, u32::MAX, SB_PAGEDOWN, 2),
+            (i16::MIN, 1, SB_LINEDOWN, 273),
+        ] {
+            commands.clear();
+            wheel(hwnd, delta, lines);
+            assert_eq!(
+                commands,
+                vec![direction as usize; count],
+                "delta={delta}, lines={lines}"
+            );
+        }
+        commands.clear();
+        for delta in [-1, 1] {
+            for _ in 0..120 {
+                wheel(hwnd, delta, 3);
+            }
+            assert!(
+                commands.is_empty(),
+                "subthreshold messages must not accumulate"
+            );
+        }
+        unsafe { remove_subclass(hwnd, Some(observe), 2) };
     }
 
     #[test]
