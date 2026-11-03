@@ -25,7 +25,7 @@ winlex Windows.Win32.winmd Windows.Wdk.winmd show Windows.Wdk.winmd::NtCancelIoF
 | `references TYPE --arch ARCH` | 字段、方法、属性、事件签名及接口要求中的反向引用 |
 | `error-code CODE` | 独立查询错误码或模块消息，不加载 WinMD |
 
-`ARCH` 可选 `x86`、`x64`、`arm64`。搜索分页使用 `--limit`（默认50，上限1000）和 `--offset`。
+`ARCH` 可选 `x86`、`x64`、`arm64`，与程序自身架构无关。搜索和反向引用使用 `--limit`（默认 50，范围 0–1000）和 `--offset` 分页。
 `--help`、`--version` 单独调用。
 
 搜索不区分大小写，声明名称选择区分大小写。`--name`、`--value`、`--guid`、`--where` 互斥，且仅用于 `search`。
@@ -39,8 +39,8 @@ winlex Windows.Win32.winmd Windows.Wdk.winmd show Windows.Wdk.winmd::NtCancelIoF
 
 快速结果先排列精确名称、数字等值、字符串等值和完整 GUID，再排列 GUID 片段、文本包含／前缀与名称范围、模糊名称（按匹配度）。同级按来源编号、token 排序后分页。组合条件和反向引用按来源编号、token 排序；单个名称模糊条件按匹配度排序。
 存在多个候选时，使用架构、限定名或 token 消除歧义。限定名形如 `Namespace.Type.Field`，嵌套类型形如 `Namespace.Outer+Inner`。
-选择声明时支持 `SOURCE::NAME` 和 `SOURCE::0xTOKEN`，SOURCE 可用来源编号或唯一程序集名称（包括名称中的 `.winmd` 后缀）。裸 token 仅允许单来源。编号和 token 仅在所属 Catalog 内有效。
-`--source SOURCE` 在搜索时过滤来源，在 show/layout/vtable/references 时限定目标来源；反向引用仍查找所有已加载来源。独立来源中的同名声明不会自动合并。
+选择声明时支持 `SOURCE::NAME` 和 `SOURCE::0xTOKEN`，SOURCE 可用来源编号或唯一程序集名称（包括名称中的 `.winmd` 后缀）。裸 token 仅允许单来源。来源编号取决于本次输入顺序，token 仅标识所属文件中的记录。
+`--source SOURCE` 在搜索时过滤来源，在 show/layout/vtable/references 时限定目标来源，不能与 `SOURCE::` 同用；反向引用仍查找所有已加载来源。独立来源中的同名声明不会自动合并。
 非 WinRT 引用按程序集名称、版本、culture、公钥 token 和 content type 匹配；依赖须显式加载。
 
 ## 错误码查询
@@ -86,7 +86,7 @@ winlex Windows.Win32.winmd search --where 'value = nan or value = inf'
 - 浮点边界按目标类型舍入，极近的边界可能变成同一个值。NaN 不能作为有序边界，候选 NaN 不匹配任何范围。无穷可作边界，`value > -inf and value < inf` 匹配有限浮点值。
 - 缺少字段的条目不满足该字段条件；`not (value = 5)` 也包含没有常量值的条目。只查询其他常量时再加 `category = "constant"`。
 - `--source`、`--arch` 与表达式取交集。字符串搜索限于输入元数据中实际保留的值。
-- 表达式最多 16384 UTF-8 字节，数字最多 4096 字节；嵌套和条件数量受限，过大输入会报错。
+- 表达式长度、数字长度、嵌套深度和条件数量受限，过大输入会报错。
 
 ## 输出
 
@@ -117,19 +117,18 @@ winlex Windows.Win32.winmd search --where 'value = nan or value = inf'
 可加载 Windows SDK 合并版 `Windows.winmd`，或依次列出文件路径加载分立 contracts。Windows App SDK 的 WinMD 位于各组件 NuGet 包的 `metadata/` 下；所需依赖也须显式加载。
 
 - WinRT 引用按类型全名匹配已加载的 WinRT 定义。合并版与分立 contracts 应选择一套，重叠定义会导致歧义。
-- 声明保留类型/方法泛型参数、实例化参数、属性、事件和 accessor 方法 ID。`interface_implementations` 提供默认接口标记及关系属性，`base_type` 提供基类。
-- runtime class 的静态、激活和组合工厂信息保留在 `StaticAttribute`、`ActivatableAttribute`、`ComposableAttribute` 中。
+- `show` 可查看类型和方法的泛型参数、实例化参数、属性、事件及访问器，以及基类和默认接口。runtime class 的静态、激活和组合工厂可在 `StaticAttribute`、`ActivatableAttribute`、`ComposableAttribute` 中查看。
 - 非泛型 WinRT 接口的 vtable 包含 `IUnknown`、`IInspectable` 六个基础槽位；委托包含 `IUnknown` 三槽及 `Invoke`。隐式槽位的实体 ID 为 null。
 - `show` 提供元数据签名；WinRT 方法 ABI 签名展开尚不支持。
 
 ## Rust API
 
-`winlex_core::Catalog` 提供同步查询，可通过 `Arc` 跨线程共享，结果拥有独立数据。
+`winlex_core::Catalog` 提供同步查询，可通过 `Arc` 跨线程共享。搜索和布局结果拥有独立数据，声明视图借用所属 `Catalog`。
 搜索和反向引用支持 `SearchOptions.cancel` 协作式取消；单次描述和布局查询不提供取消点。
 `SearchOptions.mode` 选择 `SearchMode::{Combined, Name, Value, Guid, Condition}`，默认 `Combined`。无效输入返回带 `InvalidSearchInput` 上下文的错误；表达式错误可读取 `QueryError`。`Catalog::search_exact` 独立提供严格名称选择，不进行范围浏览。
 可用 `Query::parse` 或构造 `Query` 条件树，再调用 `Catalog::search_query`；需要分离编译和执行时使用 `CompiledQuery` 与 `Catalog::search_compiled`。
 搜索迭代器逐条返回 `SearchMatch`，其中 `entity` 是实体信息，`quality` 是排序质量，`evidence` 是实际命中字段。迭代顺序是扫描顺序，展示前使用 `SearchMatch::compare` 排序。
-需要在未命中候选之间处理进度或发送缓冲时，可调用 `Search::step`，每次最多扫描一项候选，返回命中、跳过或结束状态；它与迭代器共享扫描位置和终止状态。
+需要在未命中候选之间处理进度时，可用 `Search::step` 逐项扫描，区分命中、跳过和结束状态。
 
 ```rust,ignore
 use winlex_core::{Architecture, Catalog, SearchMatch, SearchOptions};
@@ -145,14 +144,15 @@ let target = catalog.search_exact("OVERLAPPED", SearchOptions {
 let layout = catalog.layout(target, Architecture::X64)?;
 ```
 
-分页结果使用 Rust 结构体，详细结果使用 `serde_json::Value`，错误使用 `anyhow::Result`。
+声明的文本渲染和 JSON 展示适配由 `winlex-format` 提供。
 多源使用 `Catalog::open_many(paths)`；`sources()` 枚举来源，`SearchOptions.source` 过滤搜索或反向引用结果的来源。
 
-## 限制
+## 查询范围
+
+声明和类型引用来自输入 WinMD 中保留的元数据。反向引用查询覆盖字段、方法、属性、事件签名及接口关系。
 
 - 开放泛型的布局/vtable、泛型实例 ABI 及部分 WinRT 字段类型（例如 HSTRING、System.Guid）尚不支持计算。
 - 暂不支持 ModuleRef、类型转发和 retargetable 程序集引用。
 - 非零显式偏移、显式大小和灵活数组等尚不支持布局计算。
-- 反向引用不包含属性字符串、宏或文档关系。
-- 不提供完整文档正文、函数宏、任意宏配置或源码 typedef 链。
-- 读取器不支持完整 ECMA-335 签名语法，损坏输入可能触发 panic；使用受信任的 WinMD。
+
+请使用可信来源的 WinMD 文件；损坏的输入可能导致程序异常退出。
