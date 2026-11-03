@@ -15,6 +15,7 @@ Commands:
   layout TYPE             Compute size/alignment/offsets (bits)
   vtable INTERFACE        Compute inherited method slots
   references TYPE         Reverse type uses across loaded sources
+  error-code CODE         Query Windows messages (no input file required)
 
 Options:
   --source SOURCE         Zero-based input index or unique assembly name
@@ -28,6 +29,7 @@ Options:
   --help, --version       No input required
 
 Input files precede the command. Use .\search for a file named search.
+Tools: winlex error-code --help
 Declaration selectors accept SOURCE::NAME or SOURCE::0xTOKEN.
 Bare tokens require a single input source. Names can be namespace-qualified.
 Source indices follow input order and belong to this catalog only.
@@ -197,6 +199,9 @@ pub fn run(
     err: &mut dyn Write,
 ) -> u8 {
     let args: Vec<_> = args.into_iter().collect();
+    if let Some(exit) = tools::run(&args, out, err) {
+        return exit;
+    }
     let want_json = args.iter().any(|a| a == "--json");
     let immediate = match args.as_slice() {
         [] => Some(HELP),
@@ -316,6 +321,7 @@ pub fn run(
     0
 }
 mod text;
+mod tools;
 #[derive(serde::Serialize)]
 struct Page {
     total: usize,

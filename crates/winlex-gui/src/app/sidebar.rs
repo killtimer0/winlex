@@ -214,6 +214,7 @@ pub(super) fn layout(bottom: i32, positions: &mut Vec<(HWND, RECT)>) -> i32 {
     match read(|a| a.sidebar.active) {
         PanelId::Search => panel::search().layout(&mut area, &m, positions),
         PanelId::Sources => m.buttons(&mut area, panel.controls[1..].iter().copied(), positions),
+        PanelId::Tools => m.buttons(&mut area, panel.controls[1..].iter().copied(), positions),
     }
     positions.push((panel.list.hwnd, area));
     positions.push((splitter, layout::rect(x + width, 0, s(3), bottom)));

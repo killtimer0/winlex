@@ -31,11 +31,12 @@ pub(super) fn search_mode() -> SearchMode {
 pub(super) enum PanelId {
     Search = 0,
     Sources = 1,
+    Tools = 2,
 }
 pub(super) const SEARCH_PANEL: PanelId = PanelId::Search;
 pub(super) const SOURCES_PANEL: PanelId = PanelId::Sources;
 impl PanelId {
-    pub const ALL: [Self; 2] = [Self::Search, Self::Sources];
+    pub const ALL: [Self; 3] = [Self::Search, Self::Sources, Self::Tools];
     pub fn from_saved(value: u32) -> Self {
         Self::ALL
             .into_iter()
@@ -46,6 +47,7 @@ impl PanelId {
         match self {
             Self::Search => (PANEL_SEARCH, IDS_PANEL_SEARCH, IDR_SEARCH),
             Self::Sources => (MANAGE_SOURCES, IDS_PANEL_SOURCES, IDR_FILES),
+            Self::Tools => (PANEL_TOOLS, IDS_PANEL_TOOLS, IDR_SYMBOL_MISC),
         }
     }
 }
@@ -92,7 +94,7 @@ pub(super) fn debounce(input: HWND) -> anyhow::Result<()> {
     ));
     Ok(())
 }
-pub(super) fn create(frame: HWND) -> anyhow::Result<([Rc<Panel>; 2], Rc<Search>)> {
+pub(super) fn create(frame: HWND) -> anyhow::Result<([Rc<Panel>; 3], Rc<Search>)> {
     let input = unsafe {
         child_ex(
             frame,
@@ -172,7 +174,33 @@ pub(super) fn create(frame: HWND) -> anyhow::Result<([Rc<Panel>; 2], Rc<Search>)
         }?);
     }
     sources::update_actions();
-    Ok(([search_panel, Rc::new(Panel { controls, list })], search))
+    let sources_panel = Rc::new(Panel { controls, list });
+    let list = List::new(
+        frame,
+        TOOL_LIST,
+        super::tools::row,
+        super::tools::row_text,
+        Some(super::tools::activate),
+        read(|a| a.system_version),
+    )?;
+    send(list.hwnd, LVM_SETITEMCOUNT, super::tools::REGISTRY.len(), 0);
+    let controls = vec![list.hwnd, unsafe {
+        child(
+            frame,
+            w!("BUTTON"),
+            resources::wide_text(IDS_TOOL_NEW),
+            WS_TABSTOP,
+            TOOL_NEW,
+        )
+    }?];
+    Ok((
+        [
+            search_panel,
+            sources_panel,
+            Rc::new(Panel { controls, list }),
+        ],
+        search,
+    ))
 }
 impl Panel {
     pub fn focus(&self) {
@@ -239,6 +267,10 @@ impl Search {
 }
 pub(super) fn command(w: usize, control: HWND) -> bool {
     let id = w as u16;
+    if id == TOOL_NEW {
+        super::tools::selected(true);
+        return true;
+    }
     if let Some(panel) = PanelId::ALL.into_iter().find(|p| p.presentation().0 == id) {
         sidebar::show(panel, true);
         return true;

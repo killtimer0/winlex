@@ -1,0 +1,224 @@
+use std::{ffi::OsString, fmt::Write as _, io::Write, path::PathBuf};
+use winlex_core::{
+    number::IntegerLiteral,
+    tools::error_code::{self, Message, MessageStatus, QueryResult, Request, Scope},
+};
+
+const HELP: &str = "Usage: winlex error-code CODE [options]\n\nOptions:\n  --scope auto|win32|hresult|ntstatus  Query plan (default: auto)\n  --module PATH             EXE, DLL or MUI resource; excludes preset scopes\n  --lang auto|LANGID        Strict language ID; auto or 0 uses Windows defaults\n  --language auto|LANGID    Alias for --lang\n  --json                    Versioned machine-readable output\n  --help, -h                Show this help\n\nCodes accept -2147483648..4294967295. Signs and 0x/0o/0b prefixes are\naccepted; a leading zero means octal (010 = 8). LANGID is unsigned 16-bit.\nModule queries use full message IDs, preserve templates and never fall back to\nsystem resources. Module results report the selected resource language; system\nqueries cannot report their automatic language choice.\n";
+
+fn parse(args: &[OsString]) -> Result<Request, String> {
+    let mut code = None;
+    let mut scope = "auto".to_owned();
+    let mut explicit_scope = false;
+    let mut language = 0;
+    let mut module = None;
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        let text = arg.to_str().ok_or("argument must be valid Unicode")?;
+        match text {
+            "--scope" | "--lang" | "--language" | "--module" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| format!("missing value for {text}"))?;
+                if text == "--module" {
+                    module = Some(PathBuf::from(value));
+                    continue;
+                }
+                let value = value.to_str().ok_or("argument must be valid Unicode")?;
+                if text == "--scope" {
+                    scope = value.to_owned();
+                    explicit_scope = true;
+                } else {
+                    language = if value == "auto" {
+                        0
+                    } else {
+                        IntegerLiteral::parse(value.trim())
+                            .and_then(IntegerLiteral::to_u16)
+                            .map_err(|e| format!("invalid language: {e:#}"))?
+                    };
+                }
+            }
+            "--json" => {}
+            _ if text.starts_with("--") => return Err(format!("unknown option {text}")),
+            _ => {
+                if code.is_some() {
+                    return Err("error-code expects one code argument".into());
+                }
+                code = Some(
+                    IntegerLiteral::parse(text.trim())
+                        .and_then(IntegerLiteral::to_code_u32)
+                        .map_err(|e| format!("invalid code: {e:#}"))?,
+                );
+            }
+        }
+    }
+    if module.is_some() && !explicit_scope {
+        scope = "module".into();
+    }
+    let scope = match scope.as_str() {
+        "auto" => Scope::Auto,
+        "win32" => Scope::Win32,
+        "hresult" => Scope::HResult,
+        "ntstatus" => Scope::NtStatus,
+        "module" => Scope::Module(module.take().ok_or("module scope requires --module PATH")?),
+        _ => return Err("scope must be auto, win32, hresult, ntstatus or module".into()),
+    };
+    if module.is_some() {
+        return Err("--module cannot be combined with a preset --scope".into());
+    }
+    let request = Request {
+        code: code.ok_or("missing code")?,
+        scope,
+        language,
+    };
+    request.validate().map_err(|e| e.to_string())?;
+    Ok(request)
+}
+
+pub(super) fn run(args: &[OsString], out: &mut dyn Write, err: &mut dyn Write) -> u8 {
+    if matches!(args, [arg] if arg == "--help" || arg == "-h") {
+        return if out.write_all(HELP.as_bytes()).is_ok() {
+            0
+        } else {
+            4
+        };
+    }
+    let json = args.iter().any(|a| a == "--json");
+    let request = match parse(args) {
+        Ok(request) => request,
+        Err(e) => return crate::error(out, err, json, 2, "invalid_arguments", &e),
+    };
+    let result = match error_code::query(&request) {
+        Ok(result) => result,
+        Err(e) => return crate::error(out, err, json, 3, "query_error", &format!("{e:#}")),
+    };
+    let failed = result.has_failures();
+    let written = if json {
+        serde_json::to_writer_pretty(&mut *out, &serde_json::json!({"schema":"winlex-cli-7", "ok":!failed, "command":"error-code", "result":result}))
+            .map_err(std::io::Error::other).and_then(|_| writeln!(out))
+    } else {
+        write!(out, "{}", render(&result))
+    };
+    if let Err(e) = written {
+        if e.kind() == std::io::ErrorKind::BrokenPipe {
+            return if failed { 3 } else { 0 };
+        }
+        let _ = writeln!(err, "output error: {e}");
+        return 4;
+    }
+    if failed { 3 } else { 0 }
+}
+
+fn render(result: &QueryResult) -> String {
+    let mut text = format!(
+        "{} = {} (signed {})\nScope: {:?}\nRequested language: 0x{:04X}{}\n",
+        result.hex,
+        result.unsigned,
+        result.signed,
+        result.request.scope,
+        result.request.language,
+        if result.request.language == 0 {
+            " (automatic selection)"
+        } else {
+            " (strict)"
+        }
+    );
+    if result.candidates.is_empty() {
+        text.push_str(if result.has_failures() {
+            "No confirmed candidate; one or more sources failed.\n"
+        } else {
+            "No message found.\n"
+        });
+    }
+    for candidate in &result.candidates {
+        let _ = writeln!(text, "\n{:?}", candidate.scheme);
+        if let Some(bits) = &candidate.encoding {
+            let _ = writeln!(
+                text,
+                "Severity: {}; customer: {}; facility: {}; code: {}; NT mapping: {}",
+                bits.severity, bits.customer, bits.facility, bits.code, bits.nt_mapping
+            );
+        }
+        render_message(&mut text, &candidate.message);
+        for related in &candidate.related {
+            let _ = writeln!(text, "Related Win32 code ({})", related.relationship);
+            render_message(&mut text, &related.message);
+        }
+    }
+    for attempt in &result.attempts {
+        render_message(&mut text, attempt);
+    }
+    text
+}
+
+fn render_message(text: &mut String, message: &Message) {
+    let _ = writeln!(
+        text,
+        "Source: {:?}; message ID: 0x{:08X} ({})",
+        message.source, message.code, message.code
+    );
+    if message.status == MessageStatus::Found {
+        match message.actual_language {
+            Some(0) => text.push_str("Actual language: neutral resource (0x0000)\n"),
+            Some(id) => {
+                let _ = writeln!(text, "Actual language: 0x{id:04X}");
+            }
+            None => text.push_str("Actual language: unknown (Windows selection)\n"),
+        }
+    }
+    match message.status {
+        MessageStatus::Found => {
+            let _ = writeln!(text, "{}", message.text.as_deref().unwrap_or(""));
+        }
+        MessageStatus::NotFound => text.push_str("Message not found.\n"),
+        MessageStatus::LanguageNotFound => {
+            text.push_str("Requested language not found; retry language 0 for Windows selection.\n")
+        }
+        MessageStatus::NoMessageTable => text.push_str("No message-table resource found.\n"),
+        MessageStatus::Failed => {}
+    }
+    if let Some(failure) = &message.failure {
+        let _ = writeln!(
+            text,
+            "Query failed: {} ({:?}): {}",
+            failure.operation, failure.os_code, failure.detail
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn typed_request_without_metadata_and_checked_inputs() {
+        let parse_args =
+            |args: &[&str]| parse(&args.iter().map(OsString::from).collect::<Vec<_>>());
+        let request =
+            parse_args(&["-2147024891", "--scope", "hresult", "--language", "0x409"]).unwrap();
+        assert_eq!(
+            request,
+            Request {
+                code: 0x80070005,
+                scope: Scope::HResult,
+                language: 0x409
+            }
+        );
+        assert_eq!(
+            parse_args(&["0", "--module", "messages.dll", "--lang", "auto"]).unwrap(),
+            Request {
+                code: 0,
+                scope: Scope::Module(PathBuf::from("messages.dll")),
+                language: 0
+            }
+        );
+        for args in [
+            vec!["4294967296"],
+            vec!["5", "--language", "-1"],
+            vec!["5", "--language", "65536"],
+            vec!["5", "--module", "test.dll", "--scope", "win32"],
+            vec!["5", "--scope", "module"],
+        ] {
+            assert!(parse_args(&args).is_err());
+        }
+    }
+}

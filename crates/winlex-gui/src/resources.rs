@@ -148,6 +148,9 @@ pub fn text(id: u16) -> String {
     let value = wide_text(id);
     String::from_utf16(&value[..value.len() - 1]).expect("validated resource")
 }
+pub fn interface_langid() -> u16 {
+    *LANGUAGE.get().expect("initialized resource language")
+}
 pub fn wide_text(id: u16) -> &'static [u16] {
     &STRINGS.get().expect("initialized resources")[&id]
 }

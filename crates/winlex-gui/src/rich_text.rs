@@ -292,6 +292,14 @@ pub fn create(parent: HWND, id: u16) -> anyhow::Result<HWND> {
         0,
         word_break::callback as *const () as isize,
     );
+    background(hwnd);
+    let format = CHARFORMATW {
+        cbSize: size_of::<CHARFORMATW>() as u32,
+        dwMask: CFM_COLOR,
+        crTextColor: windows::Win32::Foundation::COLORREF(crate::theme::color(COLOR_WINDOWTEXT)),
+        ..Default::default()
+    };
+    send_ref(hwnd, EM_SETCHARFORMAT, SCF_ALL as usize, &format);
     Ok(hwnd)
 }
 
@@ -400,18 +408,22 @@ fn redraw(hwnd: HWND, frozen: Option<ITextDocument>) {
     }
 }
 
-fn replace(hwnd: HWND, content: &Content) -> anyhow::Result<()> {
-    let mut format = CHARFORMATW {
-        cbSize: size_of::<CHARFORMATW>() as u32,
-        ..Default::default()
-    };
-    send_mut(hwnd, EM_GETCHARFORMAT, 0, &mut format);
+fn background(hwnd: HWND) {
     send(
         hwnd,
         EM_SETBKGNDCOLOR,
         0,
         crate::theme::color(COLOR_WINDOW) as isize,
     );
+}
+
+fn replace(hwnd: HWND, content: &Content) -> anyhow::Result<()> {
+    let mut format = CHARFORMATW {
+        cbSize: size_of::<CHARFORMATW>() as u32,
+        ..Default::default()
+    };
+    send_mut(hwnd, EM_GETCHARFORMAT, 0, &mut format);
+    background(hwnd);
     let colored = syntax_enabled();
     let result = if colored {
         stream_in(hwnd, &rtf::themed(&content.rtf, crate::theme::is_dark()))

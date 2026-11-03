@@ -1,4 +1,5 @@
 //! MDI lifecycle, activation projection and one-shot arrangement commands.
+use super::content::Content;
 use super::metadata::MetadataView;
 use super::{document as host, dpi, history, read, write};
 use crate::{
@@ -12,7 +13,7 @@ use std::rc::Rc;
 pub(super) struct Workspace {
     pub mdi: HWND,
     pub tabs: HWND,
-    pub documents: Vec<Rc<MetadataView>>,
+    pub documents: Vec<Content>,
     pub icons: crate::icons::DocumentIcons,
     pub history: history::History,
     maximized: bool,
@@ -56,18 +57,18 @@ pub(super) fn keep_focus(open: impl FnOnce()) {
         focus(previous);
     }
 }
-pub(super) fn register_document(doc: Rc<MetadataView>) {
+pub(super) fn register_document(doc: Content) {
     write(|a| a.workspace.documents.push(doc));
 }
 pub(super) fn unregister_document(hwnd: HWND) {
     let removed = write(|a| {
         let docs = &mut a.workspace.documents;
         docs.iter()
-            .position(|d| d.hwnd == hwnd)
+            .position(|d| d.hwnd() == hwnd)
             .map(|index| docs.remove(index))
     });
     if let Some(doc) = removed {
-        doc.cancel();
+        drop(doc);
     }
 }
 pub(super) fn close_document(hwnd: HWND) {
@@ -75,17 +76,17 @@ pub(super) fn close_document(hwnd: HWND) {
 }
 fn close_now(hwnd: HWND) {
     let mdi = read(|a| a.workspace.mdi);
-    if view(hwnd).is_some() {
+    if content(hwnd).is_some() {
         let tabs = read(|a| a.workspace.tabs);
         let previous = unsafe { GetFocus() };
         let tab_focus = previous == tabs;
         let next = if active() == hwnd {
             read(|a| {
                 let docs = &a.workspace.documents;
-                let index = docs.iter().position(|d| d.hwnd == hwnd)?;
+                let index = docs.iter().position(|d| d.hwnd() == hwnd)?;
                 docs.get(index + 1)
                     .or_else(|| index.checked_sub(1).and_then(|i| docs.get(i)))
-                    .map(|d| d.hwnd)
+                    .map(|d| d.hwnd())
             })
         } else {
             None
@@ -122,19 +123,18 @@ pub(super) fn pin_document(hwnd: HWND) {
 pub(super) fn sync_document_selection() {
     let current = active();
     let tabs = read(|a| a.workspace.tabs);
-    let selected = view(current).map(|d| d.id);
+    let selected = content(current).map(|d| d.id());
     tabs::select(tabs, selected);
+    super::catalog::refresh_status();
 }
 pub(super) fn refresh_document_tabs() {
     let tabs = read(|a| a.workspace.tabs);
-    let docs = views();
+    let docs = contents();
     let mut ordinals = std::collections::HashMap::new();
     let items = docs
         .iter()
         .map(|content| {
-            let MetadataView {
-                id, hwnd, preview, ..
-            } = &**content;
+            let (id, hwnd, preview) = (content.id(), content.hwnd(), content.preview());
             let title = content.title();
             let ordinal = ordinals.entry(title.clone()).or_insert(0);
             *ordinal += 1;
@@ -144,21 +144,16 @@ pub(super) fn refresh_document_tabs() {
                 String::new()
             };
             let title = format!("{title}{suffix}");
-            let b = content.binding();
-            let mut description = format!(
-                "{} · {:08X}",
-                b.catalog.sources()[b.id.source_id].path.display(),
-                b.id.token
-            );
-            if preview.get() {
+            let mut description = content.description();
+            if preview {
                 description = format!("{} · {description}", resources::text(IDS_PREVIEW));
             }
             tabs::Item {
-                id: *id,
-                italic: preview.get(),
+                id,
+                italic: preview,
                 title,
                 description,
-                icon: send(*hwnd, WM_GETICON, ICON_SMALL as usize, 0) as HICON,
+                icon: send(hwnd, WM_GETICON, ICON_SMALL as usize, 0) as HICON,
             }
         })
         .collect();
@@ -166,8 +161,10 @@ pub(super) fn refresh_document_tabs() {
     sync_document_selection();
 }
 pub(super) fn tab_notification(n: &tabs::Notification) {
-    let Some(doc) = by_id(n.id) else { return };
-    let hwnd = doc.hwnd;
+    let Some(doc) = content_by_id(n.id) else {
+        return;
+    };
+    let hwnd = doc.hwnd();
     match n.header.code {
         tabs::SELECT => keep_focus(|| show_document(hwnd)),
         tabs::CLOSE => close_document(hwnd),
@@ -175,7 +172,7 @@ pub(super) fn tab_notification(n: &tabs::Notification) {
         tabs::REORDER => {
             write(|a| {
                 let docs = &mut a.workspace.documents;
-                if let Some(index) = docs.iter().position(|d| d.id == n.id) {
+                if let Some(index) = docs.iter().position(|d| d.id() == n.id) {
                     let doc = docs.remove(index);
                     docs.insert(n.index.min(docs.len()), doc);
                 }
@@ -202,9 +199,9 @@ fn tab_menu(hwnd: HWND, point: POINT) -> anyhow::Result<()> {
     Ok(())
 }
 pub(super) fn scale_documents() {
-    let docs: Vec<_> = views()
+    let docs: Vec<_> = contents()
         .into_iter()
-        .filter_map(|d| d.placement.get().map(|p| (d.hwnd, p)))
+        .filter_map(|d| d.placement().map(|p| (d.hwnd(), p)))
         .collect();
     for (hwnd, placement) in docs {
         if unsafe { IsZoomed(hwnd) == 0 && IsIconic(hwnd) == 0 } {
@@ -214,8 +211,8 @@ pub(super) fn scale_documents() {
 }
 pub(super) fn capture_placements() {
     let mdi = read(|a| a.workspace.mdi);
-    for doc in views() {
-        let hwnd = doc.hwnd;
+    for doc in contents() {
+        let hwnd = doc.hwnd();
         if unsafe { IsZoomed(hwnd) != 0 || IsIconic(hwnd) != 0 } {
             continue;
         }
@@ -223,7 +220,7 @@ pub(super) fn capture_placements() {
             bounds: bounds(hwnd, mdi),
             dpi: dpi().window(hwnd),
         };
-        doc.placement.set(Some(p));
+        doc.set_placement(p);
     }
 }
 pub(super) fn set_arrangement(arrangement: Arrangement) {
@@ -273,7 +270,7 @@ pub(super) fn create_document(
 ) -> anyhow::Result<Rc<MetadataView>> {
     let (mdi, maximized) = read(|a| (a.workspace.mdi, a.workspace.maximized));
     let mut init = host::Init {
-        content: Some(content),
+        content: Some(host::Seed::Declaration(Box::new(content))),
         error: None,
     };
     // CreateMDIWindowW consumes this pointer synchronously in WM_CREATE.
@@ -307,17 +304,67 @@ pub(super) fn create_document(
     Ok(doc)
 }
 pub(super) fn view(hwnd: HWND) -> Option<Rc<MetadataView>> {
-    read(|a| {
-        a.workspace
-            .documents
-            .iter()
-            .find(|d| d.hwnd == hwnd)
-            .cloned()
-    })
+    match content(hwnd)? {
+        Content::Declaration(v) => Some(v),
+        _ => None,
+    }
 }
 pub(super) fn views() -> Vec<Rc<MetadataView>> {
-    read(|a| a.workspace.documents.clone())
+    contents()
+        .into_iter()
+        .filter_map(|c| match c {
+            Content::Declaration(v) => Some(v),
+            _ => None,
+        })
+        .collect()
 }
 pub(super) fn by_id(id: u64) -> Option<Rc<MetadataView>> {
-    read(|a| a.workspace.documents.iter().find(|d| d.id == id).cloned())
+    match content_by_id(id)? {
+        Content::Declaration(v) => Some(v),
+        _ => None,
+    }
+}
+pub(super) fn contents() -> Vec<Content> {
+    read(|a| a.workspace.documents.clone())
+}
+pub(super) fn content(hwnd: HWND) -> Option<Content> {
+    contents().into_iter().find(|d| d.hwnd() == hwnd)
+}
+pub(super) fn content_by_id(id: u64) -> Option<Content> {
+    contents().into_iter().find(|d| d.id() == id)
+}
+pub(super) fn create_tool(descriptor: &'static super::tools::Descriptor) -> anyhow::Result<HWND> {
+    let (mdi, maximized) = read(|a| (a.workspace.mdi, a.workspace.maximized));
+    let mut init = host::Init {
+        content: Some(host::Seed::Tool(super::tools::ToolView::new(descriptor))),
+        error: None,
+    };
+    let hwnd = unsafe {
+        CreateMDIWindowW(
+            w!("Winlex.Document"),
+            wide(&resources::text(descriptor.title)).as_ptr(),
+            WS_VISIBLE | WS_OVERLAPPEDWINDOW | if maximized { WS_MAXIMIZE } else { 0 },
+            CW_USEDEFAULT,
+            CW_USEDEFAULT,
+            CW_USEDEFAULT,
+            CW_USEDEFAULT,
+            mdi,
+            instance(),
+            &mut init as *mut host::Init as isize,
+        )
+    };
+    if hwnd.is_null() {
+        return Err(init.error.unwrap_or_else(|| error("Create tool window")));
+    }
+    let doc = content(hwnd).expect("created tool");
+    match normal_placement(hwnd) {
+        Ok(p) => doc.set_placement(p),
+        Err(error) => {
+            close_document(hwnd);
+            return Err(error);
+        }
+    }
+    doc.prepare();
+    refresh_document_tabs();
+    Ok(hwnd)
 }

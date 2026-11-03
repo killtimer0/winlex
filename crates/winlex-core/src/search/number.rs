@@ -48,10 +48,9 @@ impl NumberQuery {
                 wide: Some(value),
             });
         }
-        let (negative, body) = match text.as_bytes().first() {
-            Some(b'-') => (true, &text[1..]),
-            Some(b'+') => (false, &text[1..]),
-            _ => (false, text),
+        let body = match text.as_bytes().first() {
+            Some(b'-' | b'+') => &text[1..],
+            _ => text,
         };
         ensure!(!body.is_empty(), "invalid number");
         let prefixed = super::hex_digits(body).is_some()
@@ -59,21 +58,10 @@ impl NumberQuery {
         if !prefixed && body.contains(['.', 'e', 'E']) {
             return Self::decimal(text, body);
         }
-        let (radix, digits) = if body.starts_with(['0']) && body.len() > 1 {
-            match body.as_bytes()[1] {
-                b'x' | b'X' => (16, &body[2..]),
-                b'o' | b'O' => (8, &body[2..]),
-                b'b' | b'B' => (2, &body[2..]),
-                _ => (8, &body[1..]),
-            }
-        } else {
-            (10, body)
-        };
-        let magnitude = super::parse_unsigned(digits, radix).context("invalid integer")?;
-        ensure!(
-            !negative || magnitude <= 1u64 << 63,
-            "negative integer out of range"
-        );
+        let crate::number::IntegerLiteral {
+            negative,
+            magnitude,
+        } = crate::number::IntegerLiteral::parse(text)?;
         Ok(Self::Integer {
             negative,
             magnitude,

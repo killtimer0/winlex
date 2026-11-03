@@ -6,6 +6,7 @@
 - 查看 API 参数、类型、回调及反向类型引用。
 - 按 x86、x64、ARM64 ABI 计算结构布局、位域位置和 COM vtable 槽位。
 - 支持文本和 JSON 输出。
+- 通过独立错误码工具查询 Win32、HRESULT、NTSTATUS 和自定义模块消息，无需加载 WinMD。
 - 可同时加载 SDK、WDK、WinRT 和 Windows App SDK 元数据，解析跨文件引用。
 - 支持 WinRT/App SDK 声明、泛型、属性和事件查询，以及非泛型接口/委托槽位。
 

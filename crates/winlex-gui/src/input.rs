@@ -90,6 +90,42 @@ pub fn choose_files(owner: HWND, version: WindowsVersion) -> anyhow::Result<Vec<
     }
 }
 
+pub fn choose_message_module(owner: HWND) -> anyhow::Result<Option<PathBuf>> {
+    let mut filter = Vec::new();
+    for value in [
+        resources::text(IDS_ERROR_CODE_MODULE_FILES),
+        "*.exe;*.dll;*.mui".into(),
+        resources::text(IDS_ALL_FILES),
+        "*.*".into(),
+    ] {
+        filter.extend(value.encode_utf16().chain(Some(0)));
+    }
+    filter.push(0);
+    let mut buffer = vec![0u16; 65536];
+    let mut ofn: OPENFILENAMEW = unsafe { std::mem::zeroed() };
+    ofn.lStructSize = std::mem::size_of::<OPENFILENAMEW>() as u32;
+    ofn.hwndOwner = owner;
+    ofn.lpstrFilter = filter.as_ptr();
+    ofn.lpstrTitle = resources::wide_text(IDS_ERROR_CODE_TOOL).as_ptr();
+    ofn.lpstrFile = buffer.as_mut_ptr();
+    ofn.nMaxFile = buffer.len() as u32;
+    ofn.Flags = OFN_EXPLORER
+        | OFN_FILEMUSTEXIST
+        | OFN_PATHMUSTEXIST
+        | OFN_NOCHANGEDIR
+        | OFN_DONTADDTORECENT;
+    if unsafe { GetOpenFileNameW(&mut ofn) } != 0 {
+        let length = buffer.iter().position(|c| *c == 0).unwrap_or(buffer.len());
+        return Ok(Some(PathBuf::from(OsString::from_wide(&buffer[..length]))));
+    }
+    let error = unsafe { CommDlgExtendedError() };
+    if error == 0 {
+        Ok(None)
+    } else {
+        anyhow::bail!("GetOpenFileNameW: 0x{error:08x}")
+    }
+}
+
 fn modern_choose(owner: HWND) -> windows::core::Result<Vec<PathBuf>> {
     use windows::{
         Win32::{

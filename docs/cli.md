@@ -4,7 +4,7 @@
 winlex FILE... 命令 [查询] [选项]
 ```
 
-输入文件放在命令前；`--help`、`--version` 无需输入。文件名与命令同名时使用带目录的路径，例如 `.\search`；以 `--` 开头的文件名也使用带目录的路径。
+元数据命令的输入文件放在命令前；`--help`、`--version` 和独立的 `error-code` 命令无需输入文件。文件名与命令同名时使用带目录的路径，例如 `.\search`；以 `--` 开头的文件名也使用带目录的路径。
 依次列出文件路径可加载多个文件；来源按输入顺序编号，从 0 开始，重复输入保留独立条目。
 
 ```powershell
@@ -23,6 +23,7 @@ winlex Windows.Win32.winmd Windows.Wdk.winmd show Windows.Wdk.winmd::NtCancelIoF
 | `layout TYPE --arch ARCH` | 大小、对齐、字段和位域偏移 |
 | `vtable TYPE --arch ARCH` | COM、WinRT 接口及委托的方法槽位 |
 | `references TYPE --arch ARCH` | 字段、方法、属性、事件签名及接口要求中的反向引用 |
+| `error-code CODE` | 独立查询错误码或模块消息，不加载 WinMD |
 
 `ARCH` 可选 `x86`、`x64`、`arm64`。搜索分页使用 `--limit`（默认50，上限1000）和 `--offset`。
 `--help`、`--version` 单独调用。
@@ -41,6 +42,23 @@ winlex Windows.Win32.winmd Windows.Wdk.winmd show Windows.Wdk.winmd::NtCancelIoF
 选择声明时支持 `SOURCE::NAME` 和 `SOURCE::0xTOKEN`，SOURCE 可用来源编号或唯一程序集名称（包括名称中的 `.winmd` 后缀）。裸 token 仅允许单来源。编号和 token 仅在所属 Catalog 内有效。
 `--source SOURCE` 在搜索时过滤来源，在 show/layout/vtable/references 时限定目标来源；反向引用仍查找所有已加载来源。独立来源中的同名声明不会自动合并。
 非 WinRT 引用按程序集名称、版本、culture、公钥 token 和 content type 匹配；依赖须显式加载。
+
+## 错误码查询
+
+```powershell
+winlex error-code 5 --scope win32
+winlex error-code -2147024891 --scope hresult --lang 0x409
+winlex error-code 0xC0000005 --scope ntstatus --json
+winlex error-code 0x20000001 --module .\messages.dll --lang auto
+```
+
+- `--scope` 可选 `auto`（默认）、`win32`、`hresult`、`ntstatus`。自动模式分别查询 Win32、HRESULT 和 NTSTATUS，并展示匹配结果。
+- `--module PATH` 指定单个 EXE、DLL 或 MUI 的消息表，与预设 `--scope` 互斥；使用完整消息 ID，不回退到系统消息表。
+- `--lang auto|LANGID`（也可写 `--language`）选择消息语言。`auto` 或 `0` 使用 Windows 的语言选择规则；非零 LANGID 严格请求对应语言。
+- 代码接受 -2147483648 至 4294967295，支持正负号、0x／0o／0b 前缀；前导零为八进制，例如 `010` 为 8。LANGID 为无符号 16 位值。不接受符号名称或浮点数。
+- 结果包含标准化代码、消息来源和语言信息。HRESULT 可附带关联的 Win32 错误。NTSTATUS 和自定义模块展示完整资源模板，保留 `%08lx`、`%s`、`%1!s!` 等占位符，并报告实际资源语言；系统消息自动选择时实际语言未知。
+- `--json` 输出版本化结构化结果。没有找到消息仍退出 0；参数错误退出 2，执行故障退出 3，输出失败退出 4。部分来源失败时保留其它结果并返回 3。
+- 本机系统版本和资源语言决定可查询的消息范围。
 
 ## 条件表达式
 

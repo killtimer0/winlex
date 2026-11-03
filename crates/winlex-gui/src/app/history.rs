@@ -33,10 +33,19 @@ impl Direction {
 
 #[derive(Clone)]
 struct Entry {
+    document: u64,
+    target: Target,
+}
+#[derive(Clone)]
+enum Target {
+    Declaration(DeclarationTarget),
+    Live(std::rc::Weak<()>),
+}
+#[derive(Clone)]
+struct DeclarationTarget {
     catalog: Weak<Catalog>,
     entity: EntityId,
     architecture: Architecture,
-    document: u64,
     position: ViewState,
 }
 
@@ -44,18 +53,32 @@ impl Entry {
     fn capture(document: &MetadataView) -> Self {
         let binding = document.binding();
         Self {
-            catalog: Arc::downgrade(&binding.catalog),
-            entity: binding.id,
-            architecture: binding.architecture,
             document: document.id,
-            position: document.position(),
+            target: Target::Declaration(DeclarationTarget {
+                catalog: Arc::downgrade(&binding.catalog),
+                entity: binding.id,
+                architecture: binding.architecture,
+                position: document.position(),
+            }),
         }
     }
     fn same_location(&self, other: &Self) -> bool {
         self.document == other.document
-            && self.entity == other.entity
-            && self.architecture == other.architecture
-            && self.catalog.ptr_eq(&other.catalog)
+            && match (&self.target, &other.target) {
+                (Target::Declaration(a), Target::Declaration(b)) => {
+                    a.entity == b.entity
+                        && a.architecture == b.architecture
+                        && a.catalog.ptr_eq(&b.catalog)
+                }
+                (Target::Live(a), Target::Live(b)) => a.ptr_eq(b),
+                _ => false,
+            }
+    }
+    fn valid(&self) -> bool {
+        match &self.target {
+            Target::Declaration(v) => v.catalog.upgrade().is_some(),
+            Target::Live(v) => v.upgrade().is_some(),
+        }
     }
 }
 
@@ -78,7 +101,7 @@ impl History {
     }
     fn prune(&mut self) {
         for index in (0..self.entries.len()).rev() {
-            if self.entries[index].catalog.upgrade().is_none() {
+            if !self.entries[index].valid() {
                 self.remove(index);
             }
         }
@@ -142,7 +165,32 @@ impl History {
 }
 
 fn active_entry() -> Option<Entry> {
-    workspace::view(workspace::active()).map(|doc| Entry::capture(&doc))
+    workspace::content(workspace::active()).map(|doc| capture_content(&doc))
+}
+fn capture_content(content: &super::content::Content) -> Entry {
+    match content {
+        super::content::Content::Declaration(v) => Entry::capture(v),
+        super::content::Content::Tool(v) => Entry {
+            document: v.id,
+            target: Target::Live(std::rc::Rc::downgrade(&v.lifetime)),
+        },
+    }
+}
+pub(super) fn content_activation(content: &super::content::Content, active: bool) {
+    if active {
+        content.activated();
+    }
+    if read(|a| a.workspace.history.depth != 0) {
+        return;
+    }
+    let entry = capture_content(content);
+    write(|a| {
+        if active {
+            a.workspace.history.visit(entry)
+        } else {
+            a.workspace.history.save(entry)
+        }
+    });
 }
 
 struct Scope {
@@ -191,20 +239,6 @@ pub(super) fn closing(action: impl FnOnce()) {
     refresh();
 }
 
-pub(super) fn activation(document: &MetadataView, active: bool) {
-    if read(|a| a.workspace.history.depth != 0) {
-        return;
-    }
-    let entry = Entry::capture(document);
-    write(|a| {
-        if active {
-            a.workspace.history.visit(entry);
-        } else {
-            a.workspace.history.save(entry);
-        }
-    });
-}
-
 pub(super) fn navigate(direction: Direction) {
     if read(|a| a.workspace.history.depth != 0) {
         return;
@@ -218,18 +252,31 @@ pub(super) fn navigate(direction: Direction) {
             Some((index, history.entries[index].clone()))
         });
         let Some((index, entry)) = target else { break };
-        let Some(snapshot) = entry.catalog.upgrade() else {
+        if matches!(entry.target, Target::Live(_)) {
+            if let Some(content) = workspace::content_by_id(entry.document) {
+                workspace::show_document(content.hwnd());
+                content.focus();
+                write(|a| a.workspace.history.arrived(index, content.id()));
+                break;
+            }
+            write(|a| a.workspace.history.remove(index));
+            continue;
+        }
+        let Target::Declaration(target) = entry.target else {
+            unreachable!()
+        };
+        let Some(snapshot) = target.catalog.upgrade() else {
             write(|a| a.workspace.history.remove(index));
             continue;
         };
-        let Some(entity) = catalog::report(snapshot.entity(entry.entity)) else {
+        let Some(entity) = catalog::report(snapshot.entity(target.entity)) else {
             write(|a| a.workspace.history.remove(index));
             continue;
         };
         let binding = Binding {
             catalog: snapshot,
-            id: entry.entity,
-            architecture: entry.architecture,
+            id: target.entity,
+            architecture: target.architecture,
             architecture_mask: entity.architecture_mask,
         };
         let original =
@@ -245,7 +292,7 @@ pub(super) fn navigate(direction: Direction) {
         };
         if let Some(doc) = hwnd.and_then(workspace::view) {
             doc.focus();
-            doc.restore_position(entry.position);
+            doc.restore_position(target.position);
             write(|a| a.workspace.history.arrived(index, doc.id));
         }
         break;
@@ -285,6 +332,41 @@ pub(super) fn refresh() {
 mod tests {
     use super::*;
     use Direction::{Back, Forward};
+    fn declaration(entry: &Entry) -> &DeclarationTarget {
+        let Target::Declaration(target) = &entry.target else {
+            panic!("expected declaration")
+        };
+        target
+    }
+
+    #[test]
+    fn live_history_expires_and_new_instances_do_not_revive_old_visits() {
+        let first = std::rc::Rc::new(());
+        let second = std::rc::Rc::new(());
+        let mut history = History::default();
+        let live = |document, life: &std::rc::Rc<()>| Entry {
+            document,
+            target: Target::Live(std::rc::Rc::downgrade(life)),
+        };
+        history.visit(live(1, &first));
+        history.visit(live(2, &second));
+        history.visit(live(1, &first));
+        assert_eq!(replay(&mut history, Back).unwrap().document, 2);
+        assert_eq!(replay(&mut history, Forward).unwrap().document, 1);
+        drop(first);
+        history.after_close(Some(live(2, &second)));
+        history.prune();
+        assert!(replay(&mut history, Back).is_none());
+        let fresh = std::rc::Rc::new(());
+        history.visit(live(3, &fresh));
+        assert_eq!(replay(&mut history, Back).unwrap().document, 2);
+        assert_eq!(replay(&mut history, Forward).unwrap().document, 3);
+        drop(fresh);
+        drop(second);
+        history.prune();
+        assert!(history.next(Back).is_none());
+        assert!(history.next(Forward).is_none());
+    }
 
     fn catalog() -> Arc<Catalog> {
         Arc::new(
@@ -297,14 +379,16 @@ mod tests {
     }
     fn entry(catalog: &Arc<Catalog>, token: u32) -> Entry {
         Entry {
-            catalog: Arc::downgrade(catalog),
-            entity: EntityId {
-                source_id: 0,
-                token,
-            },
-            architecture: Architecture::X86,
             document: 1,
-            position: ViewState::default(),
+            target: Target::Declaration(DeclarationTarget {
+                catalog: Arc::downgrade(catalog),
+                entity: EntityId {
+                    source_id: 0,
+                    token,
+                },
+                architecture: Architecture::X86,
+                position: ViewState::default(),
+            }),
         }
     }
     fn replay(history: &mut History, direction: Direction) -> Option<Entry> {
@@ -317,7 +401,7 @@ mod tests {
     #[track_caller]
     fn assert_token(history: &mut History, direction: Direction, expected: Option<u32>) {
         assert_eq!(
-            replay(history, direction).map(|entry| entry.entity.token),
+            replay(history, direction).map(|entry| declaration(&entry).entity.token),
             expected
         );
     }
@@ -384,24 +468,27 @@ mod tests {
         let mut duplicate = first.clone();
         duplicate.document = 2;
         let mut x64 = duplicate.clone();
-        x64.architecture = Architecture::X64;
+        let Target::Declaration(target) = &mut x64.target else {
+            unreachable!()
+        };
+        target.architecture = Architecture::X64;
         let mut history = History::default();
         for entry in [&first, &duplicate, &x64] {
             history.visit(entry.clone());
         }
         assert_eq!(
-            replay(&mut history, Back).unwrap().architecture,
+            declaration(&replay(&mut history, Back).unwrap()).architecture,
             Architecture::X86
         );
         assert_eq!(replay(&mut history, Back).unwrap().document, 1);
         history.after_close(Some(duplicate.clone()));
         assert_eq!(
-            replay(&mut history, Forward).unwrap().architecture,
+            declaration(&replay(&mut history, Forward).unwrap()).architecture,
             Architecture::X64
         );
         history.after_close(None);
         assert_eq!(
-            replay(&mut history, Back).unwrap().architecture,
+            declaration(&replay(&mut history, Back).unwrap()).architecture,
             Architecture::X64
         );
         for token in 1..=200 {
@@ -409,7 +496,7 @@ mod tests {
         }
         let mut remaining = Vec::new();
         while let Some(entry) = replay(&mut history, Back) {
-            remaining.push(entry.entity.token);
+            remaining.push(declaration(&entry).entity.token);
         }
         assert_eq!(remaining, (101..200).rev().collect::<Vec<_>>());
     }

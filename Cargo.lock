@@ -385,6 +385,7 @@ dependencies = [
  "serde",
  "sha1",
  "windows-metadata",
+ "windows-sys",
  "winnow",
 ]
 

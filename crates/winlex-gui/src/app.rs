@@ -13,6 +13,7 @@ use std::{cell::RefCell, ptr};
 
 mod architecture;
 mod catalog;
+mod content;
 mod document;
 mod frame;
 mod help;
@@ -23,6 +24,7 @@ mod panel;
 mod settings;
 mod sidebar;
 mod sources;
+mod tools;
 mod workspace;
 
 use crate::resources::{self, *};
@@ -237,7 +239,7 @@ unsafe fn run_windows(paths: Vec<std::path::PathBuf>) -> anyhow::Result<()> {
                 break;
             }
             let (mdi, document_tabs) = read(|a| (a.workspace.mdi, a.workspace.tabs));
-            if let Some(document) = workspace::view(active())
+            if let Some(document) = workspace::content(active())
                 && document.find_key(&msg)
             {
                 continue;

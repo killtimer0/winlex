@@ -193,8 +193,11 @@ pub(super) fn report<T>(result: anyhow::Result<T>) -> Option<T> {
         .map_err(|error| set_status(format!("{error:#}")))
         .ok()
 }
-fn refresh_status() {
-    let (hwnd, message) = read(|a| (a.status, a.session.status()));
+pub(super) fn refresh_status() {
+    let message = super::workspace::content(super::workspace::active())
+        .and_then(|content| content.status())
+        .unwrap_or_else(|| read(|a| a.session.status()));
+    let hwnd = read(|a| a.status);
     set_status_text(hwnd, &message);
 }
 pub(super) fn paths() -> Vec<PathBuf> {

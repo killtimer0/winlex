@@ -2,8 +2,10 @@
 //! Search results own their data; declaration views borrow their Catalog.
 mod api;
 mod model;
+pub mod number;
 mod search;
 mod source;
+pub mod tools;
 pub use model::*;
 pub use search::SearchQuery as CompiledQuery;
 pub use search::{

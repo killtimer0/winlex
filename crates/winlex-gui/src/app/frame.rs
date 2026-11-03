@@ -13,7 +13,7 @@ use windows_sys::Win32::System::SystemServices::{
 
 fn prepare() {
     let (frame, tabs, status) = read(|a| (a.frame, a.workspace.tabs, a.status));
-    let docs = workspace::views();
+    let docs = workspace::contents();
     let value = dpi().window(frame);
     if let Some(icons) = super::checked(crate::icons::WindowIcons::load(value)) {
         icons.apply(frame);
@@ -36,7 +36,7 @@ fn recolor() {
         InvalidateRect(read(|a| a.workspace.tabs), ptr::null(), 0);
     }
     sidebar::recolor();
-    for content in workspace::views() {
+    for content in workspace::contents() {
         content.recolor();
     }
     workspace::refresh_document_tabs();
@@ -73,7 +73,7 @@ pub(super) fn command(id: u16) -> bool {
     }
     match id {
         FIND_DOCUMENT | FIND_NEXT | FIND_PREVIOUS => {
-            if let Some(document) = workspace::view(active()) {
+            if let Some(document) = workspace::content(active()) {
                 document.command(id, 0);
             }
         }
@@ -92,7 +92,7 @@ pub(super) fn command(id: u16) -> bool {
             } else if h == read(|a| a.workspace.tabs) {
                 if d.is_null() {
                     sidebar::focus();
-                } else if let Some(document) = workspace::view(d) {
+                } else if let Some(document) = workspace::content(d) {
                     document.focus();
                 }
             } else {
@@ -100,6 +100,12 @@ pub(super) fn command(id: u16) -> bool {
             }
         }
         CLOSE => workspace::close_document(active()),
+        OPEN_RESULT if read(|a| a.sidebar.active == panel::PanelId::Tools) => {
+            super::tools::selected(false)
+        }
+        OPEN_NEW if read(|a| a.sidebar.active == panel::PanelId::Tools) => {
+            super::tools::selected(true)
+        }
         OPEN_RESULT => catalog::open_selected(catalog::Open::Pin),
         OPEN_NEW => catalog::open_selected(catalog::Open::New),
         EXIT => {
@@ -118,6 +124,22 @@ pub(super) fn command(id: u16) -> bool {
         _ => return false,
     }
     true
+}
+pub(super) fn update_commands() {
+    let enabled = workspace::content(active()).is_some_and(|c| c.supports_find());
+    let frame = read(|a| a.frame);
+    if frame.is_null() {
+        return;
+    }
+    for id in [FIND_DOCUMENT, FIND_NEXT, FIND_PREVIOUS] {
+        unsafe {
+            EnableMenuItem(
+                GetMenu(frame),
+                id as u32,
+                MF_BYCOMMAND | if enabled { MF_ENABLED } else { MF_GRAYED },
+            );
+        }
+    }
 }
 pub(super) unsafe extern "system" fn frame_proc(hwnd: HWND, msg: u32, w: usize, l: isize) -> isize {
     unsafe {
@@ -204,7 +226,10 @@ pub(super) unsafe extern "system" fn frame_proc(hwnd: HWND, msg: u32, w: usize, 
                     return 0;
                 }
             }
-            WM_INITMENUPOPUP => history::refresh(),
+            WM_INITMENUPOPUP => {
+                history::refresh();
+                update_commands();
+            }
             WM_APPCOMMAND => {
                 let direction = match (l as u32 >> 16) & 0x0fff {
                     APPCOMMAND_BROWSER_BACKWARD => Some(history::Direction::Back),
@@ -234,6 +259,10 @@ pub(super) unsafe extern "system" fn frame_proc(hwnd: HWND, msg: u32, w: usize, 
             }
             WM_CONTEXTMENU if w as HWND == GetDlgItem(hwnd, SOURCE_LIST as i32) => {
                 catalog::report(sources::context_menu(w as HWND, l));
+                return 0;
+            }
+            WM_CONTEXTMENU if w as HWND == GetDlgItem(hwnd, TOOL_LIST as i32) => {
+                catalog::report(super::tools::context_menu(w as HWND, l));
                 return 0;
             }
             // A top-level WM_GETMINMAXINFO minimum can block a DPI downscale.

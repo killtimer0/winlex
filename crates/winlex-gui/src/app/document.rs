@@ -1,14 +1,43 @@
-//! Native entry points and MDI messages for declaration documents.
+//! Native MDI shell lifecycle and content-specific message dispatch.
+use super::content::Content;
 use super::{dpi, history, metadata::MetadataView, read, workspace};
 use crate::native::*;
 use std::rc::Rc;
 use windows::Win32::UI::Controls::RichEdit::{EN_LINK, ENLINK};
 
 pub(super) const FOLLOW_REFERENCE: u32 = WM_APP + 42;
+const CONTENT_CHANGED: u32 = WM_APP + 43;
+const STATUS_CHANGED: u32 = WM_APP + 44;
+pub(super) fn status_changed(hwnd: HWND) {
+    send(hwnd, STATUS_CHANGED, 0, 0);
+}
+pub(super) fn update_title(hwnd: HWND, title: &str) {
+    set_text(hwnd, title);
+    send(hwnd, CONTENT_CHANGED, 0, 0);
+}
 
 pub(super) struct Init {
-    pub content: Option<super::metadata::MetadataView>,
+    pub content: Option<Seed>,
     pub error: Option<anyhow::Error>,
+}
+pub(super) enum Seed {
+    Declaration(Box<MetadataView>),
+    Tool(super::tools::ToolView),
+}
+impl Seed {
+    fn create(self, hwnd: HWND) -> anyhow::Result<Content> {
+        match self {
+            Self::Declaration(mut v) => {
+                v.create(hwnd)?;
+                Ok(Content::Declaration(Rc::from(v)))
+            }
+            Self::Tool(mut v) => {
+                v.hwnd = hwnd;
+                v.content.create(hwnd)?;
+                Ok(Content::Tool(Rc::new(v)))
+            }
+        }
+    }
 }
 pub(super) fn track_editor(owner: HWND, editor: HWND) -> anyhow::Result<()> {
     if unsafe { set_subclass(editor, Some(editor_proc), 1, owner as usize) } == 0 {
@@ -57,17 +86,18 @@ pub(super) unsafe extern "system" fn document_proc(
                 let create = &*(l as *const CREATESTRUCTW);
                 let mdi_create = &*(create.lpCreateParams as *const MDICREATESTRUCTW);
                 let init = &mut *(mdi_create.lParam as *mut Init);
-                let mut content = init.content.take().unwrap();
-                if let Err(error) = content.create(hwnd) {
-                    init.error = Some(error);
-                    return -1;
+                match init.content.take().unwrap().create(hwnd) {
+                    Ok(content) => workspace::register_document(content),
+                    Err(error) => {
+                        init.error = Some(error);
+                        return -1;
+                    }
                 }
-                workspace::register_document(Rc::new(content));
                 crate::theme::apply(hwnd);
                 return 0;
             }
             WM_NCDESTROY => {
-                let content = workspace::view(hwnd);
+                let content = workspace::content(hwnd);
                 workspace::unregister_document(hwnd);
                 let result = DefMDIChildProcW(hwnd, msg, w, l);
                 drop(content);
@@ -76,8 +106,71 @@ pub(super) unsafe extern "system" fn document_proc(
             }
             _ => {}
         }
-        if let Some(document) = workspace::view(hwnd) {
-            document.message(msg, w, l)
+        if let Some(content) = workspace::content(hwnd) {
+            match msg {
+                STATUS_CHANGED => {
+                    if workspace::active() == hwnd {
+                        super::catalog::refresh_status();
+                    }
+                    return 0;
+                }
+                CONTENT_CHANGED => {
+                    workspace::refresh_document_tabs();
+                    super::frame::update_commands();
+                    return 0;
+                }
+                WM_CLOSE => {
+                    workspace::close_document(hwnd);
+                    return 0;
+                }
+                WM_SIZE => {
+                    let result = DefMDIChildProcW(hwnd, msg, w, l);
+                    if w != SIZE_MINIMIZED as usize
+                        && workspace::content_by_id(content.id()).is_some()
+                    {
+                        content.layout();
+                    }
+                    return result;
+                }
+                WM_SYSCOMMAND if matches!((w & 0xfff0) as u32, SC_MAXIMIZE | SC_RESTORE) => {
+                    let result = DefMDIChildProcW(hwnd, msg, w, l);
+                    workspace::set_maximized(IsZoomed(hwnd) != 0);
+                    workspace::capture_placements();
+                    return result;
+                }
+                WM_EXITSIZEMOVE => workspace::capture_placements(),
+                WM_SETFOCUS => {
+                    let result = DefMDIChildProcW(hwnd, msg, w, l);
+                    if workspace::content_by_id(content.id()).is_some() {
+                        content.focus();
+                    }
+                    return result;
+                }
+                WM_MDIACTIVATE => {
+                    if w as HWND == hwnd {
+                        history::content_activation(&content, false);
+                    }
+                    let result = DefMDIChildProcW(hwnd, msg, w, l);
+                    workspace::sync_document_selection();
+                    if l as HWND == hwnd {
+                        history::content_activation(&content, true);
+                    }
+                    super::frame::update_commands();
+                    return result;
+                }
+                WM_DESTROY => {
+                    content.destroy();
+                    return DefMDIChildProcW(hwnd, msg, w, l);
+                }
+                _ => {}
+            }
+            match content {
+                Content::Declaration(document) => document.message(msg, w, l),
+                Content::Tool(tool) => tool
+                    .content
+                    .message(msg, w, l)
+                    .unwrap_or_else(|| DefMDIChildProcW(hwnd, msg, w, l)),
+            }
         } else {
             DefMDIChildProcW(hwnd, msg, w, l)
         }
@@ -105,42 +198,6 @@ impl MetadataView {
                         return 0;
                     }
                 }
-                WM_CLOSE => {
-                    workspace::close_document(hwnd);
-                    return 0;
-                }
-                WM_SIZE => {
-                    let result = DefMDIChildProcW(hwnd, msg, w, l);
-                    if w != SIZE_MINIMIZED as usize && self.is_live() {
-                        self.layout();
-                    }
-                    return result;
-                }
-                WM_SYSCOMMAND if matches!((w & 0xfff0) as u32, SC_MAXIMIZE | SC_RESTORE) => {
-                    let result = DefMDIChildProcW(hwnd, msg, w, l);
-                    workspace::set_maximized(IsZoomed(hwnd) != 0);
-                    workspace::capture_placements();
-                    return result;
-                }
-                WM_EXITSIZEMOVE => workspace::capture_placements(),
-                WM_SETFOCUS => {
-                    let result = DefMDIChildProcW(hwnd, msg, w, l);
-                    if self.is_live() {
-                        self.focus();
-                    }
-                    return result;
-                }
-                WM_MDIACTIVATE => {
-                    if w as HWND == hwnd {
-                        history::activation(self, false);
-                    }
-                    let result = DefMDIChildProcW(hwnd, msg, w, l);
-                    workspace::sync_document_selection();
-                    if l as HWND == hwnd {
-                        history::activation(self, true);
-                    }
-                    return result;
-                }
                 WM_COMMAND => {
                     let id = (w & 0xffff) as u16;
                     let code = (w >> 16) as u32;
@@ -158,7 +215,6 @@ impl MetadataView {
                         return brush;
                     }
                 }
-                WM_DESTROY => self.destroy(),
                 _ => {}
             }
             DefMDIChildProcW(hwnd, msg, w, l)

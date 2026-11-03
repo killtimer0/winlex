@@ -41,11 +41,7 @@ fn hex_digits(text: &str) -> Option<&str> {
 }
 
 fn parse_unsigned(digits: &str, radix: u32) -> anyhow::Result<u64> {
-    anyhow::ensure!(
-        !digits.is_empty() && digits.bytes().all(|b| (b as char).is_digit(radix)),
-        "invalid unsigned integer"
-    );
-    Ok(u64::from_str_radix(digits, radix)?)
+    crate::number::parse_unsigned(digits, radix)
 }
 
 #[derive(Debug, serde::Serialize)]
