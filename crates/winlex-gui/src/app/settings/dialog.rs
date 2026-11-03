@@ -35,7 +35,7 @@ impl Dialog {
 thread_local! { static CURRENT: Cell<*const Dialog> = const { Cell::new(ptr::null()) }; }
 
 pub(in super::super) fn open() {
-    catalog::report(show());
+    super::super::frame::report(show());
 }
 
 fn show() -> anyhow::Result<()> {

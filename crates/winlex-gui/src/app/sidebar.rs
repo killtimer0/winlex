@@ -123,6 +123,7 @@ pub(super) fn create(frame: HWND) -> anyhow::Result<()> {
     Ok(())
 }
 pub(super) fn show(id: PanelId, toggle: bool) {
+    super::frame::begin_status(super::frame::StatusContext::Catalog);
     write(|a| {
         let s = &mut a.sidebar;
         s.collapsed = toggle && s.active == id && !s.collapsed;

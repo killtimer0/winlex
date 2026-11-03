@@ -123,7 +123,7 @@ pub(super) fn sync_document_selection() {
     let tabs = read(|a| a.workspace.tabs);
     let selected = content(current).map(|d| d.id());
     tabs::select(tabs, selected);
-    super::catalog::refresh_status();
+    super::frame::refresh_status();
 }
 pub(super) fn refresh_document_tabs() {
     let tabs = read(|a| a.workspace.tabs);
@@ -178,7 +178,7 @@ pub(super) fn tab_notification(n: &tabs::Notification) {
             refresh_document_tabs();
         }
         tabs::CONTEXT => {
-            super::catalog::report(tab_menu(hwnd, n.point));
+            super::frame::report(tab_menu(hwnd, n.point));
         }
         _ => {}
     }

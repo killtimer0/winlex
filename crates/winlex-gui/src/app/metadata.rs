@@ -226,7 +226,7 @@ impl MetadataView {
             state.context_link = None;
             state.content = Some(content.clone());
         }
-        catalog::report(crate::rich_text::set_content(self.editor, &content));
+        super::frame::report(crate::rich_text::set_content(self.editor, &content));
         self.find.refresh(self.editor, false);
     }
     fn select_architecture(&self, code: u32) {
@@ -249,7 +249,7 @@ impl MetadataView {
             return;
         };
         if supported.len() > 1 {
-            catalog::report(write(|a| {
+            super::frame::report(write(|a| {
                 a.settings.set_preferred_architecture(&a.config, arch)
             }));
         }
@@ -334,7 +334,7 @@ impl MetadataView {
                 .filter(|current| Rc::ptr_eq(current, clicked))?;
             regions.iter().find(|region| &region.range == range)
         });
-        if let Some(Some(target)) = catalog::report(crate::rich_text::context_menu(
+        if let Some(Some(target)) = super::frame::report(crate::rich_text::context_menu(
             self.editor,
             location,
             regions,
@@ -437,7 +437,7 @@ impl MetadataView {
         } == 0
         {
             self.state.borrow_mut().navigation = None;
-            catalog::set_status(format!("{:#}", error("Queue declaration navigation")));
+            super::frame::set_status(format!("{:#}", error("Queue declaration navigation")));
         }
     }
     pub(super) fn follow_reference(&self) {
@@ -449,7 +449,7 @@ impl MetadataView {
                 .filter(|request| state.contains(request))
         };
         let Some(navigation) = navigation else { return };
-        let Some(binding) = catalog::report(Binding::resolve(
+        let Some(binding) = super::frame::report(Binding::resolve(
             navigation.binding.catalog,
             navigation.target,
             ArchitectureChoice::Exact(navigation.binding.architecture),
@@ -513,7 +513,7 @@ impl MetadataView {
         self.cancel_link_press();
         let content = self.state.borrow().content.clone();
         if let Some(content) = content {
-            catalog::report(crate::rich_text::recolor(self.editor, &content));
+            super::frame::report(crate::rich_text::recolor(self.editor, &content));
         }
     }
     pub(super) fn layout(&self) {
@@ -542,10 +542,10 @@ impl MetadataView {
         match id {
             SELECT_ARCH => self.select_architecture(code),
             DOCUMENT_MORE if code == BN_CLICKED => {
-                catalog::report(self.info.menu(self.hwnd));
+                super::frame::report(self.info.menu(self.hwnd));
             }
             DOCUMENT_ONLINE if code == BN_CLICKED => {
-                catalog::report(self.info.open_online(self.hwnd));
+                super::frame::report(self.info.open_online(self.hwnd));
             }
             _ => return false,
         }

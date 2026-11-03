@@ -119,7 +119,7 @@ impl View {
         }
     }
     fn update_icons(&self) {
-        super::super::catalog::report(super::super::document::update_icons(
+        super::super::frame::report(super::super::document::update_icons(
             self.hwnd,
             self.descriptor.icon,
             &self.icons,

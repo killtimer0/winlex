@@ -162,13 +162,33 @@ def test_shared_status_tracks_active_instance_and_catalog_refresh(launch, settin
     app.command(1040)
     n.set_text(app.search, "CreateFileW")
     n.wait(lambda: app.count() and app.named_rows("CreateFileW"), "background catalog search", 45)
-    assert app.active_document() == second and app.status_text() == ready
+    assert app.active_document() == second
+    n.wait(lambda: app.status_text().startswith(("Results ", "共 ")), "search context status", 45)
     n.send(app.mdi, win32con.WM_MDIACTIVATE, first)
     assert not app.status_text()
     n.send(first, win32con.WM_CLOSE)
     assert app.active_document() == second and app.status_text() == ready
     n.send(second, win32con.WM_CLOSE)
     n.wait(lambda: app.status_text().startswith(("Results ", "共 ")), "catalog status restored", 45)
+
+
+def test_search_error_and_document_focus_select_their_own_status(launch, settings):
+    app = launch([settings[1]])
+    doc = tool(app)
+    ready = app.status_text()
+    app.command(1040)
+    mode = n.get_item(app.frame, 1114)
+    n.send(mode, win32con.CB_SETCURSEL, 1)
+    app.command(1114, code=win32con.CBN_SELENDOK)
+    n.set_text(app.search, "value =")
+    n.wait(lambda: app.status_text().startswith(("Incomplete", "条件尚未输入完整"))
+           or "尚未输入完整" in app.status_text(), "search error over active tool")
+    error = app.status_text()
+    assert app.active_document() == doc and error != ready
+    app.focus(n.get_item(doc, 1810))
+    n.wait(lambda: app.status_text() == ready, "same document focus restores tool status")
+    app.focus(app.search)
+    n.wait(lambda: app.status_text() == error, "search focus restores query error")
 
 
 def test_tools_without_metadata_are_fixed_independent_and_reused_by_recency(launch):
@@ -283,12 +303,16 @@ def test_tool_sidebar_and_environment_do_not_reset_queries(launch):
     doc = tool(app)
     result = query(app, doc, "0xC0000005")
     app.command(1040)
+    sidebar_status = app.status_text()
+    assert sidebar_status
     assert body(doc) == result
     n.send(app.frame, win32con.WM_SETTINGCHANGE)
     n.send(app.frame, 0x031a)  # WM_THEMECHANGED, absent from older pywin32 constants.
     assert body(doc) == result
     assert n.window_text(n.get_item(doc, 1810)) == "0xC0000005"
-    assert not app.status_text()
+    assert app.status_text() == sidebar_status
+    app.focus(n.get_item(doc, 1810))
+    n.wait(lambda: not app.status_text(), "tool status restored after environment refresh")
     app.command(1800)
     assert tool(app) == doc
 

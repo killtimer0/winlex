@@ -148,12 +148,13 @@ pub(super) fn add(files: Vec<PathBuf>) {
     if files.is_empty() {
         return;
     }
+    super::frame::begin_status(super::frame::StatusContext::Catalog);
     let mut paths = catalog::paths();
     for file in files {
         let path = match std::path::absolute(file) {
             Ok(path) => path,
             Err(error) => {
-                catalog::set_status(error.to_string());
+                super::frame::set_status(error.to_string());
                 return;
             }
         };
@@ -165,7 +166,7 @@ pub(super) fn add(files: Vec<PathBuf>) {
 }
 
 fn choose_add() {
-    if let Some(paths) = catalog::report(input::choose(
+    if let Some(paths) = super::frame::report(input::choose(
         read(|a| a.frame),
         read(|a| a.system_version),
         IDS_LOAD_METADATA,
@@ -178,6 +179,12 @@ fn choose_add() {
 }
 
 pub(super) fn command(id: u16) -> bool {
+    if matches!(
+        id,
+        LOAD_METADATA | RELOAD_SOURCE | REMOVE_SOURCE | COPY_SOURCE_PATH
+    ) {
+        super::frame::begin_status(super::frame::StatusContext::Catalog);
+    }
     match id {
         LOAD_METADATA => choose_add(),
         RELOAD_SOURCE | REMOVE_SOURCE | COPY_SOURCE_PATH => {
@@ -191,7 +198,7 @@ pub(super) fn command(id: u16) -> bool {
 }
 fn action_path(command: u16, path: PathBuf) {
     if command == COPY_SOURCE_PATH {
-        catalog::report(copy_unicode(
+        super::frame::report(copy_unicode(
             list(),
             &path.as_os_str().encode_wide().collect::<Vec<_>>(),
         ));

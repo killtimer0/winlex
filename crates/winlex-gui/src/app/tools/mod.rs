@@ -43,7 +43,7 @@ pub(super) fn open(index: isize, new: bool) {
             workspace::show_document(view.hwnd);
             Some(view.hwnd)
         } else {
-            super::catalog::report(workspace::create_tool(descriptor))
+            super::frame::report(workspace::create_tool(descriptor))
         };
         if let Some(content) = hwnd.and_then(workspace::content) {
             content.activated();

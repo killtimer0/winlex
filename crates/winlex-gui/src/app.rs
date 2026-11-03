@@ -40,6 +40,7 @@ struct App {
     frame: HWND,
     icons: Option<crate::icons::WindowIcons>,
     status: HWND,
+    status_state: frame::Status,
     session: catalog::Session,
     sources: sources::Sources,
     worker: crate::worker::Worker<crate::tasks::Job, crate::tasks::Completion>,
@@ -123,6 +124,7 @@ pub fn run(
             frame: ptr::null_mut(),
             icons: None,
             status: ptr::null_mut(),
+            status_state: frame::Status::default(),
             session,
             sources: sources::Sources::default(),
             worker,
@@ -202,7 +204,7 @@ unsafe fn run_windows(paths: Vec<std::path::PathBuf>) -> anyhow::Result<()> {
             catalog::reload(paths, vec![]);
         }
         if let Some(warning) = read(|a| a.config.warning()) {
-            catalog::set_status(format!("{warning:#}"));
+            frame::set_status(format!("{warning:#}"));
         }
         ShowWindow(
             frame,
@@ -239,6 +241,12 @@ unsafe fn run_windows(paths: Vec<std::path::PathBuf>) -> anyhow::Result<()> {
                 break;
             }
             let (mdi, document_tabs) = read(|a| (a.workspace.mdi, a.workspace.tabs));
+            if matches!(
+                msg.message,
+                WM_KEYDOWN | WM_SYSKEYDOWN | WM_LBUTTONDOWN | WM_RBUTTONDOWN
+            ) {
+                frame::status_input(msg.hwnd);
+            }
             if let Some(document) = workspace::content(active())
                 && document.find_key(&msg)
             {

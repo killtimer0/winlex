@@ -130,7 +130,7 @@ pub(super) unsafe extern "system" fn document_proc(
             match msg {
                 STATUS_CHANGED => {
                     if workspace::active() == hwnd {
-                        super::catalog::refresh_status();
+                        super::frame::refresh_status();
                     }
                     return 0;
                 }
@@ -140,6 +140,9 @@ pub(super) unsafe extern "system" fn document_proc(
                     return 0;
                 }
                 WM_CLOSE => {
+                    if workspace::active() == hwnd {
+                        super::frame::begin_status(super::frame::StatusContext::Document(hwnd));
+                    }
                     workspace::close_document(hwnd);
                     return 0;
                 }
@@ -160,6 +163,7 @@ pub(super) unsafe extern "system" fn document_proc(
                 }
                 WM_EXITSIZEMOVE => workspace::capture_placements(),
                 WM_SETFOCUS => {
+                    super::frame::status_context(super::frame::StatusContext::Document(hwnd));
                     let result = DefMDIChildProcW(hwnd, msg, w, l);
                     if workspace::content_by_id(content.id()).is_some() {
                         content.focus();
@@ -173,6 +177,7 @@ pub(super) unsafe extern "system" fn document_proc(
                     let result = DefMDIChildProcW(hwnd, msg, w, l);
                     workspace::sync_document_selection();
                     if l as HWND == hwnd {
+                        super::frame::begin_status(super::frame::StatusContext::Document(hwnd));
                         history::content_activation(&content, true);
                     }
                     super::frame::update_commands();
@@ -181,6 +186,14 @@ pub(super) unsafe extern "system" fn document_proc(
                 WM_DESTROY => {
                     content.destroy();
                     return DefMDIChildProcW(hwnd, msg, w, l);
+                }
+                WM_COMMAND if l == 0 || matches!((w >> 16) as u32, BN_CLICKED | CBN_SELENDOK) => {
+                    if workspace::active() == hwnd {
+                        super::frame::begin_status(super::frame::StatusContext::Document(hwnd));
+                    }
+                }
+                WM_COMMAND if (w >> 16) as u32 == EN_SETFOCUS => {
+                    super::frame::status_context(super::frame::StatusContext::Document(hwnd));
                 }
                 _ => {}
             }
