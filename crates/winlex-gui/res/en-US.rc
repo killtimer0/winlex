@@ -73,6 +73,8 @@ BEGIN
     LTEXT "Interface &language:", -1, 10, 12, 90, 10
     COMBOBOX SETTINGS_LANGUAGE, 104, 9, 126, 70, 0x50210003
     LTEXT "Language changes take effect after restarting Winlex.", -1, 10, 35, 220, 26
+    LTEXT "&Appearance:", -1, 10, 70, 90, 10
+    COMBOBOX SETTINGS_THEME, 104, 67, 126, 70, 0x50210003
 END
 IDD_SETTINGS_SEARCH DIALOGEX 0, 0, 240, 150
 STYLE 0x40000448
@@ -109,6 +111,9 @@ BEGIN
     IDS_LANGUAGE_CHINESE "简体中文"
     IDS_SETTINGS_OK "OK"
     IDS_SETTINGS_CANCEL "Cancel"
+    IDS_THEME_SYSTEM "System"
+    IDS_THEME_LIGHT "Light"
+    IDS_THEME_DARK "Dark"
     IDS_ARCHITECTURE "Architecture"
     IDS_DOCUMENT_SOURCE "Source:"
     IDS_DOCUMENT_MORE "More information…"

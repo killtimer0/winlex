@@ -63,6 +63,7 @@ pub(super) unsafe extern "system" fn document_proc(
                     return -1;
                 }
                 workspace::register_document(Rc::new(content));
+                crate::theme::apply(hwnd);
                 return 0;
             }
             WM_NCDESTROY => {

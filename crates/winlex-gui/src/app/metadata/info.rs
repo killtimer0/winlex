@@ -231,9 +231,9 @@ impl Info {
         .contains(&control)
         {
             unsafe {
-                SetTextColor(dc, GetSysColor(COLOR_BTNTEXT));
-                SetBkColor(dc, GetSysColor(COLOR_BTNFACE));
-                Some(GetSysColorBrush(COLOR_BTNFACE) as isize)
+                SetTextColor(dc, crate::theme::color(COLOR_BTNTEXT));
+                SetBkColor(dc, crate::theme::color(COLOR_BTNFACE));
+                Some(crate::theme::brush(COLOR_BTNFACE) as isize)
             }
         } else {
             None

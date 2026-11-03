@@ -3,12 +3,13 @@ use crate::native::*;
 use anyhow::{Context, ensure};
 use std::{mem::size_of, sync::OnceLock};
 use windows::Win32::UI::Controls::RichEdit::{
-    CFE_LINK, CFE_UNDERLINE, CFM_COLOR, CFM_FACE, CFM_LINK, CFM_SIZE, CFM_UNDERLINE, CHARFORMAT2W,
-    CHARFORMATW, CHARRANGE, EDITSTREAM, EM_EXGETSEL, EM_EXSETSEL, EM_GETCHARFORMAT,
-    EM_GETEVENTMASK, EM_GETOLEINTERFACE, EM_GETSELTEXT, EM_SETBKGNDCOLOR, EM_SETCHARFORMAT,
-    EM_SETEVENTMASK, EM_SETPARAFORMAT, EM_SETSCROLLPOS, EM_STREAMIN, ENLINK, ENM_LINK,
-    IRichEditOle, ITextDocument, PARAFORMAT, PARAFORMAT2, PFM_LINESPACING, PFM_RIGHTINDENT,
-    PFM_STARTINDENT, SCF_ALL, SCF_SELECTION, SF_RTF,
+    CFE_LINK, CFE_LINKPROTECTED, CFE_UNDERLINE, CFM_COLOR, CFM_FACE, CFM_LINK, CFM_LINKPROTECTED,
+    CFM_SIZE, CFM_UNDERLINE, CHARFORMAT2W, CHARFORMATW, CHARRANGE, EDITSTREAM, EM_EXGETSEL,
+    EM_EXSETSEL, EM_GETCHARFORMAT, EM_GETEVENTMASK, EM_GETOLEINTERFACE, EM_GETSELTEXT,
+    EM_SETBKGNDCOLOR, EM_SETCHARFORMAT, EM_SETEDITSTYLEEX, EM_SETEVENTMASK, EM_SETPARAFORMAT,
+    EM_SETSCROLLPOS, EM_STREAMIN, ENLINK, ENM_LINK, IRichEditOle, ITextDocument, PARAFORMAT,
+    PARAFORMAT2, PFM_LINESPACING, PFM_RIGHTINDENT, PFM_STARTINDENT, SCF_ALL, SCF_SELECTION,
+    SES_EX_HANDLEFRIENDLYURL, SF_RTF,
 };
 use windows_core::Interface;
 use winlex_core::EntityId;
@@ -249,11 +250,18 @@ fn copy_text(hwnd: HWND, value: &str) -> anyhow::Result<()> {
 pub fn create(parent: HWND, id: u16) -> anyhow::Result<HWND> {
     // Keep the module loaded for the lifetime of every control.
     static LOADED: OnceLock<Result<(), u32>> = OnceLock::new();
-    load_module(&LOADED, "riched20.dll").context("Load RichEdit")?;
+    static MODERN: OnceLock<Result<(), u32>> = OnceLock::new();
+    // RichEdit 2.0 ignores explicit hyperlink colors when painting.
+    let class = if crate::theme::supported() && load_module(&MODERN, "msftedit.dll").is_ok() {
+        w!("RICHEDIT50W")
+    } else {
+        load_module(&LOADED, "riched20.dll").context("Load RichEdit")?;
+        w!("RichEdit20W")
+    };
     let hwnd = unsafe {
         child(
             parent,
-            w!("RichEdit20W"),
+            class,
             &[0],
             WS_TABSTOP
                 | WS_VSCROLL
@@ -268,6 +276,14 @@ pub fn create(parent: HWND, id: u16) -> anyhow::Result<HWND> {
         return Err(error);
     }
     send(hwnd, EM_SETLIMITTEXT, 0x7ffffffe, 0);
+    if crate::theme::supported() {
+        send(
+            hwnd,
+            EM_SETEDITSTYLEEX,
+            0,
+            SES_EX_HANDLEFRIENDLYURL as isize,
+        );
+    }
     let mask = send(hwnd, EM_GETEVENTMASK, 0, 0);
     send(hwnd, EM_SETEVENTMASK, 0, mask | ENM_LINK as isize);
     send(
@@ -390,10 +406,15 @@ fn replace(hwnd: HWND, content: &Content) -> anyhow::Result<()> {
         ..Default::default()
     };
     send_mut(hwnd, EM_GETCHARFORMAT, 0, &mut format);
-    send(hwnd, EM_SETBKGNDCOLOR, 1, 0);
-    let colored = !high_contrast() && unsafe { GetSysColor(COLOR_WINDOW) } == 0x00ffffff;
+    send(
+        hwnd,
+        EM_SETBKGNDCOLOR,
+        0,
+        crate::theme::color(COLOR_WINDOW) as isize,
+    );
+    let colored = syntax_enabled();
     let result = if colored {
-        stream_in(hwnd, &content.rtf)
+        stream_in(hwnd, &rtf::themed(&content.rtf, crate::theme::is_dark()))
     } else {
         Ok(())
     };
@@ -402,10 +423,17 @@ fn replace(hwnd: HWND, content: &Content) -> anyhow::Result<()> {
         let plain = CHARFORMAT2W {
             Base: CHARFORMATW {
                 cbSize: size_of::<CHARFORMAT2W>() as u32,
-                dwMask: CFM_COLOR | CFM_LINK | CFM_UNDERLINE,
-                crTextColor: windows::Win32::Foundation::COLORREF(unsafe {
-                    GetSysColor(COLOR_WINDOWTEXT)
-                }),
+                dwMask: CFM_COLOR
+                    | CFM_LINK
+                    | CFM_UNDERLINE
+                    | if crate::theme::supported() {
+                        CFM_LINKPROTECTED
+                    } else {
+                        Default::default()
+                    },
+                crTextColor: windows::Win32::Foundation::COLORREF(crate::theme::color(
+                    COLOR_WINDOWTEXT,
+                )),
                 ..Default::default()
             },
             ..Default::default()
@@ -421,16 +449,30 @@ fn replace(hwnd: HWND, content: &Content) -> anyhow::Result<()> {
     result
 }
 
+fn syntax_enabled() -> bool {
+    !high_contrast() && (crate::theme::is_dark() || crate::theme::color(COLOR_WINDOW) == 0x00ffffff)
+}
+
 fn apply_regions(hwnd: HWND, content: &Content) -> anyhow::Result<()> {
-    let format = CHARFORMAT2W {
+    let modern = crate::theme::supported();
+    let mut format = CHARFORMAT2W {
         Base: CHARFORMATW {
             cbSize: size_of::<CHARFORMAT2W>() as u32,
             dwMask: CFM_LINK | CFM_UNDERLINE,
             dwEffects: CFE_LINK | CFE_UNDERLINE,
+            crTextColor: windows::Win32::Foundation::COLORREF(if high_contrast() {
+                crate::theme::color(COLOR_WINDOWTEXT)
+            } else {
+                crate::theme::color(COLOR_HOTLIGHT)
+            }),
             ..Default::default()
         },
         ..Default::default()
     };
+    if modern {
+        format.Base.dwMask |= CFM_COLOR | CFM_LINKPROTECTED;
+        format.Base.dwEffects |= CFE_LINKPROTECTED;
+    }
     for region in &content.regions {
         if matches!(region.kind, RegionKind::Reference(_)) {
             let range = CHARRANGE {
@@ -642,6 +684,84 @@ mod tests {
     use super::*;
 
     #[test]
+    fn native_link_pixels_use_theme_color_after_dark_and_light_recoloring() {
+        unsafe fn painted_pixels(hwnd: HWND, color: u32) -> usize {
+            unsafe {
+                let area = client(hwnd);
+                let dc = CreateCompatibleDC(std::ptr::null_mut());
+                assert!(!dc.is_null());
+                let info = BITMAPINFO {
+                    bmiHeader: BITMAPINFOHEADER {
+                        biSize: size_of::<BITMAPINFOHEADER>() as u32,
+                        biWidth: area.right,
+                        biHeight: -area.bottom,
+                        biPlanes: 1,
+                        biBitCount: 32,
+                        biCompression: BI_RGB,
+                        ..std::mem::zeroed()
+                    },
+                    ..std::mem::zeroed()
+                };
+                let mut pixels = std::ptr::null_mut();
+                let bitmap = GdiObject(CreateDIBSection(
+                    dc,
+                    &info,
+                    DIB_RGB_COLORS,
+                    &mut pixels,
+                    std::ptr::null_mut(),
+                    0,
+                ));
+                assert!(!bitmap.0.is_null());
+                let old = SelectObject(dc, bitmap.0);
+                send(hwnd, WM_PRINTCLIENT, dc as usize, PRF_CLIENT as isize);
+                GdiFlush();
+                let rgb = (color & 255) << 16 | (color & 0xff00) | (color >> 16 & 255);
+                let count = std::slice::from_raw_parts(
+                    pixels.cast::<u32>(),
+                    (area.right * area.bottom) as usize,
+                )
+                .iter()
+                .filter(|&&pixel| pixel & 0xffffff == rgb)
+                .count();
+                SelectObject(dc, old);
+                DeleteDC(dc);
+                count
+            }
+        }
+
+        let fixture = Editor::new(
+            WS_POPUP | WS_VISIBLE,
+            crate::layout::rect(-10000, -10000, 600, 200),
+        );
+        place(fixture.1, crate::layout::rect(0, 0, 500, 100));
+        fixture.font_size(360);
+        let mut rendered = Rendered::from("Target");
+        rendered.regions.push(Region {
+            range: 0..6,
+            kind: RegionKind::Reference(EntityId {
+                source_id: 0,
+                token: 0x02000001,
+            }),
+        });
+        let content = Content::from(rendered);
+        for mode in [2, 1, 2, 1] {
+            crate::theme::set_mode(mode);
+            recolor(fixture.1, &content).unwrap();
+            let color = crate::theme::color(if high_contrast() {
+                COLOR_WINDOWTEXT
+            } else {
+                COLOR_HOTLIGHT
+            });
+            assert!(
+                unsafe { painted_pixels(fixture.1, color) } > 20,
+                "missing rendered hyperlink color {color:06x} in mode {mode}"
+            );
+        }
+        drop(fixture);
+        crate::theme::set_mode(0);
+    }
+
+    #[test]
     fn native_links_preserve_utf16_ranges_recoloring_and_plain_text_fallback() {
         use windows::Win32::UI::Controls::RichEdit::EN_LINK;
 
@@ -699,7 +819,11 @@ mod tests {
                 }
                 assert_eq!(text(editor).replace("\r\n", "\r"), content.text);
                 assert_ne!(send(editor, EM_GETEVENTMASK, 0, 0) & ENM_LINK as isize, 0);
-                for refresh in [false, true] {
+                for mode in [None, Some(2), Some(1), Some(2), Some(1)] {
+                    let refresh = mode.is_some();
+                    if let Some(mode) = mode {
+                        crate::theme::set_mode(mode);
+                    }
                     if refresh {
                         fixture.select(7, 10);
                         let result = recolor(editor, &content);
@@ -725,6 +849,22 @@ mod tests {
                             linked,
                             "index {index}"
                         );
+                        if linked && crate::theme::supported() {
+                            assert!(
+                                !format.Base.dwEffects.contains(
+                                    windows::Win32::UI::Controls::RichEdit::CFE_AUTOCOLOR
+                                )
+                            );
+                            assert_eq!(
+                                format.Base.crTextColor.0,
+                                crate::theme::color(if high_contrast() {
+                                    COLOR_WINDOWTEXT
+                                } else {
+                                    COLOR_HOTLIGHT
+                                }),
+                                "link color at {index}, mode={mode:?}"
+                            );
+                        }
                     }
                     for region in &content.regions {
                         let end = fixture.character_position(region.range.end as i32);
@@ -767,6 +907,7 @@ mod tests {
                 assert_eq!(format.Base.dwEffects.0 & (CFE_LINK | CFE_UNDERLINE).0, 0);
             }
             drop(fixture);
+            crate::theme::set_mode(0);
         }
     }
 
@@ -876,72 +1017,70 @@ mod tests {
     fn streamed_content_preserves_text_formats_and_reading_state() {
         use windows::Win32::UI::Controls::RichEdit::SCF_SELECTION;
 
-        unsafe {
-            let fixture = Editor::new(WS_POPUP | WS_VISIBLE, crate::layout::rect(0, 0, 900, 600));
-            let editor = fixture.1;
-            place(editor, crate::layout::rect(0, 0, 750, 500));
-            focus(editor);
-            fixture.font_size(210);
-            for body in [
-                "",
-                "const UINT32 n = 42;",
-                "// 中文😀 {\\}\nconst char16_t *s = \"中文😀\\\\{x}\";\n\tUINT32 n = 42;\n\n",
-                "one\r\ntwo\rthree\n",
-            ] {
-                let content = Content::new(body.into());
-                set_content(editor, &content).unwrap();
-                assert_eq!(text(editor).replace("\r\n", "\r"), content.text);
-                recolor(editor, &content).unwrap();
-                assert_eq!(text(editor).replace("\r\n", "\r"), content.text);
-            }
-            let content = Content::new("// 中文😀\nconst char *s = \"中😀\";".into());
+        let fixture = Editor::new(WS_POPUP | WS_VISIBLE, crate::layout::rect(0, 0, 900, 600));
+        let editor = fixture.1;
+        place(editor, crate::layout::rect(0, 0, 750, 500));
+        focus(editor);
+        fixture.font_size(210);
+        for body in [
+            "",
+            "const UINT32 n = 42;",
+            "// 中文😀 {\\}\nconst char16_t *s = \"中文😀\\\\{x}\";\n\tUINT32 n = 42;\n\n",
+            "one\r\ntwo\rthree\n",
+        ] {
+            let content = Content::new(body.into());
             set_content(editor, &content).unwrap();
+            assert_eq!(text(editor).replace("\r\n", "\r"), content.text);
             recolor(editor, &content).unwrap();
-            for (start, end, expected, color) in [
-                (0, 7, "// 中文😀", 0x008000),
-                (8, 13, "const", 0x800000),
-                (24, 29, "\"中😀\"", 0x000080),
-            ] {
-                fixture.select(start, end);
-                let mut selected = vec![0u16; (end - start + 1) as usize];
-                let count = send(editor, EM_GETSELTEXT, 0, selected.as_mut_ptr() as isize);
-                assert_eq!(
-                    String::from_utf16(&selected[..count as usize]).unwrap(),
-                    expected
-                );
-                let mut format = CHARFORMATW {
-                    cbSize: size_of::<CHARFORMATW>() as u32,
-                    ..Default::default()
-                };
-                send(
-                    editor,
-                    EM_GETCHARFORMAT,
-                    SCF_SELECTION as usize,
-                    &mut format as *mut _ as isize,
-                );
-                let colored = !high_contrast() && GetSysColor(COLOR_WINDOW) == 0x00ffffff;
-                assert_eq!(
-                    format.crTextColor.0,
-                    if colored {
-                        color
-                    } else {
-                        GetSysColor(COLOR_WINDOWTEXT)
-                    }
-                );
-                assert_eq!(format.yHeight, 210);
-            }
-            let content = Content::new("const UINT32 value = 42;\n".repeat(500));
-            set_content(editor, &content).unwrap();
-            fixture.select(6000, 6005);
-            send(editor, EM_LINESCROLL, 0, 30);
-            let first = send(editor, EM_GETFIRSTVISIBLELINE, 0, 0);
-            assert!(first > 0);
-            for _ in 0..2 {
-                recolor(editor, &content).unwrap();
-                assert_eq!(fixture.selection(), (6000, 6005));
-                assert_eq!(send(editor, EM_GETFIRSTVISIBLELINE, 0, 0), first);
-                assert_eq!(text(editor).replace("\r\n", "\r"), content.text);
-            }
+            assert_eq!(text(editor).replace("\r\n", "\r"), content.text);
+        }
+        let content = Content::new("// 中文😀\nconst char *s = \"中😀\";".into());
+        set_content(editor, &content).unwrap();
+        recolor(editor, &content).unwrap();
+        for (start, end, expected, light, dark) in [
+            (0, 7, "// 中文😀", 0x008000, 0x6a9957),
+            (8, 13, "const", 0x800000, 0xd69c56),
+            (24, 29, "\"中😀\"", 0x000080, 0x789cce),
+        ] {
+            fixture.select(start, end);
+            let mut selected = vec![0u16; (end - start + 1) as usize];
+            let count = send(editor, EM_GETSELTEXT, 0, selected.as_mut_ptr() as isize);
+            assert_eq!(
+                String::from_utf16(&selected[..count as usize]).unwrap(),
+                expected
+            );
+            let mut format = CHARFORMATW {
+                cbSize: size_of::<CHARFORMATW>() as u32,
+                ..Default::default()
+            };
+            send(
+                editor,
+                EM_GETCHARFORMAT,
+                SCF_SELECTION as usize,
+                &mut format as *mut _ as isize,
+            );
+            let colored = syntax_enabled();
+            assert_eq!(
+                format.crTextColor.0,
+                if colored {
+                    if crate::theme::is_dark() { dark } else { light }
+                } else {
+                    crate::theme::color(COLOR_WINDOWTEXT)
+                }
+            );
+            assert_eq!(format.yHeight, 210);
+        }
+        let content = Content::new("const UINT32 value = 42;\n".repeat(500));
+        set_content(editor, &content).unwrap();
+        fixture.select(6000, 6005);
+        send(editor, EM_LINESCROLL, 0, 30);
+        let first = send(editor, EM_GETFIRSTVISIBLELINE, 0, 0);
+        assert!(first > 0);
+        for _ in 0..2 {
+            recolor(editor, &content).unwrap();
+            assert_eq!(fixture.selection(), (6000, 6005));
+            assert_eq!(send(editor, EM_GETFIRSTVISIBLELINE, 0, 0), first);
+            assert_eq!(text(editor).replace("\r\n", "\r"), content.text);
         }
     }
 
@@ -991,6 +1130,40 @@ mod tests {
                 Some(ERROR_MOD_NOT_FOUND as i32)
             );
             assert!(format!("{error:#}").starts_with("Load RichEdit: "));
+        }
+    }
+
+    #[test]
+    fn dark_rtf_preserves_text_escapes_and_assigns_explicit_default_color() {
+        let content = Content::new("const char *s = \"\\cf0 中文😀\"; // comment\n42".into());
+        let light = String::from_utf8(content.rtf.clone()).unwrap();
+        let dark = String::from_utf8(rtf::themed(&content.rtf, true).into_owned()).unwrap();
+        assert_eq!(
+            light.split_once(r"\pard\f0 ").unwrap().1,
+            dark.split_once(r"\pard\f0\cf0 ").unwrap().1,
+        );
+        assert!(dark.contains(r"{\colortbl\red238\green238\blue238;"));
+        crate::theme::set_mode(2);
+        if crate::theme::is_dark() {
+            assert_eq!(crate::theme::color(COLOR_WINDOWTEXT), 0xeeeeee);
+        }
+        crate::theme::set_mode(0);
+        let fixture = Editor::new(WS_POPUP, crate::layout::rect(0, 0, 900, 600));
+        stream_in(fixture.1, dark.as_bytes()).unwrap();
+        assert_eq!(text(fixture.1).replace("\r\n", "\r"), content.text);
+        for (start, end, color) in [(0, 5, 0xd69c56), (5, 6, 0xeeeeee)] {
+            fixture.select(start, end);
+            let mut format = CHARFORMATW {
+                cbSize: size_of::<CHARFORMATW>() as u32,
+                ..Default::default()
+            };
+            send_mut(
+                fixture.1,
+                EM_GETCHARFORMAT,
+                SCF_SELECTION as usize,
+                &mut format,
+            );
+            assert_eq!(format.crTextColor.0, color);
         }
     }
 

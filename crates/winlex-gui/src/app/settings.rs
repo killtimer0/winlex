@@ -7,25 +7,63 @@ use winlex_core::{Architecture, EntityCategory};
 mod dialog;
 pub(super) use dialog::open;
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(u32)]
+pub(super) enum Theme {
+    #[default]
+    System = 0,
+    Light = 1,
+    Dark = 2,
+}
+const THEMES: &[(Theme, &str, u16)] = &[
+    (Theme::System, "system", crate::resources::IDS_THEME_SYSTEM),
+    (Theme::Light, "light", crate::resources::IDS_THEME_LIGHT),
+    (Theme::Dark, "dark", crate::resources::IDS_THEME_DARK),
+];
+impl Theme {
+    fn name(self) -> &'static str {
+        THEMES[self as usize].1
+    }
+    fn from_name(name: &str) -> Option<Self> {
+        THEMES
+            .iter()
+            .find(|(_, key, _)| *key == name)
+            .map(|&(value, _, _)| value)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Preferences {
     pub language: Language,
     pub categories: u32,
+    pub theme: Theme,
 }
 impl Preferences {
     fn parse(value: &str) -> Option<Self> {
         let (language, categories) = value.split_once(':')?;
+        let (categories, theme) = match categories.split_once(':') {
+            Some((categories, theme)) => (categories, Theme::from_name(theme)?),
+            None => (categories, Theme::System),
+        };
         let categories: u32 = categories.parse().ok()?;
         (categories & !EntityCategory::ALL == 0).then_some(Self {
             language: Language::from_name(language)?,
             categories,
+            theme,
         })
     }
+    fn serialize(self) -> String {
+        let mut value = format!("{}:{}", self.language.name(), self.categories);
+        if self.theme != Theme::System {
+            value.push(':');
+            value.push_str(self.theme.name());
+        }
+        value
+    }
     fn save(self, config: &Config) -> anyhow::Result<()> {
-        config.write_key()?.set_text(
-            "Preferences",
-            &format!("{}:{}", self.language.name(), self.categories),
-        )
+        config
+            .write_key()?
+            .set_text("Preferences", &self.serialize())
     }
 }
 
@@ -42,13 +80,70 @@ mod preference_tests {
                     Preferences::parse(&value),
                     Some(Preferences {
                         language: language.value,
-                        categories
+                        categories,
+                        theme: Theme::System,
                     })
                 );
             }
         }
-        for value in ["auto", "auto:-1", "auto:128", "other:7", "en-US:1:2"] {
+        for value in [
+            "auto",
+            "auto:-1",
+            "auto:128",
+            "other:7",
+            "en-US:1:2",
+            "auto:7:",
+            "auto:7:other",
+            "auto:7:dark:extra",
+        ] {
             assert_eq!(Preferences::parse(value), None);
+        }
+    }
+
+    #[test]
+    fn theme_options_and_preferences_round_trip() {
+        for (index, &(value, _, label)) in THEMES.iter().enumerate() {
+            assert_eq!(value as u32, index as u32);
+            assert_eq!(Theme::from_name(value.name()), Some(value));
+            assert_eq!(THEMES.iter().filter(|other| other.2 == label).count(), 1);
+            for language in crate::resources::LANGUAGES {
+                for categories in [0, EntityCategory::DEFAULT, EntityCategory::ALL] {
+                    let preferences = Preferences {
+                        language: language.value,
+                        categories,
+                        theme: value,
+                    };
+                    assert_eq!(
+                        Preferences::parse(&preferences.serialize()),
+                        Some(preferences)
+                    );
+                }
+            }
+        }
+        assert_eq!(Theme::from_name("unknown"), None);
+    }
+
+    #[test]
+    fn system_theme_preserves_legacy_preferences_format() {
+        let preferences = Preferences {
+            language: Language::English,
+            categories: EntityCategory::DEFAULT,
+            theme: Theme::System,
+        };
+        assert_eq!(preferences.serialize(), "en-US:7");
+        assert_eq!(Preferences::parse("en-US:7:system"), Some(preferences));
+        for (theme, expected) in [
+            (Theme::Light, "en-US:7:light"),
+            (Theme::Dark, "en-US:7:dark"),
+        ] {
+            assert_eq!(
+                Preferences {
+                    theme,
+                    ..preferences
+                }
+                .serialize(),
+                expected
+            );
         }
     }
 }
@@ -76,6 +171,7 @@ impl Settings {
             .unwrap_or(Preferences {
                 language: Language::Auto,
                 categories: EntityCategory::DEFAULT,
+                theme: Theme::System,
             });
         let preferred_architecture = key
             .and_then(|k| k.text("PreferredArchitecture"))
@@ -135,15 +231,6 @@ impl Settings {
             self.preferences = preferences;
         }
         Ok(())
-    }
-}
-
-fn monitor(hwnd: HWND) -> Option<MONITORINFO> {
-    unsafe {
-        let mut info: MONITORINFO = std::mem::zeroed();
-        info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
-        (GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mut info) != 0)
-            .then_some(info)
     }
 }
 

@@ -412,7 +412,7 @@ fn paint(shared: &Rc<RefCell<State>>) {
     unsafe {
         let mut ps = std::mem::zeroed();
         let dc = BeginPaint(s.hwnd, &mut ps);
-        FillRect(dc, &client(s.hwnd), GetSysColorBrush(COLOR_BTNFACE));
+        FillRect(dc, &client(s.hwnd), crate::theme::brush(COLOR_BTNFACE));
         let old = SelectObject(dc, s.font);
         SetBkMode(dc, TRANSPARENT as i32);
         for item in &s.items {
@@ -423,7 +423,7 @@ fn paint(shared: &Rc<RefCell<State>>) {
             FillRect(
                 dc,
                 rect,
-                GetSysColorBrush(if selected {
+                crate::theme::brush(if selected {
                     COLOR_WINDOW
                 } else if hot {
                     COLOR_3DLIGHT
@@ -431,11 +431,11 @@ fn paint(shared: &Rc<RefCell<State>>) {
                     COLOR_BTNFACE
                 }),
             );
-            SetTextColor(dc, GetSysColor(COLOR_WINDOWTEXT));
+            SetTextColor(dc, crate::theme::color(COLOR_WINDOWTEXT));
             if selected {
                 let mut line = *rect;
                 line.bottom = line.top + (s.unit / 3).max(2);
-                FillRect(dc, &line, GetSysColorBrush(COLOR_HIGHLIGHT));
+                FillRect(dc, &line, crate::theme::brush(COLOR_HIGHLIGHT));
             }
             let mut text_rect = *rect;
             text_rect.left += s.unit;
@@ -483,7 +483,7 @@ fn paint(shared: &Rc<RefCell<State>>) {
                 };
                 marker.left = x;
                 marker.right = x + 3;
-                FillRect(dc, &marker, GetSysColorBrush(COLOR_HIGHLIGHT));
+                FillRect(dc, &marker, crate::theme::brush(COLOR_HIGHLIGHT));
             }
         }
         SelectObject(dc, old);

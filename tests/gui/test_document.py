@@ -91,7 +91,7 @@ def test_document_controls_and_close_during_architecture_reload(launch, settings
     doc = app.open_row()
     n.wait(lambda: "CreateFileW(" in app.content(doc), "initial declaration", 45)
     editor = n.get_item(doc, 1203)
-    assert n.class_name(editor) == "RichEdit20W"
+    assert n.class_name(editor).lower() in {"richedit20w", "richedit50w"}
     body = app.content(doc)
     n.send(editor, win32con.WM_CHAR, ord("X"))  # WM_CHAR: declaration stays read-only.
     assert app.content(doc) == body

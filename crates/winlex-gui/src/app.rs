@@ -99,6 +99,7 @@ pub fn run(
     let _apartment = crate::input::Apartment::initialize()?;
     let _graphics = crate::icons::Runtime::new()?;
     let settings = settings::Settings::load(&config);
+    crate::theme::set_mode(settings.preferences.theme as u32);
     resources::initialize(settings.preferences.language)?;
     let session = catalog::Session::new(paths.is_empty());
     let worker = crate::worker::Worker::new(crate::tasks::run)?;

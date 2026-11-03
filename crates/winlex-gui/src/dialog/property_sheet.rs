@@ -8,8 +8,6 @@ use std::{
     ptr,
 };
 
-const PREPARE: u32 = WM_APP + 41;
-
 struct Sheet {
     dpi: Dpi,
     owner: HWND,
@@ -55,11 +53,10 @@ impl Sheet {
         )
     }
 
-    fn prepare(&self, hwnd: HWND) -> anyhow::Result<()> {
-        let initial = !self.prepared.get();
+    fn prepare(&self, hwnd: HWND, position: &mut WINDOWPOS) -> anyhow::Result<()> {
         let target = self.dpi.window(hwnd);
         let manual = self.dpi.mode == Mode::Pmv1;
-        if initial && manual {
+        if manual {
             let mut pages = Vec::new();
             let mut layouts = Vec::new();
             for (index, &baseline) in self.baseline.iter().enumerate() {
@@ -68,7 +65,9 @@ impl Sheet {
                 pages.push(page);
                 layouts.push(Layout::capture(page, self.dpi, baseline, &[], &[], false)?);
                 anyhow::ensure!(
-                    unsafe { set_subclass(page, Some(page_proc), 1, 0) } != 0,
+                    unsafe {
+                        set_subclass(page, Some(page_proc), 1, self as *const Sheet as usize)
+                    } != 0,
                     "Subclass property sheet page failed"
                 );
             }
@@ -107,52 +106,24 @@ impl Sheet {
                 Ok(())
             })?;
         }
-        if initial {
-            let outer = bounds(hwnd, ptr::null_mut());
-            let size = if manual {
-                self.layouts.borrow().last().unwrap().initial_size(target)?
-            } else {
-                SIZE {
-                    cx: outer.right - outer.left,
-                    cy: outer.bottom - outer.top,
-                }
-            };
-            let owner = bounds(self.owner, ptr::null_mut());
-            let mut x = owner.left + (owner.right - owner.left - size.cx) / 2;
-            let mut y = owner.top + (owner.bottom - owner.top - size.cy) / 2;
-            unsafe {
-                let monitor = MonitorFromWindow(self.owner, MONITOR_DEFAULTTONEAREST);
-                let mut info = MONITORINFO {
-                    cbSize: std::mem::size_of::<MONITORINFO>() as u32,
-                    ..std::mem::zeroed()
-                };
-                if GetMonitorInfoW(monitor, &mut info) != 0 {
-                    x = x.clamp(
-                        info.rcWork.left,
-                        (info.rcWork.right - size.cx).max(info.rcWork.left),
-                    );
-                    y = y.clamp(
-                        info.rcWork.top,
-                        (info.rcWork.bottom - size.cy).max(info.rcWork.top),
-                    );
-                }
+        let outer = bounds(hwnd, ptr::null_mut());
+        let size = if manual {
+            self.layouts.borrow().last().unwrap().initial_size(target)?
+        } else {
+            SIZE {
+                cx: outer.right - outer.left,
+                cy: outer.bottom - outer.top,
             }
-            set_bounds(hwnd, crate::layout::rect(x, y, size.cx, size.cy))?;
-        }
+        };
+        let centered = super::centered(self.owner, size);
+        // Change the pending show operation, not a nested top-level SetWindowPos.
+        position.x = centered.left;
+        position.y = centered.top;
+        position.cx = size.cx;
+        position.cy = size.cy;
+        position.flags &= !(SWP_NOMOVE | SWP_NOSIZE);
         if manual {
             self.align_pages(hwnd)?;
-            if initial {
-                // WM_SETFONT defers repainting until the complete layout is positioned.
-                // The sheet may already be visible when this posted preparation runs.
-                unsafe {
-                    RedrawWindow(
-                        hwnd,
-                        ptr::null(),
-                        ptr::null_mut(),
-                        RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN,
-                    );
-                }
-            }
         }
         Ok(())
     }
@@ -204,10 +175,9 @@ unsafe extern "system" fn sheet_callback(hwnd: HWND, message: u32, l: isize) -> 
                 .callback
                 .map_or(0, |callback| callback(hwnd, message, l));
             if message == PSCB_INITIALIZED {
+                crate::theme::apply(hwnd);
                 if set_subclass(hwnd, Some(sheet_proc), 1, current.get() as usize) == 0 {
                     state.fail(hwnd, error("Subclass property sheet"));
-                } else {
-                    PostMessageW(hwnd, PREPARE, 0, 0);
                 }
             }
             result
@@ -221,16 +191,21 @@ unsafe extern "system" fn page_proc(
     w: usize,
     l: isize,
     _: usize,
-    _: usize,
+    data: usize,
 ) -> isize {
     unsafe {
-        if message == WM_NOTIFY && (*(l as *const NMHDR)).code == PSN_SETACTIVE {
-            PostMessageW(GetParent(hwnd), PREPARE, 0, 0);
-        }
         if message == WM_NCDESTROY {
             remove_subclass(hwnd, Some(page_proc), 1);
         }
-        default_subclass(hwnd, message, w, l)
+        let result = default_subclass(hwnd, message, w, l);
+        if message == WM_NOTIFY && (*(l as *const NMHDR)).code == PSN_SETACTIVE {
+            let state = &*(data as *const Sheet);
+            let parent = GetParent(hwnd);
+            if let Err(error) = state.align_pages(parent) {
+                state.fail(parent, error);
+            }
+        }
+        result
     }
 }
 
@@ -248,7 +223,16 @@ unsafe extern "system" fn sheet_proc(
             remove_subclass(hwnd, Some(sheet_proc), 1);
         }
         let result = match message {
-            PREPARE => state.prepare(hwnd).map(|_| true),
+            WM_WINDOWPOSCHANGING if (*(l as *const WINDOWPOS)).flags & SWP_SHOWWINDOW != 0 => {
+                crate::theme::apply(hwnd);
+                if state.prepared.get() {
+                    Ok(false)
+                } else {
+                    state
+                        .prepare(hwnd, &mut *(l as *mut WINDOWPOS))
+                        .map(|_| false)
+                }
+            }
             WM_DPICHANGED if state.dpi.mode == Mode::Pmv1 && state.prepared.get() => {
                 let target = (w & 0xffff) as u32;
                 // PMv2 prepares child dialogs bottom-up during BEFOREPARENT,
@@ -274,21 +258,18 @@ unsafe extern "system" fn sheet_proc(
                         true
                     })
             }
-            WM_SIZE | WM_SIZING | WM_GETMINMAXINFO if state.prepared.get() => {
-                let mut handled = false;
-                state
-                    .with_layouts(|layouts| {
-                        if let Some(layout) = layouts.last() {
-                            handled = layout.message(message, w, l)?;
-                        }
-                        Ok(())
-                    })
-                    .map(|_| handled)
-            }
+            WM_SIZE if state.prepared.get() && w != SIZE_MINIMIZED as usize => state
+                .with_layouts(|layouts| {
+                    if let Some(layout) = layouts.last() {
+                        layout.resize(state.dpi.window(hwnd))?;
+                    }
+                    Ok(())
+                })
+                .map(|_| false),
             _ => Ok(false),
         };
         match result {
-            Ok(true) => return if message == WM_SIZING { 1 } else { 0 },
+            Ok(true) => return 0,
             Err(error) => {
                 state.fail(hwnd, error);
                 return 0;

@@ -30,6 +30,8 @@ fn prepare() {
     workspace::refresh_document_tabs();
 }
 fn recolor() {
+    crate::theme::refresh();
+    crate::theme::apply(read(|a| a.frame));
     unsafe {
         InvalidateRect(read(|a| a.workspace.tabs), ptr::null(), 0);
     }
@@ -37,6 +39,7 @@ fn recolor() {
     for content in workspace::views() {
         content.recolor();
     }
+    workspace::refresh_document_tabs();
 }
 pub(super) fn layout_frame() {
     let (frame, mdi, tabs, status) =
@@ -167,6 +170,7 @@ pub(super) unsafe extern "system" fn frame_proc(hwnd: HWND, msg: u32, w: usize, 
                     sidebar::create(hwnd)?;
                     windows_sys::Win32::UI::Shell::DragAcceptFiles(hwnd, 1);
                     prepare();
+                    crate::theme::apply(hwnd);
                     Ok(())
                 })();
                 if super::checked(result).is_none() {

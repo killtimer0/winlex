@@ -49,21 +49,23 @@ impl WindowIcons {
 }
 
 #[derive(Default)]
-pub struct DocumentIcons(Vec<(Icon, i32, i32, Weak<WindowIcons>)>);
+pub struct DocumentIcons(Vec<(Icon, i32, i32, u32, Weak<WindowIcons>)>);
 impl DocumentIcons {
     pub fn get(&mut self, icon: Icon, dpi: u32) -> anyhow::Result<Rc<WindowIcons>> {
         let small = unsafe { GetSystemMetricsForDpi(SM_CXSMICON, dpi) };
         let large = unsafe { GetSystemMetricsForDpi(SM_CXICON, dpi) };
-        self.0.retain(|(_, _, _, value)| value.strong_count() != 0);
-        for (kind, s, l, value) in &self.0 {
-            if (*kind, *s, *l) == (icon, small, large)
+        let (id, color) = ICONS[icon as usize];
+        let color = symbol_color(color);
+        self.0
+            .retain(|(_, _, _, _, value)| value.strong_count() != 0);
+        for (kind, s, l, tint, value) in &self.0 {
+            if (*kind, *s, *l, *tint) == (icon, small, large, color)
                 && let Some(value) = value.upgrade()
             {
                 return Ok(value);
             }
         }
         let render = |size| unsafe {
-            let (id, color) = ICONS[icon as usize];
             let images = Images::build(size, std::iter::once((id, [color])), "document")?;
             let handle = ImageList_GetIcon(images.0, 0, ILD_TRANSPARENT);
             anyhow::ensure!(!handle.is_null(), "Create document icon failed");
@@ -73,7 +75,8 @@ impl DocumentIcons {
             small: render(small)?,
             large: render(large)?,
         });
-        self.0.push((icon, small, large, Rc::downgrade(&value)));
+        self.0
+            .push((icon, small, large, color, Rc::downgrade(&value)));
         Ok(value)
     }
 }
@@ -127,6 +130,21 @@ const ICONS: &[(u16, u32)] = &[
     (IDR_SYMBOL_MISC, 0x666666),
     (IDR_FILE, 0x666666),
 ];
+
+fn symbol_color(color: u32) -> u32 {
+    if high_contrast() {
+        crate::theme::color(COLOR_WINDOWTEXT)
+    } else if crate::theme::is_dark() {
+        lighten(color)
+    } else {
+        color
+    }
+}
+
+fn lighten(color: u32) -> u32 {
+    let channel = |shift: u32| (((color >> shift) & 255) + 255) / 2;
+    channel(0) | channel(8) << 8 | channel(16) << 16
+}
 
 fn check(status: Status) -> anyhow::Result<()> {
     anyhow::ensure!(status == 0, "GDI+ icon operation failed: {status}");
@@ -244,24 +262,22 @@ impl Images {
         size: i32,
         resources: impl ExactSizeIterator<Item = u16>,
     ) -> anyhow::Result<Self> {
-        let color = unsafe { GetSysColor(COLOR_BTNTEXT) };
+        let color = crate::theme::color(COLOR_BTNTEXT);
         Self::build(size, resources.map(|id| (id, [color])), "toolbar")
     }
     pub fn handle(&self) -> HIMAGELIST {
         self.0
     }
     pub fn new(size: i32) -> anyhow::Result<Self> {
-        let (normal, selected) = unsafe {
-            (
-                GetSysColor(COLOR_WINDOWTEXT),
-                GetSysColor(COLOR_HIGHLIGHTTEXT),
-            )
-        };
+        let (normal, selected) = (
+            crate::theme::color(COLOR_WINDOWTEXT),
+            crate::theme::color(COLOR_HIGHLIGHTTEXT),
+        );
         Self::build(
             size,
             ICONS
                 .iter()
-                .map(|&(id, color)| (id, [color, normal, selected])),
+                .map(|&(id, color)| (id, [symbol_color(color), normal, selected])),
             "result",
         )
     }
@@ -289,7 +305,7 @@ impl Images {
     }
     pub fn draw(&self, icon: Icon, dc: HDC, x: i32, y: i32, system: bool, text_color: u32) {
         let variant = if system {
-            if text_color == unsafe { GetSysColor(COLOR_HIGHLIGHTTEXT) } {
+            if text_color == crate::theme::color(COLOR_HIGHLIGHTTEXT) {
                 2
             } else {
                 1
@@ -306,6 +322,14 @@ impl Images {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn dark_symbol_colors_keep_hues_and_lift_each_channel() {
+        assert_eq!(lighten(0), 0x7f7f7f);
+        assert_eq!(lighten(0xffffff), 0xffffff);
+        assert_eq!(lighten(0x993366), 0xcc99b2);
+        assert_eq!(lighten(0x666666), 0xb2b2b2);
+    }
+
     #[test]
     fn recoloring_reuses_alpha_without_carrying_previous_palette_colors() {
         let mut pixels = [0, 0x80332211, 0xff664422];

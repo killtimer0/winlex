@@ -507,6 +507,7 @@ impl MetadataView {
         self.layout();
     }
     pub(super) fn recolor(&self) {
+        super::checked(self.update_icons());
         self.cancel_link_press();
         let content = self.state.borrow().content.clone();
         if let Some(content) = content {

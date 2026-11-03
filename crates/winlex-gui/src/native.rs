@@ -44,6 +44,14 @@ pub fn wide(s: &str) -> Vec<u16> {
 pub fn instance() -> HINSTANCE {
     unsafe { GetModuleHandleW(ptr::null()) }
 }
+pub fn monitor(hwnd: HWND) -> Option<MONITORINFO> {
+    unsafe {
+        let mut info: MONITORINFO = std::mem::zeroed();
+        info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+        (GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mut info) != 0)
+            .then_some(info)
+    }
+}
 pub fn error(action: &str) -> anyhow::Error {
     anyhow::Error::new(std::io::Error::last_os_error()).context(action.to_owned())
 }
@@ -133,6 +141,7 @@ pub fn tooltip(owner: HWND, tool: &TTTOOLINFOW) -> anyhow::Result<HWND> {
         unsafe { DestroyWindow(hwnd) };
         anyhow::bail!("Register tooltip failed");
     }
+    crate::theme::apply(hwnd);
     Ok(hwnd)
 }
 

@@ -111,6 +111,23 @@ struct Control {
     units: RECT,
     flags: u32,
 }
+fn centered(owner: HWND, size: SIZE) -> RECT {
+    let area = bounds(owner, ptr::null_mut());
+    let mut x = area.left + (area.right - area.left - size.cx) / 2;
+    let mut y = area.top + (area.bottom - area.top - size.cy) / 2;
+    if let Some(info) = monitor(owner) {
+        x = x.clamp(
+            info.rcWork.left,
+            (info.rcWork.right - size.cx).max(info.rcWork.left),
+        );
+        y = y.clamp(
+            info.rcWork.top,
+            (info.rcWork.bottom - size.cy).max(info.rcWork.top),
+        );
+    }
+    crate::layout::rect(x, y, size.cx, size.cy)
+}
+
 pub struct Layout {
     window: HWND,
     dpi: Dpi,

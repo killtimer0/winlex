@@ -253,6 +253,7 @@ impl List {
         if unsafe { set_subclass(hwnd, Some(list_proc), 1, palette(hwnd)) } == 0 {
             anyhow::bail!("Subclass list control {id} failed");
         }
+        refresh_palette(hwnd);
         list_column(hwnd, 0, "", 100);
         send(
             hwnd,
@@ -385,6 +386,7 @@ impl List {
                     match d.nmcd.dwDrawStage {
                         CDDS_PREPAINT => Some(CDRF_NOTIFYITEMDRAW as isize),
                         CDDS_ITEMPREPAINT if self.native_background => {
+                            // The control theme supplies light/dark state backgrounds and focus.
                             Some(CDRF_NOTIFYSUBITEMDRAW as isize)
                         }
                         stage if stage == CDDS_ITEMPREPAINT | CDDS_SUBITEM => {
@@ -554,8 +556,8 @@ unsafe fn background(hwnd: HWND, dc: HDC, area: &RECT, selected: bool) {
             (true, false) => (COLOR_BTNFACE, COLOR_WINDOWTEXT),
             _ => (COLOR_WINDOW, COLOR_WINDOWTEXT),
         };
-        FillRect(dc, area, GetSysColorBrush(background));
-        SetTextColor(dc, GetSysColor(foreground));
+        FillRect(dc, area, crate::theme::brush(background));
+        SetTextColor(dc, crate::theme::color(foreground));
     }
 }
 fn themed_items(hwnd: HWND) -> bool {
@@ -646,12 +648,12 @@ impl Visuals {
             let text = if system {
                 GetTextColor(dc)
             } else {
-                GetSysColor(COLOR_WINDOWTEXT)
+                crate::theme::color(COLOR_WINDOWTEXT)
             };
             let accent = if system {
                 text
             } else {
-                GetSysColor(COLOR_HOTLIGHT)
+                crate::theme::color(COLOR_HOTLIGHT)
             };
             area.left += self.padding;
             area.right -= self.padding;
@@ -671,7 +673,7 @@ impl Visuals {
             let secondary = if system {
                 text
             } else {
-                blend(text, GetSysColor(COLOR_WINDOW))
+                blend(text, crate::theme::color(COLOR_WINDOW))
             };
             area.bottom = area.top + height;
             SelectObject(dc, self.heading.handle.0);
@@ -783,6 +785,103 @@ unsafe fn draw_text(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn custom_draw_preserves_native_state_backgrounds_in_both_palettes() {
+        unsafe {
+            let controls = INITCOMMONCONTROLSEX {
+                dwSize: std::mem::size_of::<INITCOMMONCONTROLSEX>() as u32,
+                dwICC: ICC_LISTVIEW_CLASSES,
+            };
+            assert_ne!(InitCommonControlsEx(&controls), 0);
+            let parent = test_window(
+                w!("STATIC"),
+                ptr::null(),
+                WS_POPUP,
+                layout::rect(0, 0, 300, 200),
+            );
+            let list = List::new(
+                parent,
+                1,
+                |_, visit| visit(&Display::default()),
+                |_| Vec::new(),
+                None,
+                WindowsVersion::VISTA,
+            )
+            .unwrap();
+            MoveWindow(list.hwnd, 0, 0, 300, 200, 0);
+            send(list.hwnd, LVM_SETITEMCOUNT, 1, 0);
+            let area = item_rect(list.hwnd, 0).unwrap();
+            let screen = GetDC(parent);
+            let dc = CreateCompatibleDC(screen);
+            let bitmap = CreateCompatibleBitmap(screen, 300, 200);
+            ReleaseDC(parent, screen);
+            assert!(!dc.is_null() && !bitmap.is_null());
+            let old_bitmap = SelectObject(dc, bitmap);
+            let marker = GdiObject(CreateSolidBrush(0x302010));
+            for mode in [1, 2] {
+                crate::theme::set_mode(mode);
+                crate::theme::apply(parent);
+                for state in [
+                    0,
+                    CDIS_HOT,
+                    CDIS_SELECTED,
+                    CDIS_SELECTED | CDIS_HOT,
+                    CDIS_FOCUS,
+                ] {
+                    let mut draw = NMLVCUSTOMDRAW {
+                        nmcd: NMCUSTOMDRAW {
+                            hdr: NMHDR {
+                                hwndFrom: list.hwnd,
+                                code: NM_CUSTOMDRAW,
+                                ..std::mem::zeroed()
+                            },
+                            hdc: dc,
+                            rc: area,
+                            uItemState: state,
+                            ..std::mem::zeroed()
+                        },
+                        ..std::mem::zeroed()
+                    };
+                    let mut notify = |stage| {
+                        draw.nmcd.dwDrawStage = stage;
+                        list.notify(&mut draw as *mut _ as isize).unwrap()
+                    };
+                    assert_eq!(notify(CDDS_ITEMPREPAINT), CDRF_NOTIFYSUBITEMDRAW as isize);
+                    assert_eq!(
+                        notify(CDDS_ITEMPREPAINT | CDDS_SUBITEM),
+                        (CDRF_DOERASE | CDRF_NOTIFYPOSTPAINT) as isize
+                    );
+                    // Stand in for the native background and focus border; the overlay
+                    // must not erase either, regardless of the item's native state.
+                    FillRect(dc, &area, marker.0);
+                    SetPixelV(dc, area.left, area.top, 0x908070);
+                    assert_eq!(
+                        notify(CDDS_ITEMPOSTPAINT | CDDS_SUBITEM),
+                        CDRF_DODEFAULT as isize
+                    );
+                    for y in area.top..area.bottom {
+                        for x in area.left..area.right {
+                            assert_eq!(
+                                GetPixel(dc, x, y),
+                                if x == area.left && y == area.top {
+                                    0x908070
+                                } else {
+                                    0x302010
+                                },
+                                "mode={mode}, state={state}, pixel=({x}, {y})"
+                            );
+                        }
+                    }
+                }
+            }
+            crate::theme::set_mode(0);
+            SelectObject(dc, old_bitmap);
+            DeleteObject(bitmap);
+            DeleteDC(dc);
+            DestroyWindow(parent);
+        }
+    }
 
     #[test]
     fn restored_list_state_preserves_selection_focus_mark_and_scroll() {
@@ -1060,9 +1159,9 @@ mod tests {
             let area = layout::rect(0, 0, 100, 40);
             SetBkMode(dc, TRANSPARENT as i32);
             let text: Vec<_> = "Window😀WindowWindow".encode_utf16().collect();
-            FillRect(dc, &area, GetSysColorBrush(COLOR_WINDOW));
-            let normal = GetSysColor(COLOR_WINDOWTEXT);
-            let accent = GetSysColor(COLOR_HOTLIGHT);
+            FillRect(dc, &area, crate::theme::brush(COLOR_WINDOW));
+            let normal = crate::theme::color(COLOR_WINDOWTEXT);
+            let accent = crate::theme::color(COLOR_HOTLIGHT);
             draw_text(
                 dc,
                 area,

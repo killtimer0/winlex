@@ -15,6 +15,7 @@ mod results;
 mod rich_text;
 mod tabs;
 mod tasks;
+mod theme;
 mod worker;
 
 pub fn run(args: impl Iterator<Item = std::ffi::OsString>) -> anyhow::Result<()> {

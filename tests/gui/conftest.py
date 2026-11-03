@@ -40,7 +40,9 @@ def settings(request):
     exe, winmd = Path(option("--exe")).resolve(), Path(option("--winmd")).resolve()
     output = Path(option("--artifacts")).resolve()
     output.mkdir(parents=True, exist_ok=True)
+    version = sys.getwindowsversion()
     info = {"exe": str(exe), "winmd": str(winmd), "os": platform.platform(),
+             "windows_version": {"major": version.major, "minor": version.minor, "build": version.build},
              "python": sys.version, "python_executable": sys.executable, "python_bits": struct.calcsize("P") * 8,
             "dependencies": {name: importlib.metadata.version(name) for name in ("pytest", "pywin32")},
             "hashes": {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in (exe, winmd)},

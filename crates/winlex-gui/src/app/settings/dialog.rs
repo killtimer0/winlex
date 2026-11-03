@@ -1,4 +1,4 @@
-use super::{Preferences, catalog, dpi, read, write};
+use super::{Preferences, THEMES, catalog, dpi, read, write};
 use crate::{
     dialog::{property_sheet, template_size},
     native::*,
@@ -124,6 +124,23 @@ unsafe extern "system" fn page_proc(hwnd: HWND, message: u32, _w: usize, l: isiz
                         send(language, CB_SETCURSEL, index, 0);
                     }
                 }
+                let theme = GetDlgItem(hwnd, SETTINGS_THEME as i32);
+                let supported = crate::theme::supported();
+                for (index, &(value, _, label)) in THEMES.iter().enumerate() {
+                    if !supported && index != 0 {
+                        continue;
+                    }
+                    send(
+                        theme,
+                        CB_ADDSTRING,
+                        0,
+                        resources::wide_text(label).as_ptr() as isize,
+                    );
+                    if value == state.initial.theme || !supported {
+                        send(theme, CB_SETCURSEL, index, 0);
+                    }
+                }
+                EnableWindow(theme, i32::from(supported));
             } else {
                 pages[1] = hwnd;
                 for &(id, category) in FILTERS {
@@ -190,6 +207,22 @@ fn commit(state: &Dialog) -> anyhow::Result<()> {
         .get(index as usize)
         .ok_or_else(|| anyhow::anyhow!("Invalid language selection"))?
         .value;
+    let index = send(
+        unsafe { GetDlgItem(general, SETTINGS_THEME as i32) },
+        CB_GETCURSEL,
+        0,
+        0,
+    );
+    // Unsupported systems display System without destroying a preference saved
+    // on a supported OS when the user commits unrelated settings.
+    let theme = if crate::theme::supported() {
+        THEMES
+            .get(index as usize)
+            .ok_or_else(|| anyhow::anyhow!("Invalid theme selection"))?
+            .0
+    } else {
+        state.initial.theme
+    };
     let mut categories = 0;
     for &(id, category) in FILTERS {
         if send(unsafe { GetDlgItem(search, id as i32) }, BM_GETCHECK, 0, 0) == BST_CHECKED as isize
@@ -200,6 +233,12 @@ fn commit(state: &Dialog) -> anyhow::Result<()> {
     let preferences = Preferences {
         language,
         categories,
+        theme,
     };
-    write(|a| a.settings.set_preferences(&a.config, preferences))
+    write(|a| a.settings.set_preferences(&a.config, preferences))?;
+    if state.initial.theme != theme {
+        crate::theme::set_mode(theme as u32);
+        send(read(|a| a.frame), WM_THEMECHANGED, 0, 0);
+    }
+    Ok(())
 }

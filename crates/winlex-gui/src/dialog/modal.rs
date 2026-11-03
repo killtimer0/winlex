@@ -60,30 +60,7 @@ impl Dialog<'_> {
                 let target = self.dpi.window(hwnd);
                 initial.update_dpi(target)?;
                 let size = initial.initial_size(target)?;
-                let owner = bounds(self.owner, ptr::null_mut());
-                let mut x = owner.left + (owner.right - owner.left - size.cx) / 2;
-                let mut y = owner.top + (owner.bottom - owner.top - size.cy) / 2;
-                unsafe {
-                    let mut info = MONITORINFO {
-                        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
-                        ..std::mem::zeroed()
-                    };
-                    if GetMonitorInfoW(
-                        MonitorFromWindow(self.owner, MONITOR_DEFAULTTONEAREST),
-                        &mut info,
-                    ) != 0
-                    {
-                        x = x.clamp(
-                            info.rcWork.left,
-                            (info.rcWork.right - size.cx).max(info.rcWork.left),
-                        );
-                        y = y.clamp(
-                            info.rcWork.top,
-                            (info.rcWork.bottom - size.cy).max(info.rcWork.top),
-                        );
-                    }
-                }
-                set_bounds(hwnd, crate::layout::rect(x, y, size.cx, size.cy))?;
+                set_bounds(hwnd, super::centered(self.owner, size))?;
                 initial.resize(target)?;
                 layout = Some(initial);
             } else if let Some(layout) = layout.as_mut() {
@@ -99,6 +76,9 @@ impl Dialog<'_> {
                 }
             }
             (self.callback)(hwnd, message, w, l)?;
+            if message == WM_INITDIALOG {
+                crate::theme::apply(hwnd);
+            }
             if message == WM_INITDIALOG || (message == WM_DPICHANGED && self.dpi.mode == Mode::Pmv1)
             {
                 // Font changes intentionally defer repaint until all controls are positioned.
