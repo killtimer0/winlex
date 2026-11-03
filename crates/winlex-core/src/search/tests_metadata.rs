@@ -191,6 +191,103 @@ fn conditions_fixture() -> SourceData {
 }
 
 #[test]
+fn category_vocabulary_preserves_bits_summary_kinds_and_condition_parsing() {
+    let mut file = writer::File::new("Categories");
+    for (name, base) in [
+        ("Class", "Object"),
+        ("Attribute", "Attribute"),
+        ("Struct", "ValueType"),
+        ("Enum", "Enum"),
+        ("Delegate", "MulticastDelegate"),
+    ] {
+        let base = file.TypeRef("System", base);
+        file.public_type("Fixture", name, base);
+    }
+    let interface = file.TypeDef(
+        "Fixture",
+        "Interface",
+        writer::TypeDefOrRef::default(),
+        TypeAttributes::Public,
+    );
+    file.Field("Field", &Type::I32, FieldAttributes::Public);
+    file.constant("Constant", &Value::I32(1));
+    file.MethodDef(
+        "Method",
+        &Signature {
+            flags: MethodCallAttributes::default(),
+            return_type: Type::Void,
+            types: vec![],
+        },
+        MethodAttributes::Public,
+        MethodImplAttributes::default(),
+    );
+    let property = file.Property("Property", &Type::I32);
+    file.PropertyMap(interface, property);
+    let event = file.Event("Event", &Type::class_named("Fixture", "Delegate"));
+    file.EventMap(interface, event);
+    let db = catalog("Categories", file);
+    assert_eq!(EntityCategory::ALL, 127);
+    assert_eq!(EntityCategory::DEFAULT, 7);
+    for (name, category, bit, spelling) in [
+        ("Interface", EntityCategory::Type, 1, "type"),
+        ("Method", EntityCategory::Method, 2, "method"),
+        ("Constant", EntityCategory::Constant, 4, "constant"),
+        ("Field", EntityCategory::Field, 8, "field"),
+        ("Property", EntityCategory::Property, 16, "property"),
+        ("Event", EntityCategory::Event, 32, "event"),
+        (
+            "Object",
+            EntityCategory::TypeReference,
+            64,
+            "type_reference",
+        ),
+    ] {
+        assert_eq!(category as u32, bit);
+        let selected = hits(&db, name, SearchMode::Name).pop().unwrap();
+        assert_eq!(
+            db.declaration(selected.id, None).unwrap().category(),
+            category
+        );
+        if category != EntityCategory::Type {
+            assert_eq!(selected.kind, spelling);
+        }
+        let expected: Vec<_> = db
+            .search(
+                "not name = \"missing\"",
+                SearchOptions {
+                    mode: SearchMode::Condition,
+                    categories: Some(bit),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .map(|hit| hit.unwrap().id)
+            .collect();
+        for text in [spelling.to_owned(), spelling.to_ascii_uppercase()] {
+            let mut found = hits(&db, &format!("category = {text:?}"), SearchMode::Condition);
+            found.sort_unstable_by_key(|hit| hit.id);
+            assert_eq!(found.iter().map(|hit| hit.id).collect::<Vec<_>>(), expected);
+            assert!(expected.contains(&selected.id));
+        }
+    }
+    for name in [
+        "<Module>",
+        "Class",
+        "Attribute",
+        "Struct",
+        "Enum",
+        "Delegate",
+        "Interface",
+    ] {
+        let selected = hits(&db, name, SearchMode::Name).pop().unwrap();
+        assert_eq!(
+            selected.kind,
+            name.trim_matches(['<', '>']).to_ascii_lowercase()
+        );
+    }
+}
+
+#[test]
 fn conditions_combine_same_entity_fields_and_keep_all_positive_evidence() {
     let db = Catalog::from_inputs([conditions_fixture()]).unwrap();
     let query = r#"name contains "access" and value = 5"#;
@@ -408,6 +505,10 @@ fn condition_diagnostics_keep_field_operator_and_value_errors_distinct() {
         let diagnostic = error.downcast_ref::<QueryError>().unwrap();
         assert_eq!(diagnostic.kind, kind, "{query}");
         assert_eq!(diagnostic.span, 0..query.len(), "{query}");
+        if query == r#"category = "unknown""# {
+            assert_eq!(diagnostic.message, "unknown category");
+            assert!(!diagnostic.incomplete);
+        }
     }
 }
 

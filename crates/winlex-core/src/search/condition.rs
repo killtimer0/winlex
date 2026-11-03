@@ -298,16 +298,11 @@ impl Condition {
                             kind = QueryErrorKind::Operator;
                             anyhow::ensure!(op == Operator::Equal, "category requires =");
                             kind = QueryErrorKind::Value;
-                            let category = match text.to_ascii_lowercase().as_str() {
-                                "type" => EntityCategory::Type,
-                                "method" => EntityCategory::Method,
-                                "constant" => EntityCategory::Constant,
-                                "field" => EntityCategory::Field,
-                                "property" => EntityCategory::Property,
-                                "event" => EntityCategory::Event,
-                                "type_reference" => EntityCategory::TypeReference,
-                                _ => anyhow::bail!("unknown category"),
-                            };
+                            let category = EntityCategory::NAMES
+                                .iter()
+                                .find(|(_, name)| name.eq_ignore_ascii_case(text))
+                                .map(|(category, _)| *category)
+                                .ok_or_else(|| anyhow::anyhow!("unknown category"))?;
                             Ok(Self::Category(category))
                         }
                         ("architecture", _) => {

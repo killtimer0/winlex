@@ -441,7 +441,6 @@ fn append(
     pad: &str,
 ) -> Result<()> {
     let row = c.declaration(id, Some(arch))?;
-    let entity = c.summarize(id, &row);
     let types = Types {
         catalog: c,
         owner: id,
@@ -449,7 +448,8 @@ fn append(
     };
     match row {
         Declaration::Type(t) => {
-            let layout = if entity.kind == "struct" {
+            let category = (t.name() != "<Module>").then(|| t.category());
+            let layout = if category == Some(TypeCategory::Struct) {
                 out.context(pad, arch, "Layout", c.layout(id, arch), |out, layout| {
                     out.bit_position("size: ", layout.size_bits, id)?;
                     write!(out, ", ")?;
@@ -458,7 +458,7 @@ fn append(
             } else {
                 None
             };
-            let vtable = if entity.kind == "interface" {
+            let vtable = if category == Some(TypeCategory::Interface) {
                 out.context(pad, arch, "Vtable", c.vtable(id, arch), |out, vtable| {
                     out.number("vtable: ", vtable.slots.len() as u64, Some("slots"), id)
                 })?
@@ -468,18 +468,18 @@ fn append(
             if let Some(guid) = guid(t) {
                 writeln!(out, "{pad}// GUID: {guid}")?;
             }
-            let keyword = match entity.kind.as_str() {
-                "interface" => "interface",
-                "enum" => "enum",
-                "class" => "class",
-                "delegate" => "delegate",
+            let keyword = match category {
+                Some(TypeCategory::Interface) => "interface",
+                Some(TypeCategory::Enum) => "enum",
+                Some(TypeCategory::Class) => "class",
+                Some(TypeCategory::Delegate) => "delegate",
                 _ if t.flags().contains(TypeAttributes::ExplicitLayout) => {
                     "struct /* explicit layout */"
                 }
                 _ => "struct",
             };
             let name = generic_name(t.name(), t.generic_params());
-            if entity.kind == "delegate"
+            if category == Some(TypeCategory::Delegate)
                 && let Some(invoke) = t.methods().find(|m| m.name() == "Invoke")
             {
                 write!(out, "{pad}delegate ")?;
@@ -495,7 +495,7 @@ fn append(
                 t.interface_impls()
                     .map(|i| types.ty(&i.interface(&generics), "".into())),
             );
-            if entity.kind == "enum" {
+            if category == Some(TypeCategory::Enum) {
                 bases = t
                     .underlying_type()
                     .map(|t| types.ty(&t, "".into()))
@@ -527,7 +527,7 @@ fn append(
                     )?;
                 }
             }
-            if entity.kind == "enum" {
+            if category == Some(TypeCategory::Enum) {
                 for f in t.fields().filter(|f| f.constant().is_some()) {
                     if winlex_core::metadata::supports(f, arch.bit()) {
                         let value = f.constant().unwrap().value();
@@ -650,7 +650,11 @@ fn append(
             writeln!(out, "; // event")?;
         }
         Declaration::Reference(_) => {
-            writeln!(out, "{pad}// Type reference: {}", entity.full_name)?;
+            writeln!(
+                out,
+                "{pad}// Type reference: {}",
+                c.summarize(id, &row).full_name
+            )?;
             match c.resolve_reference(id, arch) {
                 Ok(target) => {
                     write!(out, "{pad}// Resolved: ")?;
@@ -672,6 +676,94 @@ fn append(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn type_dispatch_preserves_module_attribute_and_explicit_layout_fallbacks() {
+        use winlex_core::{SourceData, windows_metadata::writer};
+
+        let mut file = writer::File::new("TypeDispatch");
+        let cases = [
+            (
+                "Attribute",
+                "OrdinaryAttribute",
+                false,
+                "struct OrdinaryAttribute : Attribute\n{\n};\n",
+            ),
+            (
+                "Attribute",
+                "ExplicitAttribute",
+                true,
+                "struct /* explicit layout */ ExplicitAttribute : Attribute\n{\n};\n",
+            ),
+            (
+                "Object",
+                "ExplicitClass",
+                true,
+                "class ExplicitClass : Object\n{\n};\n",
+            ),
+            ("", "<Module>", false, "struct <Module>\n{\n};\n"),
+            (
+                "ValueType",
+                "<Module>",
+                false,
+                "struct <Module> : ValueType\n{\n};\n",
+            ),
+            ("Enum", "<Module>", false, "struct <Module> : Enum\n{\n};\n"),
+            (
+                "MulticastDelegate",
+                "<Module>",
+                false,
+                "struct <Module> : MulticastDelegate\n{\n};\n",
+            ),
+            (
+                "Attribute",
+                "<Module>",
+                true,
+                "struct /* explicit layout */ <Module> : Attribute\n{\n};\n",
+            ),
+        ];
+        for (base, name, explicit, _) in cases {
+            let base = if base.is_empty() {
+                writer::TypeDefOrRef::default()
+            } else {
+                writer::TypeDefOrRef::TypeRef(file.TypeRef("System", base))
+            };
+            file.TypeDef(
+                "C2Kinds",
+                name,
+                base,
+                TypeAttributes::Public
+                    | if explicit {
+                        TypeAttributes::ExplicitLayout
+                    } else {
+                        TypeAttributes::SequentialLayout
+                    },
+            );
+        }
+        let path =
+            std::env::temp_dir().join(format!("winlex-type-dispatch-{}.winmd", std::process::id()));
+        std::fs::write(&path, file.into_stream()).unwrap();
+        let source = SourceData::read(&path).unwrap();
+        std::fs::remove_file(path).unwrap();
+        let catalog = Catalog::from_inputs([source]).unwrap();
+        let ids: Vec<_> = catalog
+            .type_ids()
+            .filter(|&id| {
+                let Declaration::Type(t) = catalog.declaration(id, None).unwrap() else {
+                    unreachable!()
+                };
+                t.namespace() == "C2Kinds"
+            })
+            .collect();
+        assert_eq!(ids.len(), cases.len());
+        for (id, (_, _, _, expected)) in ids.into_iter().zip(cases) {
+            for arch in Architecture::ALL {
+                let rendered = render(&catalog, id, arch).unwrap();
+                assert_eq!(rendered.text, expected);
+                assert!(rendered.regions.is_empty());
+            }
+        }
+    }
 
     #[test]
     fn labeled_positions_capture_complete_regions_without_separators() {

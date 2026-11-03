@@ -62,7 +62,6 @@ pub(in crate::app) struct View {
     setting: Cell<bool>,
     revision: Cell<u64>,
     pending: Cell<usize>,
-    querying: Cell<bool>,
     languages: RefCell<Vec<u16>>,
     body: RefCell<crate::rich_text::Content>,
     tx: mpsc::Sender<Completion>,
@@ -93,7 +92,6 @@ impl View {
             setting: Cell::new(true),
             revision: Cell::new(0),
             pending: Cell::new(0),
-            querying: Cell::new(false),
             languages: RefCell::new(vec![]),
             body: RefCell::new(crate::rich_text::Content::new(String::new())),
             tx,
@@ -284,7 +282,7 @@ impl View {
         }
     }
     fn execute(&self) {
-        if self.querying.get() {
+        if unsafe { IsWindowEnabled(self.query) } == 0 {
             return;
         }
         let request = match self.request() {
@@ -303,7 +301,6 @@ impl View {
             let _ = tx.send(Completion::Query { revision, result });
         }) {
             Ok(()) => {
-                self.querying.set(true);
                 unsafe { EnableWindow(self.query, 0) };
                 self.set_status(&resources::text(IDS_ERROR_CODE_QUERYING));
             }
@@ -319,7 +316,6 @@ impl View {
             self.pending.set(self.pending.get().saturating_sub(1));
             match message {
                 Completion::Query { revision, result } => {
-                    self.querying.set(false);
                     unsafe { EnableWindow(self.query, 1) };
                     let body = match result {
                         Ok(result) => {
@@ -799,14 +795,10 @@ fn order_languages(mut ids: Vec<u16>, interface: u16, user: u16) -> Vec<u16> {
     ids
 }
 fn scope_label(scope: &Scope) -> u16 {
-    match scope {
-        Scope::Auto => IDS_ERROR_CODE_AUTO,
-        Scope::Win32 => IDS_ERROR_CODE_WIN32,
-        Scope::HResult => IDS_ERROR_CODE_HRESULT,
-        Scope::NtStatus => IDS_ERROR_CODE_NTSTATUS,
-        Scope::Errno => IDS_ERROR_CODE_ERRNO,
-        Scope::Module(_) => IDS_ERROR_CODE_CUSTOM,
-    }
+    SCOPES
+        .iter()
+        .find(|(_, value)| value == scope)
+        .map_or(IDS_ERROR_CODE_CUSTOM, |(label, _)| *label)
 }
 fn render(result: &QueryResult) -> String {
     let mut lines = vec![
@@ -957,8 +949,13 @@ mod tests {
     }
     #[test]
     fn scopes_have_distinct_resource_and_model_identities() {
+        assert_eq!(
+            scope_label(&Scope::Module(PathBuf::from("messages.dll"))),
+            IDS_ERROR_CODE_CUSTOM
+        );
         for (i, (label, scope)) in SCOPES.iter().enumerate() {
             assert_eq!(scope_label(scope), *label);
+            assert_ne!(*label, IDS_ERROR_CODE_CUSTOM);
             for (other_label, other_scope) in &SCOPES[i + 1..] {
                 assert_ne!(label, other_label);
                 assert_ne!(scope, other_scope);

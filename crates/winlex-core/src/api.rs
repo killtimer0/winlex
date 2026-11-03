@@ -97,6 +97,24 @@ pub enum EntityCategory {
 impl EntityCategory {
     pub const ALL: u32 = 127;
     pub const DEFAULT: u32 = Self::Type as u32 | Self::Method as u32 | Self::Constant as u32;
+
+    pub(crate) const NAMES: &[(Self, &str)] = &[
+        (Self::Type, "type"),
+        (Self::Method, "method"),
+        (Self::Constant, "constant"),
+        (Self::Field, "field"),
+        (Self::Property, "property"),
+        (Self::Event, "event"),
+        (Self::TypeReference, "type_reference"),
+    ];
+
+    fn name(self) -> &'static str {
+        Self::NAMES
+            .iter()
+            .find(|(category, _)| *category == self)
+            .unwrap()
+            .1
+    }
 }
 #[derive(Debug, serde::Serialize)]
 pub struct EntitySummary {
@@ -365,16 +383,7 @@ impl Catalog {
                     format!("{:?}", t.category()).to_lowercase()
                 }
             }
-            Declaration::Field(f) => if f.constant().is_some() {
-                "constant"
-            } else {
-                "field"
-            }
-            .into(),
-            Declaration::Method(_) => "method".into(),
-            Declaration::Property(_) => "property".into(),
-            Declaration::Event(_) => "event".into(),
-            Declaration::Reference(_) => "type_reference".into(),
+            _ => row.category().name().into(),
         };
         EntitySummary {
             id,

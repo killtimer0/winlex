@@ -6,14 +6,21 @@ use std::{cell::RefCell, rc::Rc};
 use windows::Win32::UI::Controls::RichEdit::{EN_LINK, ENLINK};
 
 pub(super) const FOLLOW_REFERENCE: u32 = WM_APP + 42;
-const CONTENT_CHANGED: u32 = WM_APP + 43;
-const STATUS_CHANGED: u32 = WM_APP + 44;
 pub(super) fn status_changed(hwnd: HWND) {
-    send(hwnd, STATUS_CHANGED, 0, 0);
+    if let Some(content) = workspace::content(hwnd) {
+        if workspace::active() == hwnd {
+            super::frame::refresh_status();
+        }
+        drop(content);
+    }
 }
 pub(super) fn update_title(hwnd: HWND, title: &str) {
     set_text(hwnd, title);
-    send(hwnd, CONTENT_CHANGED, 0, 0);
+    if let Some(content) = workspace::content(hwnd) {
+        workspace::refresh_document_tabs();
+        super::frame::update_commands();
+        drop(content);
+    }
 }
 pub(super) fn update_icons(
     hwnd: HWND,
@@ -128,17 +135,6 @@ pub(super) unsafe extern "system" fn document_proc(
         }
         if let Some(content) = workspace::content(hwnd) {
             match msg {
-                STATUS_CHANGED => {
-                    if workspace::active() == hwnd {
-                        super::frame::refresh_status();
-                    }
-                    return 0;
-                }
-                CONTENT_CHANGED => {
-                    workspace::refresh_document_tabs();
-                    super::frame::update_commands();
-                    return 0;
-                }
                 WM_CLOSE => {
                     if workspace::active() == hwnd {
                         super::frame::begin_status(super::frame::StatusContext::Document(hwnd));
