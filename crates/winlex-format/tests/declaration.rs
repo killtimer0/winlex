@@ -27,6 +27,72 @@ fn render(catalog: &Catalog, name: &str) -> winlex_format::declaration::Rendered
 }
 
 #[test]
+fn method_imports_and_variadic_signatures_preserve_metadata_meaning() {
+    use winlex_core::windows_metadata::{writer, *};
+    let mut file = writer::File::new("MethodPresentation");
+    file.TypeDef(
+        "Fixture",
+        "Apis",
+        writer::TypeDefOrRef::default(),
+        TypeAttributes::Public,
+    );
+    for (name, flags, parameters, import) in [
+        ("Print", 5, 1, Some(("", "printf", 0x200))),
+        ("Imported", 0, 0, Some(("library.dll", "entry", 0x100))),
+        ("UnknownConvention", 0, 0, Some(("", "entry", 0))),
+        ("OnlyVariadic", 5, 0, None),
+        ("InstanceVariadic", 0x25, 1, None),
+        ("VaList", 0, 2, None),
+        ("OtherConvention", 1, 1, None),
+    ] {
+        let method = file.MethodDef(
+            name,
+            &Signature {
+                flags: MethodCallAttributes(flags),
+                return_type: Type::I32,
+                types: vec![Type::I32; parameters],
+            },
+            MethodAttributes::Public | MethodAttributes::Static,
+            MethodImplAttributes(0),
+        );
+        if let Some((module, entry, convention)) = import {
+            file.ImplMap(method, PInvokeAttributes(convention), entry, module);
+        }
+    }
+    let catalog =
+        Catalog::from_inputs([source("method-presentation", file.into_stream())]).unwrap();
+    for (name, expected) in [
+        (
+            "Print",
+            "// printf; C\nINT32 Print(\n    INT32 arg1,\n    ...\n);\n",
+        ),
+        (
+            "Imported",
+            "// library.dll!entry; system\nINT32 Imported(void);\n",
+        ),
+        (
+            "UnknownConvention",
+            "// entry\nINT32 UnknownConvention(void);\n",
+        ),
+        ("OnlyVariadic", "INT32 OnlyVariadic(...);\n"),
+        (
+            "InstanceVariadic",
+            "INT32 InstanceVariadic(\n    INT32 arg1,\n    ...\n);\n",
+        ),
+        (
+            "VaList",
+            "INT32 VaList(\n    INT32 arg1,\n    INT32 arg2\n);\n",
+        ),
+        (
+            "OtherConvention",
+            "INT32 OtherConvention(\n    INT32 arg1\n);\n",
+        ),
+    ] {
+        assert_eq!(render(&catalog, name).text, expected, "{name}");
+    }
+}
+
+#[test]
 fn external_references_remain_unlinked_when_missing_or_ambiguous() {
     use winlex_core::windows_metadata::{reader, writer, *};
     let mut dependency = writer::File::new("NavigationExternal");

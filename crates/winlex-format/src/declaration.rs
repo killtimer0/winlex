@@ -381,7 +381,7 @@ fn method(
 ) -> Result<()> {
     let signature = m.signature(&[]);
     let params = m.params_by_sequence(signature.types.len())?;
-    let parameters = signature
+    let mut parameters = signature
         .types
         .iter()
         .zip(params.params())
@@ -412,8 +412,13 @@ fn method(
             types.ty(t, name.into()).prefix(&prefix)
         })
         .collect::<Vec<_>>();
+    if signature.flags.0 & 0x0f == MethodCallAttributes::VARARG.0 {
+        parameters.push("...".into());
+    }
     let parameters = if parameters.is_empty() {
         "void".into()
+    } else if signature.types.is_empty() {
+        "...".into()
     } else {
         Rendered::join(parameters, &format!(",\n{pad}    "))
             .prefix(&format!("\n{pad}    "))
@@ -614,13 +619,17 @@ fn append(
         }
         Declaration::Method(m) => {
             if let Some(import) = m.impl_map() {
-                writeln!(
-                    out,
-                    "{pad}// {}!{}; {:?}",
-                    import.import_scope().name(),
-                    import.import_name(),
-                    m.calling_convention()
-                )?;
+                write!(out, "{pad}// ")?;
+                let module = import.import_scope().name();
+                if !module.is_empty() {
+                    write!(out, "{module}!")?;
+                }
+                write!(out, "{}", import.import_name())?;
+                let convention = m.calling_convention();
+                if !convention.is_empty() {
+                    write!(out, "; {convention}")?;
+                }
+                writeln!(out)?;
             }
             method(
                 out,
