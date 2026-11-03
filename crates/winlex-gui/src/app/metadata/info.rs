@@ -244,8 +244,7 @@ impl Info {
         let online = m.button_size(self.online);
         let combo = bounds(self.architecture, ptr::null_mut());
         let combo_height = combo.bottom - combo.top;
-        let label_width =
-            m.label_width([resources::wide_text(IDS_ARCHITECTURE)].into_iter(), 0) - m.px(16);
+        let label_width = m.text_width(resources::wide_text(IDS_ARCHITECTURE)) + m.px(8);
         let actions_width = label_width + m.px(70 + 8) + button.cx + m.px(8) + online.cx;
         let wrap_button = actions_width > area.right - area.left;
         let row_height = m.height.max(combo_height).max(if wrap_button {
@@ -258,7 +257,7 @@ impl Info {
             .borrow()
             .as_ref()
             .map_or(m.height, |font| font.height);
-        let kind_width = m.label_width([text_wide(self.kind)].into_iter(), 0);
+        let kind_width = m.text_width(&text_wide(self.kind)) + m.px(24);
         let wide = area.right - area.left >= m.px(520).max(actions_width + m.px(180));
         let mut title = layout::take_top(area, heading_height + m.px(4));
         if wide {
@@ -280,8 +279,7 @@ impl Info {
         positions.push((self.scope, layout::take_top(area, m.height + m.px(8))));
         let mut row = layout::take_top(area, if wide { row_height } else { m.height });
         layout::take_top(area, m.px(4));
-        let source_width =
-            m.label_width([resources::wide_text(IDS_DOCUMENT_SOURCE)].into_iter(), 0) - m.px(16);
+        let source_width = m.text_width(resources::wide_text(IDS_DOCUMENT_SOURCE)) + m.px(8);
         let mut source_row = if wide {
             let width = (row.right - row.left - actions_width - m.px(16)).max(0);
             let source = layout::take_left(&mut row, width);

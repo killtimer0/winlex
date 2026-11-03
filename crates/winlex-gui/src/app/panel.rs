@@ -222,8 +222,7 @@ impl Search {
         send(self.tooltip, TTM_SETMAXTIPWIDTH, 0, m.px(480) as isize);
     }
     pub fn layout(&self, area: &mut RECT, m: &layout::Metrics, positions: &mut Vec<(HWND, RECT)>) {
-        let outer = dpi().child_outer(self.input, layout::rect(0, 0, 1, m.height + m.px(4)));
-        let mut row = layout::take_top(area, outer.bottom - outer.top);
+        let mut row = layout::take_top(area, m.edit_height(self.input, dpi()));
         let width = m
             .label_width(
                 SEARCH_MODES

@@ -71,7 +71,7 @@ def test_tool_compact_layout_and_narrow_fallback(launch):
                if hasattr(n.user, "GetDpiForWindow") else 96)
         scale = lambda value: round(value * dpi / 96)
         n.send(app.mdi, win32con.WM_MDIRESTORE, doc)
-        for width, paired in [(900, True), (320, False), (900, True)]:
+        for width, paired in [(900, True), (320, False), (220, False), (900, True)]:
             assert n.set_pos(doc, 0, 0, 0, scale(width), scale(560),
                              win32con.SWP_NOMOVE | win32con.SWP_NOZORDER |
                              win32con.SWP_NOACTIVATE)
@@ -84,14 +84,27 @@ def test_tool_compact_layout_and_narrow_fallback(launch):
             else:
                 assert scope[3] <= language[1]
             assert code[3] <= scope[1]
-            assert language[3] <= module[1] and module[2] < browse[0]
-            assert module[3] <= execute[1]
+            assert language[3] <= module[1]
+            assert module[2] < browse[0] or module[3] <= browse[1]
+            assert max(module[3], browse[3]) <= execute[1]
             assert execute[2] <= copy[0] or execute[3] <= copy[1]
             assert max(execute[3], copy[3]) < result[1] < result[3]
             _, _, client_width, client_height = n.rectangle(doc, client=True)
             left, top = win32gui.ClientToScreen(doc, (0, 0))
-            assert left <= result[0] < result[2] <= left + client_width
-            assert top <= result[1] < result[3] <= top + client_height
+            controls = [n.get_item(doc, control) for control in
+                        (1810, 1811, 1812, 1813, 1814, 1815, 1816, 1818)]
+            controls += [control for control in n.windows(doc)
+                         if win32gui.GetParent(control) == doc
+                         and n.class_name(control).lower() == "static"
+                         and n.is_visible(control)]
+            assert all(control and n.is_visible(control) for control in controls)
+            rectangles = [n.rectangle(control) for control in controls]
+            for index, rect in enumerate(rectangles):
+                assert left <= rect[0] < rect[2] <= left + client_width
+                assert top <= rect[1] < rect[3] <= top + client_height
+                for other in rectangles[index + 1:]:
+                    assert (rect[2] <= other[0] or other[2] <= rect[0]
+                            or rect[3] <= other[1] or other[3] <= rect[1])
     assert not n.get_item(doc, 1817), "tool has no local status EDIT"
 
 

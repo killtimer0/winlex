@@ -65,19 +65,59 @@ impl Find {
         if !self.visible.get() {
             return;
         }
-        let mut top = layout::take_top(area, m.height + m.px(8));
-        let label = layout::take_left(&mut top, m.px(45));
-        positions.push((self.controls[0], label));
-        let width = ((top.right - top.left - m.px(180)).max(m.px(30))).min(top.right - top.left);
-        positions.push((self.controls[1], layout::take_left(&mut top, width)));
-        for i in 2..5 {
-            positions.push((self.controls[i], layout::take_left(&mut top, m.px(60))));
+        let gap = m.px(4);
+        let label_width = m.text_width(&text_wide(self.controls[0])) + gap;
+        let edit_height = m.edit_height(self.controls[1], super::super::dpi());
+        let buttons = &self.controls[2..5];
+        let button = m.button_group_size(buttons);
+        let actions_width = (button.cx + gap) * buttons.len() as i32;
+        let inline = area.right - area.left >= label_width + m.px(80) + actions_width;
+        let row_height = edit_height
+            .max(m.height)
+            .max(if inline { button.cy } else { 0 });
+        let mut top = layout::take_top(area, row_height);
+        positions.push((self.controls[0], layout::take_left(&mut top, label_width)));
+        let mut actions = top;
+        if inline {
+            top.right -= actions_width;
+            actions.left = top.right + gap;
         }
-        let mut bottom = layout::take_top(area, m.height + m.px(8));
-        for i in 5..7 {
-            positions.push((self.controls[i], layout::take_left(&mut bottom, m.px(110))));
+        let edit_top = top.top + ((top.bottom - top.top - edit_height).max(0)) / 2;
+        positions.push((
+            self.controls[1],
+            layout::rect(
+                top.left,
+                edit_top,
+                top.right - top.left,
+                edit_height.min(top.bottom - edit_top),
+            ),
+        ));
+        layout::take_top(area, gap);
+        if inline {
+            m.buttons(&mut actions, buttons.iter().copied(), positions);
+        } else {
+            m.buttons(area, buttons.iter().copied(), positions);
         }
-        positions.push((self.controls[7], bottom));
+        let mut row = layout::rect(area.left, area.top, 0, 0);
+        let option_height = m.button_group_size(&self.controls[5..7]).cy;
+        for &control in &self.controls[5..7] {
+            let size = m.button_size(control);
+            if row.right - row.left < size.cx {
+                row = layout::take_top(area, option_height);
+                layout::take_top(area, gap);
+            }
+            let mut bounds = layout::take_left(&mut row, size.cx);
+            let height = size.cy.min(bounds.bottom - bounds.top);
+            bounds.top += (bounds.bottom - bounds.top - height) / 2;
+            bounds.bottom = bounds.top + height;
+            positions.push((control, bounds));
+            layout::take_left(&mut row, gap);
+        }
+        if row.right - row.left < m.text_width(&text_wide(self.controls[7])) {
+            row = layout::take_top(area, m.height);
+            layout::take_top(area, gap);
+        }
+        positions.push((self.controls[7], row));
     }
     fn show(&self, visible: bool) {
         self.visible.set(visible);

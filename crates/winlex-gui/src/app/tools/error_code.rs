@@ -507,22 +507,49 @@ impl View {
         let m = super::super::metrics(self.hwnd);
         let mut area = layout::inset(client(self.hwnd), m.px(8));
         let mut positions = vec![];
-        let row = m.row().max(m.px(24));
-        let label_width = m
-            .label_width(
-                [
-                    IDS_ERROR_CODE_LABEL,
-                    IDS_ERROR_CODE_SCOPE,
-                    IDS_ERROR_CODE_LANGUAGE,
-                    IDS_ERROR_CODE_MODULE,
-                ]
-                .into_iter()
-                .map(resources::wide_text),
-                64,
+        let gap = m.px(4);
+        let label_gap = m.px(8);
+        let label_width = [
+            IDS_ERROR_CODE_LABEL,
+            IDS_ERROR_CODE_SCOPE,
+            IDS_ERROR_CODE_LANGUAGE,
+            IDS_ERROR_CODE_MODULE,
+        ]
+        .into_iter()
+        .map(|id| m.text_width(resources::wide_text(id)))
+        .max()
+        .unwrap_or(0)
+        .min((area.right - area.left) / 3);
+        let label_column = label_width + label_gap;
+        let browse = m.button_size(self.browse);
+        let dpi = super::super::dpi();
+        let heights = [
+            m.edit_height(self.input, dpi),
+            {
+                let r = bounds(self.scope, self.hwnd);
+                r.bottom - r.top
+            },
+            {
+                let r = bounds(self.language, self.hwnd);
+                r.bottom - r.top
+            },
+            m.edit_height(self.module, dpi),
+        ];
+        let centered = |r: RECT, height: i32| {
+            let height = height.min(r.bottom - r.top);
+            layout::rect(
+                r.left,
+                r.top + (r.bottom - r.top - height) / 2,
+                r.right - r.left,
+                height,
             )
-            .min((area.right - area.left) / 3);
-        let button_width = m.px(124);
-        let paired = area.right - area.left >= label_width * 2 + m.px(360);
+        };
+        let combo_bounds = |r: RECT, height: i32| {
+            let mut r = centered(r, height);
+            r.bottom = r.top + height.max(m.row() * 9);
+            r
+        };
+        let paired = area.right - area.left >= label_column * 2 + m.px(360);
         for (index, control) in [self.input, self.scope, self.language, self.module]
             .into_iter()
             .enumerate()
@@ -533,34 +560,62 @@ impl View {
             if !visible || index == 2 && paired {
                 continue;
             }
+            let wrap_browse =
+                index == 3 && area.right - area.left < label_column + m.px(80) + gap + browse.cx;
+            let mut row = heights[index].max(m.height);
+            if index == 1 && paired {
+                row = row.max(heights[2]);
+            }
+            if index == 3 && !wrap_browse {
+                row = row.max(browse.cy);
+            }
             let mut line = layout::take_top(&mut area, row);
-            positions.push((
-                self.labels[index],
-                layout::take_left(&mut line, label_width),
-            ));
-            if index == 3 {
+            let label = layout::take_left(&mut line, label_width);
+            positions.push((self.labels[index], centered(label, m.height)));
+            layout::take_left(&mut line, label_gap);
+            if index == 3 && !wrap_browse {
                 let right = line.right;
-                line.right = (right - button_width - m.px(4)).max(line.left);
+                line.right = (right - browse.cx - gap).max(line.left);
                 positions.push((
                     self.browse,
-                    layout::rect(right - button_width, line.top, button_width, row),
+                    centered(
+                        layout::rect(
+                            right - browse.cx,
+                            line.top,
+                            browse.cx,
+                            line.bottom - line.top,
+                        ),
+                        browse.cy,
+                    ),
                 ));
-            }
-            if index == 1 || index == 2 {
-                line.bottom = line.top + row * 9;
             }
             if index == 1 && paired {
                 let mut language = line;
-                let width = (line.right - line.left - label_width - m.px(8)) / 2;
+                let width = (line.right - line.left - label_column - label_gap) / 2;
                 line.right = line.left + width;
-                language.left = line.right + m.px(8);
-                let mut label = layout::take_left(&mut language, label_width);
-                label.bottom = label.top + row;
-                positions.push((self.labels[2], label));
-                positions.push((self.language, language));
+                language.left = line.right + label_gap;
+                let label = layout::take_left(&mut language, label_width);
+                positions.push((self.labels[2], centered(label, m.height)));
+                layout::take_left(&mut language, label_gap);
+                positions.push((self.language, combo_bounds(language, heights[2])));
             }
-            positions.push((control, line));
-            layout::take_top(&mut area, m.px(4));
+            positions.push((
+                control,
+                if index == 1 || index == 2 {
+                    combo_bounds(line, heights[index])
+                } else {
+                    centered(line, heights[index])
+                },
+            ));
+            layout::take_top(&mut area, gap);
+            if wrap_browse {
+                let mut line = layout::take_top(&mut area, browse.cy);
+                let indent = label_column.min((line.right - line.left - browse.cx).max(0));
+                layout::take_left(&mut line, indent);
+                let button = layout::take_left(&mut line, browse.cx);
+                positions.push((self.browse, button));
+                layout::take_top(&mut area, gap);
+            }
         }
         show(self.browse, self.custom());
         m.buttons(&mut area, [self.query, self.copy], &mut positions);

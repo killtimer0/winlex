@@ -62,11 +62,42 @@ impl Metrics {
     pub fn row(&self) -> i32 {
         self.height + self.px(12)
     }
+    pub fn edit_height(&self, hwnd: HWND, dpi: crate::dpi::Dpi) -> i32 {
+        let outer = dpi.child_outer(hwnd, rect(0, 0, 1, self.height + self.px(4)));
+        outer.bottom - outer.top
+    }
+    pub fn text_width(&self, text: &[u16]) -> i32 {
+        let length = text.iter().position(|&c| c == 0).unwrap_or(text.len());
+        let mut bounds = rect(0, 0, 0, 0);
+        with_window_font(std::ptr::null_mut(), self.font, |dc| unsafe {
+            if length != 0 {
+                DrawTextW(
+                    dc,
+                    text.as_ptr().cast_mut(),
+                    i32::try_from(length).expect("label length fits DrawTextW"),
+                    &mut bounds,
+                    DT_CALCRECT | DT_SINGLELINE,
+                );
+            }
+        });
+        bounds.right
+    }
     pub fn button_size(&self, hwnd: HWND) -> SIZE {
         let mut size = SIZE { cx: 0, cy: 0 };
         if send_mut(hwnd, BCM_GETIDEALSIZE, 0, &mut size) == 0 {
             size.cx = self.label_width(std::iter::once(text_wide(hwnd)), 0);
             size.cy = self.row();
+            let style = unsafe { GetWindowLongPtrW(hwnd, GWL_STYLE) as i32 } & BS_TYPEMASK;
+            if matches!(
+                style,
+                BS_CHECKBOX | BS_AUTOCHECKBOX | BS_3STATE | BS_AUTO3STATE
+            ) {
+                let glyph = unsafe {
+                    windows_sys::Win32::UI::HiDpi::GetSystemMetricsForDpi(SM_CXMENUCHECK, self.dpi)
+                };
+                size.cx = self.text_width(&text_wide(hwnd)) + glyph + self.px(8);
+                size.cy = size.cy.max(glyph);
+            }
         }
         size
     }
@@ -75,26 +106,9 @@ impl Metrics {
         labels: impl Iterator<Item = T>,
         minimum: i32,
     ) -> i32 {
-        let mut width = self.px(minimum);
-        with_window_font(std::ptr::null_mut(), self.font, |dc| unsafe {
-            for label in labels {
-                let label = label.as_ref();
-                let length = label.iter().position(|&c| c == 0).unwrap_or(label.len());
-                let mut bounds = rect(0, 0, 0, 0);
-                if length != 0 {
-                    DrawTextW(
-                        dc,
-                        // DT_MODIFYSTRING is not set; DrawTextW only reads the label.
-                        label.as_ptr().cast_mut(),
-                        i32::try_from(length).expect("label length fits DrawTextW"),
-                        &mut bounds,
-                        DT_CALCRECT | DT_SINGLELINE,
-                    );
-                }
-                width = width.max(bounds.right + self.px(24));
-            }
-        });
-        width
+        labels.fold(self.px(minimum), |width, label| {
+            width.max(self.text_width(label.as_ref()) + self.px(24))
+        })
     }
     pub fn buttons(
         &self,
@@ -107,16 +121,7 @@ impl Metrics {
             return;
         }
         let gap = self.px(4);
-        let size = controls.iter().map(|&h| self.button_size(h)).fold(
-            SIZE {
-                cx: self.px(75),
-                cy: 0,
-            },
-            |group, button| SIZE {
-                cx: group.cx.max(button.cx),
-                cy: group.cy.max(button.cy),
-            },
-        );
+        let size = self.button_group_size(&controls);
         let width = size.cx;
         let available = (area.right - area.left).max(0);
         let columns = ((available + gap) / (width + gap)).max(1);
@@ -139,6 +144,18 @@ impl Metrics {
                 ),
             ));
         }
+    }
+    pub fn button_group_size(&self, controls: &[HWND]) -> SIZE {
+        controls.iter().map(|&h| self.button_size(h)).fold(
+            SIZE {
+                cx: self.px(75),
+                cy: 0,
+            },
+            |group, button| SIZE {
+                cx: group.cx.max(button.cx),
+                cy: group.cy.max(button.cy),
+            },
+        )
     }
 }
 
@@ -292,7 +309,31 @@ mod tests {
         terminated.push(0);
         let width = m.label_width(std::iter::once(&text), 0);
         assert!(width > m.px(24));
+        assert_eq!(m.text_width(&text) + m.px(24), width);
+        assert_eq!(m.text_width(&[]), 0);
         assert_eq!(width, m.label_width(std::iter::once(&terminated), 0));
         assert_eq!(m.label_width(std::iter::once(&[]), 0), m.px(24));
+    }
+
+    #[test]
+    fn edit_measurement_preserves_content_height_with_native_borders() {
+        unsafe {
+            let dpi = crate::dpi::Dpi {
+                mode: crate::dpi::Mode::System,
+            };
+            let m = Metrics {
+                dpi: dpi.system(),
+                font: GetStockObject(SYSTEM_FONT),
+                height: 16,
+            };
+            for style in [WS_POPUP, WS_POPUP | WS_BORDER] {
+                let hwnd = test_window(w!("EDIT"), w!(""), style, rect(0, 0, 100, 100));
+                let height = m.edit_height(hwnd, dpi);
+                set_bounds(hwnd, rect(0, 0, 100, height)).unwrap();
+                let content = client(hwnd);
+                assert_eq!(content.bottom - content.top, m.height + m.px(4));
+                DestroyWindow(hwnd);
+            }
+        }
     }
 }
