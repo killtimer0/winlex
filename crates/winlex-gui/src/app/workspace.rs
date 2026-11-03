@@ -264,13 +264,10 @@ pub(super) fn next_id() -> u64 {
         a.workspace.serial
     })
 }
-pub(super) fn create_document(
-    title: &str,
-    content: super::metadata::MetadataView,
-) -> anyhow::Result<Rc<MetadataView>> {
+fn create_window(title: &str, seed: host::Seed, context: &str) -> anyhow::Result<HWND> {
     let (mdi, maximized) = read(|a| (a.workspace.mdi, a.workspace.maximized));
     let mut init = host::Init {
-        content: Some(host::Seed::Declaration(Box::new(content))),
+        content: Some(seed),
         error: None,
     };
     // CreateMDIWindowW consumes this pointer synchronously in WM_CREATE.
@@ -289,7 +286,7 @@ pub(super) fn create_document(
         )
     };
     if hwnd.is_null() {
-        return Err(init.error.unwrap_or_else(|| error("Create MDI document")));
+        return Err(init.error.unwrap_or_else(|| error(context)));
     }
     let placement = match normal_placement(hwnd) {
         Ok(placement) => placement,
@@ -298,8 +295,21 @@ pub(super) fn create_document(
             return Err(error);
         }
     };
+    content(hwnd)
+        .expect("created content")
+        .set_placement(placement);
+    Ok(hwnd)
+}
+pub(super) fn create_document(
+    title: &str,
+    content: super::metadata::MetadataView,
+) -> anyhow::Result<Rc<MetadataView>> {
+    let hwnd = create_window(
+        title,
+        host::Seed::Declaration(Box::new(content)),
+        "Create MDI document",
+    )?;
     let doc = view(hwnd).expect("created document");
-    doc.placement.set(Some(placement));
     refresh_document_tabs();
     Ok(doc)
 }
@@ -334,36 +344,12 @@ pub(super) fn content_by_id(id: u64) -> Option<Content> {
     contents().into_iter().find(|d| d.id() == id)
 }
 pub(super) fn create_tool(descriptor: &'static super::tools::Descriptor) -> anyhow::Result<HWND> {
-    let (mdi, maximized) = read(|a| (a.workspace.mdi, a.workspace.maximized));
-    let mut init = host::Init {
-        content: Some(host::Seed::Tool(super::tools::ToolView::new(descriptor))),
-        error: None,
-    };
-    let hwnd = unsafe {
-        CreateMDIWindowW(
-            w!("Winlex.Document"),
-            wide(&resources::text(descriptor.title)).as_ptr(),
-            WS_VISIBLE | WS_OVERLAPPEDWINDOW | if maximized { WS_MAXIMIZE } else { 0 },
-            CW_USEDEFAULT,
-            CW_USEDEFAULT,
-            CW_USEDEFAULT,
-            CW_USEDEFAULT,
-            mdi,
-            instance(),
-            &mut init as *mut host::Init as isize,
-        )
-    };
-    if hwnd.is_null() {
-        return Err(init.error.unwrap_or_else(|| error("Create tool window")));
-    }
+    let hwnd = create_window(
+        &resources::text(descriptor.title),
+        host::Seed::Tool(super::tools::ToolView::new(descriptor)),
+        "Create tool window",
+    )?;
     let doc = content(hwnd).expect("created tool");
-    match normal_placement(hwnd) {
-        Ok(p) => doc.set_placement(p),
-        Err(error) => {
-            close_document(hwnd);
-            return Err(error);
-        }
-    }
     doc.prepare();
     refresh_document_tabs();
     Ok(hwnd)

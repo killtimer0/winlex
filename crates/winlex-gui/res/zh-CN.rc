@@ -142,7 +142,6 @@ BEGIN
     IDS_QUERY_OPERATOR "条件无效：此字段不支持该操作"
     IDS_QUERY_VALUE "条件无效：请检查值的类型、范围或格式"
     IDS_QUERY_LIMIT "查询超过支持的长度或复杂度"
-    IDS_SEARCH_HELP_TITLE "搜索语法"
     IDS_SEARCH_HELP "快速搜索匹配名称、常量值和 GUID。\n\n条件示例：\nname contains ""access"" and value = 5\nvalue contains ""Windows""\nvalue >= 1.45 and value < 1.55\nvalue = nan or value = inf\n\n使用 AND、OR、NOT 和括号；字符串需加双引号。\n字段：name、fullname、value、guid、namespace、category、source、architecture。\n文本操作：=、contains、starts_with；名称还支持 fuzzy。\nnamespace within ""Windows.Win32"" 包含子命名空间。\nsource = 0 指第一个输入；architecture = ""x86"" 指适用于 x86。\n\n整数、浮点数和字符串不同：5、5.0、""5""。\n浮点边界按常量声明类型舍入。\nnan 匹配所有 NaN；inf 和 -inf 匹配相应符号的无穷。\nNaN 不能作为有序边界；NOT 也包含缺少该字段的条目。"
     IDS_INVALID_CONDITION_QUERY "条件无效：语法错误"
     IDS_SEARCH_TIP_QUICK "搜索名称、常量值和 GUID。\n示例：CrtFlW、5、1.5、Windows\n组合多个条件时，请选择“条件搜索”。\n完整说明：帮助 → 搜索语法。"

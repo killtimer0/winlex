@@ -87,11 +87,7 @@ fn dialog_rules_preserve_anchors_and_restore_geometry_after_dpi_round_trips() {
         hwnd,
         Dpi { mode: Mode::Pmv1 },
         SIZE { cx: 200, cy: 120 },
-        &[
-            (1, SIZE_X | SIZE_Y),
-            (2, MOVE_X | MOVE_Y),
-            (3, CENTER_X | CENTER_Y),
-        ],
+        &[(1, SIZE_X | SIZE_Y), (2, MOVE_X | MOVE_Y)],
         &[],
         true,
     )
@@ -99,7 +95,6 @@ fn dialog_rules_preserve_anchors_and_restore_geometry_after_dpi_round_trips() {
     layout.update_dpi(96).unwrap();
     let children: Vec<_> = (1..=3).map(|id| unsafe { GetDlgItem(hwnd, id) }).collect();
     let original: Vec<_> = children.iter().map(|&child| bounds(child, hwnd)).collect();
-    let base = client(hwnd);
     let outer = bounds(hwnd, ptr::null_mut());
     let larger = crate::layout::rect(
         0,
@@ -129,13 +124,6 @@ fn dialog_rules_preserve_anchors_and_restore_geometry_after_dpi_round_trips() {
             resized[1].top - original[1].top
         ),
         (100, 60)
-    );
-    assert_eq!(
-        (
-            resized[2].left + resized[2].right,
-            resized[2].top + resized[2].bottom
-        ),
-        (base.right + 100, base.bottom + 60)
     );
     for dpi in [144, 192, 120, 96, 144, 96] {
         let size = layout.initial_size(dpi).unwrap();

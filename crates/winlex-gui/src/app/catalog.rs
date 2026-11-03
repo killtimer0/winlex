@@ -337,7 +337,6 @@ fn merge_results(results: &mut Items, batch: &mut Items, tracked: &mut [isize; 4
             .get(index as usize)
             .map(|item| std::ptr::from_ref(&**item))
     });
-    batch.sort_unstable_by(|a, b| a.compare(b));
     results.append(batch);
     results.sort_by(|a, b| a.compare(b));
     for (index, item) in tracked.iter_mut().zip(original) {

@@ -86,8 +86,6 @@ pub const SIZE_X: u32 = 1;
 pub const SIZE_Y: u32 = 2;
 pub const MOVE_X: u32 = 4;
 pub const MOVE_Y: u32 = 8;
-pub const CENTER_X: u32 = 16;
-pub const CENTER_Y: u32 = 32;
 
 // Non-client DPI scaling may already have changed the client area while
 // PMv1 template metrics still use system DPI. Read the baseline from
@@ -179,9 +177,9 @@ impl Layout {
                 anyhow::ensure!(
                     !child.is_null()
                         && !excluded.contains(&child)
-                        && flags & !(SIZE_X | SIZE_Y | MOVE_X | MOVE_Y | CENTER_X | CENTER_Y) == 0
-                        && (flags & (SIZE_X | MOVE_X | CENTER_X)).count_ones() <= 1
-                        && (flags & (SIZE_Y | MOVE_Y | CENTER_Y)).count_ones() <= 1,
+                        && flags & !(SIZE_X | SIZE_Y | MOVE_X | MOVE_Y) == 0
+                        && (flags & (SIZE_X | MOVE_X)).count_ones() <= 1
+                        && (flags & (SIZE_Y | MOVE_Y)).count_ones() <= 1,
                     "Invalid dialog layout rule {id}"
                 );
             }
@@ -269,16 +267,12 @@ impl Layout {
             let r = control.units;
             let mut pos = self.map(r.left, r.top, target);
             let mut size = self.map(r.right, r.bottom, target);
-            if control.flags & CENTER_X != 0 {
-                pos.cx = (client.right - size.cx) / 2;
-            } else if control.flags & MOVE_X != 0 {
+            if control.flags & MOVE_X != 0 {
                 pos.cx += client.right - base.cx;
             } else if control.flags & SIZE_X != 0 {
                 size.cx += client.right - base.cx;
             }
-            if control.flags & CENTER_Y != 0 {
-                pos.cy = (client.bottom - size.cy) / 2;
-            } else if control.flags & MOVE_Y != 0 {
+            if control.flags & MOVE_Y != 0 {
                 pos.cy += client.bottom - base.cy;
             } else if control.flags & SIZE_Y != 0 {
                 size.cy += client.bottom - base.cy;

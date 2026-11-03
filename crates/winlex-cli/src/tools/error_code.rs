@@ -8,8 +8,7 @@ const HELP: &str = "Usage: winlex error-code CODE [options]\n\nOptions:\n  --sco
 
 fn parse(args: &[OsString]) -> Result<Request, String> {
     let mut code = None;
-    let mut scope = "auto".to_owned();
-    let mut explicit_scope = false;
+    let mut scope = None;
     let mut language = 0;
     let mut module = None;
     let mut args = args.iter();
@@ -26,8 +25,7 @@ fn parse(args: &[OsString]) -> Result<Request, String> {
                 }
                 let value = value.to_str().ok_or("argument must be valid Unicode")?;
                 if text == "--scope" {
-                    scope = value.to_owned();
-                    explicit_scope = true;
+                    scope = Some(value);
                 } else {
                     language = if value == "auto" {
                         0
@@ -52,10 +50,7 @@ fn parse(args: &[OsString]) -> Result<Request, String> {
             }
         }
     }
-    if module.is_some() && !explicit_scope {
-        scope = "module".into();
-    }
-    let scope = match scope.as_str() {
+    let scope = match scope.unwrap_or(if module.is_some() { "module" } else { "auto" }) {
         "auto" => Scope::Auto,
         "win32" => Scope::Win32,
         "hresult" => Scope::HResult,
@@ -189,6 +184,55 @@ fn render_message(text: &mut String, message: &Message) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn scope_options_preserve_defaults_conflicts_and_diagnostic_precedence() {
+        let parse_args =
+            |args: &[&str]| parse(&args.iter().map(OsString::from).collect::<Vec<_>>());
+        for args in [vec!["5"], vec!["5", "--scope", "auto"]] {
+            assert_eq!(parse_args(&args).unwrap().scope, Scope::Auto);
+        }
+        for args in [
+            vec!["5", "--module", "last.dll"],
+            vec!["5", "--scope", "module", "--module", "last.dll"],
+            vec!["5", "--module", "last.dll", "--scope", "module"],
+            vec![
+                "5", "--scope", "auto", "--scope", "module", "--module", "last.dll",
+            ],
+            vec!["5", "--module", "first.dll", "--module", "last.dll"],
+        ] {
+            assert_eq!(
+                parse_args(&args).unwrap().scope,
+                Scope::Module(PathBuf::from("last.dll"))
+            );
+        }
+        for scope in ["auto", "win32", "hresult", "ntstatus"] {
+            for args in [
+                vec!["5", "--scope", scope, "--module", "test.dll"],
+                vec!["5", "--module", "test.dll", "--scope", scope],
+                vec![
+                    "--module", "test.dll", "--scope", "module", "--scope", scope,
+                ],
+            ] {
+                assert_eq!(
+                    parse_args(&args).unwrap_err(),
+                    "--module cannot be combined with a preset --scope"
+                );
+            }
+        }
+        for (args, error) in [
+            (
+                vec!["--scope", "invalid"],
+                "scope must be auto, win32, hresult, ntstatus or module",
+            ),
+            (
+                vec!["--scope", "module"],
+                "module scope requires --module PATH",
+            ),
+            (vec!["--module", "test.dll"], "missing code"),
+        ] {
+            assert_eq!(parse_args(&args).unwrap_err(), error);
+        }
+    }
     #[test]
     fn typed_request_without_metadata_and_checked_inputs() {
         let parse_args =
