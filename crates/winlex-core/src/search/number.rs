@@ -24,10 +24,7 @@ impl Comparison {
 }
 
 pub(super) enum NumberQuery {
-    Integer {
-        negative: bool,
-        magnitude: u64,
-    },
+    Integer(crate::number::IntegerLiteral),
     Float {
         narrow: Option<f32>,
         wide: Option<f64>,
@@ -58,14 +55,7 @@ impl NumberQuery {
         if !prefixed && body.contains(['.', 'e', 'E']) {
             return Self::decimal(text, body);
         }
-        let crate::number::IntegerLiteral {
-            negative,
-            magnitude,
-        } = crate::number::IntegerLiteral::parse(text)?;
-        Ok(Self::Integer {
-            negative,
-            magnitude,
-        })
+        Ok(Self::Integer(crate::number::IntegerLiteral::parse(text)?))
     }
     fn decimal(text: &str, body: &str) -> Result<Self> {
         let wide = text.parse::<f64>().context("invalid decimal number")?;
@@ -90,7 +80,7 @@ impl NumberQuery {
     ) -> Option<super::MatchQuality> {
         self.compare(value, architecture, mask, op)
             .then_some(match self {
-                Self::Integer { .. } => super::MatchQuality::Integer,
+                Self::Integer(_) => super::MatchQuality::Integer,
                 Self::Float { .. } => super::MatchQuality::Float,
             })
     }
@@ -129,10 +119,10 @@ impl NumberQuery {
                     }
                 })
             }
-            Self::Integer {
+            Self::Integer(crate::number::IntegerLiteral {
                 negative,
                 magnitude,
-            } => {
+            }) => {
                 let Some(integer) = crate::integer(value) else {
                     return false;
                 };

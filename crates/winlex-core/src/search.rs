@@ -40,10 +40,6 @@ fn hex_digits(text: &str) -> Option<&str> {
     text.strip_prefix("0x").or_else(|| text.strip_prefix("0X"))
 }
 
-fn parse_unsigned(digits: &str, radix: u32) -> anyhow::Result<u64> {
-    crate::number::parse_unsigned(digits, radix)
-}
-
 #[derive(Debug, serde::Serialize)]
 pub struct SearchMatch {
     #[serde(flatten)]

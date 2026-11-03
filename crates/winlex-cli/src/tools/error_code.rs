@@ -94,14 +94,7 @@ pub(super) fn run(args: &[OsString], out: &mut dyn Write, err: &mut dyn Write) -
     } else {
         write!(out, "{}", render(&result))
     };
-    if let Err(e) = written {
-        if e.kind() == std::io::ErrorKind::BrokenPipe {
-            return if failed { 3 } else { 0 };
-        }
-        let _ = writeln!(err, "output error: {e}");
-        return 4;
-    }
-    if failed { 3 } else { 0 }
+    crate::finish_output(written, err, if failed { 3 } else { 0 })
 }
 
 fn render(result: &QueryResult) -> String {

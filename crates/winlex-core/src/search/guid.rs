@@ -81,9 +81,10 @@ impl GuidQuery {
             } else {
                 (token, 10)
             };
-            let byte =
-                u8::try_from(super::parse_unsigned(digits, radix).context("invalid GUID byte")?)
-                    .context("GUID byte out of range")?;
+            let byte = u8::try_from(
+                crate::number::parse_unsigned(digits, radix).context("invalid GUID byte")?,
+            )
+            .context("GUID byte out of range")?;
             use std::fmt::Write;
             write!(fragment, "{byte:02x}").unwrap();
             ensure!(fragment.len() <= 32, "GUID byte sequence is too long");

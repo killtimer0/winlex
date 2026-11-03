@@ -493,29 +493,42 @@ fn response_writer_failures_preserve_text_and_json_exit_codes() {
         }
     }
     use std::io::ErrorKind::{BrokenPipe, PermissionDenied};
-    for (json, kind, expected) in [
-        (false, BrokenPipe, 0),
-        (true, BrokenPipe, 4),
-        (false, PermissionDenied, 4),
-        (true, PermissionDenied, 4),
+    for (args, exit) in [
+        (vec![input().into_os_string(), "summary".into()], 0),
+        (
+            vec![
+                "error-code".into(),
+                "5".into(),
+                "--module".into(),
+                input().join("missing-message-module.dll").into_os_string(),
+            ],
+            3,
+        ),
     ] {
-        let mut args = vec![input().into_os_string(), "summary".into()];
-        if json {
-            args.push("--json".into());
-        }
-        let mut err = Vec::new();
-        assert_eq!(
-            winlex_cli::run(args, &mut Failing(kind), &mut err),
-            expected
-        );
-        if expected == 0 {
-            assert!(err.is_empty());
-        } else {
-            assert!(
-                String::from_utf8(err)
-                    .unwrap()
-                    .starts_with("output error: ")
+        for (json, kind, expected) in [
+            (false, BrokenPipe, exit),
+            (true, BrokenPipe, 4),
+            (false, PermissionDenied, 4),
+            (true, PermissionDenied, 4),
+        ] {
+            let mut args = args.clone();
+            if json {
+                args.push("--json".into());
+            }
+            let mut err = Vec::new();
+            assert_eq!(
+                winlex_cli::run(args, &mut Failing(kind), &mut err),
+                expected
             );
+            if expected == exit {
+                assert!(err.is_empty());
+            } else {
+                assert!(
+                    String::from_utf8(err)
+                        .unwrap()
+                        .starts_with("output error: ")
+                );
+            }
         }
     }
 }
