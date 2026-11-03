@@ -262,9 +262,6 @@ class Session:
         with client(tabs) as root, root.children() as pages:
             return [page.name for page in pages]
 
-    def tab_label(self, index):
-        return self.tab_labels()[index]
-
     def tab_descriptions(self):
         from .accessibility import client
         with client(n.get_item(self.frame, 1104)) as root, root.children() as pages:

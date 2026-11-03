@@ -1,112 +1,14 @@
-// Independent, stock .NET reader: checks row counts and index keys, not product data.
+// Independent, stock .NET reader for raw metadata facts.
 using System.Reflection.Metadata;
 using System.Reflection.Metadata.Ecma335;
 using System.Reflection.PortableExecutable;
 using System.Text.Json;
-using System.Globalization;
 using System.Collections.Immutable;
 
 using var stream = File.OpenRead(args[0]);
 using var pe = new PEReader(stream);
 var r = pe.GetMetadataReader(MetadataReaderOptions.None);
-var names = new SortedDictionary<string, List<uint>>(StringComparer.Ordinal);
-var values = new SortedDictionary<string, List<uint>>(StringComparer.Ordinal);
-var guids = new SortedDictionary<string, List<uint>>(StringComparer.Ordinal);
-void Add(SortedDictionary<string, List<uint>> map, string key, EntityHandle h)
-{
-    if (!map.TryGetValue(key, out var ids))
-        map[key] = ids = new();
-    ids.Add((uint)MetadataTokens.GetToken(h));
-}
-string AttributeName(CustomAttribute a)
-{
-    if (a.Constructor.Kind != HandleKind.MemberReference)
-        return "";
-    var parent = r.GetMemberReference((MemberReferenceHandle)a.Constructor).Parent;
-    return parent.Kind switch
-    {
-        HandleKind.TypeReference => r.GetString(r.GetTypeReference((TypeReferenceHandle)parent).Name),
-        HandleKind.TypeDefinition => r.GetString(r.GetTypeDefinition((TypeDefinitionHandle)parent).Name),
-        _ => ""
-    };
-}
-void GuidKeys(EntityHandle h, CustomAttributeHandleCollection attrs)
-{
-    foreach (var handle in attrs)
-    {
-        var a = r.GetCustomAttribute(handle);
-        if (AttributeName(a) != "GuidAttribute")
-            continue;
-        var blob = r.GetBlobReader(a.Value);
-        if (blob.ReadUInt16() != 1)
-            throw new Exception("attribute prolog");
-        var d1 = blob.ReadUInt32();
-        var d2 = blob.ReadUInt16();
-        var d3 = blob.ReadUInt16();
-        var tail = Enumerable.Range(0, 8).Select(_ => blob.ReadByte()).ToArray();
-        Add(
-            guids,
-            $"{d1:x8}-{d2:x4}-{d3:x4}-{tail[0]:x2}{tail[1]:x2}-{string.Concat(tail.Skip(2).Select(v => v.ToString("x2")))}",
-            h);
-    }
-}
-int constants = 0;
-foreach (var h in r.TypeDefinitions)
-{
-    var t = r.GetTypeDefinition(h);
-    Add(names, r.GetString(t.Name).ToLowerInvariant(), h);
-    GuidKeys(h, t.GetCustomAttributes());
-}
-foreach (var h in r.FieldDefinitions)
-{
-    var f = r.GetFieldDefinition(h);
-    Add(names, r.GetString(f.Name).ToLowerInvariant(), h);
-    GuidKeys(h, f.GetCustomAttributes());
-    var ch = f.GetDefaultValue();
-    if (ch.IsNil)
-        continue;
-    constants++;
-    var c = r.GetConstant(ch);
-    var b = r.GetBlobReader(c.Value);
-    object v = c.TypeCode switch
-    {
-        ConstantTypeCode.SByte => b.ReadSByte(),
-        ConstantTypeCode.Byte => b.ReadByte(),
-        ConstantTypeCode.Int16 => b.ReadInt16(),
-        ConstantTypeCode.UInt16 => b.ReadUInt16(),
-        ConstantTypeCode.Int32 => b.ReadInt32(),
-        ConstantTypeCode.UInt32 => b.ReadUInt32(),
-        ConstantTypeCode.Int64 => b.ReadInt64(),
-        ConstantTypeCode.UInt64 => b.ReadUInt64(),
-        _ => null
-    };
-    if (v != null)
-        Add(values, Convert.ToString(v, CultureInfo.InvariantCulture)!, h);
-}
-foreach (var h in r.MethodDefinitions)
-    Add(names, r.GetString(r.GetMethodDefinition(h).Name).ToLowerInvariant(), h);
-foreach (var map in new[] { names, values, guids })
-    foreach (var ids in map.Values)
-        ids.Sort();
-var sample = r.TypeDefinitions
-    .Where(h => r.GetString(r.GetTypeDefinition(h).Name) == "OPENFILENAMEW")
-    .Select(h =>
-    {
-        var t = r.GetTypeDefinition(h);
-        var l = t.GetLayout();
-        return new
-        {
-            token = MetadataTokens.GetToken(h),
-            pack = l.PackingSize,
-            size = l.Size,
-            fields = t.GetFields().Select(f => new
-            {
-                token = MetadataTokens.GetToken(f),
-                name = r.GetString(r.GetFieldDefinition(f).Name),
-                offset = r.GetFieldDefinition(f).GetOffset()
-            }).ToArray()
-        };
-    }).ToArray();
+var constants = r.FieldDefinitions.Count(h => !r.GetFieldDefinition(h).GetDefaultValue().IsNil);
 var layouts = r.FieldDefinitions
     .Where(h => r.GetFieldDefinition(h).GetOffset() >= 0)
     .Select(h => new
@@ -204,10 +106,6 @@ File.WriteAllText(args[1], JsonSerializer.Serialize(new
     method_rows = r.MethodDefinitions.Count,
     constants,
     field_layout_rows = r.GetTableRowCount(TableIndex.FieldLayout),
-    names,
-    values,
-    guids,
-    sample,
     layouts,
     scopes,
     signature_type_tokens = signatures
