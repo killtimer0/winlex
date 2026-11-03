@@ -119,13 +119,11 @@ impl View {
         }
     }
     fn update_icons(&self) {
-        let value = super::super::dpi().window(self.hwnd);
-        if let Some(icons) = super::super::catalog::report(super::super::write(|a| {
-            a.workspace.icons.get(self.descriptor.icon, value)
-        })) {
-            icons.apply(self.hwnd);
-            self.icons.replace(Some(icons));
-        }
+        super::super::catalog::report(super::super::document::update_icons(
+            self.hwnd,
+            self.descriptor.icon,
+            &self.icons,
+        ));
     }
     pub fn activated(&self) {
         self.recent.set(super::CLOCK.with(|clock| {
@@ -493,7 +491,7 @@ impl View {
         self.result = crate::rich_text::create(hwnd, ERROR_CODE_RESULT)?;
         send(self.input, EM_SETLIMITTEXT, 4096, 0);
         send(self.module, EM_SETLIMITTEXT, 32767, 0);
-        for control in [self.input, self.module, self.result] {
+        for control in [self.input, self.module] {
             if unsafe { set_subclass(control, Some(text_proc), 1810, 0) } == 0 {
                 return Err(error("Subclass tool text control"));
             }
@@ -658,12 +656,6 @@ unsafe extern "system" fn text_proc(
 ) -> isize {
     unsafe {
         match msg {
-            WM_RBUTTONDOWN if GetDlgCtrlID(hwnd) == ERROR_CODE_RESULT as i32 => return 0,
-            WM_RBUTTONUP if GetDlgCtrlID(hwnd) == ERROR_CODE_RESULT as i32 => {
-                let view = crate::rich_text::ViewState::capture(hwnd);
-                focus(hwnd);
-                view.restore(hwnd);
-            }
             WM_GETDLGCODE if w == VK_TAB as usize => {
                 return (DLGC_WANTARROWS | DLGC_WANTCHARS) as isize;
             }
@@ -672,9 +664,6 @@ unsafe extern "system" fn text_proc(
             }
             WM_IME_ENDCOMPOSITION => {
                 RemovePropW(hwnd, w!("Winlex.Tool.Composing"));
-            }
-            WM_CONTEXTMENU if GetDlgCtrlID(hwnd) == ERROR_CODE_RESULT as i32 => {
-                return send(GetParent(hwnd), msg, hwnd as usize, l);
             }
             WM_NCDESTROY => {
                 RemovePropW(hwnd, w!("Winlex.Tool.Composing"));

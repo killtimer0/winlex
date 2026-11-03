@@ -293,9 +293,9 @@ fn create_window(title: &str, seed: host::Seed, context: &str) -> anyhow::Result
             return Err(error);
         }
     };
-    content(hwnd)
-        .expect("created content")
-        .set_placement(placement);
+    let content = content(hwnd).expect("created content");
+    content.set_placement(placement);
+    content.prepare();
     Ok(hwnd)
 }
 pub(super) fn create_document(
@@ -347,8 +347,6 @@ pub(super) fn create_tool(descriptor: &'static super::tools::Descriptor) -> anyh
         host::Seed::Tool(Box::new(super::tools::ToolView::new(descriptor))),
         "Create tool window",
     )?;
-    let doc = content(hwnd).expect("created tool");
-    doc.prepare();
     refresh_document_tabs();
     Ok(hwnd)
 }

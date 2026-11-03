@@ -135,7 +135,6 @@ pub(super) fn open(binding: Binding, preview: bool) -> anyhow::Result<HWND> {
     };
     let title = content.title();
     let content = workspace::create_document(&title, content)?;
-    content.prepare();
     content.request();
     Ok(content.hwnd)
 }
@@ -168,28 +167,12 @@ impl MetadataView {
         )
     }
     fn update_icons(&self) -> anyhow::Result<()> {
-        let hwnd = self.hwnd;
         let icon = {
             let state = self.state.borrow();
             let entity = state.binding.catalog.entity(state.binding.id)?;
             crate::icons::Icon::for_kind(&entity.kind)
         };
-        let value = dpi().window(hwnd);
-        let icons = write(|a| a.workspace.icons.get(icon, value))?;
-        if self
-            .icons
-            .borrow()
-            .as_ref()
-            .is_some_and(|old| Rc::ptr_eq(old, &icons))
-        {
-            return Ok(());
-        }
-        icons.apply(hwnd);
-        self.icons.replace(Some(icons));
-        if unsafe { IsZoomed(hwnd) } != 0 && workspace::active() == hwnd {
-            unsafe { DrawMenuBar(read(|a| a.frame)) };
-        }
-        Ok(())
+        super::document::update_icons(self.hwnd, icon, &self.icons)
     }
     fn fill_architectures(&self) {
         let binding = self.state.borrow().binding.clone();
@@ -217,8 +200,7 @@ impl MetadataView {
             let previous = state.ticket.replace(ticket.id);
             (state.binding.clone(), previous)
         };
-        set_text(self.hwnd, &self.title());
-        workspace::refresh_document_tabs();
+        document::update_title(self.hwnd, &self.title());
         self.layout();
         let job = Job::Describe {
             document: self.id,

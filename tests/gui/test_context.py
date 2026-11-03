@@ -6,8 +6,11 @@ import sys
 import time
 import win32clipboard as clipboard
 import win32con
+import win32api
+import pytest
 from support import messages
 from support import native as n
+from support.input_state import InputState, foreground
 
 
 def popup(app, editor, location=-1, keyboard=False, mouse=False):
@@ -67,6 +70,50 @@ def character_point(app, editor, index):
     point = n.w.POINT(x + 1, y + 1)
     assert n.api(n.user, "ClientToScreen", n.w.BOOL, n.w.HWND, n.c.POINTER(n.w.POINT))(editor, n.c.byref(point))
     return (point.x & 0xFFFF) | ((point.y & 0xFFFF) << 16)
+
+
+@pytest.mark.parametrize('kind', ['declaration', 'tool'])
+def test_readonly_result_context_input_preserves_selection(launch, settings, kind):
+    from test_tools import tool, query
+
+    app = launch([settings[1]])
+    with InputState() as inputs, foreground(app, inputs):
+        if kind == 'tool':
+            doc = tool(app)
+            query(app, doc, '5')
+            editor = n.get_item(doc, 1816)
+        else:
+            app.query('CreateFileW')
+            doc = app.open_row()
+            n.wait(lambda: 'CreateFileW(' in app.content(doc), 'declaration')
+            editor = n.get_item(doc, 1203)
+        app.focus(editor)
+        n.send(editor, win32con.EM_SETSEL, 2, 8)
+        selection = n.send(editor, win32con.EM_GETSEL)
+        first = n.send(editor, win32con.EM_GETFIRSTVISIBLELINE)
+        for gesture in ('mouse', 'apps', 'shift-f10'):
+            if gesture == 'mouse':
+                popup(app, editor, character_point(app, editor, 4), mouse=True)
+            elif gesture == 'apps':
+                inputs.key(win32con.VK_APPS)
+                find_popup(app)
+            else:
+                inputs.state['held'].append(win32con.VK_SHIFT)
+                inputs.save()
+                win32api.keybd_event(win32con.VK_SHIFT, 0, 0, 0)
+                try:
+                    inputs.key(win32con.VK_F10)
+                    find_popup(app)
+                finally:
+                    win32api.keybd_event(win32con.VK_SHIFT, 0, win32con.KEYEVENTF_KEYUP, 0)
+                    inputs.state['held'].remove(win32con.VK_SHIFT)
+                    inputs.save()
+            try:
+                assert n.send(editor, win32con.EM_GETSEL) == selection
+                assert n.send(editor, win32con.EM_GETFIRSTVISIBLELINE) == first
+            finally:
+                dismiss(editor)
+            assert app.active_document() == doc
 
 
 def test_numeric_context_and_selection_survive_architecture_changes(launch, settings):

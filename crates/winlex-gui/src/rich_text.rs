@@ -271,9 +271,9 @@ pub fn create(parent: HWND, id: u16) -> anyhow::Result<HWND> {
             id,
         )
     }?;
-    if let Err(error) = scroll::install(hwnd) {
+    if unsafe { set_subclass(hwnd, Some(procedure), 1, 0) } == 0 {
         unsafe { DestroyWindow(hwnd) };
-        return Err(error);
+        anyhow::bail!("Subclass RichEdit failed");
     }
     send(hwnd, EM_SETLIMITTEXT, 0x7ffffffe, 0);
     if crate::theme::supported() {
@@ -301,6 +301,61 @@ pub fn create(parent: HWND, id: u16) -> anyhow::Result<HWND> {
     };
     send_ref(hwnd, EM_SETCHARFORMAT, SCF_ALL as usize, &format);
     Ok(hwnd)
+}
+
+unsafe extern "system" fn procedure(
+    hwnd: HWND,
+    msg: u32,
+    w: usize,
+    l: isize,
+    id: usize,
+    _: usize,
+) -> isize {
+    unsafe {
+        match msg {
+            WM_GETDLGCODE if w == VK_TAB as usize => {
+                return (DLGC_WANTARROWS | DLGC_WANTCHARS) as isize;
+            }
+            WM_RBUTTONDOWN => return 0,
+            WM_RBUTTONUP => {
+                let view = ViewState::capture(hwnd);
+                focus(hwnd);
+                view.restore(hwnd);
+            }
+            WM_CONTEXTMENU => return send(GetParent(hwnd), msg, hwnd as usize, l),
+            WM_KEYDOWN
+                if w == VK_APPS as usize
+                    || w == VK_F10 as usize && GetKeyState(VK_SHIFT as i32) < 0 =>
+            {
+                return send(GetParent(hwnd), WM_CONTEXTMENU, hwnd as usize, -1);
+            }
+            WM_KEYUP
+                if w == VK_APPS as usize
+                    || w == VK_F10 as usize && GetKeyState(VK_SHIFT as i32) < 0 =>
+            {
+                return 0;
+            }
+            WM_MOUSEWHEEL if w & 0xffff == 0 && GetKeyState(VK_MENU as i32) >= 0 => {
+                let delta = (w >> 16) as i16;
+                if delta != 0 {
+                    let mut lines = 3u32;
+                    SystemParametersInfoW(
+                        SPI_GETWHEELSCROLLLINES,
+                        0,
+                        (&mut lines as *mut u32).cast(),
+                        0,
+                    );
+                    scroll::wheel(hwnd, delta, lines);
+                }
+                return 0;
+            }
+            WM_NCDESTROY => {
+                remove_subclass(hwnd, Some(procedure), id);
+            }
+            _ => {}
+        }
+        default_subclass(hwnd, msg, w, l)
+    }
 }
 
 fn load_module(cache: &OnceLock<Result<(), u32>>, name: &str) -> std::io::Result<()> {

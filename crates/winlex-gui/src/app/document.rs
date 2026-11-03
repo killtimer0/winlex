@@ -2,7 +2,7 @@
 use super::content::Content;
 use super::{dpi, history, metadata::MetadataView, read, workspace};
 use crate::native::*;
-use std::rc::Rc;
+use std::{cell::RefCell, rc::Rc};
 use windows::Win32::UI::Controls::RichEdit::{EN_LINK, ENLINK};
 
 pub(super) const FOLLOW_REFERENCE: u32 = WM_APP + 42;
@@ -14,6 +14,27 @@ pub(super) fn status_changed(hwnd: HWND) {
 pub(super) fn update_title(hwnd: HWND, title: &str) {
     set_text(hwnd, title);
     send(hwnd, CONTENT_CHANGED, 0, 0);
+}
+pub(super) fn update_icons(
+    hwnd: HWND,
+    icon: crate::icons::Icon,
+    current: &RefCell<Option<Rc<crate::icons::WindowIcons>>>,
+) -> anyhow::Result<()> {
+    let value = dpi().window(hwnd);
+    let icons = super::write(|a| a.workspace.icons.get(icon, value))?;
+    if current
+        .borrow()
+        .as_ref()
+        .is_some_and(|old| Rc::ptr_eq(old, &icons))
+    {
+        return Ok(());
+    }
+    icons.apply(hwnd);
+    current.replace(Some(icons));
+    if unsafe { IsZoomed(hwnd) } != 0 && workspace::active() == hwnd {
+        unsafe { DrawMenuBar(read(|a| a.frame)) };
+    }
+    Ok(())
 }
 
 pub(super) struct Init {
@@ -265,35 +286,8 @@ unsafe extern "system" fn editor_proc(
                 _ => {}
             }
         }
-        match msg {
-            WM_GETDLGCODE if w == VK_TAB as usize => {
-                return (DLGC_WANTARROWS | DLGC_WANTCHARS) as isize;
-            }
-            // RichEdit must not collapse an existing selection on a contextual click.
-            WM_RBUTTONDOWN => return 0,
-            WM_RBUTTONUP => {
-                // Native right-up focuses before WM_CONTEXTMENU and scrolls to the old caret.
-                let view = crate::rich_text::ViewState::capture(hwnd);
-                focus(hwnd);
-                view.restore(hwnd);
-            }
-            WM_CONTEXTMENU => return send(owner as HWND, msg, hwnd as usize, l),
-            WM_KEYDOWN
-                if w == VK_APPS as usize
-                    || w == VK_F10 as usize && GetKeyState(VK_SHIFT as i32) < 0 =>
-            {
-                return send(owner as HWND, WM_CONTEXTMENU, hwnd as usize, -1);
-            }
-            WM_KEYUP
-                if w == VK_APPS as usize
-                    || w == VK_F10 as usize && GetKeyState(VK_SHIFT as i32) < 0 =>
-            {
-                return 0;
-            }
-            WM_NCDESTROY => {
-                remove_subclass(hwnd, Some(editor_proc), 1);
-            }
-            _ => {}
+        if msg == WM_NCDESTROY {
+            remove_subclass(hwnd, Some(editor_proc), 1);
         }
         let result = default_subclass(hwnd, msg, w, l);
         if msg == WM_LBUTTONUP

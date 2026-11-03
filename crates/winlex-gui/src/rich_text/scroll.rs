@@ -2,13 +2,6 @@ use crate::native::*;
 #[cfg(test)]
 use windows::Win32::UI::Controls::RichEdit::EM_SETSCROLLPOS;
 
-pub(super) fn install(hwnd: HWND) -> anyhow::Result<()> {
-    if unsafe { set_subclass(hwnd, Some(procedure), 1, 0) } == 0 {
-        anyhow::bail!("Subclass RichEdit scrolling failed");
-    }
-    Ok(())
-}
-
 pub(super) fn position(hwnd: HWND) -> POINT {
     let mut point = offset(hwnd, 0);
     point.x = point.x.max(0);
@@ -45,7 +38,7 @@ pub(super) fn line_height(hwnd: HWND) -> Option<i32> {
     (height > 0).then_some(height)
 }
 
-fn wheel(hwnd: HWND, delta: i16, lines: u32) {
+pub(super) fn wheel(hwnd: HWND, delta: i16, lines: u32) {
     let pages = lines == u32::MAX;
     let units = if pages { 1 } else { u64::from(lines) };
     let count = (u64::from(delta.unsigned_abs()) * units + 60) / 120;
@@ -57,35 +50,6 @@ fn wheel(hwnd: HWND, delta: i16, lines: u32) {
     };
     for _ in 0..count {
         send(hwnd, WM_VSCROLL, direction as usize, 0);
-    }
-}
-
-unsafe extern "system" fn procedure(
-    hwnd: HWND,
-    msg: u32,
-    w: usize,
-    l: isize,
-    id: usize,
-    _data: usize,
-) -> isize {
-    unsafe {
-        if msg == WM_NCDESTROY {
-            remove_subclass(hwnd, Some(procedure), id);
-        } else if msg == WM_MOUSEWHEEL && w & 0xffff == 0 && GetKeyState(VK_MENU as i32) >= 0 {
-            let delta = (w >> 16) as i16;
-            if delta != 0 {
-                let mut lines = 3u32;
-                SystemParametersInfoW(
-                    SPI_GETWHEELSCROLLLINES,
-                    0,
-                    (&mut lines as *mut u32).cast(),
-                    0,
-                );
-                wheel(hwnd, delta, lines);
-            }
-            return 0;
-        }
-        default_subclass(hwnd, msg, w, l)
     }
 }
 
@@ -387,13 +351,16 @@ mod tests {
         let hwnd = editor.1;
         let mut received = (0u32, 0usize, 0isize);
         unsafe {
-            remove_subclass(hwnd, Some(procedure), 1);
+            remove_subclass(hwnd, Some(crate::rich_text::procedure), 1);
             assert_ne!(
                 set_subclass(hwnd, Some(observe), 2, &mut received as *mut _ as usize),
                 0
             );
         }
-        install(hwnd).unwrap();
+        assert_ne!(
+            unsafe { set_subclass(hwnd, Some(crate::rich_text::procedure), 1, 0) },
+            0
+        );
         for (message, keys) in [
             (WM_MOUSEWHEEL, 8),
             (WM_MOUSEWHEEL, 4),

@@ -246,6 +246,28 @@ def menu_rect(app, menu, index):
     return rect.left, rect.top, rect.right, rect.bottom
 
 
+def test_dark_tool_menu_icon_is_visible_on_creation(launch, profile, settings):
+    from test_tools import tool
+
+    app = dark_app(launch, profile, [settings[1]])
+    app.query('CreateFileW')
+    doc = app.open_row()
+    with InputState() as inputs, foreground(app, inputs), n.window_dpi_context(app.frame):
+        n.send(app.mdi, win32con.WM_MDIMAXIMIZE, doc)
+        for new in (False, True):
+            doc = tool(app, new=new)
+            assert n.is_zoomed(doc)
+            menu, _ = menu_items(app)
+            assert win32gui.GetSubMenu(menu, 0)
+            left, top, right, bottom = menu_rect(app, menu, 0)
+            x, y, _, _ = n.rectangle(app.frame)
+            palette = colors(app.frame, inset((left - x, top - y, right - x, bottom - y), 2),
+                             client=False)
+            bg = palette.most_common(1)[0][0]
+            assert max(bg) < 128
+            assert any(max(color) - max(bg) > 60 for color in palette), palette
+
+
 def test_dark_mdi_merged_menu_glyph_pixels_and_native_actions(launch, profile, settings):
     app = dark_app(launch, profile, [settings[1]])
     app.query('CreateFileW')
