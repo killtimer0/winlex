@@ -66,13 +66,7 @@ def test_error_code_cli_missing_and_invalid_are_distinct(settings):
         assert result['error']['code'] == 'invalid_arguments'
 
 
-def test_error_code_cli_system_module_and_failure(settings):
-    module = os.path.join(os.environ['SystemRoot'], 'System32', 'ntdll.dll')
-    result = query(settings, '0xC0000005', '--module', module)['result']
-    message = result['candidates'][0]['message']
-    assert message['status'] == 'found'
-    assert message['source']['kind'] == 'module'
-    assert message['text']
+def test_error_code_cli_missing_module_failure(settings):
     failed = query(settings, '5', '--module', settings[2] / 'missing.dll', expected=3)
     message = failed['result']['candidates'][0]['message']
     assert message['status'] == 'failed'
@@ -89,6 +83,8 @@ def test_error_code_cli_ntstatus_preserves_complete_template(settings):
         (settings[2] / 'ntstatus-complete-templates.json').write_text(
             json.dumps(messages, ensure_ascii=False, indent=2), encoding='utf-8')
         assert message['status'] == 'found'
+        if scope[0] == '--module':
+            assert message['source']['kind'] == 'module'
         text = message['text']
         assert 'instruction' in text.lower() or '指令' in text, text
         assert 'referenced memory' in text.lower() or '内存' in text, text

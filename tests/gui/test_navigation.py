@@ -344,9 +344,8 @@ def test_last_reference_glyph_and_trailing_line_space_have_precise_hit_bounds(la
 
 
 @pytest.mark.parametrize("gesture", ["ctrl-click", "mouse-context-menu"])
-def test_real_unfocused_scrolled_reference_navigates_on_first_gesture(request, launch, settings, gesture):
-    if not request.config.getoption("--real-input"):
-        pytest.skip("actual input not requested")
+@pytest.mark.interactive
+def test_real_unfocused_scrolled_reference_navigates_on_first_gesture(launch, settings, gesture):
     import re
     import win32api
     from support.input_state import InputState
@@ -451,9 +450,8 @@ def test_real_unfocused_scrolled_reference_navigates_on_first_gesture(request, l
             assert app.tab_descriptions()[0].startswith(("Preview · ", "预览 · "))
 
 
-def test_real_ctrl_click_and_drag_do_not_confuse_navigation_with_selection(request, launch, settings):
-    if not request.config.getoption("--real-input"):
-        pytest.skip("actual input not requested")
+@pytest.mark.interactive
+def test_real_ctrl_click_and_drag_do_not_confuse_navigation_with_selection(launch, settings):
     import time
     import win32api
     import win32gui

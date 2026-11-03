@@ -228,9 +228,8 @@ def test_settings_dpi_pages(launch, settings, mode):
     output.write_text(json.dumps(evidence, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def test_settings_pmv1_initial_paint(request, launch, settings):
-    if not request.config.getoption("--real-input"):
-        pytest.skip("visible desktop capture not requested")
+@pytest.mark.interactive
+def test_settings_pmv1_initial_paint(launch, settings):
     if not hasattr(n.user, "GetDpiForWindow"):
         pytest.skip("per-monitor DPI unavailable")
     app = launch(dpi="pmv1")

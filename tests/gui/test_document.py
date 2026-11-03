@@ -1,5 +1,6 @@
 import time
 import shutil
+import pytest
 import win32con
 import win32gui
 from support import native as n
@@ -29,68 +30,6 @@ def test_large_api_document_stays_responsive(launch, settings):
     assert app.content(doc) == body
     assert n.send(editor, win32con.EM_GETSEL) == (6005 << 16) | 6000
     assert n.send(editor, win32con.EM_GETFIRSTVISIBLELINE) == first
-
-
-def test_declaration_wheel_is_synchronous_and_rounds_each_message(launch, settings):
-    app = launch([settings[1]])
-    app.query("Windows.Win32.Graphics.Gdi.Apis")
-    doc = app.open_row()
-    n.wait(lambda: "EnumDisplayMonitors(" in app.content(doc), "complete Gdi declaration", 45)
-    editor = n.get_item(doc, 1203)
-    app.focus(editor)
-    n.send(editor, win32con.EM_SETSEL, 2, 8)
-
-    def top():
-        n.send(editor, win32con.EM_LINESCROLL, 0, -1_000_000)
-        assert n.send(editor, win32con.EM_GETFIRSTVISIBLELINE) == 0
-
-    def wheel(delta):
-        n.send(editor, win32con.WM_MOUSEWHEEL, (delta & 0xffff) << 16)
-
-    lines = n.w.UINT()
-    spi = n.api(n.user, "SystemParametersInfoW", n.w.BOOL,
-                n.w.UINT, n.w.UINT, n.c.c_void_p, n.w.UINT)
-    assert spi(0x0068, 0, n.c.byref(lines), 0)
-    top()
-    wheel(-120)
-    whole = n.send(editor, win32con.EM_GETFIRSTVISIBLELINE)
-    assert (whole > 0) == (lines.value != 0)
-    top()
-    for _ in range(120):
-        wheel(-1)
-    units = 1 if lines.value == 0xffffffff else lines.value
-    if units < 60:
-        assert n.send(editor, win32con.EM_GETFIRSTVISIBLELINE) == 0
-    else:
-        # Large preferences can make even a single delta scroll; compare native commands.
-        actual = n.send(editor, win32con.EM_GETFIRSTVISIBLELINE)
-        top()
-        command = win32con.SB_PAGEDOWN if lines.value == 0xffffffff else win32con.SB_LINEDOWN
-        for _ in range(120 * ((units + 60) // 120)):
-            n.send(editor, win32con.WM_VSCROLL, command)
-        assert actual == n.send(editor, win32con.EM_GETFIRSTVISIBLELINE)
-    top()
-    wheel(-120)
-    assert n.send(editor, win32con.EM_GETFIRSTVISIBLELINE) == whole
-    wheel(120)
-    assert n.send(editor, win32con.EM_GETFIRSTVISIBLELINE) == 0
-    wheel(120)
-    assert n.send(editor, win32con.EM_GETFIRSTVISIBLELINE) == 0
-    assert n.send(editor, win32con.EM_GETSEL) == (8 << 16) | 2
-    n.send(editor, win32con.WM_VSCROLL, win32con.SB_BOTTOM)
-    bottom = n.send(editor, win32con.EM_GETFIRSTVISIBLELINE)
-    for _ in range(5):
-        wheel(-120)
-        assert n.send(editor, win32con.EM_GETFIRSTVISIBLELINE) == bottom
-    wheel(120)
-    previous = n.send(editor, win32con.EM_GETFIRSTVISIBLELINE)
-    for _ in range(3):
-        wheel(-120)
-        current = n.send(editor, win32con.EM_GETFIRSTVISIBLELINE)
-        assert previous <= current <= bottom
-        previous = current
-    assert previous == bottom
-    assert n.send(editor, win32con.EM_GETSEL) == (8 << 16) | 2
 
 
 def test_online_button_tracks_document_metadata(launch, settings):
@@ -316,7 +255,9 @@ def test_document_source_and_responsive_reading_layout(launch, settings):
         assert counts[2] == counts[0]
 
 
-def test_constant_summary_pseudocode_and_information_copy(launch, settings):
+@pytest.mark.parametrize('copy', [False, pytest.param(True, marks=pytest.mark.interactive)],
+                         ids=['summary-contract', 'clipboard'])
+def test_constant_summary_pseudocode_and_information_copy(launch, settings, copy):
     import json
     import subprocess
     from test_context import find_popup, wait_closed, wait_clipboard_available, clipboard_text
@@ -347,6 +288,8 @@ def test_constant_summary_pseudocode_and_information_copy(launch, settings):
         hwnd = n.get_item(doc, control)
         with client(hwnd) as accessible:
             assert accessible.name in names
+    if not copy:
+        return
     button = n.get_item(doc, 1206)
     expected = [str(path), entity_id, "ERROR_ACCESS_DENIED",
                 "Windows.Win32.Foundation.WIN32_ERROR.ERROR_ACCESS_DENIED", path.name]

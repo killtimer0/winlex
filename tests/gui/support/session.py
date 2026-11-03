@@ -1,6 +1,5 @@
 """Owned GUI process and remote memory; partial-start failures use the same cleanup."""
 import ctypes as c
-from contextlib import contextmanager
 from ctypes import wintypes as w
 import json
 from pathlib import Path
@@ -24,11 +23,10 @@ class ThreadInfo(c.Structure):
 
 
 class Session:
-    def __init__(self, exe, profile, arguments=(), dpi="auto", real_input=False):
+    def __init__(self, exe, profile, arguments=(), dpi="auto"):
         self.process = self.handle = self.memory = self.frame = None
         self.cleanup_complete = False
         self.actual_dpi = None
-        self.real_input = real_input
         try:
             self.process = subprocess.Popen([str(exe), *map(str, arguments)], env=profile.environment(dpi=dpi))
             self.frame = n.wait(self.find_frame, "main window")
@@ -211,41 +209,34 @@ class Session:
                 return doc
         return n.wait(match, description)
 
-    @contextmanager
-    def _click_row(self, row, double=False):
-        self.select(row)
-        left, top, right, bottom = self.item_rect(row)
-        point = ((left + right) // 2, (top + bottom) // 2)
-        if self.real_input:
-            import win32gui
-            from .input_state import InputState
-            with InputState() as state:
-                with n.window_dpi_context(self.results):
-                    position = win32gui.ClientToScreen(self.results, point)
-                state.click(*position)
-                if double:
-                    state.click(*position)
-                yield
-            return
-        lparam = (point[1] << 16) | (point[0] & 0xffff)
-        # A list view starts an internal drag loop on button-down, so post clicks.
-        n.post(self.results, win32con.WM_LBUTTONDOWN, win32con.MK_LBUTTON, lparam)
-        n.post(self.results, win32con.WM_LBUTTONUP, 0, lparam)
-        if double:
-            n.post(self.results, win32con.WM_LBUTTONDBLCLK, win32con.MK_LBUTTON, lparam)
-            n.post(self.results, win32con.WM_LBUTTONUP, 0, lparam)
-        yield
-
     def preview_row(self, row=0):
-        return self._clicked_document(row, False, "preview document")
-
-    def double_click_row(self, row=0):
-        return self._clicked_document(row, True, "opened document")
-
-    def _clicked_document(self, row, double, description):
+        self.select(row)
+        self.focus(self.results)
+        n.key_message(self.results, win32con.VK_SPACE)
         name = self.cell(row).splitlines()[0].rsplit(".", 1)[-1]
-        with self._click_row(row, double=double):
-            return self.wait_document(description, name)
+        return self.wait_document("preview document", name)
+
+    def single_click_row(self, inputs, row=0):
+        return self._clicked_document(inputs, row, False, "preview document")
+
+    def double_click_row(self, inputs, row=0):
+        return self._clicked_document(inputs, row, True, "opened document")
+
+    def _clicked_document(self, inputs, row, double, description):
+        import win32gui
+        assert inputs is not None, "Mouse gestures require an interactive input owner"
+        name = self.cell(row).splitlines()[0].rsplit(".", 1)[-1]
+        self.select(row)
+        with n.window_dpi_context(self.results):
+            left, top, right, bottom = self.item_rect(row)
+            point = ((left + right) // 2, (top + bottom) // 2)
+            position = win32gui.ClientToScreen(self.results, point)
+            assert win32gui.GetForegroundWindow() == self.frame, "Application lost foreground"
+            assert win32gui.WindowFromPoint(position) == self.results, "Result row is obscured"
+        inputs.click(*position)
+        if double:
+            inputs.click(*position)
+        return self.wait_document(description, name)
 
     def focus(self, control):
         attach = n.api(n.user, "AttachThreadInput", w.BOOL, w.DWORD, w.DWORD, w.BOOL)

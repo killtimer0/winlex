@@ -7,6 +7,9 @@ import importlib.metadata
 from pathlib import Path
 
 import pytest
+import win32api
+import win32con
+import win32service
 from support.config import ConfigProfile
 from support.session import Session
 from support.pe import is_64_bit
@@ -21,7 +24,22 @@ def pytest_addoption(parser):
     parser.addoption("--artifacts", default="tmp/gui-tests")
     parser.addoption("--language", default="en-US", choices=("en-US", "zh-CN"))
     parser.addoption("--dpi", default="auto")
-    parser.addoption("--real-input", action="store_true")
+    parser.addoption("--real-input", action="store_true",
+                     help="Run only interactive input/screen tests on the current desktop")
+
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "interactive: requires an exclusive active input desktop")
+
+
+def pytest_collection_modifyitems(config, items):
+    interactive = config.getoption("--real-input")
+    selected, deselected = [], []
+    for item in items:
+        target = selected if bool(item.get_closest_marker("interactive")) == interactive else deselected
+        target.append(item)
+    items[:] = selected
+    config.hook.pytest_deselected(items=deselected)
 
 
 @pytest.hookimpl(hookwrapper=True)
@@ -48,6 +66,9 @@ def settings(request):
             "hashes": {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in (exe, winmd)},
             "language": option("--language"), "dpi": option("--dpi"), "capabilities": n.capabilities()}
     info["exe_bits"] = 64 if is_64_bit(exe) else 32
+    info["test_group"] = "interactive" if option("--real-input") else "isolated"
+    info["desktop"] = win32service.GetUserObjectInformation(
+        win32service.GetThreadDesktop(win32api.GetCurrentThreadId()), win32con.UOI_NAME)
     (output / "environment.json").write_text(json.dumps(info, indent=2), encoding="utf-8")
     yield exe, winmd, output
     root = extended(output)
@@ -65,8 +86,7 @@ def profile(request):
 def launch(request, settings, profile):
     sessions = []
     def start(arguments=(), dpi=None):
-        session = Session(settings[0], profile, arguments, dpi or request.config.getoption("--dpi"),
-                          real_input=request.config.getoption("--real-input"))
+        session = Session(settings[0], profile, arguments, dpi or request.config.getoption("--dpi"))
         sessions.append(session)
         return session
     yield start

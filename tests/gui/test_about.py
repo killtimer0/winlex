@@ -76,9 +76,8 @@ def test_about_content_modality_and_dpi(launch, profile, settings, language, tit
     n.wait(lambda: not n.is_window(dialog), 'about button close')
 
 
-def test_about_real_keyboard(request, launch):
-    if not request.config.getoption('--real-input'):
-        pytest.skip('actual input not requested')
+@pytest.mark.interactive
+def test_about_real_keyboard(launch):
     app = launch()
     with InputState() as inputs, foreground(app, inputs):
         dialog = open_about(app)

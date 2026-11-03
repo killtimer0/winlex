@@ -49,10 +49,9 @@ def test_search_tooltip_registers_and_tracks_mode_without_hover(launch, settings
         assert actual and (actual == initial) == (index == 0)
 
 
+@pytest.mark.interactive
 def test_toolbar_names_on_hover(launch, settings):
     app = launch()
-    if not app.real_input:
-        pytest.skip('requires --real-input')
     toolbar = n.get_item(app.frame, 1113)
     tooltip = n.send(toolbar, win32con.WM_USER + 35)
     with InputState() as inputs, n.window_dpi_context(app.frame):
@@ -78,8 +77,6 @@ def test_toolbar_names_on_hover(launch, settings):
 
 
 def infotip(app, control, row, image):
-    if not app.real_input:
-        pytest.skip('requires --real-input')
     if not n.is_visible(control):
         app.command(1021 if control == app.sources else 1040)
     n.send(control, 0x1013, row, 0)
@@ -101,6 +98,7 @@ def infotip(app, control, row, image):
         return text
 
 
+@pytest.mark.interactive
 def test_structured_infotips_preserve_paths_and_report_reload_errors(launch, settings):
     from support.paths import extended
     directory = settings[2] / ('长路径' * 40) / ('metadata-' * 12)
@@ -126,6 +124,7 @@ def test_structured_infotips_preserve_paths_and_report_reload_errors(launch, set
     assert 'Previously loaded metadata is still available.' in tip or '先前加载的元数据仍可使用。' in tip
 
 
+@pytest.mark.interactive
 def test_infotips_include_values_and_full_guids(launch, settings):
     app = launch([settings[1]])
     mode = n.get_item(app.frame, 1114)

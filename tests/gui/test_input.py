@@ -5,10 +5,10 @@ import win32gui
 from support import native as n
 from support.input_state import InputState
 
+pytestmark = pytest.mark.interactive
 
-def test_real_search_keyboard(request, launch, settings):
-    if not request.config.getoption("--real-input"):
-        pytest.skip("actual input not requested")
+
+def test_real_search_keyboard(launch, settings):
     with InputState() as input_state:
         app = launch([settings[1]])
         n.wait(lambda: app.status_text().startswith(("Ready.", "已就绪")), "loaded", 45)

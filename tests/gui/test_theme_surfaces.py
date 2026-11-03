@@ -17,6 +17,8 @@ from support.input_state import InputState, foreground as acquire_foreground
 from test_tooltips import infotip
 from test_theme import THEME_SUPPORTED
 
+pytestmark = pytest.mark.interactive
+
 
 @contextmanager
 def foreground(app, inputs):
@@ -40,8 +42,6 @@ def dark_app(launch, profile, arguments=()):
         pytest.skip('requires Windows 10 build 19045 or later')
     profile.set('Preferences', winreg.REG_SZ, 'en-US:7:dark')
     app = launch(arguments)
-    if not app.real_input:
-        pytest.skip('requires --real-input on the current interactive desktop')
     return app
 
 

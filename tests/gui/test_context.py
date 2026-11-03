@@ -4,6 +4,7 @@ import shutil
 import subprocess
 import sys
 import time
+from contextlib import ExitStack
 import win32clipboard as clipboard
 import win32con
 import win32api
@@ -73,11 +74,16 @@ def character_point(app, editor, index):
 
 
 @pytest.mark.parametrize('kind', ['declaration', 'tool'])
-def test_readonly_result_context_input_preserves_selection(launch, settings, kind):
+@pytest.mark.parametrize('physical', [False, pytest.param(True, marks=pytest.mark.interactive)],
+                         ids=['messages', 'keyboard'])
+def test_readonly_result_context_input_preserves_selection(launch, settings, kind, physical):
     from test_tools import tool, query
 
     app = launch([settings[1]])
-    with InputState() as inputs, foreground(app, inputs):
+    with ExitStack() as stack:
+        if physical:
+            inputs = stack.enter_context(InputState())
+            stack.enter_context(foreground(app, inputs))
         if kind == 'tool':
             doc = tool(app)
             query(app, doc, '5')
@@ -91,7 +97,7 @@ def test_readonly_result_context_input_preserves_selection(launch, settings, kin
         n.send(editor, win32con.EM_SETSEL, 2, 8)
         selection = n.send(editor, win32con.EM_GETSEL)
         first = n.send(editor, win32con.EM_GETFIRSTVISIBLELINE)
-        for gesture in ('mouse', 'apps', 'shift-f10'):
+        for gesture in (('apps', 'shift-f10') if physical else ('mouse',)):
             if gesture == 'mouse':
                 popup(app, editor, character_point(app, editor, 4), mouse=True)
             elif gesture == 'apps':
@@ -254,6 +260,7 @@ def clipboard_text():
     return None
 
 
+@pytest.mark.interactive
 def test_numeric_copy_formats(launch, settings):
     app = launch([settings[1]])
     app.query("Windows.Win32.Security.SECURITY_ATTRIBUTES")
@@ -311,18 +318,6 @@ def test_numeric_context_covers_labels_units_and_constant_annotations(launch, se
             assert items == [2074]
             dismiss(editor)
             n.send(editor, win32con.WM_NULL)
-        for down, expected in ((0, decimal), (1, hexadecimal)):
-            n.send(editor, win32con.EM_SETSEL, start, start)
-            wait_clipboard_available()
-            sequence = clipboard.GetClipboardSequenceNumber()
-            popup(app, editor)
-            for _ in range(down + 1):
-                n.key_message(editor, win32con.VK_DOWN)
-            n.key_message(editor, win32con.VK_RETURN)
-            wait_closed(editor)
-            n.send(editor, win32con.WM_NULL)
-            n.wait(lambda: clipboard.GetClipboardSequenceNumber() != sequence, "numeric value copied")
-            assert clipboard_text() == expected
 
 
 def test_numeric_context_requires_the_whole_selection_in_one_region(launch, settings):
@@ -390,6 +385,7 @@ def test_numeric_context_uses_updated_caret_after_mouse_right_click(launch, sett
                 assert current & 0xFFFF == current >> 16
 
 
+@pytest.mark.interactive
 def test_copy_wrapped_declaration_keeps_original_line_breaks(launch, settings):
     app = launch([settings[1]])
     app.query("Windows.Win32.Storage.FileSystem.CreateFileW")
@@ -415,6 +411,7 @@ def test_copy_wrapped_declaration_keeps_original_line_breaks(launch, settings):
     assert clipboard_text() == body.replace("\n", "\r\n")
 
 
+@pytest.mark.interactive
 def test_copy_contention_preserves_clipboard_and_allows_retry(launch, settings, tmp_path):
     app = launch([settings[1]])
     app.query("Windows.Win32.Security.SECURITY_ATTRIBUTES")

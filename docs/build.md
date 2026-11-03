@@ -105,7 +105,8 @@ python tests/gui/resources.py --exe "$guiExe"
 
 `$guiExe` 为构建显示的 GUI 完整路径。`--dpi` 可改为 `pmv1`、`system`、`unaware` 或 `auto`。`--desktop current` 使用当前桌面。
 结果写入 `tmp/gui-tests/<run-id>/`，包括 JUnit、失败截图和 `run.json`。
-实际键鼠专项增加 `--desktop current --real-input -k real_search_keyboard`，要求解锁的活动输入桌面，并允许测试程序取得前台；测试期间不要操作键鼠。
+交互与屏幕呈现组使用 `--desktop current --real-input`，只运行标记为 `interactive` 的用例；可加 `-k real_search_keyboard` 等选择器。默认隔离桌面只运行其余 CLI／窗口契约用例。两组均可加 `--collect-only -q` 核对选择结果。
+交互组要求专用 VM 中解锁的独占活动会话，并允许测试程序取得前台；测试期间不要操作键鼠。职责划分见 [测试目录说明](../tests/README.md)。
 执行端使用与目标系统兼容的 Python 3.8+，通过 `tests/gui/requirements.txt` 安装依赖。
 x64 EXE 需要 64 位执行端 Python；x86 EXE 可使用 32 位或 64 位执行端 Python。
 消息资源等可选 fixture 的部署要求见 [测试目录说明](../tests/README.md)。

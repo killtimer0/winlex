@@ -19,7 +19,7 @@ HISTORY_FORWARD = 1056
 
 @pytest.fixture
 def history_input(request):
-    if not request.config.getoption("--real-input"):
+    if request.node.get_closest_marker("interactive") is None:
         yield None
         return
     from support.input_state import InputState
@@ -29,7 +29,6 @@ def history_input(request):
 
 @pytest.fixture
 def launch(launch, history_input):
-    # Session.preview_row uses real clicks whenever the whole run enables input.
     with ExitStack() as stack:
         def start(*args, **kwargs):
             app = launch(*args, **kwargs)
@@ -421,9 +420,8 @@ def test_appcommand_routes_from_editor_and_search(launch, settings):
 
 
 @pytest.mark.parametrize("gesture", ["alt-arrows", "mouse-side-buttons", "menu"])
-def test_real_foreground_history_gestures(request, launch, settings, gesture, history_input):
-    if not request.config.getoption("--real-input"):
-        pytest.skip("actual history input not requested")
+@pytest.mark.interactive
+def test_real_foreground_history_gestures(launch, settings, gesture, history_input):
     import win32api
     import win32gui
 

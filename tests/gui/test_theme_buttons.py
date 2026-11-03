@@ -11,6 +11,8 @@ from test_about import open_about
 from test_search_help import open_help
 from test_theme_surfaces import background, center, colors, dark_app, foreground, move, screen_image
 
+pytestmark = pytest.mark.interactive
+
 
 def button_pixels(hwnd, checkbox=False, enabled=True):
     _, _, width, height = n.rectangle(hwnd, client=True)

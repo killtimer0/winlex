@@ -1,8 +1,30 @@
 """Transient documents: single-click previews, explicit opens keep them."""
 import pytest
 import win32con
+from contextlib import ExitStack
 
 from support import native as n
+from support.input_state import InputState, foreground
+
+
+@pytest.fixture
+def pointer(request):
+    if request.node.get_closest_marker("interactive") is None:
+        yield None
+    else:
+        with InputState() as inputs:
+            yield inputs
+
+
+@pytest.fixture
+def launch(launch, pointer):
+    with ExitStack() as stack:
+        def start(*args, **kwargs):
+            app = launch(*args, **kwargs)
+            if pointer is not None:
+                stack.enter_context(foreground(app, pointer))
+            return app
+        yield start
 
 
 def title(app, row=0):
@@ -13,13 +35,13 @@ def body(app, doc):
     return n.get_item(doc, 1203)
 
 
-@pytest.mark.parametrize("gesture", ["click", "space"])
-def test_preview_replacement_preserves_architecture_and_focus(launch, settings, gesture):
+@pytest.mark.parametrize("gesture", [pytest.param("click", marks=pytest.mark.interactive), "space"])
+def test_preview_replacement_preserves_architecture_and_focus(launch, settings, gesture, pointer):
     app = launch([settings[1]])
     app.query("CreateFileW")
     name = title(app)
     app.focus(app.results)
-    first = app.preview_row()
+    first = app.single_click_row(pointer) if gesture == "click" else app.preview_row()
     n.wait(lambda: app.focused() == app.results, "preview keeps the list focus")
     assert app.tab_labels()[0] == name + " - x86"
     assert app.tab_descriptions()[0].startswith(("Preview · ", "预览 · "))
@@ -30,7 +52,7 @@ def test_preview_replacement_preserves_architecture_and_focus(launch, settings, 
     name = title(app)
     app.focus(app.results)
     if gesture == "click":
-        second = app.preview_row()
+        second = app.single_click_row(pointer)
     else:
         app.select(0)
         n.key_message(app.results, win32con.VK_SPACE)
@@ -111,7 +133,9 @@ def test_arrow_keys_only_move_the_selection(launch, settings):
     assert app.focused() == app.results
 
 
-def test_pinning_and_open_commands_preserve_documents_and_focus(launch, settings):
+@pytest.mark.parametrize('double_click', [False, pytest.param(True, marks=pytest.mark.interactive)],
+                         ids=['command-contract', 'double-click'])
+def test_pinning_and_open_commands_preserve_documents_and_focus(launch, settings, double_click, pointer):
     app = launch([settings[1]])
     app.query("CreateFileW")
     app.focus(app.results)
@@ -135,10 +159,10 @@ def test_pinning_and_open_commands_preserve_documents_and_focus(launch, settings
     n.send(preview, win32con.WM_CLOSE)
     n.wait(lambda: app.documents() == [doc], "close transient preview")
     app.focus(app.results)
-    opened = app.double_click_row(0)
-    n.wait(lambda: len(app.documents()) == 2, "double click opens a document")
+    opened = app.double_click_row(pointer) if double_click else app.open_row(0)
+    n.wait(lambda: len(app.documents()) == 2, "explicit open creates a document")
     assert app.tab_labels()[1] == name + " - x86"
-    n.wait(lambda: app.focused() == body(app, opened), "double click focuses the body")
+    n.wait(lambda: app.focused() == body(app, opened), "explicit open focuses the body")
 
     n.send(app.mdi, win32con.WM_MDIACTIVATE, doc)
     assert app.active_document() == doc
