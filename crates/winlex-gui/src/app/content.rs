@@ -13,7 +13,7 @@ impl Content {
     pub fn status(&self) -> Option<String> {
         match self {
             Self::Declaration(_) => None,
-            Self::Tool(v) => Some(v.content.status()),
+            Self::Tool(v) => Some(v.status()),
         }
     }
     pub fn id(&self) -> u64 {
@@ -52,13 +52,13 @@ impl Content {
     pub fn focus(&self) {
         match self {
             Self::Declaration(v) => v.focus(),
-            Self::Tool(v) => v.content.focus(),
+            Self::Tool(v) => v.focus(),
         }
     }
     pub fn layout(&self) {
         match self {
             Self::Declaration(v) => v.layout(),
-            Self::Tool(v) => v.content.layout(),
+            Self::Tool(v) => v.layout(),
         }
     }
     pub fn prepare(&self) {
@@ -82,7 +82,7 @@ impl Content {
     pub fn find_key(&self, msg: &MSG) -> bool {
         match self {
             Self::Declaration(v) => v.find_key(msg),
-            Self::Tool(v) => v.content.key(msg),
+            Self::Tool(v) => v.key(msg),
         }
     }
     pub fn destroy(&self) {
@@ -91,7 +91,7 @@ impl Content {
                 v.cancel();
                 v.destroy();
             }
-            Self::Tool(v) => v.content.destroy(),
+            Self::Tool(v) => v.destroy(),
         }
     }
     pub fn supports_find(&self) -> bool {

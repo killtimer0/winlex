@@ -2,106 +2,27 @@
 use super::{content::Content, history, read, workspace};
 use crate::{
     icons::Icon,
-    layout,
     list::{Display, TextSegment},
     native::*,
     resources::{self, *},
 };
-use std::{
-    cell::{Cell, RefCell},
-    rc::Rc,
-};
+use std::cell::Cell;
 
 mod error_code;
-
-pub(super) trait ToolContent {
-    fn create(&mut self, hwnd: HWND) -> anyhow::Result<()>;
-    fn layout(&self);
-    fn focus(&self);
-    fn prepare(&self);
-    fn recolor(&self);
-    fn status(&self) -> String;
-    fn message(&self, msg: u32, w: usize, l: isize) -> Option<isize>;
-    fn key(&self, _msg: &MSG) -> bool {
-        false
-    }
-    fn destroy(&self) {}
-}
+pub(super) use error_code::View as ToolView;
 pub(super) struct Descriptor {
     pub id: &'static str,
     pub title: u16,
     pub description: u16,
     pub icon: Icon,
-    pub factory: fn() -> Box<dyn ToolContent>,
 }
 pub(super) static REGISTRY: &[Descriptor] = &[Descriptor {
     id: "error_code",
     title: IDS_ERROR_CODE_TOOL,
     description: IDS_ERROR_CODE_DESCRIPTION,
     icon: Icon::Constant,
-    factory: error_code::create,
 }];
-pub(super) struct ToolView {
-    pub id: u64,
-    pub hwnd: HWND,
-    pub descriptor: &'static Descriptor,
-    pub content: Box<dyn ToolContent>,
-    pub lifetime: Rc<()>,
-    pub placement: Cell<Option<layout::Placement>>,
-    recent: Cell<u64>,
-    icons: RefCell<Option<Rc<crate::icons::WindowIcons>>>,
-}
-impl ToolView {
-    pub fn new(descriptor: &'static Descriptor) -> Self {
-        Self {
-            id: workspace::next_id(),
-            hwnd: std::ptr::null_mut(),
-            descriptor,
-            content: (descriptor.factory)(),
-            lifetime: Rc::new(()),
-            placement: Cell::new(None),
-            recent: Cell::new(0),
-            icons: RefCell::new(None),
-        }
-    }
-    pub fn title(&self) -> String {
-        if self.hwnd.is_null() {
-            resources::text(self.descriptor.title)
-        } else {
-            crate::native::text(self.hwnd)
-        }
-    }
-    fn update_icons(&self) {
-        let value = super::dpi().window(self.hwnd);
-        if let Some(icons) = super::catalog::report(super::write(|a| {
-            a.workspace.icons.get(self.descriptor.icon, value)
-        })) {
-            icons.apply(self.hwnd);
-            self.icons.replace(Some(icons));
-        }
-    }
-    pub fn prepare(&self) {
-        self.update_icons();
-        self.content.prepare();
-    }
-    pub fn recolor(&self) {
-        self.update_icons();
-        self.content.recolor();
-    }
-    pub fn activated(&self) {
-        self.recent.set(CLOCK.with(|clock| {
-            let next = clock.get() + 1;
-            clock.set(next);
-            next
-        }));
-    }
-}
 thread_local! {static CLOCK:Cell<u64>=const{Cell::new(0)};}
-pub(super) fn activated(id: u64) {
-    if let Some(Content::Tool(v)) = workspace::content_by_id(id) {
-        v.activated();
-    }
-}
 pub(super) fn open(index: isize, new: bool) {
     let Some(descriptor) = REGISTRY.get(index as usize) else {
         return;
@@ -125,7 +46,7 @@ pub(super) fn open(index: isize, new: bool) {
             super::catalog::report(workspace::create_tool(descriptor))
         };
         if let Some(content) = hwnd.and_then(workspace::content) {
-            activated(content.id());
+            content.activated();
             content.focus();
         }
     });

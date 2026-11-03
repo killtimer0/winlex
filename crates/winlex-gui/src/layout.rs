@@ -32,6 +32,22 @@ pub fn take_left(area: &mut RECT, width: i32) -> RECT {
     area.left = (left + width).min(area.right);
     rect(left, area.top, area.left - left, area.bottom - area.top)
 }
+pub fn limit_sizing(area: &mut RECT, edge: u32, minimum: SIZE) {
+    if area.right - area.left < minimum.cx {
+        if matches!(edge, WMSZ_LEFT | WMSZ_TOPLEFT | WMSZ_BOTTOMLEFT) {
+            area.left = area.right - minimum.cx;
+        } else {
+            area.right = area.left + minimum.cx;
+        }
+    }
+    if area.bottom - area.top < minimum.cy {
+        if matches!(edge, WMSZ_TOP | WMSZ_TOPLEFT | WMSZ_TOPRIGHT) {
+            area.top = area.bottom - minimum.cy;
+        } else {
+            area.bottom = area.top + minimum.cy;
+        }
+    }
+}
 
 /// A single font/DPI snapshot for measurement and placement; does not own the font.
 pub struct Metrics {
@@ -153,6 +169,29 @@ pub enum Arrangement {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sizing_limits_keep_the_opposite_edge_fixed_for_every_drag_direction() {
+        for edge in WMSZ_LEFT..=WMSZ_BOTTOMRIGHT {
+            let mut area = rect(10, 20, 30, 40);
+            limit_sizing(&mut area, edge, SIZE { cx: 100, cy: 80 });
+            assert_eq!(area.right - area.left, 100);
+            assert_eq!(area.bottom - area.top, 80);
+            if matches!(edge, WMSZ_LEFT | WMSZ_TOPLEFT | WMSZ_BOTTOMLEFT) {
+                assert_eq!(area.right, 40);
+            } else {
+                assert_eq!(area.left, 10);
+            }
+            if matches!(edge, WMSZ_TOP | WMSZ_TOPLEFT | WMSZ_TOPRIGHT) {
+                assert_eq!(area.bottom, 60);
+            } else {
+                assert_eq!(area.top, 20);
+            }
+            let previous = (area.left, area.top, area.right, area.bottom);
+            limit_sizing(&mut area, edge, SIZE { cx: 90, cy: 70 });
+            assert_eq!((area.left, area.top, area.right, area.bottom), previous);
+        }
+    }
 
     #[test]
     fn button_size_falls_back_when_query_returns_false() {

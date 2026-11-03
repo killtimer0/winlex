@@ -268,22 +268,14 @@ pub(super) unsafe extern "system" fn frame_proc(hwnd: HWND, msg: u32, w: usize, 
             WM_SIZING => {
                 let r = &mut *(l as *mut RECT);
                 let value = dpi().window(hwnd);
-                let mw = layout::scale(480, value);
-                let mh = layout::scale(300, value);
-                if r.right - r.left < mw {
-                    if matches!(w as u32, WMSZ_LEFT | WMSZ_TOPLEFT | WMSZ_BOTTOMLEFT) {
-                        r.left = r.right - mw;
-                    } else {
-                        r.right = r.left + mw;
-                    }
-                }
-                if r.bottom - r.top < mh {
-                    if matches!(w as u32, WMSZ_TOP | WMSZ_TOPLEFT | WMSZ_TOPRIGHT) {
-                        r.top = r.bottom - mh;
-                    } else {
-                        r.bottom = r.top + mh;
-                    }
-                }
+                layout::limit_sizing(
+                    r,
+                    w as u32,
+                    SIZE {
+                        cx: layout::scale(480, value),
+                        cy: layout::scale(300, value),
+                    },
+                );
                 return 1;
             }
             WM_CLOSE => {

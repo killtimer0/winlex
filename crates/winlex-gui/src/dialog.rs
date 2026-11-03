@@ -357,20 +357,7 @@ impl Layout {
             WM_SIZING if self.minimum => {
                 let minimum = self.initial_size(target)?;
                 let r = unsafe { &mut *(l as *mut RECT) };
-                if r.right - r.left < minimum.cx {
-                    if matches!(w as u32, WMSZ_LEFT | WMSZ_TOPLEFT | WMSZ_BOTTOMLEFT) {
-                        r.left = r.right - minimum.cx;
-                    } else {
-                        r.right = r.left + minimum.cx;
-                    }
-                }
-                if r.bottom - r.top < minimum.cy {
-                    if matches!(w as u32, WMSZ_TOP | WMSZ_TOPLEFT | WMSZ_TOPRIGHT) {
-                        r.top = r.bottom - minimum.cy;
-                    } else {
-                        r.bottom = r.top + minimum.cy;
-                    }
-                }
+                crate::layout::limit_sizing(r, w as u32, minimum);
                 return Ok(true);
             }
             WM_GETMINMAXINFO

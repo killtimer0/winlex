@@ -67,9 +67,7 @@ pub(super) fn unregister_document(hwnd: HWND) {
             .position(|d| d.hwnd() == hwnd)
             .map(|index| docs.remove(index))
     });
-    if let Some(doc) = removed {
-        drop(doc);
-    }
+    drop(removed);
 }
 pub(super) fn close_document(hwnd: HWND) {
     history::closing(|| close_now(hwnd));
@@ -346,7 +344,7 @@ pub(super) fn content_by_id(id: u64) -> Option<Content> {
 pub(super) fn create_tool(descriptor: &'static super::tools::Descriptor) -> anyhow::Result<HWND> {
     let hwnd = create_window(
         &resources::text(descriptor.title),
-        host::Seed::Tool(super::tools::ToolView::new(descriptor)),
+        host::Seed::Tool(Box::new(super::tools::ToolView::new(descriptor))),
         "Create tool window",
     )?;
     let doc = content(hwnd).expect("created tool");

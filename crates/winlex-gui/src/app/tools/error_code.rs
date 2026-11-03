@@ -1,5 +1,6 @@
 //! Error-code controls and instance-local asynchronous resource queries.
-use super::ToolContent;
+use super::Descriptor;
+use crate::native::text;
 use crate::{
     layout,
     native::*,
@@ -10,6 +11,7 @@ use std::{
     ffi::OsString,
     os::windows::ffi::{OsStrExt, OsStringExt},
     path::PathBuf,
+    rc::Rc,
     sync::mpsc,
 };
 use winlex_core::{
@@ -27,9 +29,6 @@ const SCOPES: &[(u16, Scope)] = &[
     (IDS_ERROR_CODE_NTSTATUS, Scope::NtStatus),
 ];
 
-pub(super) fn create() -> Box<dyn ToolContent> {
-    Box::new(View::default())
-}
 enum Completion {
     Query {
         revision: u64,
@@ -40,8 +39,14 @@ enum Completion {
         result: Result<Vec<u16>, core::Failure>,
     },
 }
-struct View {
-    hwnd: HWND,
+pub(in crate::app) struct View {
+    pub id: u64,
+    pub hwnd: HWND,
+    pub descriptor: &'static Descriptor,
+    pub lifetime: Rc<()>,
+    pub placement: Cell<Option<layout::Placement>>,
+    pub(super) recent: Cell<u64>,
+    icons: RefCell<Option<Rc<crate::icons::WindowIcons>>>,
     input: HWND,
     scope: HWND,
     language: HWND,
@@ -62,11 +67,17 @@ struct View {
     tx: mpsc::Sender<Completion>,
     rx: RefCell<mpsc::Receiver<Completion>>,
 }
-impl Default for View {
-    fn default() -> Self {
+impl View {
+    pub fn new(descriptor: &'static Descriptor) -> Self {
         let (tx, rx) = mpsc::channel();
         Self {
+            id: super::super::workspace::next_id(),
             hwnd: std::ptr::null_mut(),
+            descriptor,
+            lifetime: Rc::new(()),
+            placement: Cell::new(None),
+            recent: Cell::new(0),
+            icons: RefCell::new(None),
             input: std::ptr::null_mut(),
             scope: std::ptr::null_mut(),
             language: std::ptr::null_mut(),
@@ -90,17 +101,39 @@ impl Default for View {
     }
 }
 fn native_text(hwnd: HWND) -> Vec<u16> {
-    let length = unsafe { GetWindowTextLengthW(hwnd) }.max(0) as usize;
-    let mut text = vec![0; length + 1];
-    let count =
-        unsafe { GetWindowTextW(hwnd, text.as_mut_ptr(), text.len() as i32) }.max(0) as usize;
-    text.truncate(count);
+    let mut text = text_wide(hwnd);
+    text.pop();
     text
 }
-fn text(hwnd: HWND) -> String {
-    String::from_utf16_lossy(&native_text(hwnd))
+fn language_identity(ids: &[u16], selected: isize, value: &str) -> Option<u16> {
+    ids.get(selected as usize)
+        .copied()
+        .filter(|id| language_label(*id) == value)
 }
 impl View {
+    pub fn title(&self) -> String {
+        if self.hwnd.is_null() {
+            resources::text(self.descriptor.title)
+        } else {
+            text(self.hwnd)
+        }
+    }
+    fn update_icons(&self) {
+        let value = super::super::dpi().window(self.hwnd);
+        if let Some(icons) = super::super::catalog::report(super::super::write(|a| {
+            a.workspace.icons.get(self.descriptor.icon, value)
+        })) {
+            icons.apply(self.hwnd);
+            self.icons.replace(Some(icons));
+        }
+    }
+    pub fn activated(&self) {
+        self.recent.set(super::CLOCK.with(|clock| {
+            let next = clock.get() + 1;
+            clock.set(next);
+            next
+        }));
+    }
     fn command(&self, id: u16, code: u32) -> bool {
         if self.setting.get() {
             return false;
@@ -156,14 +189,7 @@ impl View {
     }
     fn request(&self) -> anyhow::Result<Request> {
         let code = IntegerLiteral::parse(text(self.input).trim())?.to_code_u32()?;
-        let selected = send(self.language, CB_GETCURSEL, 0, 0);
-        let value = text(self.language);
-        let language = self
-            .languages
-            .borrow()
-            .get(selected as usize)
-            .copied()
-            .filter(|id| language_label(*id) == value);
+        let (value, language) = self.selected_language();
         let language = match language {
             Some(id) => id,
             None => IntegerLiteral::parse(value.trim())?.to_u16()?,
@@ -183,18 +209,14 @@ impl View {
         self.revision.set(self.revision.get() + 1);
         self.set_status(&resources::text(IDS_ERROR_CODE_STALE));
     }
+    fn selected_language(&self) -> (String, Option<u16>) {
+        let selected = send(self.language, CB_GETCURSEL, 0, 0);
+        let value = text(self.language);
+        let id = language_identity(&self.languages.borrow(), selected, &value);
+        (value, id)
+    }
     fn set_languages(&self, ids: Vec<u16>, preserve: bool) {
-        let previous = preserve.then(|| {
-            let selected = send(self.language, CB_GETCURSEL, 0, 0);
-            let value = text(self.language);
-            let id = self
-                .languages
-                .borrow()
-                .get(selected as usize)
-                .copied()
-                .filter(|id| language_label(*id) == value);
-            (value, id)
-        });
+        let previous = preserve.then(|| self.selected_language());
         let was_setting = self.setting.replace(true);
         let ids = order_languages(ids, resources::interface_langid(), unsafe {
             windows_sys::Win32::Globalization::GetUserDefaultUILanguage()
@@ -362,63 +384,46 @@ impl View {
         }
     }
 }
-impl ToolContent for View {
-    fn create(&mut self, hwnd: HWND) -> anyhow::Result<()> {
+impl View {
+    pub fn create(&mut self, hwnd: HWND) -> anyhow::Result<()> {
         self.hwnd = hwnd;
-        for label in [
-            IDS_ERROR_CODE_LABEL,
-            IDS_ERROR_CODE_SCOPE,
-            IDS_ERROR_CODE_LANGUAGE,
-            IDS_ERROR_CODE_MODULE,
+        for (label, id, control, class, style, edge) in [
+            (
+                IDS_ERROR_CODE_LABEL,
+                ERROR_CODE_INPUT,
+                &mut self.input,
+                w!("EDIT"),
+                ES_AUTOHSCROLL as u32,
+                WS_EX_CLIENTEDGE,
+            ),
+            (
+                IDS_ERROR_CODE_SCOPE,
+                ERROR_CODE_SCOPE,
+                &mut self.scope,
+                w!("COMBOBOX"),
+                WS_VSCROLL | CBS_DROPDOWNLIST as u32,
+                0,
+            ),
+            (
+                IDS_ERROR_CODE_LANGUAGE,
+                ERROR_CODE_LANGUAGE,
+                &mut self.language,
+                w!("COMBOBOX"),
+                WS_VSCROLL | CBS_DROPDOWN as u32 | CBS_AUTOHSCROLL as u32,
+                0,
+            ),
+            (
+                IDS_ERROR_CODE_MODULE,
+                ERROR_CODE_MODULE,
+                &mut self.module,
+                w!("EDIT"),
+                ES_AUTOHSCROLL as u32,
+                WS_EX_CLIENTEDGE,
+            ),
         ] {
             self.labels
                 .push(unsafe { child(hwnd, w!("STATIC"), resources::wide_text(label), 0, 0) }?);
-            let control = match label {
-                IDS_ERROR_CODE_LABEL => unsafe {
-                    child_ex(
-                        hwnd,
-                        w!("EDIT"),
-                        &[0],
-                        WS_TABSTOP | ES_AUTOHSCROLL as u32,
-                        WS_EX_CLIENTEDGE,
-                        ERROR_CODE_INPUT,
-                    )
-                }?,
-                IDS_ERROR_CODE_SCOPE => unsafe {
-                    child(
-                        hwnd,
-                        w!("COMBOBOX"),
-                        &[0],
-                        WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST as u32,
-                        ERROR_CODE_SCOPE,
-                    )
-                }?,
-                IDS_ERROR_CODE_LANGUAGE => unsafe {
-                    child(
-                        hwnd,
-                        w!("COMBOBOX"),
-                        &[0],
-                        WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWN as u32 | CBS_AUTOHSCROLL as u32,
-                        ERROR_CODE_LANGUAGE,
-                    )
-                }?,
-                _ => unsafe {
-                    child_ex(
-                        hwnd,
-                        w!("EDIT"),
-                        &[0],
-                        WS_TABSTOP | ES_AUTOHSCROLL as u32,
-                        WS_EX_CLIENTEDGE,
-                        ERROR_CODE_MODULE,
-                    )
-                }?,
-            };
-            match label {
-                IDS_ERROR_CODE_LABEL => self.input = control,
-                IDS_ERROR_CODE_SCOPE => self.scope = control,
-                IDS_ERROR_CODE_LANGUAGE => self.language = control,
-                _ => self.module = control,
-            }
+            *control = unsafe { child_ex(hwnd, class, &[0], WS_TABSTOP | style, edge, id) }?;
         }
         for &(label, _) in SCOPES {
             send(
@@ -436,33 +441,36 @@ impl ToolContent for View {
         );
         send(self.scope, CB_SETCURSEL, 0, 0);
         self.system_languages(false);
-        self.browse = unsafe {
-            child(
-                hwnd,
-                w!("BUTTON"),
-                resources::wide_text(IDS_ERROR_CODE_BROWSE),
-                WS_TABSTOP,
+        for (control, id, label, style) in [
+            (
+                &mut self.browse,
                 ERROR_CODE_BROWSE,
-            )
-        }?;
-        self.query = unsafe {
-            child(
-                hwnd,
-                w!("BUTTON"),
-                resources::wide_text(IDS_ERROR_CODE_QUERY),
-                WS_TABSTOP | BS_DEFPUSHBUTTON as u32,
+                IDS_ERROR_CODE_BROWSE,
+                0,
+            ),
+            (
+                &mut self.query,
                 ERROR_CODE_QUERY,
-            )
-        }?;
-        self.copy = unsafe {
-            child(
-                hwnd,
-                w!("BUTTON"),
-                resources::wide_text(IDS_ERROR_CODE_COPY_ALL),
-                WS_TABSTOP,
+                IDS_ERROR_CODE_QUERY,
+                BS_DEFPUSHBUTTON as u32,
+            ),
+            (
+                &mut self.copy,
                 ERROR_CODE_COPY_ALL,
-            )
-        }?;
+                IDS_ERROR_CODE_COPY_ALL,
+                0,
+            ),
+        ] {
+            *control = unsafe {
+                child(
+                    hwnd,
+                    w!("BUTTON"),
+                    resources::wide_text(label),
+                    WS_TABSTOP | style,
+                    id,
+                )
+            }?;
+        }
         let tool = TTTOOLINFOW {
             cbSize: std::mem::offset_of!(TTTOOLINFOW, lpReserved) as u32,
             uFlags: TTF_IDISHWND | TTF_SUBCLASS,
@@ -494,7 +502,7 @@ impl ToolContent for View {
         self.setting.set(false);
         Ok(())
     }
-    fn layout(&self) {
+    pub fn layout(&self) {
         if self.result.is_null() {
             return;
         }
@@ -568,10 +576,11 @@ impl ToolContent for View {
             self.set_status(&format!("{error:#}"));
         }
     }
-    fn focus(&self) {
+    pub fn focus(&self) {
         focus(self.input)
     }
-    fn prepare(&self) {
+    pub fn prepare(&self) {
+        self.update_icons();
         let m = super::super::metrics(self.hwnd);
         for h in self.labels.iter().copied().chain([
             self.input,
@@ -590,13 +599,14 @@ impl ToolContent for View {
         send(self.tooltip, TTM_SETMAXTIPWIDTH, 0, m.px(480) as isize);
         self.layout();
     }
-    fn recolor(&self) {
+    pub fn recolor(&self) {
+        self.update_icons();
         let _ = crate::rich_text::recolor(self.result, &self.body.borrow());
     }
-    fn status(&self) -> String {
+    pub fn status(&self) -> String {
         self.status.borrow().clone()
     }
-    fn key(&self, msg: &MSG) -> bool {
+    pub fn key(&self, msg: &MSG) -> bool {
         if msg.message == WM_KEYDOWN
             && msg.wParam == VK_A as usize
             && unsafe { GetKeyState(VK_CONTROL as i32) } < 0
@@ -616,7 +626,7 @@ impl ToolContent for View {
         }
         false
     }
-    fn message(&self, msg: u32, w: usize, l: isize) -> Option<isize> {
+    pub fn message(&self, msg: u32, w: usize, l: isize) -> Option<isize> {
         match msg {
             WM_COMMAND if self.command(w as u16, (w >> 16) as u32) => Some(0),
             WM_TIMER if w == TIMER => {
@@ -630,7 +640,7 @@ impl ToolContent for View {
             _ => None,
         }
     }
-    fn destroy(&self) {
+    pub fn destroy(&self) {
         unsafe {
             KillTimer(self.hwnd, TIMER);
             DestroyWindow(self.tooltip);
@@ -863,6 +873,35 @@ fn render_message(lines: &mut Vec<String>, message: &Message) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn language_identity_requires_the_selected_label_to_match_editable_text() {
+        let ids = [0x409, 0x804];
+        for (index, id) in ids.into_iter().enumerate() {
+            assert_eq!(
+                language_identity(&ids, index as isize, &language_label(id)),
+                Some(id)
+            );
+            for value in ["0x0409", "409", "unknown", ""] {
+                assert_eq!(language_identity(&ids, index as isize, value), None);
+            }
+        }
+        assert_eq!(language_identity(&ids, -1, &language_label(ids[0])), None);
+        assert_eq!(language_identity(&[], 0, &language_label(ids[0])), None);
+    }
+    #[test]
+    fn native_text_keeps_unpaired_utf16_units_without_a_terminator() {
+        unsafe {
+            let value = [67, 58, 92, 0xd800, 0];
+            let control = test_window(
+                w!("EDIT"),
+                value.as_ptr(),
+                WS_POPUP,
+                layout::rect(0, 0, 300, 200),
+            );
+            assert_eq!(native_text(control), value[..value.len() - 1]);
+            DestroyWindow(control);
+        }
+    }
     #[test]
     fn scopes_have_distinct_resource_and_model_identities() {
         for (i, (label, scope)) in SCOPES.iter().enumerate() {

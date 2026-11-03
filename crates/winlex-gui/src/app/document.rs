@@ -22,7 +22,7 @@ pub(super) struct Init {
 }
 pub(super) enum Seed {
     Declaration(Box<MetadataView>),
-    Tool(super::tools::ToolView),
+    Tool(Box<super::tools::ToolView>),
 }
 impl Seed {
     fn create(self, hwnd: HWND) -> anyhow::Result<Content> {
@@ -32,9 +32,8 @@ impl Seed {
                 Ok(Content::Declaration(Rc::from(v)))
             }
             Self::Tool(mut v) => {
-                v.hwnd = hwnd;
-                v.content.create(hwnd)?;
-                Ok(Content::Tool(Rc::new(v)))
+                v.create(hwnd)?;
+                Ok(Content::Tool(Rc::from(v)))
             }
         }
     }
@@ -167,7 +166,6 @@ pub(super) unsafe extern "system" fn document_proc(
             match content {
                 Content::Declaration(document) => document.message(msg, w, l),
                 Content::Tool(tool) => tool
-                    .content
                     .message(msg, w, l)
                     .unwrap_or_else(|| DefMDIChildProcW(hwnd, msg, w, l)),
             }
