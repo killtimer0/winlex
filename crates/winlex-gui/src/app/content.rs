@@ -8,6 +8,7 @@ pub(super) enum Content {
     Declaration(Rc<MetadataView>),
     Tool(Rc<ToolView>),
 }
+
 impl Content {
     pub fn status(&self) -> Option<String> {
         match self {
@@ -75,7 +76,7 @@ impl Content {
     pub fn command(&self, id: u16, code: u32) -> bool {
         match self {
             Self::Declaration(v) => v.command(id, code),
-            Self::Tool(v) => v.content.command(id, code),
+            Self::Tool(_) => false,
         }
     }
     pub fn find_key(&self, msg: &MSG) -> bool {
@@ -96,7 +97,7 @@ impl Content {
     pub fn supports_find(&self) -> bool {
         match self {
             Self::Declaration(_) => true,
-            Self::Tool(v) => v.content.supports_find(),
+            Self::Tool(_) => false,
         }
     }
     pub fn activated(&self) {

@@ -23,8 +23,38 @@ pub(super) struct Binding {
     pub catalog: Arc<Catalog>,
     pub architecture: Architecture,
     pub architecture_mask: i32,
+    name: String,
+}
+pub(super) enum ArchitectureChoice {
+    Exact(Architecture),
+    Preferred {
+        current: Option<Architecture>,
+        preferred: Option<Architecture>,
+    },
 }
 impl Binding {
+    pub(super) fn resolve(
+        catalog: Arc<Catalog>,
+        id: EntityId,
+        choice: ArchitectureChoice,
+    ) -> anyhow::Result<Self> {
+        let entity = catalog.entity(id)?;
+        let mask = entity.architecture_mask;
+        let architecture = match choice {
+            ArchitectureChoice::Exact(arch) => arch.supports(mask).then_some(arch),
+            ArchitectureChoice::Preferred { current, preferred } => current
+                .filter(|arch| arch.supports(mask))
+                .or_else(|| super::architecture::preferred(mask, preferred)),
+        }
+        .ok_or_else(|| anyhow::anyhow!(resources::text(IDS_UNSUPPORTED_ARCH)))?;
+        Ok(Self {
+            id,
+            catalog,
+            architecture,
+            architecture_mask: mask,
+            name: entity.name,
+        })
+    }
     pub(super) fn same_entity(&self, other: &Self) -> bool {
         self.id == other.id && Arc::ptr_eq(&self.catalog, &other.catalog)
     }
@@ -34,7 +64,6 @@ impl Binding {
 }
 struct State {
     binding: Binding,
-    name: String,
     ticket: Option<u64>,
     restore: Option<crate::rich_text::ViewState>,
     content: Option<Rc<crate::rich_text::Content>>,
@@ -82,7 +111,7 @@ pub(super) fn find(binding: &Binding) -> Option<HWND> {
         matches.then_some(content.hwnd)
     })
 }
-pub(super) fn open(name: &str, binding: Binding, preview: bool) -> anyhow::Result<HWND> {
+pub(super) fn open(binding: Binding, preview: bool) -> anyhow::Result<HWND> {
     let content = MetadataView {
         id: workspace::next_id(),
         hwnd: std::ptr::null_mut(),
@@ -92,7 +121,6 @@ pub(super) fn open(name: &str, binding: Binding, preview: bool) -> anyhow::Resul
         icons: RefCell::new(None),
         state: RefCell::new(State {
             binding,
-            name: name.into(),
             ticket: None,
             restore: None,
             content: None,
@@ -118,11 +146,10 @@ impl MetadataView {
     pub(super) fn binding(&self) -> Binding {
         self.state.borrow().binding.clone()
     }
-    pub(super) fn rebind(&self, name: &str, binding: Binding) {
+    pub(super) fn rebind(&self, binding: Binding) {
         {
             let mut state = self.state.borrow_mut();
             state.binding = binding;
-            state.name = name.into();
             state.press = None;
             state.navigation = None;
             state.context_link = None;
@@ -134,7 +161,11 @@ impl MetadataView {
     }
     pub(super) fn title(&self) -> String {
         let state = self.state.borrow();
-        format!("{} - {}", state.name, state.binding.architecture.name())
+        format!(
+            "{} - {}",
+            state.binding.name,
+            state.binding.architecture.name()
+        )
     }
     fn update_icons(&self) -> anyhow::Result<()> {
         let hwnd = self.hwnd;
@@ -242,9 +273,8 @@ impl MetadataView {
         }
         if arch != binding.architecture {
             binding.architecture = arch;
-            let name = self.state.borrow().name.clone();
             history::visit(|| {
-                self.rebind(&name, binding);
+                self.rebind(binding);
             });
         }
     }
@@ -437,25 +467,15 @@ impl MetadataView {
                 .filter(|request| state.contains(request))
         };
         let Some(navigation) = navigation else { return };
-        let Some(entity) = catalog::report(navigation.binding.catalog.entity(navigation.target))
-        else {
+        let Some(binding) = catalog::report(Binding::resolve(
+            navigation.binding.catalog,
+            navigation.target,
+            ArchitectureChoice::Exact(navigation.binding.architecture),
+        )) else {
             return;
-        };
-        if !navigation
-            .binding
-            .architecture
-            .supports(entity.architecture_mask)
-        {
-            catalog::set_status(resources::text(IDS_UNSUPPORTED_ARCH));
-            return;
-        }
-        let binding = Binding {
-            id: entity.id,
-            architecture_mask: entity.architecture_mask,
-            ..navigation.binding
         };
         history::visit(|| {
-            if let Some(hwnd) = catalog::open_binding(&entity.name, binding, catalog::Open::Preview)
+            if let Some(hwnd) = catalog::open_binding(binding, catalog::Open::Preview, None)
                 && let Some(document) = workspace::view(hwnd)
             {
                 document.focus();
@@ -581,4 +601,56 @@ fn old_version(binding: &Binding) -> bool {
                 && current.sources().iter().any(|s| &s.path == path)
         })
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn catalog() -> Arc<Catalog> {
+        Arc::new(
+            Catalog::open(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../inputs/Windows.Win32.winmd"),
+            )
+            .unwrap(),
+        )
+    }
+
+    #[test]
+    fn materialization_keeps_snapshot_identity_and_exact_architecture() {
+        let snapshot = catalog();
+        let entity = snapshot
+            .search("SECURITY_ATTRIBUTES", Default::default())
+            .unwrap()
+            .map(Result::unwrap)
+            .find(|entity| entity.name == "SECURITY_ATTRIBUTES")
+            .unwrap();
+        let first = Binding::resolve(
+            snapshot.clone(),
+            entity.id,
+            ArchitectureChoice::Exact(Architecture::X86),
+        )
+        .unwrap();
+        assert_eq!(first.name, entity.name);
+        assert_eq!(first.architecture_mask, entity.architecture_mask);
+        assert_eq!(first.architecture, Architecture::X86);
+        assert!(Arc::ptr_eq(&first.catalog, &snapshot));
+        let other_architecture = Binding::resolve(
+            snapshot,
+            entity.id,
+            ArchitectureChoice::Exact(Architecture::X64),
+        )
+        .unwrap();
+        assert_eq!(other_architecture.architecture, Architecture::X64);
+        assert!(first.same_entity(&other_architecture));
+        assert!(!first.same_location(&other_architecture));
+        let reloaded = Binding::resolve(
+            catalog(),
+            entity.id,
+            ArchitectureChoice::Exact(Architecture::X86),
+        )
+        .unwrap();
+        assert!(!first.same_entity(&reloaded));
+    }
 }

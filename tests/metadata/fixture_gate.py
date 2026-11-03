@@ -2,19 +2,19 @@ import json
 from pathlib import Path
 import subprocess
 from reader_gate import check_reader
+from artifacts import executable
 
 ROOT = Path(__file__).resolve().parents[2]
-EXE = ROOT / "target/release/examples/host-cli.exe"
 
 
 def layout(source, name):
-    return subprocess.run([EXE, source, "--json", "--arch", "x64", "layout", name], capture_output=True, text=True, encoding="utf-8")
+    return subprocess.run([executable("host-cli"), source, "--json", "--arch", "x64", "layout", name], capture_output=True, text=True, encoding="utf-8")
 
 
 def main():
     out = ROOT / "tmp/verify/reader-fixtures"
     out.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["dotnet", "build", str(ROOT / "tests/metadata/ReaderFixtures"), "-c", "Release", "-o", str(out)], check=True)
+    subprocess.run(["dotnet", "build", str(ROOT / "tests/metadata/ReaderFixtures"), "-c", "Debug", "-o", str(out)], check=True)
     source = out / "ReaderFixtures.dll"
     facts, _ = check_reader(source, out / "oracle.json")
     assert any(r["offset"] == 8 for r in facts["layouts"])
@@ -31,7 +31,7 @@ def main():
     overlay = json.loads(result.stdout)["result"]
     assert overlay["size_bits"] == 64 and [f["offset_bits"] for f in overlay["fields"]] == [0, 0]
     def query(command, name):
-        p = subprocess.run([EXE, source, "--json", "--arch", "x64", command, name], capture_output=True, check=True)
+        p = subprocess.run([executable("host-cli"), source, "--json", "--arch", "x64", command, name], capture_output=True, check=True)
         return json.loads(p.stdout)["result"]
     box = query("show", "Fixtures.IBox`1")
     assert box["generic_parameters"][0]["name"] == "T"

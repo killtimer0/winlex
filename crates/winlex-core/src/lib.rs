@@ -9,8 +9,8 @@ pub mod tools;
 pub use model::*;
 pub use search::SearchQuery as CompiledQuery;
 pub use search::{
-    Comparison, EvidenceField, Literal, MatchEvidence, MatchField, MatchQuality, NameMatcher,
-    Operator, Predicate, Query, QueryError, QueryErrorKind, SearchMatch,
+    Comparison, EvidenceField, Literal, MatchEvidence, MatchField, MatchQuality, Operator,
+    Predicate, Query, QueryError, QueryErrorKind, SearchMatch,
 };
 pub use source::{AssemblyIdentity, EntityId, Source, SourceData};
 // Low-level adapters for independent metadata verification.

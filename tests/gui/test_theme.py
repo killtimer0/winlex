@@ -1,5 +1,6 @@
 import struct
 import ctypes as c
+import sys
 import pytest
 import win32con
 import win32gui
@@ -8,6 +9,11 @@ from support import native as n
 from support.diagnostics import capture, screenshot
 from test_about import open_about
 from test_search_help import open_help
+
+
+THEME_SUPPORTED = tuple(sys.getwindowsversion()[:3]) >= (10, 0, 19045)
+modern_theme = pytest.mark.skipif(
+    not THEME_SUPPORTED, reason='requires Windows 10 build 19045 or later')
 
 
 def dark_background(hwnd):
@@ -23,6 +29,7 @@ def dark_background(hwnd):
 
 @pytest.mark.parametrize('language', ['en-US', 'zh-CN'])
 @pytest.mark.parametrize('dpi', ['pmv2', 'pmv1', 'system', 'unaware'])
+@modern_theme
 def test_theme_switch_persistence_and_dialogs(launch, profile, settings, language, dpi):
     profile.set('Preferences', winreg.REG_SZ, language + ':7:dark')
     app = launch(dpi=dpi)
@@ -66,6 +73,7 @@ def test_theme_switch_persistence_and_dialogs(launch, profile, settings, languag
     assert dark_background(restarted.search)
 
 
+@modern_theme
 def test_theme_change_preserves_document(launch, profile, settings):
     profile.set('Preferences', winreg.REG_SZ, 'en-US:7:light')
     app = launch([settings[1]])
@@ -84,6 +92,7 @@ def test_theme_change_preserves_document(launch, profile, settings):
     screenshot(app.frame, settings[2] / 'dark-document.bmp')
 
 
+@modern_theme
 def test_system_theme_uses_windows_preference(launch, profile):
     profile.set('Preferences', winreg.REG_SZ, 'en-US:7')
     try:
@@ -101,6 +110,7 @@ def test_system_theme_uses_windows_preference(launch, profile):
     assert profile.get('Preferences') == 'en-US:7'
 
 
+@modern_theme
 def test_modern_titlebar_tracks_explicit_theme(launch, profile):
     try:
         dwm = c.WinDLL('dwmapi')

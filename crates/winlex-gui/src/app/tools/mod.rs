@@ -22,16 +22,10 @@ pub(super) trait ToolContent {
     fn recolor(&self);
     fn status(&self) -> String;
     fn message(&self, msg: u32, w: usize, l: isize) -> Option<isize>;
-    fn command(&self, _id: u16, _code: u32) -> bool {
-        false
-    }
     fn key(&self, _msg: &MSG) -> bool {
         false
     }
     fn destroy(&self) {}
-    fn supports_find(&self) -> bool {
-        false
-    }
 }
 pub(super) struct Descriptor {
     pub id: &'static str,

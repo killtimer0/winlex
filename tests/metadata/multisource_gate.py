@@ -3,10 +3,10 @@ import json
 from pathlib import Path
 import subprocess
 from reader_gate import check_reader
+from artifacts import executable
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "tmp/verify/multisource"
-EXE = ROOT / "target/release/examples/host-cli.exe"
 
 
 def build(folder, name, version, code, dependency=None, public_sign=False):
@@ -20,12 +20,12 @@ def build(folder, name, version, code, dependency=None, public_sign=False):
         signing = '<SignAssembly>true</SignAssembly><PublicSign>true</PublicSign><AssemblyOriginatorKeyFile>key.snk</AssemblyOriginatorKeyFile>'
     (path / "fixture.csproj").write_text(f'<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net8.0</TargetFramework><AssemblyName>{name}</AssemblyName><AssemblyVersion>{version}</AssemblyVersion>{signing}</PropertyGroup>{reference}</Project>')
     (path / "Types.cs").write_text(code)
-    subprocess.run(["dotnet", "build", path / "fixture.csproj", "-c", "Release", "-o", path / "out"], check=True, capture_output=True)
+    subprocess.run(["dotnet", "build", path / "fixture.csproj", "-c", "Debug", "-o", path / "out"], check=True, capture_output=True)
     return path / "out" / f"{name}.dll"
 
 
 def query(files, command, name=None, *options, error=None):
-    args = [EXE, "--json", "--arch", "x64"]
+    args = [executable("host-cli"), "--json", "--arch", "x64"]
     for file in files:
         args.append(file)
     args.extend(options)

@@ -1,7 +1,7 @@
 //! UI transactions and immutable document bindings. HWNDs never cross the worker boundary.
 use super::{
     history,
-    metadata::{self, Binding},
+    metadata::{self, ArchitectureChoice, Binding},
     read, workspace, write,
 };
 use crate::native::text;
@@ -436,51 +436,50 @@ fn open_now(row: isize, mode: Open) -> Option<HWND> {
         a.session.results.get(row as usize).map(|e| {
             (
                 e.id,
-                e.name.clone(),
-                e.architecture_mask,
                 a.session.catalog.clone(),
                 a.settings.preferred_architecture,
             )
         })
     });
-    let (id, title, mask, Some(catalog), preferred) = item? else {
-        return None;
-    };
-    let Some(fallback) = super::architecture::preferred(mask, preferred) else {
-        set_status(resources::text(IDS_UNSUPPORTED_ARCH));
+    let (id, Some(catalog), preferred) = item? else {
         return None;
     };
     // A new result keeps the architecture of the declaration being read.
-    let architecture = if mode == Open::New {
-        fallback
+    let current = if mode == Open::New {
+        None
     } else {
-        metadata::binding(workspace::active())
-            .map(|binding| binding.architecture)
-            .filter(|arch| arch.supports(mask))
-            .unwrap_or(fallback)
+        metadata::binding(workspace::active()).map(|binding| binding.architecture)
     };
-    let binding = Binding {
-        architecture,
+    let binding = report(Binding::resolve(
+        catalog,
         id,
-        catalog: catalog.clone(),
-        architecture_mask: mask,
-    };
-    open_binding(&title, binding, mode)
+        ArchitectureChoice::Preferred { current, preferred },
+    ))?;
+    open_binding(binding, mode, None)
 }
-pub(super) fn open_binding(title: &str, binding: Binding, mode: Open) -> Option<HWND> {
+pub(super) fn open_binding(binding: Binding, mode: Open, original: Option<u64>) -> Option<HWND> {
     let preview = workspace::preview_document();
     let existing = (mode != Open::New)
         .then(|| {
-            metadata::find(&binding).or_else(|| {
-                preview.and_then(|hwnd| {
-                    workspace::view(hwnd)?.rebind(title, binding.clone());
-                    Some(hwnd)
+            original
+                .and_then(workspace::by_id)
+                .filter(|doc| doc.binding().same_entity(&binding))
+                .map(|doc| {
+                    if !doc.binding().same_location(&binding) {
+                        doc.rebind(binding.clone());
+                    }
+                    doc.hwnd
                 })
-            })
+                .or_else(|| metadata::find(&binding))
+                .or_else(|| {
+                    preview.and_then(|hwnd| {
+                        workspace::view(hwnd)?.rebind(binding.clone());
+                        Some(hwnd)
+                    })
+                })
         })
         .flatten();
-    let hwnd =
-        existing.or_else(|| report(metadata::open(title, binding, mode == Open::Preview)))?;
+    let hwnd = existing.or_else(|| report(metadata::open(binding, mode == Open::Preview)))?;
     if mode == Open::Pin {
         workspace::pin_document(hwnd);
     }

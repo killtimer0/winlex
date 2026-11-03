@@ -22,13 +22,14 @@ def query(settings, *arguments, expected=0):
 
 def test_error_code_cli_queries_without_metadata(settings):
     result = query(settings, '-2147024891', '--scope', 'hresult', '--lang', '0x409')['result']
-    assert result['hex'] == '0x80070005'
-    assert result['signed'] == -2147024891
+    assert result['request']['code'] == 0x80070005
+    assert not {'hex', 'unsigned', 'signed'} & result.keys()
     candidate = result['candidates'][0]
     assert candidate['scheme'] == 'h_result'
     assert candidate['message']['code'] == 0x80070005
     related = candidate['related'][0]
-    assert related['code'] == 5
+    assert 'code' not in related
+    assert related['message']['code'] == 5
     assert related['message']['status'] == 'found'
     assert related['message']['actual_language'] == 0x409
     assert related['message']['text']
@@ -36,7 +37,7 @@ def test_error_code_cli_queries_without_metadata(settings):
     assert auto['candidates']
     assert all(c['message']['actual_language'] is None for c in auto['candidates']
                if c['message']['source']['kind'] == 'system')
-    assert query(settings, '010', '--scope', 'win32')['result']['unsigned'] == 8
+    assert query(settings, '010', '--scope', 'win32')['result']['request']['code'] == 8
 
 
 def test_error_code_cli_text_and_help_without_metadata(settings):

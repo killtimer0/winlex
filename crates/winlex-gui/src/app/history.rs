@@ -1,7 +1,7 @@
 //! Workspace navigation keeps weak snapshot locators and per-visit reading positions.
 use super::{
     catalog,
-    metadata::{Binding, MetadataView},
+    metadata::{ArchitectureChoice, Binding, MetadataView},
     read, workspace, write,
 };
 use crate::{native::*, resources::*, rich_text::ViewState};
@@ -269,27 +269,15 @@ pub(super) fn navigate(direction: Direction) {
             write(|a| a.workspace.history.remove(index));
             continue;
         };
-        let Some(entity) = catalog::report(snapshot.entity(target.entity)) else {
+        let Some(binding) = catalog::report(Binding::resolve(
+            snapshot,
+            target.entity,
+            ArchitectureChoice::Exact(target.architecture),
+        )) else {
             write(|a| a.workspace.history.remove(index));
             continue;
         };
-        let binding = Binding {
-            catalog: snapshot,
-            id: target.entity,
-            architecture: target.architecture,
-            architecture_mask: entity.architecture_mask,
-        };
-        let original =
-            workspace::by_id(entry.document).filter(|doc| doc.binding().same_entity(&binding));
-        let hwnd = if let Some(doc) = original {
-            if doc.binding().architecture != binding.architecture {
-                doc.rebind(&entity.name, binding);
-            }
-            workspace::show_document(doc.hwnd);
-            Some(doc.hwnd)
-        } else {
-            catalog::open_binding(&entity.name, binding, catalog::Open::Preview)
-        };
+        let hwnd = catalog::open_binding(binding, catalog::Open::Preview, Some(entry.document));
         if let Some(doc) = hwnd.and_then(workspace::view) {
             doc.focus();
             doc.restore_position(target.position);

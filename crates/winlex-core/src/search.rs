@@ -250,16 +250,14 @@ impl SearchQuery {
     }
 }
 
-pub struct NameMatcher {
-    field: MatchField,
+struct NameMatcher {
     atom: Atom,
     matcher: Matcher,
     buffer: Vec<char>,
 }
 impl NameMatcher {
-    pub fn new(query: &str, case_sensitive: bool) -> Self {
+    fn new(query: &str, case_sensitive: bool) -> Self {
         Self {
-            field: MatchField::for_query(query),
             atom: Atom::new(
                 query,
                 if case_sensitive {
@@ -275,14 +273,8 @@ impl NameMatcher {
             buffer: Vec::new(),
         }
     }
-    pub fn score(&mut self, name: &str, full_name: &str) -> Option<(u16, MatchField)> {
-        let text = self.field.text(name, full_name);
-        self.atom
-            .score(Utf32Str::new(text, &mut self.buffer), &mut self.matcher)
-            .map(|score| (score, self.field))
-    }
     /// Character indices in the original matched field, not UTF-8 or UTF-16 offsets.
-    pub fn indices(&mut self, text: &str, indices: &mut Vec<u32>) -> Option<u16> {
+    fn indices(&mut self, text: &str, indices: &mut Vec<u32>) -> Option<u16> {
         indices.clear();
         self.atom.indices(
             Utf32Str::new(text, &mut self.buffer),
@@ -298,14 +290,17 @@ mod tests {
     #[test]
     fn literal_fuzzy_matching_and_highlight_agree() {
         let mut matcher = NameMatcher::new("CW", false);
-        let (score, field) = matcher.score("CreateWindow", "Win32.CreateWindow").unwrap();
-        let text = if field == MatchField::Name {
-            "CreateWindow"
-        } else {
-            "Win32.CreateWindow"
+        let hit = NameQuery::compile("CW", true, false)
+            .matches("CreateWindow", "Win32.CreateWindow")
+            .unwrap();
+        let MatchQuality::Fuzzy { score, field } = hit.quality else {
+            panic!("expected a fuzzy match")
         };
+        assert_eq!(field, MatchField::Name);
+        let text = "CreateWindow";
         let mut indices = vec![999];
         assert_eq!(matcher.indices(text, &mut indices), Some(score));
+        assert_eq!(hit.evidence[0].indices.as_deref(), Some(indices.as_slice()));
         assert_eq!(
             indices
                 .iter()
@@ -313,17 +308,18 @@ mod tests {
                 .collect::<String>(),
             "CW"
         );
-        assert!(matcher.score("MessageBox", "Win32.MessageBox").is_none());
+        assert!(matcher.indices("MessageBox", &mut indices).is_none());
         let mut literal = NameMatcher::new("^File", false);
-        assert!(literal.score("File", "File").is_none());
-        assert!(literal.score("^File", "^File").is_some());
+        assert!(literal.indices("File", &mut indices).is_none());
+        assert!(literal.indices("^File", &mut indices).is_some());
     }
     #[test]
     fn unicode_indices() {
         let mut matcher = NameMatcher::new("窗口", true);
-        assert!(matcher.score("窗口", "命名空间.窗口").is_some());
-        let mut matcher = NameMatcher::new("😀W", false);
         let mut indices = vec![];
+        assert!(matcher.indices("窗口", &mut indices).is_some());
+        assert_eq!(indices, [0, 1]);
+        let mut matcher = NameMatcher::new("😀W", false);
         assert!(matcher.indices("😀窗口W", &mut indices).is_some());
         assert_eq!(indices, [0, 3]);
         let mut matcher = NameMatcher::new("W", false);
@@ -333,45 +329,44 @@ mod tests {
     #[test]
     fn continuous_and_boundary_matches_outrank_scattered_characters() {
         let mut matcher = NameMatcher::new("CreateFileW", false);
-        let exact = matcher.score("CreateFileW", "CreateFileW").unwrap().0;
+        let mut indices = vec![];
+        let exact = matcher.indices("CreateFileW", &mut indices).unwrap();
         let scattered = matcher
-            .score(
+            .indices(
                 "CxxxxrxxxxexxxxaxxxxtxxxxexxxxFxxxxixxxxlxxxxexxxxW",
-                "CxxxxrxxxxexxxxaxxxxtxxxxexxxxFxxxxixxxxlxxxxexxxxW",
+                &mut indices,
             )
-            .unwrap()
-            .0;
+            .unwrap();
         assert!(exact > scattered);
         let mut matcher = NameMatcher::new("CW", false);
-        let boundary = matcher.score("CreateWindow", "CreateWindow").unwrap().0;
-        let scattered = matcher.score("acxxxxxxxxw", "acxxxxxxxxw").unwrap().0;
+        let boundary = matcher.indices("CreateWindow", &mut indices).unwrap();
+        let scattered = matcher.indices("acxxxxxxxxw", &mut indices).unwrap();
         assert!(boundary > scattered);
-        let mut matcher = NameMatcher::new("Win32.File", false);
+        let mut query = NameQuery::compile("Win32.File", true, false);
         assert_eq!(
-            matcher.score("File", "Win32.File").unwrap().1,
-            MatchField::FullName
+            query.matches("File", "Win32.File").unwrap().quality,
+            MatchQuality::NameExact(MatchField::FullName)
         );
         let mut matcher = NameMatcher::new("createfilew", true);
-        assert!(matcher.score("CreateFileW", "CreateFileW").is_none());
+        assert!(matcher.indices("CreateFileW", &mut indices).is_none());
     }
 
     #[test]
     fn unqualified_queries_never_fall_back_to_the_full_name() {
-        let mut matcher = NameMatcher::new("NwCW", false);
+        let mut query = NameQuery::compile("NwCW", true, false);
         assert!(
-            matcher
-                .score("CreateWindow", "Namespace.CreateWindow")
+            query
+                .matches("CreateWindow", "Namespace.CreateWindow")
                 .is_none()
         );
-        let mut matcher = NameMatcher::new("Namespace", false);
-        assert!(matcher.score("File", "Namespace.File").is_none());
-        let mut matcher = NameMatcher::new("CW", false);
-        let hit = matcher.score("CreateWindow", "CW.CreateWindow").unwrap();
-        assert_eq!(hit.1, MatchField::Name);
-        assert_eq!(
-            matcher.score("CreateWindow", "Other.CreateWindow"),
-            Some(hit)
-        );
+        let mut query = NameQuery::compile("Namespace", true, false);
+        assert!(query.matches("File", "Namespace.File").is_none());
+        let mut query = NameQuery::compile("CW", true, false);
+        let hit = query.matches("CreateWindow", "CW.CreateWindow").unwrap();
+        assert_eq!(hit.quality.field(), Some(MatchField::Name));
+        let other = query.matches("CreateWindow", "Other.CreateWindow").unwrap();
+        assert_eq!(other.quality, hit.quality);
+        assert_eq!(other.evidence, hit.evidence);
     }
 
     #[test]
@@ -381,10 +376,16 @@ mod tests {
             ("O+I", "Namespace.Outer+Inner"),
         ] {
             let mut matcher = NameMatcher::new(query, false);
-            let (score, field) = matcher.score("Unrelated", text).unwrap();
+            let mut name_query = NameQuery::compile(query, true, false);
+            let hit = name_query.matches("Unrelated", text).unwrap();
+            let MatchQuality::Fuzzy { score, field } = hit.quality else {
+                panic!("expected a fuzzy match")
+            };
             assert_eq!(field, MatchField::FullName);
             let mut indices = vec![];
             assert_eq!(matcher.indices(text, &mut indices), Some(score));
+            assert_eq!(hit.evidence[0].field, EvidenceField::FullName);
+            assert_eq!(hit.evidence[0].indices.as_deref(), Some(indices.as_slice()));
             assert_eq!(
                 indices
                     .iter()
@@ -392,7 +393,7 @@ mod tests {
                     .collect::<String>(),
                 query
             );
-            assert!(matcher.score(query, "Unrelated").is_none());
+            assert!(name_query.matches(query, "Unrelated").is_none());
         }
     }
 }

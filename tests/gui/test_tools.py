@@ -5,7 +5,7 @@ import win32gui
 import pytest
 
 from support import native as n
-from test_history import enabled, HISTORY_BACK, HISTORY_FORWARD
+from test_history import enabled, history_menu, HISTORY_BACK, HISTORY_FORWARD
 
 
 def tools(app):
@@ -36,7 +36,30 @@ def query(app, doc, value):
     n.set_text(n.get_item(doc, 1810), value)
     app.command(1815, doc)
     return n.wait(lambda: body(doc) if not app.status_text()
-                  and body(doc) else None, "tool explicit query", 30)
+                   and body(doc) else None, "tool explicit query", 30)
+
+
+def test_tool_host_find_commands_are_disabled_and_harmless(launch):
+    app = launch()
+    doc = tool(app)
+    choose_scope(app, doc, 1)
+    original = query(app, doc, "5")
+    assert "0x00000005" in original
+    code = n.get_item(doc, 1810)
+    n.set_text(code, "87")
+    app.focus(code)
+    status = app.status_text()
+    _, index, menu = history_menu(app)
+    n.send(app.frame, win32con.WM_INITMENUPOPUP, menu, index)
+    for command in [1060, 1061, 1062]:
+        assert not enabled(app, command)
+        app.command(command)
+        assert app.active_document() == doc
+        assert app.focused() == code
+        assert n.window_text(code) == "87"
+        assert body(doc) == original and app.status_text() == status
+        assert not n.get_item(doc, 1220), "host find must not create tool controls"
+    assert "0x00000057" in query(app, doc, "87")
 
 
 def test_tool_compact_layout_and_narrow_fallback(launch):

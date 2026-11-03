@@ -30,8 +30,6 @@ fn prepare() {
     workspace::refresh_document_tabs();
 }
 fn recolor() {
-    crate::theme::refresh();
-    crate::theme::apply(read(|a| a.frame));
     unsafe {
         InvalidateRect(read(|a| a.workspace.tabs), ptr::null(), 0);
     }

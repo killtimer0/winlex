@@ -102,12 +102,12 @@ fn effective_dark(mode: u32, system: bool, contrast: bool, supported: bool) -> b
 /// Call before creating GUI windows. Unknown modes use the system preference.
 pub fn set_mode(mode: u32) {
     STATE.with(|state| state.borrow_mut().mode = if mode <= 2 { mode } else { 0 });
-    refresh();
+    if refresh_palette() {
+        apply_roots();
+    }
 }
 
-/// Re-reads accessibility and system preference. System-color notifications
-/// already reapply each receiving root; only effective-mode changes fan out.
-pub fn refresh() -> bool {
+fn refresh_palette() -> bool {
     if !supported() {
         return false;
     }
@@ -136,24 +136,27 @@ pub fn refresh() -> bool {
                 (apis.flush_menu_themes)();
             }
         });
-        unsafe extern "system" fn refresh_root(hwnd: HWND, _: isize) -> i32 {
-            let mut data = 0;
-            // The subclass is the registration: enumerate each installed root
-            // once, including owned dialogs, without a second HWND registry.
-            if unsafe { GetWindowSubclass(hwnd, Some(subclass), SUBCLASS, &mut data) } != 0 {
-                apply(hwnd);
-            }
-            1
-        }
-        unsafe {
-            EnumThreadWindows(
-                windows_sys::Win32::System::Threading::GetCurrentThreadId(),
-                Some(refresh_root),
-                0,
-            );
-        }
     }
     changed
+}
+
+fn apply_roots() {
+    unsafe extern "system" fn refresh_root(hwnd: HWND, _: isize) -> i32 {
+        let mut data = 0;
+        // The subclass is the registration: enumerate each installed root
+        // once, including owned dialogs, without a second HWND registry.
+        if unsafe { GetWindowSubclass(hwnd, Some(subclass), SUBCLASS, &mut data) } != 0 {
+            apply(hwnd);
+        }
+        1
+    }
+    unsafe {
+        EnumThreadWindows(
+            windows_sys::Win32::System::Threading::GetCurrentThreadId(),
+            Some(refresh_root),
+            0,
+        );
+    }
 }
 
 pub fn is_dark() -> bool {
@@ -300,12 +303,18 @@ unsafe extern "system" fn subclass(
             return default_subclass(hwnd, msg, w, l);
         }
         if matches!(msg, WM_SETTINGCHANGE | WM_SYSCOLORCHANGE | WM_THEMECHANGED) {
-            // Let controls discard their cached theme before applying our colors.
-            let result = default_subclass(hwnd, msg, w, l);
             let applying = APPLYING.with(Cell::get);
             let root = GetWindowLongW(hwnd, GWL_STYLE) as u32 & WS_CHILD == 0;
-            if !applying && root && !refresh() {
-                apply(hwnd);
+            // Application content must see the new palette, but native controls
+            // must discard their cached theme before we reapply it.
+            let changed = !applying && root && refresh_palette();
+            let result = default_subclass(hwnd, msg, w, l);
+            if !applying && root {
+                if changed {
+                    apply_roots();
+                } else {
+                    apply(hwnd);
+                }
             }
             return result;
         }
@@ -934,6 +943,89 @@ mod tests {
         }
         assert_eq!(dark_color(COLOR_WINDOWTEXT), dark_color(COLOR_BTNTEXT));
         assert_ne!(dark_color(COLOR_GRAYTEXT), dark_color(COLOR_WINDOWTEXT));
+    }
+
+    #[test]
+    fn root_notifications_reapply_after_default_without_touching_other_roots() {
+        if !supported() {
+            return;
+        }
+        let controls = CommonControls::activate();
+        controls.initialize(ICC_LISTVIEW_CLASSES);
+        struct Notification {
+            list: HWND,
+            calls: usize,
+        }
+        unsafe extern "system" fn observe(
+            hwnd: HWND,
+            msg: u32,
+            w: usize,
+            l: isize,
+            _: usize,
+            data: usize,
+        ) -> isize {
+            unsafe {
+                if matches!(msg, WM_SETTINGCHANGE | WM_SYSCOLORCHANGE | WM_THEMECHANGED) {
+                    let notification = &mut *(data as *mut Notification);
+                    notification.calls += 1;
+                    send(notification.list, LVM_SETTEXTCOLOR, 0, 0x00123456);
+                    return 73;
+                }
+                default_subclass(hwnd, msg, w, l)
+            }
+        }
+        unsafe {
+            let class = WNDCLASSW {
+                lpfnWndProc: Some(DefWindowProcW),
+                hInstance: instance(),
+                lpszClassName: w!("Winlex.Test.ThemeNotifications"),
+                ..std::mem::zeroed()
+            };
+            assert!(RegisterClassW(&class) != 0 || GetLastError() == ERROR_CLASS_ALREADY_EXISTS);
+            let area = crate::layout::rect(0, 0, 200, 100);
+            let parent = test_window(class.lpszClassName, ptr::null(), WS_POPUP, area);
+            let other = test_window(w!("#32770"), ptr::null(), WS_POPUP, area);
+            SetWindowLongPtrW(other, GWLP_HWNDPARENT, parent as _);
+            let list = child(parent, w!("SysListView32"), &[0], LVS_REPORT, 1).unwrap();
+            let other_list = child(other, w!("SysListView32"), &[0], LVS_REPORT, 1).unwrap();
+            let mut notification = Notification { list, calls: 0 };
+            set_subclass(
+                parent,
+                Some(observe),
+                SUBCLASS + 1,
+                &mut notification as *mut _ as usize,
+            );
+            set_mode(1);
+            apply(parent);
+            apply(other);
+            for mode in [2, 1] {
+                set_mode(mode);
+                assert_eq!(
+                    send(other_list, LVM_GETTEXTCOLOR, 0, 0) as u32,
+                    color(COLOR_WINDOWTEXT)
+                );
+                for msg in [WM_SETTINGCHANGE, WM_SYSCOLORCHANGE, WM_THEMECHANGED] {
+                    send(other_list, LVM_SETTEXTCOLOR, 0, 0x00654321);
+                    let before = notification.calls;
+                    assert_eq!(send(parent, msg, 0, 0), 73);
+                    assert_eq!(notification.calls, before + 1);
+                    assert_eq!(
+                        send(list, LVM_GETTEXTCOLOR, 0, 0) as u32,
+                        color(COLOR_WINDOWTEXT)
+                    );
+                    assert_eq!(send(other_list, LVM_GETTEXTCOLOR, 0, 0), 0x00654321);
+                }
+                send(
+                    other_list,
+                    LVM_SETTEXTCOLOR,
+                    0,
+                    color(COLOR_WINDOWTEXT) as isize,
+                );
+            }
+            DestroyWindow(other);
+            DestroyWindow(parent);
+            set_mode(0);
+        }
     }
 
     #[test]

@@ -5,9 +5,11 @@ from pathlib import Path
 import subprocess
 import struct
 import shutil
+import sys
 
 ROOT = Path(__file__).resolve().parents[2]
-EXE = Path(os.environ.get("WINLEX_GATE_CLI", ROOT / "target/release/examples/host-cli.exe"))
+sys.path.insert(0, str(ROOT / "tests/metadata"))
+from artifacts import executable
 WINMD = ROOT / "inputs/Windows.Win32.winmd"
 SDK = Path(os.environ["WINLEX_SDK_INCLUDE"])
 MSVC = Path(os.environ["WINLEX_MSVC_ROOT"])
@@ -16,7 +18,7 @@ OUT = ROOT / "tmp/verify/compiler"
 
 
 def query(command, name, arch):
-    cmd = [EXE, WINMD, "--json", "--arch", arch, command, name]
+    cmd = [executable("host-cli"), WINMD, "--json", "--arch", arch, command, name]
     p = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", check=True)
     return json.loads(p.stdout)["result"]
 
@@ -119,7 +121,7 @@ def main():
         reports.append({"arch": arch, "assertions": count, "compilers": results, "layouts": layouts, "vtables": vtables})
         (OUT / "report.json").write_text(json.dumps(reports, indent=2))
         assert all(r.get("returncode", 0) == 0 for r in results.values()), f"See {OUT}/{arch}-*.log"
-    summary = {"architectures": 3, "assertions": {c: sum(r["assertions"] for r in reports if r["compilers"][c].get("returncode") == 0) for c in ("msvc", "clang")}, "overlapped_promoted_members_checked": True, "msvc_bitfield_byte_checks": sum(r["compilers"]["msvc"].get("bitfield_bytes_match", False) for r in reports), "entrypoint": str(EXE)}
+    summary = {"architectures": 3, "assertions": {c: sum(r["assertions"] for r in reports if r["compilers"][c].get("returncode") == 0) for c in ("msvc", "clang")}, "overlapped_promoted_members_checked": True, "msvc_bitfield_byte_checks": sum(r["compilers"]["msvc"].get("bitfield_bytes_match", False) for r in reports), "entrypoint": str(executable("host-cli"))}
     (OUT / "summary.json").write_text(json.dumps(summary, indent=2))
     print(json.dumps(summary, indent=2))
 

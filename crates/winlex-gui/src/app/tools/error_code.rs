@@ -101,6 +101,43 @@ fn text(hwnd: HWND) -> String {
     String::from_utf16_lossy(&native_text(hwnd))
 }
 impl View {
+    fn command(&self, id: u16, code: u32) -> bool {
+        if self.setting.get() {
+            return false;
+        }
+        match id {
+            ERROR_CODE_INPUT | ERROR_CODE_MODULE if code == EN_CHANGE => {
+                self.changed();
+                if id == ERROR_CODE_MODULE && self.custom() {
+                    self.set_languages(vec![0], true);
+                }
+            }
+            ERROR_CODE_MODULE if code == EN_KILLFOCUS => self.refresh_module_languages(),
+            ERROR_CODE_SCOPE if code == CBN_SELENDOK => {
+                self.changed();
+                if self.custom() {
+                    self.set_languages(vec![0], true);
+                    self.refresh_module_languages();
+                } else {
+                    self.system_languages(true);
+                }
+                self.layout();
+            }
+            ERROR_CODE_LANGUAGE if code == CBN_EDITCHANGE || code == CBN_SELENDOK => self.changed(),
+            ERROR_CODE_QUERY if code == BN_CLICKED => {
+                self.refresh_module_languages();
+                self.execute();
+            }
+            ERROR_CODE_BROWSE if code == BN_CLICKED => self.browse(),
+            ERROR_CODE_COPY_ALL if code == BN_CLICKED => {
+                if let Err(error) = copy_unicode(self.hwnd, &native_text(self.result)) {
+                    self.set_status(&format!("{error:#}"));
+                }
+            }
+            _ => return false,
+        };
+        true
+    }
     fn set_status(&self, message: &str) {
         self.status.replace(message.to_owned());
         super::super::document::status_changed(self.hwnd);
@@ -263,9 +300,9 @@ impl View {
                             super::super::document::update_title(
                                 self.hwnd,
                                 &format!(
-                                    "{} — {}",
+                                    "{} — 0x{:08X}",
                                     resources::text(IDS_ERROR_CODE_TOOL),
-                                    result.hex
+                                    result.request.code
                                 ),
                             );
                             render(&result)
@@ -545,48 +582,10 @@ impl ToolContent for View {
         self.layout();
     }
     fn recolor(&self) {
-        crate::theme::apply(self.hwnd);
         let _ = crate::rich_text::recolor(self.result, &self.body.borrow());
     }
     fn status(&self) -> String {
         self.status.borrow().clone()
-    }
-    fn command(&self, id: u16, code: u32) -> bool {
-        if self.setting.get() {
-            return false;
-        }
-        match id {
-            ERROR_CODE_INPUT | ERROR_CODE_MODULE if code == EN_CHANGE => {
-                self.changed();
-                if id == ERROR_CODE_MODULE && self.custom() {
-                    self.set_languages(vec![0], true);
-                }
-            }
-            ERROR_CODE_MODULE if code == EN_KILLFOCUS => self.refresh_module_languages(),
-            ERROR_CODE_SCOPE if code == CBN_SELENDOK => {
-                self.changed();
-                if self.custom() {
-                    self.set_languages(vec![0], true);
-                    self.refresh_module_languages();
-                } else {
-                    self.system_languages(true);
-                }
-                self.layout();
-            }
-            ERROR_CODE_LANGUAGE if code == CBN_EDITCHANGE || code == CBN_SELENDOK => self.changed(),
-            ERROR_CODE_QUERY if code == BN_CLICKED => {
-                self.refresh_module_languages();
-                self.execute();
-            }
-            ERROR_CODE_BROWSE if code == BN_CLICKED => self.browse(),
-            ERROR_CODE_COPY_ALL if code == BN_CLICKED => {
-                if let Err(error) = copy_unicode(self.hwnd, &native_text(self.result)) {
-                    self.set_status(&format!("{error:#}"));
-                }
-            }
-            _ => return false,
-        };
-        true
     }
     fn key(&self, msg: &MSG) -> bool {
         if msg.message == WM_KEYDOWN
@@ -742,10 +741,14 @@ fn scope_label(scope: &Scope) -> String {
 fn render(result: &QueryResult) -> String {
     let mut lines = vec![
         resources::text(IDS_ERROR_CODE_REQUEST),
-        format!("{} {}", resources::text(IDS_ERROR_CODE_LABEL), result.hex),
+        format!(
+            "{} 0x{:08X}",
+            resources::text(IDS_ERROR_CODE_LABEL),
+            result.request.code
+        ),
         resources::text(IDS_ERROR_CODE_DECIMAL)
-            .replace("{unsigned}", &result.unsigned.to_string())
-            .replace("{signed}", &result.signed.to_string()),
+            .replace("{unsigned}", &result.request.code.to_string())
+            .replace("{signed}", &(result.request.code as i32).to_string()),
         format!(
             "{} {}",
             resources::text(IDS_ERROR_CODE_SCOPE),
@@ -792,8 +795,8 @@ fn render(result: &QueryResult) -> String {
             lines.push(format!(
                 "{}: 0x{:08X} ({})",
                 resources::text(IDS_ERROR_CODE_RELATED),
-                related.code,
-                related.code
+                related.message.code,
+                related.message.code
             ));
             render_message(&mut lines, &related.message);
         }

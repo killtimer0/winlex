@@ -96,6 +96,13 @@ fn children(root: &IAccessible) -> Vec<IAccessible> {
 fn page(value: VARIANT) -> IAccessible {
     IDispatch::try_from(&value).unwrap().cast().unwrap()
 }
+fn variant_i32(value: &VARIANT) -> i32 {
+    unsafe {
+        let raw = &value.as_raw().Anonymous.Anonymous;
+        assert_eq!(raw.vt, windows::Win32::System::Variant::VT_I4.0);
+        raw.Anonymous.lVal
+    }
+}
 fn location(page: &IAccessible) -> RECT {
     let (mut x, mut y, mut width, mut height) = (0, 0, 0, 0);
     unsafe {
@@ -109,8 +116,8 @@ fn same(a: &IAccessible, b: &IAccessible) -> bool {
     unsafe {
         a.get_accName(&child).unwrap() == b.get_accName(&child).unwrap()
             && a.get_accDescription(&child).unwrap() == b.get_accDescription(&child).unwrap()
-            && i32::try_from(&a.get_accRole(&child).unwrap()).unwrap()
-                == i32::try_from(&b.get_accRole(&child).unwrap()).unwrap()
+            && variant_i32(&a.get_accRole(&child).unwrap())
+                == variant_i32(&b.get_accRole(&child).unwrap())
     }
 }
 fn requests() -> Vec<(u32, u64, usize)> {
@@ -126,7 +133,7 @@ fn empty_tabs_start_usable_and_can_add_remove_the_first_child() {
         assert_eq!(root.accChildCount().unwrap(), 0);
         assert_eq!(root.get_accName(&child).unwrap(), BSTR::from("Pages"));
         assert_eq!(
-            i32::try_from(&root.get_accRole(&child).unwrap()).unwrap(),
+            variant_i32(&root.get_accRole(&child).unwrap()),
             ROLE_SYSTEM_PAGETABLIST as i32
         );
         assert_eq!(
@@ -375,7 +382,7 @@ fn msaa_focus_and_selection_are_independent_and_none_is_noop() {
         let title = |value: VARIANT| page(value).get_accName(&self_id).unwrap().to_string();
         assert_eq!(title(root.accSelection().unwrap()), "Alpha");
         assert_eq!(title(root.accFocus().unwrap()), "Beta");
-        let flags = i32::try_from(&beta.get_accState(&self_id).unwrap()).unwrap() as u32;
+        let flags = variant_i32(&beta.get_accState(&self_id).unwrap()) as u32;
         assert_ne!(flags & STATE_SYSTEM_FOCUSED, 0);
         assert_eq!(flags & STATE_SYSTEM_SELECTED, 0);
         beta.accSelect(SELFLAG_TAKESELECTION as i32, &self_id)
@@ -424,9 +431,12 @@ fn msaa_tree_identity_requests_and_disconnection() {
                 None,
             )
             .unwrap();
-        assert_eq!(BSTR::try_from(&value).unwrap().to_string(), "Pages");
+        let raw = &value.as_raw().Anonymous.Anonymous;
+        assert_eq!(raw.vt, windows::Win32::System::Variant::VT_BSTR.0);
+        let name = std::mem::ManuallyDrop::new(BSTR::from_raw(raw.Anonymous.bstrVal));
+        assert_eq!(name.to_string(), "Pages");
         assert_eq!(
-            i32::try_from(&root.get_accRole(&self_id).unwrap()).unwrap(),
+            variant_i32(&root.get_accRole(&self_id).unwrap()),
             ROLE_SYSTEM_PAGETABLIST as i32
         );
         let original = children(&root);
@@ -440,8 +450,7 @@ fn msaa_tree_identity_requests_and_disconnection() {
         );
         assert!(same(&alpha.accParent().unwrap().cast().unwrap(), &root));
         assert_ne!(
-            i32::try_from(&alpha.get_accState(&self_id).unwrap()).unwrap()
-                & STATE_SYSTEM_SELECTED as i32,
+            variant_i32(&alpha.get_accState(&self_id).unwrap()) & STATE_SYSTEM_SELECTED as i32,
             0
         );
         let selected = page(root.accSelection().unwrap());
@@ -455,8 +464,7 @@ fn msaa_tree_identity_requests_and_disconnection() {
             "host can reject close requests"
         );
         assert_ne!(
-            i32::try_from(&alpha.get_accState(&self_id).unwrap()).unwrap()
-                & STATE_SYSTEM_SELECTED as i32,
+            variant_i32(&alpha.get_accState(&self_id).unwrap()) & STATE_SYSTEM_SELECTED as i32,
             0,
             "selection is committed by the host"
         );
@@ -552,11 +560,10 @@ fn keyboard_mouse_and_accessible_geometry_share_the_same_tabs() {
         send(f.tabs, WM_KEYDOWN, VK_END as usize, 0);
         assert_eq!(requests(), vec![(SELECT, 8, 0)]);
         select(f.tabs, Some(8));
-        let state = i32::try_from(&pages[7].get_accState(&self_id).unwrap()).unwrap();
+        let state = variant_i32(&pages[7].get_accState(&self_id).unwrap());
         assert_eq!(state & STATE_SYSTEM_OFFSCREEN as i32, 0);
         assert_ne!(
-            i32::try_from(&pages[0].get_accState(&self_id).unwrap()).unwrap()
-                & STATE_SYSTEM_OFFSCREEN as i32,
+            variant_i32(&pages[0].get_accState(&self_id).unwrap()) & STATE_SYSTEM_OFFSCREEN as i32,
             0
         );
         assert_eq!(pages[7].accChildCount().unwrap(), 0);
@@ -565,7 +572,7 @@ fn keyboard_mouse_and_accessible_geometry_share_the_same_tabs() {
         let y = r.top + (r.bottom - r.top) / 2;
         let hit = page(root.accHitTest(x, y).unwrap());
         assert!(same(&hit, &pages[7]));
-        assert_eq!(i32::try_from(&hit.accHitTest(x, y).unwrap()).unwrap(), 0);
+        assert_eq!(variant_i32(&hit.accHitTest(x, y).unwrap()), 0);
         let mut p = POINT { x, y };
         ScreenToClient(f.tabs, &mut p);
         let position = ((p.x as u16 as u32) | ((p.y as u16 as u32) << 16)) as isize;

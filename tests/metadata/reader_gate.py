@@ -2,6 +2,7 @@
 import json
 from pathlib import Path
 import subprocess
+from artifacts import executable
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -22,9 +23,9 @@ def compare(actual, expected):
 
 def check_reader(source, oracle_path, *, capture_output=False, facts_path=None):
     subprocess.run(["dotnet", "run", "--project", ROOT / "tests/metadata/MetadataOracle",
-                    "-c", "Release", "--", source, oracle_path],
+                    "-c", "Debug", "--", source, oracle_path],
                    check=True, capture_output=capture_output)
-    facts = subprocess.run([ROOT / "target/release/examples/reader-facts.exe", source],
+    facts = subprocess.run([executable("reader-facts"), source],
                            capture_output=True, check=True).stdout
     if facts_path is not None:
         facts_path.write_bytes(facts)

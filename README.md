@@ -64,7 +64,7 @@ Winlex 采用 [GNU GPL v3.0](LICENSE)（`GPL-3.0-only`）许可证。第三方�
 
 ```powershell
 python scripts/prepare-inputs.py
-cargo test -p winlex-core -p winlex-cli --release --locked
+cargo test -p winlex-core -p winlex-cli --locked
 ```
 
 构建步骤见 [构建与验证](docs/build.md)。

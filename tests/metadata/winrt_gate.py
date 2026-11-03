@@ -5,14 +5,14 @@ from pathlib import Path
 import re
 import subprocess
 from reader_gate import check_reader
+from artifacts import executable
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "tmp/verify/winrt"
-EXE = ROOT / "target/release/examples/host-cli.exe"
 
 
 def query(files, command, name, error=None):
-    args = [EXE, "--json", "--arch", "x64", "--limit", "1000"]
+    args = [executable("host-cli"), "--json", "--arch", "x64", "--limit", "1000"]
     for file in files:
         args.append(file)
     p = subprocess.run(args + [command, name], capture_output=True)
@@ -73,7 +73,7 @@ def main():
     assert re.findall(r"STDMETHODCALLTYPE\s*\*(\w+)", block) == [s["method"] for s in slots]
     check_reader(union, OUT / (union.stem + "-oracle.json"), capture_output=True)
     apps = sorted(set(args.apps.glob("**/metadata/*.winmd"))) if args.apps else []
-    subprocess.run([ROOT / "target/release/examples/query-audit.exe", union, *apps], check=True)
+    subprocess.run([executable("query-audit"), union, *apps], check=True)
     if apps:
         for deps in ([union], contracts):
             files = apps + deps

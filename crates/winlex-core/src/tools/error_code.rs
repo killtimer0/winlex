@@ -149,7 +149,6 @@ pub struct Message {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct RelatedCode {
     pub relationship: &'static str,
-    pub code: u32,
     pub message: Message,
 }
 
@@ -164,9 +163,6 @@ pub struct Candidate {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct QueryResult {
     pub request: Request,
-    pub hex: String,
-    pub unsigned: u32,
-    pub signed: i32,
     pub candidates: Vec<Candidate>,
     /// In automatic mode, unsuccessful attempts remain observable without
     /// presenting their bit decompositions as identified domains.
@@ -193,9 +189,6 @@ pub fn query(request: &Request) -> crate::Result<QueryResult> {
     };
     let mut result = QueryResult {
         request: request.clone(),
-        hex: format!("0x{:08X}", request.code),
-        unsigned: request.code,
-        signed: request.code as i32,
         candidates: vec![],
         attempts: vec![],
     };
@@ -213,7 +206,6 @@ pub fn query(request: &Request) -> crate::Result<QueryResult> {
             related_win32(request.code)
                 .map(|code| RelatedCode {
                     relationship: "hresult_from_win32",
-                    code,
                     message: message(code, request.language, Source::System),
                 })
                 .into_iter()
@@ -329,7 +321,7 @@ mod tests {
         let candidate = &result.candidates[0];
         assert_eq!(candidate.scheme, Scheme::HResult);
         assert_eq!(candidate.message.code, request.code);
-        assert_eq!(candidate.related[0].code, 5);
+        assert_eq!(candidate.related[0].message.code, 5);
         assert_eq!(candidate.related[0].message.status, MessageStatus::Found);
         assert_eq!(candidate.related[0].message.actual_language, Some(0x409));
         let automatic = query(&Request {

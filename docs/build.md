@@ -22,13 +22,13 @@ WinMD 写入 `inputs/Windows.Win32.winmd`，链接依赖写入 `tmp/deps/`。
 
 ```powershell
 $link = Join-Path $env:VCToolsInstallDir 'bin/Hostx64/x86/link.exe'
-./scripts/build.ps1 -Architecture x86 -LinkExe $link `
+./scripts/build.ps1 -Architecture x86 -Configuration Debug -LinkExe $link `
   -YyThunksObject tmp/deps/yy-thunks-1.2.3/x86/YY_Thunks_for_WinXP.obj `
   -VcLtlRoot tmp/deps/vc-ltl-5.3.1/sdk
 ```
 
 x64 构建将架构、链接器和 OBJ 路径改为 x64。
-默认构建 Release，使用 `-Configuration Debug` 构建开发版本。
+开发构建使用 `-Configuration Debug`；优化版本使用 `-Configuration Release`。
 分发版本使用 `-Configuration Dist`，启用体积优化、完整 LTO、单代码生成单元和源码路径重映射；发生 panic 时直接终止进程，不执行栈展开清理。
 脚本优先从开发环境的 Windows SDK 路径查找 Microsoft `rc.exe`，也可用 `-RcExe PATH` 指定。
 GUI 菜单、字符串、版本信息和清单从 `crates/winlex-gui/res/gui.rc` 编译并嵌入。
@@ -66,14 +66,33 @@ YY-Thunks 提供系统 API 回退，VC-LTL5 复用系统 `msvcrt.dll`。
 运行库测试和开发用 CLI：
 
 ```powershell
-cargo test -p winlex-core -p winlex-cli --release --locked
-cargo build -p winlex-cli --example host-cli --release --locked
+cargo test -p winlex-core -p winlex-cli --locked
+cargo build -p winlex-cli --example host-cli --locked
 cargo fmt --all --check
 cargo clippy -p winlex-core -p winlex-cli --all-targets --locked -- -D warnings
 python tests/metadata/run.py
+python -m unittest discover -s tests/metadata -p test_artifacts.py
 ```
 
 `tests/metadata/run.py` 比较 Rust 读取结果与 .NET `System.Reflection.Metadata`，并验证布局、泛型及跨源引用样例。报告写入 `tmp/verify/`。
+默认使用 Debug，遵循 Cargo 的 target 和输出目录配置；可用 `--target`、`--target-dir "PATH WITH SPACES"`、`--profile release` 显式选择。
+运行后，实际可执行文件路径保存在 `tmp/verify/artifacts.json`；可用 `--artifacts PATH` 更改位置。
+各 gate 可独立运行，默认读取该记录；自定义记录通过 `WINLEX_GATE_ARTIFACTS` 指定。
+`WINLEX_GATE_CLI`、`WINLEX_GATE_READER_FACTS`、`WINLEX_GATE_QUERY_AUDIT` 分别覆盖 CLI、读取器和 WinRT 审计程序路径，优先于记录中的值。
+
+```powershell
+python tests/metadata/reader_gate.py
+python tests/metadata/fixture_gate.py
+python tests/metadata/multisource_gate.py
+```
+
+生成消息资源 fixture 时，传入双架构构建显示的实际 `.build.json` 路径：
+
+```powershell
+python tests/fixtures/build_message_fixtures.py --x86-build "$x86Cli.build.json" --x64-build "$x64Cli.build.json"
+```
+
+`$x86Cli` 和 `$x64Cli` 为对应 CLI 的完整路径；资源 DLL 写入 `tmp/message-fixtures/`。
 
 GUI 使用独立 pytest 用例及公共 native/session 支持层，默认运行在隔离桌面：
 
@@ -81,12 +100,12 @@ GUI 使用独立 pytest 用例及公共 native/session 支持层，默认运行�
 cargo clippy -p winlex-gui --all-targets --locked -- -D warnings
 uv venv tmp/gui-tests/venv
 uv pip install --python tmp/gui-tests/venv/Scripts/python.exe -r tests/gui/requirements.txt
-tmp/gui-tests/venv/Scripts/python.exe tests/gui/run.py --exe target/i686-pc-windows-msvc/release/winlex-gui.exe --dpi pmv2 -q
-tmp/gui-tests/venv/Scripts/python.exe tests/gui/run.py --exe target/i686-pc-windows-msvc/release/winlex-gui.exe --dpi pmv1 --language zh-CN -q
-python tests/gui/resources.py --exe target/i686-pc-windows-msvc/release/winlex-gui.exe
+tmp/gui-tests/venv/Scripts/python.exe tests/gui/run.py --exe "$guiExe" --dpi pmv2 -q
+tmp/gui-tests/venv/Scripts/python.exe tests/gui/run.py --exe "$guiExe" --dpi pmv1 --language zh-CN -q
+python tests/gui/resources.py --exe "$guiExe"
 ```
 
-`--dpi` 可改为 `pmv1`、`system`、`unaware` 或 `auto`。`--desktop current` 使用当前桌面。
+`$guiExe` 为构建显示的 GUI 完整路径。`--dpi` 可改为 `pmv1`、`system`、`unaware` 或 `auto`。`--desktop current` 使用当前桌面。
 `--language/--dpi` 属于测试参数，通过独立配置根及 `WINLEX_DPI` 启动 EXE。
 结果在 `tmp/gui-tests/<run-id>/`：JUnit、环境/输入哈希、窗口树、失败截图、退出码和清理记录。
 Runner 管理测试进程和隔离资源，退出及清理结果记录在 `run.json`。
@@ -122,6 +141,8 @@ $env:WINLEX_MSVC_ROOT = $env:VCToolsInstallDir
 $env:WINLEX_SDK_INCLUDE = Join-Path $env:WindowsSdkDir "Include/$($env:WindowsSDKVersion.TrimEnd('\'))"
 $env:WINLEX_CLANG = (Get-Command clang).Source
 python tests/metadata/run.py --abi
+# 已有产物记录时也可单独运行
+python tests/abi/run.py
 ```
 
 Clang 验证 x86/x64/ARM64；MSVC 验证已安装的目标编译器。`WINLEX_GATE_CLI` 可指定另一个待测 exe。

@@ -106,10 +106,10 @@ pub(super) fn run(args: &[OsString], out: &mut dyn Write, err: &mut dyn Write) -
 
 fn render(result: &QueryResult) -> String {
     let mut text = format!(
-        "{} = {} (signed {})\nScope: {:?}\nRequested language: 0x{:04X}{}\n",
-        result.hex,
-        result.unsigned,
-        result.signed,
+        "0x{:08X} = {} (signed {})\nScope: {:?}\nRequested language: 0x{:04X}{}\n",
+        result.request.code,
+        result.request.code,
+        result.request.code as i32,
         result.request.scope,
         result.request.language,
         if result.request.language == 0 {
@@ -184,6 +184,24 @@ fn render_message(text: &mut String, message: &Message) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn result_projects_numeric_text_from_the_request_without_json_mirrors() {
+        let result = QueryResult {
+            request: Request {
+                code: 0x80070005,
+                scope: Scope::HResult,
+                language: 0x409,
+            },
+            candidates: vec![],
+            attempts: vec![],
+        };
+        assert!(render(&result).starts_with("0x80070005 = 2147942405 (signed -2147024891)\n"));
+        let json = serde_json::to_value(&result).unwrap();
+        assert_eq!(json["request"]["code"], 0x80070005u32);
+        for key in ["hex", "unsigned", "signed"] {
+            assert!(json.get(key).is_none());
+        }
+    }
     #[test]
     fn scope_options_preserve_defaults_conflicts_and_diagnostic_precedence() {
         let parse_args =

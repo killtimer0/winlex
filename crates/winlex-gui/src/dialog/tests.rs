@@ -1,14 +1,26 @@
 use super::*;
 use windows_sys::Win32::UI::HiDpi::*;
 
+fn set_thread_dpi_context(context: DPI_AWARENESS_CONTEXT) -> Option<DPI_AWARENESS_CONTEXT> {
+    unsafe {
+        let module = GetModuleHandleW(w!("user32.dll"));
+        let address = GetProcAddress(module, c"SetThreadDpiAwarenessContext".as_ptr().cast())?;
+        let set: unsafe extern "system" fn(DPI_AWARENESS_CONTEXT) -> DPI_AWARENESS_CONTEXT =
+            std::mem::transmute(address);
+        let previous = set(context);
+        assert!(!previous.is_null());
+        Some(previous)
+    }
+}
+
 struct Window {
     hwnd: HWND,
-    context: DPI_AWARENESS_CONTEXT,
+    context: Option<DPI_AWARENESS_CONTEXT>,
 }
 impl Window {
     fn new() -> Self {
         unsafe {
-            let context = SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_UNAWARE);
+            let context = set_thread_dpi_context(DPI_AWARENESS_CONTEXT_UNAWARE);
             let mut template = vec![0u16; 13];
             let style = WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | DS_SETFONT as u32;
             template[0] = style as u16;
@@ -58,7 +70,9 @@ impl Drop for Window {
     fn drop(&mut self) {
         unsafe {
             DestroyWindow(self.hwnd);
-            SetThreadDpiAwarenessContext(self.context);
+            if let Some(context) = self.context {
+                assert!(set_thread_dpi_context(context).is_some());
+            }
         }
     }
 }
