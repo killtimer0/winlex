@@ -10,6 +10,34 @@ use crate::{
 
 mod error_code;
 pub(super) use error_code::View as ToolView;
+
+pub(super) fn complete(
+    ctx: &Context,
+    document: u64,
+    id: u64,
+    completion: crate::tasks::tools::Completion,
+) {
+    let Some(tool) = workspace::content_by_id(ctx, document).and_then(|c| c.tool()) else {
+        return;
+    };
+    match completion {
+        crate::tasks::tools::Completion::Query { revision, result } => {
+            tool.query_complete(id, revision, result);
+        }
+        crate::tasks::tools::Completion::Languages { path, result } => {
+            tool.languages_complete(id, path, result);
+        }
+    }
+}
+
+pub(super) fn worker_stopped(ctx: &Context) {
+    for tool in workspace::contents(ctx)
+        .into_iter()
+        .filter_map(|c| c.tool())
+    {
+        tool.worker_stopped();
+    }
+}
 pub(super) struct Descriptor {
     pub id: &'static str,
     pub title: u16,

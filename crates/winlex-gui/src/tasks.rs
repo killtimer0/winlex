@@ -15,6 +15,8 @@ use winlex_core::{
 
 const SEARCH_BATCH_INTERVAL: Duration = Duration::from_millis(100);
 
+pub mod tools;
+
 pub enum LoadInput {
     Read(PathBuf),
     Reuse(SourceData),
@@ -42,14 +44,9 @@ pub enum Job {
         entity: EntityId,
         arch: Architecture,
     },
-    ErrorCode {
+    Tool {
         document: u64,
-        revision: u64,
-        request: winlex_core::tools::error_code::Request,
-    },
-    ErrorCodeLanguages {
-        document: u64,
-        path: PathBuf,
+        job: tools::Job,
     },
 }
 pub enum Completion {
@@ -70,20 +67,16 @@ pub enum Completion {
         document: u64,
         result: anyhow::Result<crate::rich_text::Content>,
     },
-    ErrorCodeQuery {
+    Tool {
         id: u64,
         document: u64,
-        revision: u64,
-        result: anyhow::Result<winlex_core::tools::error_code::QueryResult>,
-    },
-    ErrorCodeLanguages {
-        id: u64,
-        document: u64,
-        path: PathBuf,
-        result: Result<Vec<u16>, winlex_core::tools::error_code::Failure>,
+        completion: tools::Completion,
     },
 }
 pub fn run(job: Job, ticket: &Ticket, publish: &dyn Fn(Completion) -> anyhow::Result<()>) {
+    if ticket.cancelled() {
+        return;
+    }
     let id = ticket.id;
     let completion = match job {
         Job::Load { inputs } => Completion::Loaded {
@@ -124,21 +117,10 @@ pub fn run(job: Job, ticket: &Ticket, publish: &dyn Fn(Completion) -> anyhow::Re
             document,
             result: winlex_format::declaration::render(&catalog, entity, arch).map(Into::into),
         },
-        Job::ErrorCode {
-            document,
-            revision,
-            request,
-        } => Completion::ErrorCodeQuery {
+        Job::Tool { document, job } => Completion::Tool {
             id,
             document,
-            revision,
-            result: winlex_core::tools::error_code::query(&request),
-        },
-        Job::ErrorCodeLanguages { document, path } => Completion::ErrorCodeLanguages {
-            id,
-            document,
-            result: winlex_core::tools::error_code::module_languages(&path),
-            path,
+            completion: tools::run(job),
         },
     };
     let _ = publish(completion);
@@ -208,6 +190,51 @@ mod tests {
         cell::{Cell, RefCell},
         collections::VecDeque,
     };
+
+    #[test]
+    fn tool_completion_keeps_document_ticket_and_input_identity() {
+        let ticket = Ticket::new(17);
+        run(
+            Job::Tool {
+                document: 23,
+                job: tools::Job::Languages {
+                    path: PathBuf::new(),
+                },
+            },
+            &ticket,
+            &|completion| {
+                let Completion::Tool {
+                    id,
+                    document,
+                    completion: tools::Completion::Languages { path, result },
+                } = completion
+                else {
+                    panic!("expected tool language completion");
+                };
+                assert_eq!(id, 17);
+                assert_eq!(document, 23);
+                assert!(path.as_os_str().is_empty());
+                assert!(result.is_err());
+                Ok(())
+            },
+        );
+    }
+
+    #[test]
+    fn cancelled_tool_job_does_not_publish() {
+        let ticket = Ticket::new(1);
+        ticket.cancel();
+        run(
+            Job::Tool {
+                document: 1,
+                job: tools::Job::Languages {
+                    path: PathBuf::new(),
+                },
+            },
+            &ticket,
+            &|_| panic!("cancelled tool job published a completion"),
+        );
+    }
 
     fn hit(token: u32) -> SearchStep {
         SearchStep::Match(SearchMatch {

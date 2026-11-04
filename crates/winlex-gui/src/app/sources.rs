@@ -238,7 +238,7 @@ pub(super) fn refresh(ctx: &Context) {
         }
     });
     let count = rows.len();
-    ctx.with_sources(|sources| sources.rows = rows);
+    ctx.with_sources_mut(|sources| sources.rows = rows);
     state.apply(list, count);
     super::sidebar::panel(ctx, super::panel::SOURCES_PANEL)
         .list

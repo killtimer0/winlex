@@ -6,7 +6,7 @@ use crate::{
     layout,
     native::*,
     resources::{self, *},
-    tasks::Job,
+    tasks::{Job, tools::Job as ToolJob},
 };
 use std::{
     cell::{Cell, RefCell},
@@ -247,12 +247,19 @@ impl View {
         ids.push(resources::interface_langid());
         self.set_languages(ids, preserve);
     }
-    fn submit(&self, pending: &Cell<Option<u64>>, job: Job) -> anyhow::Result<()> {
+    fn submit(&self, pending: &Cell<Option<u64>>, job: ToolJob) -> anyhow::Result<()> {
         let ctx = self.ctx();
         let ticket = crate::app::catalog::next_ticket(ctx);
         let id = ticket.id;
         let previous = pending.take();
-        ctx.replace_job(previous, ticket, job)?;
+        ctx.replace_job(
+            previous,
+            ticket,
+            Job::Tool {
+                document: self.id,
+                job,
+            },
+        )?;
         pending.set(Some(id));
         Ok(())
     }
@@ -269,13 +276,7 @@ impl View {
         if path.as_os_str().is_empty() {
             return;
         }
-        if let Err(error) = self.submit(
-            &self.languages_ticket,
-            Job::ErrorCodeLanguages {
-                document: self.id,
-                path,
-            },
-        ) {
+        if let Err(error) = self.submit(&self.languages_ticket, ToolJob::Languages { path }) {
             self.set_status(&format!("{error:#}"));
         }
     }
@@ -294,14 +295,7 @@ impl View {
             }
         };
         let revision = self.revision.get();
-        match self.submit(
-            &self.query_ticket,
-            Job::ErrorCode {
-                document: self.id,
-                revision,
-                request,
-            },
-        ) {
+        match self.submit(&self.query_ticket, ToolJob::Query { revision, request }) {
             Ok(()) => {
                 unsafe { EnableWindow(self.query, 0) };
                 self.set_status(&resources::text(IDS_ERROR_CODE_QUERYING));
@@ -309,7 +303,12 @@ impl View {
             Err(error) => self.set_status(&format!("{error:#}")),
         }
     }
-    pub fn query_complete(&self, id: u64, revision: u64, result: anyhow::Result<QueryResult>) {
+    pub(super) fn query_complete(
+        &self,
+        id: u64,
+        revision: u64,
+        result: anyhow::Result<QueryResult>,
+    ) {
         if self.query_ticket.get() != Some(id) {
             return;
         }
@@ -342,7 +341,7 @@ impl View {
             });
         }
     }
-    pub fn languages_complete(
+    pub(super) fn languages_complete(
         &self,
         id: u64,
         path: PathBuf,
@@ -691,7 +690,7 @@ impl View {
             DestroyWindow(self.tooltip);
         }
     }
-    pub fn worker_stopped(&self) {
+    pub(super) fn worker_stopped(&self) {
         let querying = self.query_ticket.take().is_some();
         let languages = self.languages_ticket.take().is_some();
         if querying || languages {

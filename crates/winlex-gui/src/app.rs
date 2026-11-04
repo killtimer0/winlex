@@ -225,26 +225,11 @@ fn poll_completions(ctx: &Context) {
                     view.complete(id, result);
                 }
             }
-            Ok(Completion::ErrorCodeQuery {
+            Ok(Completion::Tool {
                 id,
                 document,
-                revision,
-                result,
-            }) => {
-                if let Some(tool) = workspace::content_by_id(ctx, document).and_then(|c| c.tool()) {
-                    tool.query_complete(id, revision, result);
-                }
-            }
-            Ok(Completion::ErrorCodeLanguages {
-                id,
-                document,
-                path,
-                result,
-            }) => {
-                if let Some(tool) = workspace::content_by_id(ctx, document).and_then(|c| c.tool()) {
-                    tool.languages_complete(id, path, result);
-                }
-            }
+                completion,
+            }) => tools::complete(ctx, document, id, completion),
             Err(std::sync::mpsc::TryRecvError::Empty) => {
                 catalog::flush_results(ctx);
                 return;
@@ -255,12 +240,7 @@ fn poll_completions(ctx: &Context) {
                 for view in workspace::views(ctx) {
                     view.worker_stopped();
                 }
-                for tool in workspace::contents(ctx)
-                    .into_iter()
-                    .filter_map(|c| c.tool())
-                {
-                    tool.worker_stopped();
-                }
+                tools::worker_stopped(ctx);
                 panel::cancel_debounce(ctx);
                 return;
             }

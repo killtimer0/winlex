@@ -63,29 +63,38 @@ impl Context {
     pub fn with_config<T>(&self, f: impl FnOnce(&crate::config::Config) -> T) -> T {
         self.read(|a| f(&a.config))
     }
-    pub fn with_session<T>(&self, f: impl FnOnce(&mut catalog::Session) -> T) -> T {
+    pub fn with_session<T>(&self, f: impl FnOnce(&catalog::Session) -> T) -> T {
+        self.read(|a| f(&a.session))
+    }
+    pub fn with_session_mut<T>(&self, f: impl FnOnce(&mut catalog::Session) -> T) -> T {
         self.write(|a| f(&mut a.session))
     }
-    pub fn with_workspace<T>(&self, f: impl FnOnce(&mut workspace::Workspace) -> T) -> T {
+    pub fn with_workspace<T>(&self, f: impl FnOnce(&workspace::Workspace) -> T) -> T {
+        self.read(|a| f(&a.workspace))
+    }
+    pub fn with_workspace_mut<T>(&self, f: impl FnOnce(&mut workspace::Workspace) -> T) -> T {
         self.write(|a| f(&mut a.workspace))
     }
-    pub fn with_sidebar<T>(&self, f: impl FnOnce(&mut sidebar::Sidebar) -> T) -> T {
+    pub fn with_sidebar<T>(&self, f: impl FnOnce(&sidebar::Sidebar) -> T) -> T {
+        self.read(|a| f(&a.sidebar))
+    }
+    pub fn with_sidebar_mut<T>(&self, f: impl FnOnce(&mut sidebar::Sidebar) -> T) -> T {
         self.write(|a| f(&mut a.sidebar))
     }
-    pub fn with_sources<T>(&self, f: impl FnOnce(&mut sources::Sources) -> T) -> T {
+    pub fn with_sources<T>(&self, f: impl FnOnce(&sources::Sources) -> T) -> T {
+        self.read(|a| f(&a.sources))
+    }
+    pub fn with_sources_mut<T>(&self, f: impl FnOnce(&mut sources::Sources) -> T) -> T {
         self.write(|a| f(&mut a.sources))
     }
-    pub fn with_status<T>(&self, f: impl FnOnce(&mut status::Status) -> T) -> T {
+    pub fn with_status<T>(&self, f: impl FnOnce(&status::Status) -> T) -> T {
+        self.read(|a| f(&a.status_state))
+    }
+    pub fn with_status_mut<T>(&self, f: impl FnOnce(&mut status::Status) -> T) -> T {
         self.write(|a| f(&mut a.status_state))
     }
-    pub fn with_session_and_config<T>(
-        &self,
-        f: impl FnOnce(&mut catalog::Session, &crate::config::Config) -> T,
-    ) -> T {
-        self.write(|a| f(&mut a.session, &a.config))
-    }
-    pub fn with_settings<T>(&self, f: impl FnOnce(&mut settings::Settings) -> T) -> T {
-        self.write(|a| f(&mut a.settings))
+    pub fn with_settings<T>(&self, f: impl FnOnce(&settings::Settings) -> T) -> T {
+        self.read(|a| f(&a.settings))
     }
     pub fn with_settings_and_config<T>(
         &self,
@@ -184,5 +193,39 @@ impl Context {
         let root = if root.is_null() { hwnd } else { root };
         let raw = unsafe { GetWindowLongPtrW(root, GWLP_USERDATA) } as *const Context;
         (!raw.is_null()).then(|| unsafe { &*raw })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn state_readers_allow_nested_context_reads() {
+        let config = crate::config::Config::load(1).unwrap();
+        let settings = settings::Settings::load(&config);
+        let sidebar = sidebar::Sidebar::new(&config);
+        let ctx = Context::new(
+            config,
+            settings,
+            Dpi {
+                mode: crate::dpi::Mode::Unaware,
+            },
+            crate::platform::WindowsVersion::query().unwrap(),
+            catalog::Session::new(false),
+            crate::worker::Worker::new(crate::tasks::run).unwrap(),
+            sidebar,
+        );
+        ctx.with_session(|_| {
+            ctx.with_workspace(|_| {
+                ctx.with_sidebar(|_| {
+                    ctx.with_sources(|_| {
+                        ctx.with_status(|_| {
+                            ctx.with_settings(|_| assert!(ctx.frame().is_null()));
+                        });
+                    });
+                });
+            });
+        });
     }
 }

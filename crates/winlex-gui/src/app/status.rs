@@ -34,7 +34,7 @@ impl Status {
     }
 }
 pub(super) fn begin_status(ctx: &Context, context: StatusContext) {
-    ctx.with_status(|status| status.begin(context));
+    ctx.with_status_mut(|status| status.begin(context));
     refresh_status(ctx);
 }
 pub(super) fn status_context(ctx: &Context, context: StatusContext) {
@@ -43,7 +43,7 @@ pub(super) fn status_context(ctx: &Context, context: StatusContext) {
     }
 }
 pub(super) fn begin_operation(ctx: &Context) {
-    ctx.with_status(|status| status.notice = None);
+    ctx.with_status_mut(|status| status.notice = None);
     refresh_status(ctx);
 }
 pub(super) fn status_input(ctx: &Context, hwnd: HWND) {
@@ -55,7 +55,7 @@ pub(super) fn status_input(ctx: &Context, hwnd: HWND) {
     }
 }
 pub(super) fn set_status(ctx: &Context, message: String) {
-    ctx.with_status(|status| status.notice = Some(message));
+    ctx.with_status_mut(|status| status.notice = Some(message));
     refresh_status(ctx);
 }
 pub(super) fn report<T>(ctx: &Context, result: anyhow::Result<T>) -> Option<T> {

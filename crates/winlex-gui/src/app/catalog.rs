@@ -203,7 +203,7 @@ pub(super) fn paths(ctx: &Context) -> Vec<PathBuf> {
     ctx.with_session(|session| session.paths())
 }
 pub(super) fn next_ticket(ctx: &Context) -> Ticket {
-    ctx.with_session(|session| session.ticket())
+    ctx.with_session_mut(|session| session.ticket())
 }
 pub(super) fn pending(ctx: &Context, path: &std::path::Path) -> bool {
     ctx.with_session(|session| session.pending(path))
@@ -241,10 +241,10 @@ pub(super) fn source_states(ctx: &Context) -> Vec<SourceState> {
     })
 }
 pub(super) fn reload(ctx: &Context, paths: Vec<PathBuf>, reload: Vec<PathBuf>) {
-    let (previous, ticket, job) = ctx.with_session(|session| session.begin_load(paths, reload));
+    let (previous, ticket, job) = ctx.with_session_mut(|session| session.begin_load(paths, reload));
     let result = ctx.replace_job(previous, ticket, job);
     if let Err(e) = result {
-        ctx.with_session(|session| session.fail_load(format!("{e:#}")));
+        ctx.with_session_mut(|session| session.fail_load(format!("{e:#}")));
     }
     super::status::refresh_status(ctx);
     super::sources::refresh(ctx);
@@ -253,7 +253,7 @@ pub(super) fn reload(ctx: &Context, paths: Vec<PathBuf>, reload: Vec<PathBuf>) {
 pub(super) fn input_changed(ctx: &Context) {
     super::status::begin_status(ctx, super::status::StatusContext::Catalog);
     let (input, composing) = super::panel::cancel_debounce(ctx);
-    let cancelled = ctx.with_session(|session| {
+    let cancelled = ctx.with_session_mut(|session| {
         let cancelled = session.reset_search();
         session.load_error = None;
         cancelled
@@ -267,12 +267,12 @@ pub(super) fn input_changed(ctx: &Context) {
             Ok(()) => Search::Waiting,
             Err(e) => Search::Failed(e),
         };
-        ctx.with_session(|session| session.search = state);
+        ctx.with_session_mut(|session| session.search = state);
     }
     super::status::refresh_status(ctx);
 }
 pub(super) fn search(ctx: &Context) {
-    ctx.with_session(|session| {
+    ctx.with_session_mut(|session| {
         session.load_error = None;
     });
     submit_search(ctx);
@@ -286,7 +286,7 @@ fn submit_search(ctx: &Context) {
     let mode = super::panel::search_mode(ctx);
     let categories = settings::categories(ctx);
     let mut submitted = None;
-    let cancelled = ctx.with_session(|session| {
+    let cancelled = ctx.with_session_mut(|session| {
         let s = &mut *session;
         let cancelled = s.reset_search();
         let Some(catalog) = s.catalog.clone().filter(|_| !query.is_empty()) else {
@@ -340,7 +340,7 @@ fn submit_search(ctx: &Context) {
     };
     update_results(ctx);
     if let Err(e) = sent {
-        ctx.with_session(|session| session.search = Search::Failed(e));
+        ctx.with_session_mut(|session| session.search = Search::Failed(e));
     }
     super::status::refresh_status(ctx);
 }
@@ -382,7 +382,7 @@ pub(super) fn flush_results(ctx: &Context) {
     }
     let hwnd = results_list(ctx);
     let mut state = crate::list::State::capture(hwnd);
-    ctx.with_session(|session| {
+    ctx.with_session_mut(|session| {
         let s = &mut *session;
         merge_results(&mut s.results, &mut s.pending_results, &mut state.indices);
     });
@@ -519,7 +519,7 @@ pub(super) fn open_binding(
     Some(hwnd)
 }
 pub(super) fn worker_stopped(ctx: &Context) {
-    ctx.with_session(|session| {
+    ctx.with_session_mut(|session| {
         session.fail_load(resources::text(IDS_WORKER_STOPPED));
         session.search = Search::Idle;
     });
@@ -531,22 +531,18 @@ pub(super) fn loaded(ctx: &Context, id: u64, result: anyhow::Result<Option<Arc<C
         resources::text(IDS_LOAD_FAILED).replace("{error}", &format!("{error:#}"))
     });
     let committed = result.is_ok();
-    if !ctx.with_session(|session| session.accept_load(id, result)) {
+    if !ctx.with_session_mut(|session| session.accept_load(id, result)) {
         return;
     }
     if committed {
         submit_search(ctx);
-        super::status::report(
-            ctx,
-            ctx.with_session_and_config(|session, config| {
-                if session.remember_sources {
-                    config
-                        .write_key()?
-                        .set_paths("AutoLoad", &session.paths())?;
-                }
-                Ok::<_, anyhow::Error>(())
-            }),
-        );
+        if ctx.with_session(|session| session.remember_sources) {
+            let paths = paths(ctx);
+            super::status::report(
+                ctx,
+                ctx.with_config(|config| config.write_key()?.set_paths("AutoLoad", &paths)),
+            );
+        }
         for view in workspace::views(ctx) {
             view.layout();
         }
@@ -555,10 +551,10 @@ pub(super) fn loaded(ctx: &Context, id: u64, result: anyhow::Result<Option<Arc<C
     super::status::refresh_status(ctx);
 }
 pub(super) fn matches(ctx: &Context, id: u64, items: Items) {
-    ctx.with_session(|session| session.accept_matches(id, items));
+    ctx.with_session_mut(|session| session.accept_matches(id, items));
 }
 pub(super) fn search_done(ctx: &Context, id: u64, result: anyhow::Result<()>) {
-    ctx.with_session(|session| session.finish_search(id, result));
+    ctx.with_session_mut(|session| session.finish_search(id, result));
 }
 
 #[cfg(test)]

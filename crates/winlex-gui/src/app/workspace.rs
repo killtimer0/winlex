@@ -43,7 +43,7 @@ pub(super) fn tabs(ctx: &Context) -> HWND {
     ctx.with_workspace(|workspace| workspace.tabs)
 }
 pub(super) fn attach(ctx: &Context, tabs: HWND, mdi: HWND) {
-    ctx.with_workspace(|workspace| {
+    ctx.with_workspace_mut(|workspace| {
         workspace.tabs = tabs;
         workspace.mdi = mdi;
     });
@@ -53,10 +53,10 @@ pub(super) fn document_icons(
     icon: crate::icons::Icon,
     dpi: u32,
 ) -> anyhow::Result<Rc<crate::icons::WindowIcons>> {
-    ctx.with_workspace(|workspace| workspace.icons.get(icon, dpi))
+    ctx.with_workspace_mut(|workspace| workspace.icons.get(icon, dpi))
 }
 pub(super) fn next_tool_clock(ctx: &Context) -> u64 {
-    ctx.with_workspace(|workspace| {
+    ctx.with_workspace_mut(|workspace| {
         workspace.tool_clock += 1;
         workspace.tool_clock
     })
@@ -65,7 +65,7 @@ pub(super) fn history_depth(ctx: &Context) -> usize {
     ctx.with_workspace(|workspace| workspace.history.depth())
 }
 pub(super) fn with_history<T>(ctx: &Context, f: impl FnOnce(&mut history::History) -> T) -> T {
-    ctx.with_workspace(|workspace| f(&mut workspace.history))
+    ctx.with_workspace_mut(|workspace| f(&mut workspace.history))
 }
 pub(super) fn active(ctx: &Context) -> HWND {
     let mdi = mdi(ctx);
@@ -93,10 +93,10 @@ pub(super) fn keep_focus(ctx: &Context, open: impl FnOnce()) {
     }
 }
 pub(super) fn register_document(ctx: &Context, doc: Content) {
-    ctx.with_workspace(|workspace| workspace.documents.push(doc));
+    ctx.with_workspace_mut(|workspace| workspace.documents.push(doc));
 }
 pub(super) fn unregister_document(ctx: &Context, hwnd: HWND) {
-    let removed = ctx.with_workspace(|workspace| {
+    let removed = ctx.with_workspace_mut(|workspace| {
         let docs = &mut workspace.documents;
         docs.iter().position(|d| d.hwnd() == hwnd).map(|index| {
             let document = docs.remove(index);
@@ -205,7 +205,7 @@ pub(super) fn tab_notification(ctx: &Context, n: &tabs::Notification) {
         tabs::CLOSE => close_document(ctx, hwnd),
         tabs::ACTIVATE => pin_document(ctx, hwnd),
         tabs::REORDER => {
-            ctx.with_workspace(|workspace| {
+            ctx.with_workspace_mut(|workspace| {
                 let docs = &mut workspace.documents;
                 if let Some(index) = docs.iter().position(|d| d.id() == n.id) {
                     let doc = docs.remove(index);
@@ -281,7 +281,7 @@ pub(super) fn set_arrangement(ctx: &Context, arrangement: Arrangement) {
     capture_placements(ctx);
 }
 pub(super) fn set_maximized(ctx: &Context, maximized: bool) {
-    ctx.with_workspace(|workspace| workspace.maximized = maximized);
+    ctx.with_workspace_mut(|workspace| workspace.maximized = maximized);
 }
 fn normal_placement(ctx: &Context, hwnd: HWND) -> anyhow::Result<Placement> {
     Ok(Placement {
@@ -290,7 +290,7 @@ fn normal_placement(ctx: &Context, hwnd: HWND) -> anyhow::Result<Placement> {
     })
 }
 pub(super) fn next_id(ctx: &Context) -> u64 {
-    ctx.with_workspace(|workspace| {
+    ctx.with_workspace_mut(|workspace| {
         workspace.serial += 1;
         workspace.serial
     })

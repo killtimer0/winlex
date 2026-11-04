@@ -104,7 +104,7 @@ pub(super) fn create(ctx: &Context, frame: HWND) -> anyhow::Result<()> {
         )
     }?;
     let splitter = unsafe { child(frame, w!("Winlex.Splitter"), &[0], 0, 0) }?;
-    ctx.with_sidebar(|sidebar| {
+    ctx.with_sidebar_mut(|sidebar| {
         sidebar.toolbar = toolbar;
         sidebar.splitter = splitter;
     });
@@ -136,7 +136,7 @@ pub(super) fn create(ctx: &Context, frame: HWND) -> anyhow::Result<()> {
         }
     }
     let (panels, search) = panel::create(ctx, frame)?;
-    ctx.with_sidebar(|sidebar| {
+    ctx.with_sidebar_mut(|sidebar| {
         sidebar.panels = panels.into();
         sidebar.search = Some(search);
     });
@@ -145,7 +145,7 @@ pub(super) fn create(ctx: &Context, frame: HWND) -> anyhow::Result<()> {
 }
 pub(super) fn show(ctx: &Context, id: PanelId, toggle: bool) {
     super::status::begin_status(ctx, super::status::StatusContext::Catalog);
-    ctx.with_sidebar(|sidebar| {
+    ctx.with_sidebar_mut(|sidebar| {
         let s = &mut *sidebar;
         s.collapsed = toggle && s.active == id && !s.collapsed;
         s.active = id;
@@ -204,7 +204,7 @@ fn update_images(ctx: &Context, toolbar: HWND, size: i32) {
         PanelId::ALL.into_iter().map(|id| id.presentation().2),
     )) {
         send(toolbar, TB_SETIMAGELIST, 0, images.handle());
-        ctx.with_sidebar(|sidebar| sidebar.images = Some(images));
+        ctx.with_sidebar_mut(|sidebar| sidebar.images = Some(images));
     }
 }
 pub(super) fn recolor(ctx: &Context) {
@@ -279,7 +279,7 @@ pub(super) unsafe extern "system" fn splitter_proc(
                     ctx.dpi().window(frame) as i32,
                 )
                 .clamp(MIN_WIDTH, MAX_WIDTH);
-                ctx.with_sidebar(|sidebar| sidebar.width = width);
+                ctx.with_sidebar_mut(|sidebar| sidebar.width = width);
                 super::frame::layout_frame(ctx);
                 return 0;
             }
