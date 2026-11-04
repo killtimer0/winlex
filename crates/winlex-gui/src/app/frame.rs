@@ -176,29 +176,19 @@ pub(super) unsafe extern "system" fn frame_proc(hwnd: HWND, msg: u32, w: usize, 
                     }
                 }
             }
-            WM_CONTEXTMENU if w as HWND == GetDlgItem(hwnd, RESULTS as i32) => {
-                status::begin_status(
-                    ctx,
-                    status::StatusContext::Panel(super::panel::PanelId::Search),
-                );
-                status::report(ctx, super::catalog::context_menu(ctx, w as HWND, l));
-                return 0;
-            }
-            WM_CONTEXTMENU if w as HWND == GetDlgItem(hwnd, SOURCE_LIST as i32) => {
-                status::begin_status(
-                    ctx,
-                    status::StatusContext::Panel(super::panel::PanelId::Sources),
-                );
-                status::report(ctx, sources::context_menu(ctx, w as HWND, l));
-                return 0;
-            }
-            WM_CONTEXTMENU if w as HWND == GetDlgItem(hwnd, TOOL_LIST as i32) => {
-                status::begin_status(
-                    ctx,
-                    status::StatusContext::Panel(super::panel::PanelId::Tools),
-                );
-                status::report(ctx, super::tools::context_menu(ctx, w as HWND, l));
-                return 0;
+            WM_CONTEXTMENU => {
+                if let Some(panel) = sidebar::owner(ctx, w as HWND)
+                    && panel.list.hwnd == w as HWND
+                {
+                    status::begin_status(ctx, status::StatusContext::Panel(panel.id));
+                    let result = match panel.id {
+                        panel::PanelId::Search => super::catalog::context_menu(ctx, w as HWND, l),
+                        panel::PanelId::Sources => sources::context_menu(ctx, w as HWND, l),
+                        panel::PanelId::Tools => super::tools::context_menu(ctx, w as HWND, l),
+                    };
+                    status::report(ctx, result);
+                    return 0;
+                }
             }
             // A top-level WM_GETMINMAXINFO minimum can block a DPI downscale.
             // Use WM_SIZING for interactive limits; retain child minmax for layouts.

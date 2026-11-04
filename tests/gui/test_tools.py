@@ -40,6 +40,23 @@ def query(app, doc, value):
                    and body(doc) else None, "tool explicit query", 30)
 
 
+def test_tool_list_context_menu_offers_instance_actions_without_opening(launch):
+    from test_context import dismiss, popup
+
+    app = launch()
+    app.command(1800)
+    panel = n.get_item(app.frame, 1801)
+    app.select(0, panel)
+    app.focus(panel)
+    _, ids = popup(app, panel, keyboard=True)
+    try:
+        assert ids == [1, 2]
+        assert not tools(app)
+        assert not app.status_text()
+    finally:
+        dismiss(panel)
+
+
 @pytest.mark.parametrize("active_panel", [0, 2])
 def test_tool_list_rows_align_after_initialization_and_panel_switches(launch, settings, profile, active_panel):
     profile.set("ActivePanel", winreg.REG_DWORD, active_panel)
