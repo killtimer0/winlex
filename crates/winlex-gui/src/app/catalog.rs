@@ -277,9 +277,6 @@ pub(super) fn input_changed(ctx: &Context) {
     super::status::refresh_status(ctx);
 }
 pub(super) fn search(ctx: &Context) {
-    submit_search(ctx);
-}
-fn submit_search(ctx: &Context) {
     let (input, composing) = super::panel::cancel_debounce(ctx);
     if composing {
         return;
@@ -618,7 +615,7 @@ pub(super) fn loaded(ctx: &Context, id: u64, result: anyhow::Result<Option<Arc<C
         return;
     }
     if committed {
-        submit_search(ctx);
+        search(ctx);
         if ctx.with_session(|session| session.remember_sources) {
             let paths = paths(ctx);
             super::status::report(

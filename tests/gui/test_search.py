@@ -162,6 +162,8 @@ def test_ime_defers_search(launch, settings):
     n.wait(lambda: app.status_text().startswith(("Ready.", "已就绪")), "loaded", 45)
     n.send(app.search, win32con.WM_IME_STARTCOMPOSITION)
     n.set_text(app.search, "CreateFileW")
+    app.focus(app.search)
+    n.key_message(app.search, win32con.VK_RETURN)
     time.sleep(.35)
     assert app.count() == 0
     n.send(app.search, win32con.WM_IME_ENDCOMPOSITION)

@@ -19,10 +19,10 @@ mod rtf;
 mod scroll;
 mod word_break;
 
-const KEYWORD_COLOR: u32 = 0x800000;
-const COMMENT_COLOR: u32 = 0x008000;
-const STRING_COLOR: u32 = 0x000080;
-const NUMBER_COLOR: u32 = 0x800080;
+const KEYWORD_STYLE: u8 = 1;
+const COMMENT_STYLE: u8 = 2;
+const STRING_STYLE: u8 = 3;
+const NUMBER_STYLE: u8 = 4;
 
 pub struct Content {
     text: String,
@@ -583,7 +583,7 @@ fn stream_in(hwnd: HWND, data: &[u8]) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn spans(text: &[u16]) -> Vec<(usize, usize, u32)> {
+fn spans(text: &[u16]) -> Vec<(usize, usize, u8)> {
     let mut result = Vec::new();
     let mut i = 0;
     while i < text.len() {
@@ -594,14 +594,14 @@ fn spans(text: &[u16]) -> Vec<(usize, usize, u32)> {
             while i < text.len() && text[i] != 13 {
                 i += 1;
             }
-            Some(COMMENT_COLOR)
+            Some(COMMENT_STYLE)
         } else if ch == b'/' as u16 && text.get(i) == Some(&(b'*' as u16)) {
             i += 1;
             i = text[i..]
                 .windows(2)
                 .position(|pair| pair == [b'*' as u16, b'/' as u16])
                 .map_or(text.len(), |end| i + end + 2);
-            Some(COMMENT_COLOR)
+            Some(COMMENT_STYLE)
         } else if ch == b'"' as u16 || ch == b'\'' as u16 {
             while i < text.len() {
                 let next = text[i];
@@ -612,7 +612,7 @@ fn spans(text: &[u16]) -> Vec<(usize, usize, u32)> {
                     break;
                 }
             }
-            Some(STRING_COLOR)
+            Some(STRING_STYLE)
         } else if ch <= 127 && ((ch as u8).is_ascii_alphanumeric() || ch == b'_' as u16) {
             let number = (ch as u8).is_ascii_digit();
             let extra = if number { b'.' } else { b'_' } as u16;
@@ -623,7 +623,7 @@ fn spans(text: &[u16]) -> Vec<(usize, usize, u32)> {
                 i += 1;
             }
             if number {
-                Some(NUMBER_COLOR)
+                Some(NUMBER_STYLE)
             } else {
                 let word = String::from_utf16_lossy(&text[start..i]);
                 matches!(
@@ -661,7 +661,7 @@ fn spans(text: &[u16]) -> Vec<(usize, usize, u32)> {
                         | "string"
                         | "object"
                 )
-                .then_some(KEYWORD_COLOR)
+                .then_some(KEYWORD_STYLE)
             }
         } else {
             None
@@ -1236,37 +1236,43 @@ mod tests {
     #[test]
     fn highlighting_keeps_numeric_identifier_and_comment_boundaries() {
         for (body, expected) in [
-            ("int1 _int UINT32_ 0xAf", vec![("0xAf", 0x800080)]),
-            ("/*/ int", vec![("/*/ int", 0x008000)]),
-            ("/**/int", vec![("/**/", 0x008000), ("int", 0x800000)]),
-            ("/* **/42", vec![("/* **/", 0x008000), ("42", 0x800080)]),
+            ("int1 _int UINT32_ 0xAf", vec![("0xAf", NUMBER_STYLE)]),
+            ("/*/ int", vec![("/*/ int", COMMENT_STYLE)]),
+            (
+                "/**/int",
+                vec![("/**/", COMMENT_STYLE), ("int", KEYWORD_STYLE)],
+            ),
+            (
+                "/* **/42",
+                vec![("/* **/", COMMENT_STYLE), ("42", NUMBER_STYLE)],
+            ),
             (
                 "/*\r😀*/UINT32",
-                vec![("/*\r😀*/", 0x008000), ("UINT32", 0x800000)],
+                vec![("/*\r😀*/", COMMENT_STYLE), ("UINT32", KEYWORD_STYLE)],
             ),
             (
                 "\"int 123\" // UINT32\rconst",
                 vec![
-                    ("\"int 123\"", 0x000080),
-                    ("// UINT32", 0x008000),
-                    ("const", 0x800000),
+                    ("\"int 123\"", STRING_STYLE),
+                    ("// UINT32", COMMENT_STYLE),
+                    ("const", KEYWORD_STYLE),
                 ],
             ),
         ] {
             let text: Vec<_> = body.encode_utf16().collect();
             let found: Vec<_> = spans(&text)
                 .into_iter()
-                .map(|(start, end, color)| (String::from_utf16(&text[start..end]).unwrap(), color))
+                .map(|(start, end, style)| (String::from_utf16(&text[start..end]).unwrap(), style))
                 .collect();
             let expected: Vec<_> = expected
                 .into_iter()
-                .map(|(token, color)| (token.to_owned(), color))
+                .map(|(token, style)| (token.to_owned(), style))
                 .collect();
             assert_eq!(found, expected, "{body}");
         }
         assert_eq!(
             spans(&[b'1' as u16, 0xd800, b'2' as u16, 0xdc00]),
-            [(0, 1, 0x800080), (2, 3, 0x800080)]
+            [(0, 1, NUMBER_STYLE), (2, 3, NUMBER_STYLE)]
         );
     }
 

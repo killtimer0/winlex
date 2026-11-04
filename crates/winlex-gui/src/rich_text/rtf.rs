@@ -32,16 +32,9 @@ pub(super) fn render(text: &str) -> Vec<u8> {
     let units: Vec<_> = text.encode_utf16().collect();
     let mut rtf = LIGHT_HEADER.to_vec();
     let mut end = 0;
-    for (start, next, color) in super::spans(&units) {
+    for (start, next, style) in super::spans(&units) {
         append(&mut rtf, &units[end..start]);
-        let index = match color {
-            super::KEYWORD_COLOR => 1,
-            super::COMMENT_COLOR => 2,
-            super::STRING_COLOR => 3,
-            super::NUMBER_COLOR => 4,
-            _ => unreachable!(),
-        };
-        write!(rtf, "\\cf{index} ").unwrap();
+        write!(rtf, "\\cf{style} ").unwrap();
         append(&mut rtf, &units[start..next]);
         rtf.extend_from_slice(br"\cf0 ");
         end = next;
@@ -67,6 +60,24 @@ fn append(out: &mut Vec<u8>, text: &[u16]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn syntax_tokens_use_the_same_palette_slots_in_both_themes() {
+        let light = render("const x = 42; \"😀\" // int\r");
+        let expected = concat!(
+            r"\cf1 const\cf0  x = \cf4 42\cf0 ; ",
+            r#"\cf3 "\u-10179?\u-8704?"\cf0  "#,
+            r"\cf2 // int\cf0 \par \par }",
+        );
+        assert_eq!(
+            light.strip_prefix(LIGHT_HEADER).unwrap(),
+            expected.as_bytes()
+        );
+        assert_eq!(
+            themed(&light, true).strip_prefix(DARK_HEADER).unwrap(),
+            expected.as_bytes()
+        );
+    }
 
     #[test]
     fn themed_headers_leave_escaped_body_and_invalid_input_untouched() {

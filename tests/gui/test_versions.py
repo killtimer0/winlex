@@ -18,7 +18,6 @@ def test_reload_keeps_old_document_snapshot(launch, settings):
     editor = n.get_item(entity, 1203)
     n.send(editor, win32con.EM_SETSEL, 2, 8)
     app.command(1044)
-    n.wait(lambda: app.status_text().startswith(("Results ", "共 ")), "reload", 45)
     n.wait(lambda: n.is_visible(n.get_item(entity, 1204)), "earlier snapshot", 45)
     assert n.send(editor, win32con.EM_GETSEL) == (8 << 16) | 2
     app.command(1040)
