@@ -1,6 +1,7 @@
 /tmp/
 /inputs/*.winmd
 /target/
+/artifacts/
 /node_modules/
 **/target/
 **/__pycache__/

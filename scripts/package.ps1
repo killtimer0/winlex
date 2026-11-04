@@ -9,23 +9,13 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
-$policy = (Get-Content -LiteralPath "$root/inputs/targets.json" -Raw | ConvertFrom-Json).$Architecture
-$target = $policy.target
-$records = @($CliBuildRecord, $GuiBuildRecord)
-$names = @('winlex.exe', 'winlex-gui.exe')
-$binaries = @()
-for ($i = 0; $i -lt $records.Count; $i++) {
-    $record = Get-Content -LiteralPath $records[$i] -Raw | ConvertFrom-Json
-    if ($record.target -ne $target -or $record.configuration -ne $Configuration) {
-        throw "Build record target or configuration mismatch: $($records[$i])"
-    }
-    $exe = (Resolve-Path -LiteralPath $record.executable).Path
-    if ([IO.Path]::GetFileName($exe) -ine $names[$i] -or
-        (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash -ine $record.executable_sha256) {
-        throw "Executable name or hash mismatch: $exe"
-    }
-    $binaries += $exe
-}
+$verifyArguments = @("$PSScriptRoot/build-record.py", '--records', $CliBuildRecord, $GuiBuildRecord,
+    '--architecture', $Architecture, '--configuration', $Configuration)
+$records = & python @verifyArguments --json
+if ($LASTEXITCODE -ne 0) { throw 'Build record or PE validation failed.' }
+$records = $records | ConvertFrom-Json
+$binaries = @($records | ForEach-Object { $_.executable })
+$target = $records[0].target
 $output = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputDir)
 New-Item -ItemType Directory -Force -Path $output | Out-Null
 $zip = Join-Path $output "winlex-$Architecture.zip"
@@ -83,9 +73,16 @@ try {
     }
     [IO.File]::WriteAllLines((Join-Path $stage 'SHA256SUMS.txt'), [string[]]$manifest, [Text.UTF8Encoding]::new($false))
     Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip
+    & python @verifyArguments --archive $zip
+    if ($LASTEXITCODE -ne 0) { throw 'Archive validation failed.' }
     $hash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
     [IO.File]::WriteAllText("$zip.sha256", "$hash  $([IO.Path]::GetFileName($zip))`n", [Text.UTF8Encoding]::new($false))
     Write-Host "Packaged $zip"
+} catch {
+    foreach ($path in @($zip, "$zip.sha256")) {
+        if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
+    }
+    throw
 } finally {
     Remove-Item -LiteralPath $stage -Recurse -Force
 }

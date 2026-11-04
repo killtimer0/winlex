@@ -12,13 +12,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - arch: x86
-            target: i686-pc-windows-msvc
-          - arch: x64
-            target: x86_64-pc-windows-msvc
-          - arch: arm64
-            target: aarch64-pc-windows-msvc
+        arch: [x86, x64, arm64]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install Rust target and license documentation
@@ -26,53 +20,56 @@ jobs:
         run: |
           rustup default stable
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          rustup target add ${{ matrix.target }}
+          $policy = (Get-Content inputs/targets.json -Raw | ConvertFrom-Json).'${{ matrix.arch }}'
+          rustup target add $policy.target
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          rustup component add rust-docs
+          rustup component add rust-docs rustfmt
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Prepare pinned compatibility dependencies
         shell: pwsh
         run: |
-          python scripts/prepare-inputs.py
+          python scripts/prepare-inputs.py --architecture ${{ matrix.arch }}
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Install ARM64 MSVC tools if needed
         if: matrix.arch == 'arm64'
         shell: pwsh
         run: |
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.ARM64 -property installationPath
+          $policy = (Get-Content inputs/targets.json -Raw | ConvertFrom-Json).'${{ matrix.arch }}'
+          $vs = & $vswhere -latest -products * -requires $policy.vs_component -property installationPath
           if (-not $vs) {
             $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
             if (-not $vs) { throw 'Visual Studio C++ tools not found.' }
             $installer = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\setup.exe"
-            $process = Start-Process -FilePath $installer -ArgumentList @('modify', '--installPath', "`"$vs`"", '--add', 'Microsoft.VisualStudio.Component.VC.Tools.ARM64', '--quiet', '--norestart') -Wait -PassThru
+            $process = Start-Process -FilePath $installer -ArgumentList @('modify', '--installPath', "`"$vs`"", '--add', $policy.vs_component, '--quiet', '--norestart') -Wait -PassThru
             if ($process.ExitCode -notin @(0, 3010)) { throw "MSVC ARM64 installation failed: $($process.ExitCode)" }
           }
+      - name: Validate Debug build and contracts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $arch = '${{ matrix.arch }}'
+          python -m pip install PyYAML
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo fmt --all -- --check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test -p winlex-core -p winlex-format -p winlex-cli --locked
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./scripts/build.ps1 -Architecture $arch -TargetDir "$pwd/target"
+          $policy = (Get-Content inputs/targets.json -Raw | ConvertFrom-Json).$arch
+          $env:WINLEX_TEST_ARCH = $arch
+          $env:WINLEX_PACKAGE_REQUIRE_ARCH = $arch
+          [Environment]::SetEnvironmentVariable("WINLEX_PACKAGE_$($arch.ToUpperInvariant())_BUILD_DIR", "$pwd/target/$($policy.target)/debug", 'Process')
+          python -m unittest discover -s tests/scripts -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build and package
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
           $arch = '${{ matrix.arch }}'
-          $component = if ($arch -eq 'arm64') { 'Microsoft.VisualStudio.Component.VC.Tools.ARM64' } else { 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64' }
-          $vs = & $vswhere -latest -products * -requires $component -property installationPath
-          if (-not $vs) { throw 'Visual Studio C++ tools not found.' }
-          $devcmd = Join-Path $vs 'Common7/Tools/VsDevCmd.bat'
-          $devArch = if ($arch -eq 'x86') { 'x86' } else { $arch }
-          cmd /s /c "`"`"$devcmd`" -no_logo -host_arch=x64 -arch=$devArch && set`"" | ForEach-Object {
-            if ($_ -match '^([^=]+)=(.*)$') { [Environment]::SetEnvironmentVariable($matches[1], $matches[2], 'Process') }
-          }
-          if ($LASTEXITCODE -ne 0) { throw 'VsDevCmd failed.' }
-          $link = Join-Path $env:VCToolsInstallDir "bin/Hostx64/$arch/link.exe"
-          $args = @{ Architecture = $arch; Configuration = 'Dist'; LinkExe = $link; TargetDir = "$pwd/target" }
-          $ltl = Get-Content inputs/vc-ltl-source.json -Raw | ConvertFrom-Json
-          $args.VcLtlRoot = "$pwd/tmp/deps/vc-ltl-$($ltl.version)/sdk"
-          if ($arch -ne 'arm64') {
-            $thunks = Get-Content inputs/yy-thunks-source.json -Raw | ConvertFrom-Json
-            $args.YyThunksObject = "$pwd/tmp/deps/yy-thunks-$($thunks.version)/$arch/YY_Thunks_for_WinXP.obj"
-          }
-          ./scripts/build.ps1 @args
-          $bin = "$pwd/target/${{ matrix.target }}/dist"
+          ./scripts/build.ps1 -Architecture $arch -Configuration Dist -TargetDir "$pwd/target"
+          $policy = (Get-Content inputs/targets.json -Raw | ConvertFrom-Json).$arch
+          $bin = "$pwd/target/$($policy.target)/dist"
           ./scripts/package.ps1 -Architecture $arch -CliBuildRecord "$bin/winlex.exe.build.json" -GuiBuildRecord "$bin/winlex-gui.exe.build.json" -OutputDir "$pwd/artifacts"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:

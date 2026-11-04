@@ -12,6 +12,7 @@ from zipfile import ZipFile
 
 ROOT = Path(__file__).resolve().parents[2]
 TARGETS = {"x86": "i686-pc-windows-msvc", "x64": "x86_64-pc-windows-msvc", "arm64": "aarch64-pc-windows-msvc"}
+ARCHITECTURES = [os.environ["WINLEX_PACKAGE_REQUIRE_ARCH"]] if os.environ.get("WINLEX_PACKAGE_REQUIRE_ARCH") else list(TARGETS)
 SCRIPT = ROOT / "scripts/package.ps1"
 
 
@@ -31,6 +32,8 @@ class PackageContracts(unittest.TestCase):
                                         ROOT / "target" / TARGETS[arch] / "debug"))
         records = [binary_dir / f"{name}.exe.build.json" for name in ("winlex", "winlex-gui")]
         if not all(path.is_file() for path in records):
+            if os.environ.get("WINLEX_PACKAGE_REQUIRE_ARCH") == arch:
+                self.fail(f"Required Debug build records not available: {binary_dir}")
             self.skipTest(f"Debug build records not available: {binary_dir}")
         return records
 
@@ -42,7 +45,7 @@ class PackageContracts(unittest.TestCase):
         ], text=True, capture_output=True, encoding="utf-8", errors="replace")
 
     def test_debug_packages(self):
-        for arch in TARGETS:
+        for arch in ARCHITECTURES:
             with self.subTest(arch=arch):
                 records = self.records(arch)
                 out = self.directory / f"good-{arch}"
@@ -89,34 +92,39 @@ class PackageContracts(unittest.TestCase):
                                          json.loads(record.read_text(encoding="utf-8-sig"))["executable_sha256"].lower())
 
     def test_rejects_bad_records_and_existing_outputs(self):
-        records = self.records("x64")
+        arch = ARCHITECTURES[0] if os.environ.get("WINLEX_PACKAGE_REQUIRE_ARCH") else "x64"
+        records = self.records(arch)
         original = json.loads(records[0].read_text(encoding="utf-8-sig"))
         for field, value, message in (
-            ("target", TARGETS["x86"], "target or configuration mismatch"),
+            ("target", "unsupported-target", "target or configuration mismatch"),
             ("configuration", "Dist", "target or configuration mismatch"),
             ("executable_sha256", "0" * 64, "name or hash mismatch"),
+            ("schema_version", 0, "Unsupported build record"),
+            ("build_id", "other-invocation", "Build invocation mismatch"),
+            ("source", {"commit": "0" * 40, "dirty": False, "sha256": "0" * 64}, "Build provenance mismatch: source"),
+            ("rust_licenses_sha256", "0" * 64, "Build provenance mismatch: rust_licenses_sha256"),
         ):
             with self.subTest(field=field):
                 bad = self.directory / f"bad-{field}.json"
                 bad.write_text(json.dumps({**original, field: value}), encoding="utf-8")
                 out = self.directory / f"bad-{field}"
-                result = self.package("x64", [bad, records[1]], out)
+                result = self.package(arch, [bad, records[1]], out)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn(message, result.stdout + result.stderr)
-                self.assertFalse((out / "winlex-x64.zip").exists())
+                self.assertFalse((out / f"winlex-{arch}.zip").exists())
         for suffix in (".zip", ".zip.sha256"):
             with self.subTest(existing=suffix):
                 out = self.directory / ("existing-" + suffix.replace(".", "-"))
                 out.mkdir()
-                existing = out / f"winlex-x64{suffix}"
+                existing = out / f"winlex-{arch}{suffix}"
                 existing.write_bytes(b"keep")
-                result = self.package("x64", records, out)
+                result = self.package(arch, records, out)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("Output already exists", result.stdout + result.stderr)
                 self.assertEqual(existing.read_bytes(), b"keep")
 
     def test_system_crt_imports_and_build_records(self):
-        for arch in TARGETS:
+        for arch in ARCHITECTURES:
             with self.subTest(arch=arch):
                 for path in self.records(arch):
                     record = json.loads(path.read_text(encoding="utf-8-sig"))
@@ -138,7 +146,7 @@ class PackageContracts(unittest.TestCase):
 
 
 class WorkflowContracts(unittest.TestCase):
-    def test_all_architectures_receive_vc_ltl_but_only_legacy_receive_thunks(self):
+    def test_matrix_uses_shared_build_entry_and_required_debug_contracts(self):
         try:
             import yaml
         except ImportError:
@@ -146,42 +154,16 @@ class WorkflowContracts(unittest.TestCase):
         workflow = yaml.load((ROOT / ".github/workflows/build.yml").read_text(encoding="utf-8"),
                              Loader=yaml.BaseLoader)
         steps = workflow["jobs"]["dist"]["steps"]
-        prepare = next(step for step in steps if step.get("name") == "Prepare pinned compatibility dependencies")
-        self.assertNotIn("if", prepare)
+        prepare = next(step for step in steps if step.get("name") == "Prepare pinned compatibility dependencies")["run"]
+        self.assertIn("--architecture ${{ matrix.arch }}", prepare)
         build = next(step["run"] for step in steps if step.get("name") == "Build and package")
-        args = "$args = " + build.split("$args = ", 1)[1].split("./scripts/build.ps1 @args", 1)[0]
-        for arch in TARGETS:
-            with self.subTest(arch=arch):
-                script = f"$arch='{arch}'; $link='unused'\n" + args + "\n$args | ConvertTo-Json"
-                result = subprocess.run(["pwsh", "-NoProfile", "-Command", script], cwd=ROOT,
-                                        text=True, capture_output=True, encoding="utf-8")
-                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                arguments = json.loads(result.stdout)
-                self.assertTrue(arguments["VcLtlRoot"].endswith("/sdk"))
-                self.assertEqual("YyThunksObject" in arguments, arch != "arm64")
-
-    def test_build_selects_installation_with_target_tools(self):
-        try:
-            import yaml
-        except ImportError:
-            self.skipTest("PyYAML is required for workflow YAML validation")
-        workflow = yaml.load((ROOT / ".github/workflows/build.yml").read_text(encoding="utf-8"),
-                             Loader=yaml.BaseLoader)
-        build = next(step["run"] for step in workflow["jobs"]["dist"]["steps"]
-                     if step.get("name") == "Build and package")
-        selection = build.split("$devcmd =", 1)[0]
-        mock = "$vswhere = { param([switch]$latest, $products, $requires, $property) " \
-               "switch ($requires) { 'Microsoft.VisualStudio.Component.VC.Tools.ARM64' { 'C:/ArmBuildTools' } " \
-               "'Microsoft.VisualStudio.Component.VC.Tools.x86.x64' { 'C:/Community' } default { throw 'Unexpected component' } } }"
-        selection, count = re.subn(r'^\s*\$vswhere = .*$', lambda _: mock, selection, flags=re.MULTILINE)
-        self.assertEqual(count, 1)
-        for arch in ("x86", "x64", "arm64"):
-            with self.subTest(arch=arch):
-                script = re.sub(r"\$\{\{\s*matrix\.arch\s*\}\}", arch, selection)
-                result = subprocess.run(["pwsh", "-NoProfile", "-Command", script + "\nWrite-Output $vs"],
-                                        text=True, capture_output=True, encoding="utf-8")
-                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                self.assertEqual(result.stdout.strip(), "C:/ArmBuildTools" if arch == "arm64" else "C:/Community")
+        self.assertIn("./scripts/build.ps1 -Architecture $arch", build)
+        self.assertNotIn("VsDevCmd", build)
+        validate = next(step["run"] for step in steps if step.get("name") == "Validate Debug build and contracts")
+        self.assertIn("WINLEX_PACKAGE_REQUIRE_ARCH", validate)
+        self.assertIn("python -m unittest discover -s tests/scripts -v", validate)
+        self.assertLess(steps.index(next(step for step in steps if step.get("name") == "Validate Debug build and contracts")),
+                        steps.index(next(step for step in steps if step.get("name") == "Build and package")))
 
     def test_manual_matrix_and_pinned_actions(self):
         try:
@@ -192,9 +174,10 @@ class WorkflowContracts(unittest.TestCase):
                              Loader=yaml.BaseLoader)
         self.assertEqual(set(workflow["on"]), {"workflow_dispatch"})
         job = workflow["jobs"]["dist"]
-        matrix = job["strategy"]["matrix"]["include"]
-        self.assertEqual({item["arch"]: item["target"] for item in matrix}, TARGETS)
-        self.assertEqual(len(matrix), 3)
+        matrix = job["strategy"]["matrix"]["arch"]
+        self.assertEqual(set(matrix), set(TARGETS))
+        policies = json.loads((ROOT / "inputs/targets.json").read_text())
+        self.assertEqual({arch: policy["target"] for arch, policy in policies.items()}, TARGETS)
         actions = [step["uses"] for step in job["steps"] if "uses" in step]
         self.assertEqual(set(actions), {
             "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",

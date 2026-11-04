@@ -11,18 +11,23 @@
 
 流水线使用 `Dist` profile，且不生成、下载或捆绑 WinMD。所有架构使用固定版本 VC-LTL；x86／x64 配合 YY-Thunks，ARM64 使用系统 UCRT 模式且不链接 YY-Thunks。最低系统和构建环境见[构建指南](build.md)。交叉构建不等同于目标系统实际运行验证。
 
-本地从 MSVC 开发环境使用 PowerShell 7.2+ 构建，再将构建输出显示的 `.build.json` 路径显式传给打包脚本：
+手动工作流先执行 Debug 构建、库测试及构建／打包契约，再生成 Dist 包。各架构使用相同入口，只有实际工具和兼容库需求不同。Rust 使用最新 stable，不固定版本；构建记录保留实际版本。
+
+本地使用 PowerShell 7.2+ 构建，再将构建输出显示的 `.build.json` 路径显式传给打包脚本：
 
 ```powershell
-./scripts/build.ps1 -Architecture x64 -Configuration Dist -LinkExe $link `
-  -YyThunksObject $thunks -VcLtlRoot $ltl
+./scripts/build.ps1 -Architecture x64 -Configuration Dist
 ./scripts/package.ps1 -Architecture x64 `
   -CliBuildRecord "$cli.build.json" -GuiBuildRecord "$gui.build.json" `
   -OutputDir ./tmp/packages
 Get-FileHash ./tmp/packages/winlex-x64.zip -Algorithm SHA256
 ```
 
-`$cli`、`$gui` 为本次构建显示的可执行文件绝对路径。打包脚本核对目标、配置和二进制哈希，拒绝覆盖已有 ZIP 或校验文件；默认只接受 Dist 记录，开发验证可显式指定 `-Configuration Debug`。二进制构建记录含本机路径，不放入程序包。
+`$cli`、`$gui` 为本次构建显示的可执行文件绝对路径。两份记录必须来自同一次构建，且源码提交、工作区内容及 Rust 工具链／许可材料必须与当前环境一致。Dist 打包要求干净的源码树；源码修改或提交后须重新构建。旧格式记录不能作为新打包入口的输入。
+
+打包脚本核对固定依赖、目标策略、二进制哈希、PE 架构／子系统及普通和延迟 CRT 导入，拒绝额外运行库、WinMD 和构建记录进入包，并验证 ZIP 内文件集合与校验值。输出放在 Git 忽略的目录，例如 `tmp/` 或 `artifacts/`；已有 ZIP 或校验文件不会被覆盖。默认只接受 Dist 记录，开发验证可显式指定 `-Configuration Debug`。二进制构建记录含本机路径，不放入程序包。
+
+这些措施提供输入追溯和产物校验，不保证 EXE 或 ZIP 字节级可复现；MSVC、SDK、Rust 版本以及归档时间戳仍可能变化。
 
 ## 元数据
 

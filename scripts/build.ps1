@@ -42,7 +42,7 @@ if (-not $RcExe) {
     )
     $RcExe = $sdkBins | Where-Object { $_ } | ForEach-Object {
         Join-Path $_ 'x64/rc.exe'
-    } | Where-Object { Test-Path $_ -PathType Leaf } | Select-Object -First 1
+    } | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
 }
 if (-not $RcExe -and $Configuration -ne 'Dist') {
     $rcCommand = Get-Command rc.exe -ErrorAction SilentlyContinue
@@ -56,11 +56,11 @@ if (-not $RcExe -and $Configuration -ne 'Dist') {
 }
 if (-not $RcExe) { throw 'Microsoft rc.exe was not found in the SDK environment. Specify -RcExe or omit -LinkExe to initialize the toolchain.' }
 $rc = (Resolve-Path -LiteralPath $RcExe).Path
-if ((Get-Item $rc).VersionInfo.CompanyName -notmatch 'Microsoft') { throw 'Use Microsoft rc.exe.' }
+if ((Get-Item -LiteralPath $rc).VersionInfo.CompanyName -notmatch 'Microsoft') { throw 'Use Microsoft rc.exe.' }
 if ([IO.Path]::GetFileName($linker) -ine 'link.exe') {
     throw 'Use Microsoft MSVC link.exe. YY-Thunks uses a different integration for lld-link.'
 }
-if ((Get-Item $linker).VersionInfo.CompanyName -notmatch 'Microsoft') {
+if ((Get-Item -LiteralPath $linker).VersionInfo.CompanyName -notmatch 'Microsoft') {
     throw 'The supplied link.exe is not identified as a Microsoft linker.'
 }
 $linkerDirectory = Split-Path $linker -Parent
@@ -78,7 +78,7 @@ $identity = & python "$PSScriptRoot/build-record.py"
 if ($LASTEXITCODE -ne 0) { throw 'Unable to capture build source and toolchain identity.' }
 $identity = $identity | ConvertFrom-Json
 $libdir = & rustc --print target-libdir --target $target
-if ($LASTEXITCODE -ne 0 -or -not (Test-Path $libdir)) {
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $libdir)) {
     throw "Rust standard library for $target is missing. Install a Rust MSVC toolchain and this target first."
 }
 $oldFlags = $env:CARGO_ENCODED_RUSTFLAGS
@@ -86,12 +86,14 @@ $oldRustFlags = $env:RUSTFLAGS
 $oldObject = $env:WINLEX_YY_THUNKS_OBJ
 $oldLtl = $env:WINLEX_VC_LTL_ROOT
 $oldRc = $env:WINLEX_RC_EXE
+$oldConsoleEncoding = [Console]::OutputEncoding
 try {
+    [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
     if ($oldFlags -or $oldRustFlags) { throw 'Clear existing RUSTFLAGS/CARGO_ENCODED_RUSTFLAGS before this build.' }
     $flags = @('-C','target-feature=+crt-static','-C',"linker=$linker")
     if ($Configuration -eq 'Dist') {
         $sysroot = & rustc --print sysroot
-        if ($LASTEXITCODE -ne 0 -or -not (Test-Path $sysroot)) { throw 'Rust sysroot was not found.' }
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $sysroot)) { throw 'Rust sysroot was not found.' }
         $cargoHome = if ($env:CARGO_HOME) { $env:CARGO_HOME } else { Join-Path $env:USERPROFILE '.cargo' }
         $remappings = @(
             @($root, '/src/winlex'),
@@ -110,7 +112,7 @@ try {
     $env:WINLEX_RC_EXE = $rc
     $arguments = @(
         'build', '--manifest-path', "$root/Cargo.toml", '--package', 'winlex',
-        '--target', $target, '--locked', '--message-format=json-render-diagnostics'
+        '--target', $target, '--locked', '--message-format=json'
     )
     if ($Configuration -eq 'Release') { $arguments += '--release' }
     if ($Configuration -eq 'Dist') { $arguments += @('--profile', 'dist') }
@@ -136,7 +138,7 @@ try {
     if (-not $packageId -or -not $buildOutputs.ContainsKey($packageId)) {
         throw 'Cargo did not report the executable package build output.'
     }
-    $compatibility = Get-Content (Join-Path $buildOutputs[$packageId] 'compatibility.json') -Raw | ConvertFrom-Json
+    $compatibility = Get-Content -LiteralPath (Join-Path $buildOutputs[$packageId] 'compatibility.json') -Raw | ConvertFrom-Json
     if ($compatibility.target -ne $target) { throw 'Build compatibility metadata target mismatch.' }
     foreach ($property in $policy.PSObject.Properties) {
         if ($compatibility.($property.Name) -cne $property.Value) {
@@ -167,12 +169,12 @@ try {
             sdk_version = $env:WindowsSDKVersion
             policy = $policy
             linker = $linker
-            linker_version = (Get-Item $linker).VersionInfo.FileVersion
+            linker_version = (Get-Item -LiteralPath $linker).VersionInfo.FileVersion
             resource_compiler = $rc
-            resource_compiler_version = (Get-Item $rc).VersionInfo.FileVersion
+            resource_compiler_version = (Get-Item -LiteralPath $rc).VersionInfo.FileVersion
             minimum_windows = $compatibility.minimum_windows
             executable = $exe
-            executable_sha256 = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLowerInvariant()
+            executable_sha256 = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant()
         }
         $report.crt = "VC-LTL5 system $($policy.crt_mode)"
         if ($policy.thunks_arch) {
@@ -181,7 +183,7 @@ try {
         }
         $report.vc_ltl_root = $ltlRoot
         $report.vc_ltl_libraries = $checkedInputs.vc_ltl_libraries
-        $report | ConvertTo-Json -Depth 5 | Set-Content "$exe.build.json" -Encoding utf8
+        $report | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath "$exe.build.json" -Encoding utf8
         Write-Host "Built $exe"
     }
 } finally {
@@ -190,4 +192,5 @@ try {
     $env:WINLEX_YY_THUNKS_OBJ = $oldObject
     $env:WINLEX_VC_LTL_ROOT = $oldLtl
     $env:WINLEX_RC_EXE = $oldRc
+    [Console]::OutputEncoding = $oldConsoleEncoding
 }
