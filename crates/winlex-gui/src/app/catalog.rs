@@ -419,6 +419,75 @@ pub(super) fn row_text(ctx: &Context, row: usize) -> Vec<u16> {
         value
     })
 }
+pub(super) fn context_menu(ctx: &Context, hwnd: HWND, location: isize) -> anyhow::Result<()> {
+    let Some((row, point)) = crate::list::context_target(hwnd, location) else {
+        return Ok(());
+    };
+    let Some((catalog, id, name)) = ctx.with_session(|session| {
+        let item = session.results.get(row)?;
+        Some((session.catalog.clone()?, item.id, item.full_name.clone()))
+    }) else {
+        return Ok(());
+    };
+    let preferred = settings::preferred_architecture(ctx);
+    let current = metadata::binding(ctx, workspace::active(ctx)).map(|b| b.architecture);
+    let binding = Binding::resolve(
+        catalog,
+        id,
+        ArchitectureChoice::Preferred { current, preferred },
+    )?;
+    let value = super::result_value::read(&binding.catalog, id, binding.architecture)?;
+    let menu = Popup::new()?;
+    menu.item(1, resources::wide_text(IDS_RESULT_OPEN), true)?;
+    menu.item(2, resources::wide_text(IDS_RESULT_NEW), true)?;
+    menu.separator()?;
+    menu.item(3, resources::wide_text(IDS_RESULT_COPY_NAME), true)?;
+    if let Some(value) = &value {
+        menu.item(4, resources::wide_text(IDS_RESULT_COPY_VALUE), true)?;
+        if value.hexadecimal.is_some() {
+            menu.item(5, resources::wide_text(IDS_RESULT_COPY_HEX), true)?;
+        }
+    }
+    match menu.track(hwnd, point) {
+        command @ (1 | 2) => {
+            let mode = if command == 1 { Open::Pin } else { Open::New };
+            let binding = if mode == Open::New {
+                Binding::resolve(
+                    binding.catalog,
+                    id,
+                    ArchitectureChoice::Preferred {
+                        current: None,
+                        preferred,
+                    },
+                )?
+            } else {
+                binding
+            };
+            history::visit(ctx, || {
+                if let Some(hwnd) = open_binding(ctx, binding, mode, None)
+                    && let Some(document) = workspace::content(ctx, hwnd)
+                {
+                    document.focus();
+                }
+            });
+        }
+        3 => copy_unicode(hwnd, &name.encode_utf16().collect::<Vec<_>>())?,
+        command @ (4 | 5) => {
+            if let Some(value) = &value {
+                let text = if command == 4 {
+                    Some(&value.text)
+                } else {
+                    value.hexadecimal.as_ref()
+                };
+                if let Some(text) = text {
+                    copy_unicode(hwnd, &text.encode_utf16().collect::<Vec<_>>())?;
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
 /// How a result reaches a document: transient preview, pinned open, or forced duplicate.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Open {

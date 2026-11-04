@@ -48,6 +48,23 @@ fn integer_format(t: &Type, arch: Architecture) -> Option<(u32, bool)> {
         _ => return None,
     })
 }
+
+/// Normalize an integer constant using its declared type and target architecture.
+/// Named types fall back to the metadata value's storage type.
+pub fn normalized_integer(value: &Value, t: &Type, arch: Architecture) -> Option<(i128, u32)> {
+    let (bits, signed) = integer_format(t, arch).or_else(|| {
+        matches!(t, Type::ValueName(_) | Type::ClassName(_))
+            .then(|| integer_format(&value.ty(), arch))
+            .flatten()
+    })?;
+    let raw = integer(value)? & ((1i128 << bits) - 1);
+    let normalized = if signed && raw & (1i128 << (bits - 1)) != 0 {
+        raw - (1i128 << bits)
+    } else {
+        raw
+    };
+    Some((normalized, bits))
+}
 pub fn attribute_value(v: &Value) -> String {
     if let Value::EnumValue(n, v) = v {
         return format!("{}.{}({})", n.namespace, n.name, attribute_value(v));
@@ -377,6 +394,38 @@ pub fn vtable(v: &winlex_core::Vtable) -> Json {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn normalized_integers_follow_declared_type_and_architecture() {
+        for (value, ty, arch, expected) in [
+            (Value::U32(u32::MAX), Type::I32, Architecture::X64, (-1, 32)),
+            (
+                Value::I32(-1),
+                Type::U32,
+                Architecture::X64,
+                (u32::MAX as i128, 32),
+            ),
+            (Value::U32(0x80), Type::I8, Architecture::X64, (-128, 8)),
+            (
+                Value::U64(u64::MAX),
+                Type::ISize,
+                Architecture::X86,
+                (-1, 32),
+            ),
+            (
+                Value::U64(u64::MAX),
+                Type::USize,
+                Architecture::X64,
+                (u64::MAX as i128, 64),
+            ),
+        ] {
+            assert_eq!(normalized_integer(&value, &ty, arch), Some(expected));
+        }
+        assert_eq!(
+            normalized_integer(&Value::Bool(true), &Type::I32, Architecture::X64),
+            None
+        );
+    }
 
     #[test]
     fn integer_projections_preserve_signed_values_and_storage_widths() {

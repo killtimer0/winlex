@@ -176,6 +176,11 @@ pub(super) unsafe extern "system" fn frame_proc(hwnd: HWND, msg: u32, w: usize, 
                     }
                 }
             }
+            WM_CONTEXTMENU if w as HWND == GetDlgItem(hwnd, RESULTS as i32) => {
+                status::begin_status(ctx, status::StatusContext::Catalog);
+                status::report(ctx, super::catalog::context_menu(ctx, w as HWND, l));
+                return 0;
+            }
             WM_CONTEXTMENU if w as HWND == GetDlgItem(hwnd, SOURCE_LIST as i32) => {
                 status::begin_status(ctx, status::StatusContext::Catalog);
                 status::report(ctx, sources::context_menu(ctx, w as HWND, l));

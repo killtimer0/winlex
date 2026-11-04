@@ -1,6 +1,11 @@
 LANGUAGE 9, 1
 STRINGTABLE
 BEGIN
+    IDS_RESULT_OPEN "Open"
+    IDS_RESULT_NEW "Open in New Window"
+    IDS_RESULT_COPY_NAME "Copy Full Name"
+    IDS_RESULT_COPY_VALUE "Copy Value"
+    IDS_RESULT_COPY_HEX "Copy Hexadecimal Value"
     IDS_PANEL_TOOLS "Tools"
     IDS_TOOL_OPEN "Open"
     IDS_TOOL_NEW "New instance"

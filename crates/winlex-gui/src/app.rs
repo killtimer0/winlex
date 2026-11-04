@@ -20,6 +20,7 @@ mod history;
 mod keys;
 mod metadata;
 mod panel;
+mod result_value;
 mod settings;
 mod sidebar;
 mod sources;

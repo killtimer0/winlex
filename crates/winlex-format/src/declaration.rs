@@ -1,5 +1,5 @@
 //! Compact C/IDL-like reading view; not a compilable header or an ABI definition.
-use super::integer_format;
+use super::normalized_integer;
 use std::fmt::Write;
 use winlex_core::windows_metadata::reader::*;
 use winlex_core::windows_metadata::*;
@@ -306,19 +306,7 @@ fn constant(
     entity: EntityId,
     suffix: &str,
 ) -> Result<()> {
-    if let Some((bits, signed)) = integer_format(t, arch).or_else(|| {
-        matches!(t, Type::ValueName(_) | Type::ClassName(_))
-            .then(|| integer_format(&value.ty(), arch))
-            .flatten()
-    }) && let Some(raw) = integer(value)
-    {
-        let mask = (1i128 << bits) - 1;
-        let raw = raw & mask;
-        let value = if signed && raw & (1i128 << (bits - 1)) != 0 {
-            raw - (1i128 << bits)
-        } else {
-            raw
-        };
+    if let Some((value, bits)) = normalized_integer(value, t, arch) {
         out.annotated(value, Some(bits), None, entity, format_args!("{value}"))?;
         let hex = out.regions.last().unwrap().number().unwrap().hexadecimal();
         write!(out, "{suffix} // ")?;
