@@ -1,11 +1,11 @@
-# CLI 与查询接口
+# CLI 使用指南
 
 ```text
 winlex FILE... 命令 [查询] [选项]
 ```
 
 元数据命令的输入文件放在命令前；`--help`、`--version` 和独立的 `error-code` 命令无需输入文件。文件名与命令同名时使用带目录的路径，例如 `.\search`；以 `--` 开头的文件名也使用带目录的路径。
-依次列出文件路径可加载多个文件；来源按输入顺序编号，从 0 开始，重复输入保留独立条目。
+依次列出文件路径可加载多个文件；来源按输入顺序编号，从 0 开始。
 
 ```powershell
 winlex Windows.Win32.winmd Windows.Wdk.winmd summary
@@ -26,7 +26,8 @@ winlex Windows.Win32.winmd Windows.Wdk.winmd show Windows.Wdk.winmd::NtCancelIoF
 | `error-code CODE` | 独立查询错误码或模块消息，不加载 WinMD |
 
 `ARCH` 可选 `x86`、`x64`、`arm64`，与程序自身架构无关。搜索和反向引用使用 `--limit`（默认 50，范围 0–1000）和 `--offset` 分页。
-`--help`、`--version` 单独调用。
+
+## 搜索
 
 搜索不区分大小写，声明名称选择区分大小写。`--name`、`--value`、`--guid`、`--where` 互斥，且仅用于 `search`。
 
@@ -34,14 +35,17 @@ winlex Windows.Win32.winmd Windows.Wdk.winmd show Windows.Wdk.winmd::NtCancelIoF
 - `--name` 精确匹配名称；以 `.` 结尾浏览命名空间后代，以 `+` 结尾浏览嵌套类型。查询不含 `.` 或 `+` 时匹配短名称，否则匹配完整限定名。
 - 快速搜索的模糊匹配允许字符不连续，但须保持顺序；标点按字面匹配，不忽略重音。
 - `--value` 接受带正负号的二进制 `0b`、前导零八进制、`0o`、十进制和 `0x` 整数。按能容纳输入的 8/16/32/64 位解释位模式，不截断；同一位宽可重解释符号。例如 `257` 不匹配 8 位的 `1`，`0xffffffff` 匹配 32 位的 `-1`，但不匹配 64 位的 `-1`。
-- 含小数点或指数时搜索浮点常量，按常量声明类型转换输入后比较，`1.5` 和 `1.50` 等价。整数语法不搜索浮点值。`nan` 匹配任意 NaN，`inf`／`+inf` 匹配正无穷，`-inf` 匹配负无穷，关键字不区分 ASCII 大小写。正负零相等。有限字面量溢出或非零值舍入为零时，不匹配对应浮点类型；所有浮点类型均不可表示时报告输入错误。
+- 含小数点或指数时搜索浮点常量，按常量声明类型转换后比较，`1.5` 和 `1.50` 等价。整数语法不搜索浮点值。`nan` 匹配任意 NaN，`inf`／`+inf` 匹配正无穷，`-inf` 匹配负无穷。不区分大小写，正负零相等。
 - `--guid` 接受完整 GUID（可带花括号）或连续十六进制片段，保留前导零，可跨 GUID 分组匹配。字节顺序按显示的 GUID 文本；`239,254` 表示 `effe`，`FF 0A` 表示 `ff0a`，`0xBC,0xAB` 表示 `bcab`。无前缀数字列表为十进制；出现无前缀的 A–F 时，无前缀项均须是两位十六进制字节。
 
-快速结果先排列精确名称、数字等值、字符串等值和完整 GUID，再排列 GUID 片段、文本包含／前缀与名称范围、模糊名称（按匹配度）。同级按来源编号、token 排序后分页。组合条件和反向引用按来源编号、token 排序；单个名称模糊条件按匹配度排序。
+快速搜索优先返回精确命中，其次为 GUID 片段、文本匹配和模糊名称；模糊名称按匹配度排列。
+
+## 选择声明与来源
+
 存在多个候选时，使用架构、限定名或 token 消除歧义。限定名形如 `Namespace.Type.Field`，嵌套类型形如 `Namespace.Outer+Inner`。
 选择声明时支持 `SOURCE::NAME` 和 `SOURCE::0xTOKEN`，SOURCE 可用来源编号或唯一程序集名称（包括名称中的 `.winmd` 后缀）。裸 token 仅允许单来源。来源编号取决于本次输入顺序，token 仅标识所属文件中的记录。
 `--source SOURCE` 在搜索时过滤来源，在 show/layout/vtable/references 时限定目标来源，不能与 `SOURCE::` 同用；反向引用仍查找所有已加载来源。独立来源中的同名声明不会自动合并。
-非 WinRT 引用按程序集名称、版本、culture、公钥 token 和 content type 匹配；依赖须显式加载。
+跨文件引用所需的依赖须显式加载；非 WinRT 引用要求程序集身份匹配。
 
 ## 错误码查询
 
@@ -54,11 +58,11 @@ winlex error-code 0x20000001 --module .\messages.dll --lang auto
 ```
 
 - `--scope` 可选 `auto`（默认）、`win32`、`hresult`、`ntstatus`、`errno`。自动模式分别查询 Win32、HRESULT 和 NTSTATUS，不查询 CRT errno。
-- `errno` 查询系统 `msvcrt.dll` 的 Microsoft CRT 消息，不代表 UCRT 或 POSIX 的完整错误码表。消息固定为英文；`--lang auto`、`0` 或 `0x409` 均可，其他 LANGID 返回语言未找到。未知值和表内空缺返回消息未找到，不回退到 Win32。
+- `errno` 查询系统 `msvcrt.dll` 的 Microsoft CRT 消息，不是完整的 UCRT 或 POSIX 错误码表。消息固定为英文；`--lang auto`、`0` 或 `0x409` 均可，其他 LANGID 返回语言未找到。
 - `--module PATH` 指定单个 EXE、DLL 或 MUI 的消息表，与预设 `--scope` 互斥；使用完整消息 ID，不回退到系统消息表。
 - `--lang auto|LANGID`（也可写 `--language`）选择消息语言。除上述 CRT errno 外，`auto` 或 `0` 使用 Windows 的语言选择规则；非零 LANGID 严格请求对应语言。
 - 代码接受 -2147483648 至 4294967295，支持正负号、0x／0o／0b 前缀；前导零为八进制，例如 `010` 为 8。LANGID 为无符号 16 位值。不接受符号名称或浮点数。
-- 结果包含标准化代码、消息来源和语言信息。HRESULT 可附带关联的 Win32 错误。NTSTATUS 和自定义模块展示完整资源模板，保留 `%08lx`、`%s`、`%1!s!` 等占位符，并报告实际资源语言；系统消息自动选择时实际语言未知。
+- HRESULT 可附带关联的 Win32 错误。NTSTATUS 和自定义模块保留消息模板中的占位符，并报告资源语言；系统消息自动选择时实际语言未知。
 - `--json` 输出版本化结构化结果。没有找到消息仍退出 0；参数错误退出 2，执行故障退出 3，输出失败退出 4。部分来源失败时保留其它结果并返回 3。
 - 本机系统版本和资源语言决定可查询的消息范围。
 
@@ -88,7 +92,6 @@ winlex Windows.Win32.winmd search --where 'value = nan or value = inf'
 - 浮点边界按目标类型舍入，极近的边界可能变成同一个值。NaN 不能作为有序边界，候选 NaN 不匹配任何范围。无穷可作边界，`value > -inf and value < inf` 匹配有限浮点值。
 - 缺少字段的条目不满足该字段条件；`not (value = 5)` 也包含没有常量值的条目。只查询其他常量时再加 `category = "constant"`。
 - `--source`、`--arch` 与表达式取交集。字符串搜索限于输入元数据中实际保留的值。
-- 表达式长度、数字长度、嵌套深度和条件数量受限，过大输入会报错。
 
 ## 输出
 
@@ -126,11 +129,7 @@ winlex Windows.Win32.winmd search --where 'value = nan or value = inf'
 ## Rust API
 
 `winlex_core::Catalog` 提供同步查询，可通过 `Arc` 跨线程共享。搜索和布局结果拥有独立数据，声明视图借用所属 `Catalog`。
-搜索和反向引用支持 `SearchOptions.cancel` 协作式取消；单次描述和布局查询不提供取消点。
-`SearchOptions.mode` 选择 `SearchMode::{Combined, Name, Value, Guid, Condition}`，默认 `Combined`。无效输入返回带 `InvalidSearchInput` 上下文的错误；表达式错误可读取 `QueryError`。`Catalog::search_exact` 独立提供严格名称选择，不进行范围浏览。
-可用 `CompiledQuery::compile` 编译搜索文本，或通过 `Query::parse`／构造 `Query` 条件树后调用 `CompiledQuery::from_query`；编译结果交给 `Catalog::search_compiled` 执行。
-搜索迭代器逐条返回 `SearchMatch`，其中 `entity` 是实体信息，`quality` 是排序质量，`evidence` 是实际命中字段。迭代顺序是扫描顺序，展示前使用 `SearchMatch::compare` 排序。
-需要在未命中候选之间处理进度时，可用 `Search::step` 逐项扫描，区分命中、跳过和结束状态。
+搜索迭代器按扫描顺序返回结果；展示前使用 `SearchMatch::compare` 排序。`Catalog::search_exact` 用于严格名称选择。
 
 ```rust,ignore
 use winlex_core::{Architecture, Catalog, SearchMatch, SearchOptions};
@@ -148,6 +147,7 @@ let layout = catalog.layout(target, Architecture::X64)?;
 
 声明的文本渲染和 JSON 展示适配由 `winlex-format` 提供。
 多源使用 `Catalog::open_many(paths)`；`sources()` 枚举来源，`SearchOptions.source` 过滤搜索或反向引用结果的来源。
+完整接口可通过 `cargo doc -p winlex-core -p winlex-format --no-deps --open` 查看。
 
 ## 查询范围
 

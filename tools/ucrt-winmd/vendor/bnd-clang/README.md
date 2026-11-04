@@ -55,4 +55,4 @@ the maintained fork changes.
 
 ## License
 
-MIT or Apache-2.0
+See the generator's [third-party notices](../../THIRD-PARTY-NOTICES.md) for component licenses.

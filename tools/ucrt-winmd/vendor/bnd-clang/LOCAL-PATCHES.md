@@ -10,8 +10,8 @@ Changes in `vendored/windows-clang/src/`:
 - `canon.rs`, `typedef.rs`: preserve selected CRT semantic aliases at definition
   and reference sites instead of collapsing them to ABI-equivalent primitives.
   The backing definitions of `size_t`, `uintptr_t`, `intptr_t` and `ptrdiff_t`
-  use native-sized integers on all architectures, avoiding redundant x86 splits
-  while retaining named references and the `rsize_t` to `size_t` alias chain.
+  use native-sized integers on all architectures, retaining named references and
+  the `rsize_t` to `size_t` alias chain.
 - `collector.rs`: store free functions separately from same-named record tags;
   filtering continues to use public symbol names. `scope.rs` builds reachability
   edges from public names rather than internal collector keys.

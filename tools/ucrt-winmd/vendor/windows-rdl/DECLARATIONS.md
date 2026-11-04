@@ -19,4 +19,4 @@ Based on windows-rdl 0.100.0, with its upstream license retained.
 
 This convention is intended for query-only metadata. It is not an upstream format
 extension and does not claim CLR executability. The original library/import mode
-remains available. Contract tests live in the generator's `tests/declarations.rs`.
+remains available.

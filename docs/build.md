@@ -28,26 +28,20 @@ $link = Join-Path $env:VCToolsInstallDir 'bin/Hostx64/x86/link.exe'
 ```
 
 x64 构建将架构、链接器和 OBJ 路径改为 x64。
-开发构建使用 `-Configuration Debug`；优化版本使用 `-Configuration Release`。
-分发版本使用 `-Configuration Dist`。
-脚本优先从开发环境的 Windows SDK 路径查找 Microsoft `rc.exe`，也可用 `-RcExe PATH` 指定。
-输出目录遵循 Cargo 配置和 `CARGO_TARGET_DIR`，也可用 `-TargetDir PATH` 指定。
-默认产物位于 `target/<Rust target>/{debug,release,dist}/`；构建结束后显示实际路径。
-`winlex.exe` 为命令行程序，`winlex-gui.exe` 为图形界面程序。
-各自的 `.build.json` 可供消息资源 fixture 构建使用。元数据查询另需 WinMD 文件。
+开发构建使用 `-Configuration Debug`；优化版本和分发版本分别使用 `Release` 和 `Dist`。
+脚本自动查找 Microsoft `rc.exe`，也可用 `-RcExe PATH` 指定；输出目录可用 `-TargetDir PATH` 指定，否则遵循 Cargo 配置。
+构建结束后显示 `winlex.exe`、`winlex-gui.exe` 的实际路径；对应的 `.build.json` 可用于生成消息资源 fixture。
 
 ## 可选 UCRT 元数据生成
 
-生成器是独立工具，不参与 Winlex 默认构建，也不要求 Winlex、VC-LTL 或 YY-Thunks：
+生成器不参与 Winlex 默认构建：
 
 ```powershell
 ./tools/ucrt-winmd/build.ps1
 ./tools/ucrt-winmd/build.ps1 -Check
 ```
 
-生成需要现代 64 位 Windows 开发机、PowerShell 7.2+、Rust 1.95+、MSVC/SDK 和 Clang/libclang；检查另需 Python 3.10+。Winlex 的 XP 兼容要求不适用于生成器。
-产物位于 `tools/ucrt-winmd/out/UCRT.winmd`，不自动写入 `inputs/`，也不随源码提交。
-独立部署、工具链选择、可选 Winlex 集成验证及限制见[生成器说明](../tools/ucrt-winmd/README.md)。
+依赖、产物和使用方法见[生成器说明](../tools/ucrt-winmd/README.md)。Winlex 的 XP 兼容要求不适用于生成器。
 
 ## 更新图标资源
 
@@ -86,10 +80,8 @@ python -m unittest discover -s tests/metadata -p test_artifacts.py
 ```
 
 `tests/metadata/run.py` 比较 Rust 读取结果与 .NET `System.Reflection.Metadata`，并验证布局、泛型及跨源引用样例。报告写入 `tmp/verify/`。
-默认使用 Debug，遵循 Cargo 的 target 和输出目录配置；可用 `--target`、`--target-dir "PATH WITH SPACES"`、`--profile release` 显式选择。
-运行后，实际可执行文件路径保存在 `tmp/verify/artifacts.json`；可用 `--artifacts PATH` 更改位置。
-各 gate 可独立运行，默认读取该记录；自定义记录通过 `WINLEX_GATE_ARTIFACTS` 指定。
-`WINLEX_GATE_CLI`、`WINLEX_GATE_READER_FACTS`、`WINLEX_GATE_QUERY_AUDIT` 分别覆盖 CLI、读取器和 WinRT 审计程序路径，优先于记录中的值。
+默认使用 Debug 和 Cargo 的 target、输出目录配置；可用 `--target`、`--target-dir`、`--profile` 显式选择。
+各 gate 也可独立运行，默认读取 `tmp/verify/artifacts.json` 中的可执行文件路径；用 `--artifacts PATH` 更改记录位置后，通过 `WINLEX_GATE_ARTIFACTS` 指定该记录。
 
 ```powershell
 python tests/metadata/reader_gate.py
@@ -118,8 +110,7 @@ python tests/gui/resources.py --exe "$guiExe"
 
 `$guiExe` 为构建显示的 GUI 完整路径。`--dpi` 可改为 `pmv1`、`system`、`unaware` 或 `auto`。`--desktop current` 使用当前桌面。
 结果写入 `tmp/gui-tests/<run-id>/`，包括 JUnit、失败截图和 `run.json`。
-交互与屏幕呈现组使用 `--desktop current --real-input`，只运行标记为 `interactive` 的用例；可加 `-k real_search_keyboard` 等选择器。默认隔离桌面只运行其余 CLI／窗口契约用例。两组均可加 `--collect-only -q` 核对选择结果。
-交互组要求专用 VM 中解锁的独占活动会话，并允许测试程序取得前台；测试期间不要操作键鼠。职责划分见 [测试目录说明](../tests/README.md)。
+交互与屏幕呈现测试使用 `--desktop current --real-input`；默认隔离桌面运行其余用例。交互测试要求专用 VM 中解锁的独占活动会话，并允许测试程序取得前台；测试期间不要操作键鼠。详情见 [测试目录说明](../tests/README.md)。
 执行端使用与目标系统兼容的 Python 3.8+，通过 `tests/gui/requirements.txt` 安装依赖。
 x64 EXE 需要 64 位执行端 Python；x86 EXE 可使用 32 位或 64 位执行端 Python。
 消息资源等可选 fixture 的部署要求见 [测试目录说明](../tests/README.md)。

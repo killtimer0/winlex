@@ -19,6 +19,5 @@ are external prerequisites, not redistributed in the source archive.
 
 These dependency licenses do not by themselves establish the redistribution
 terms for metadata derived from Microsoft headers. Review those terms separately
-before distributing generated WinMD files. This notice is not legal advice or
-a license grant for generated metadata. The generator's original source is
+before distributing generated WinMD files. The generator's original source is
 licensed under GPL-3.0-only; see `LICENSE`.

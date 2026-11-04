@@ -11,64 +11,21 @@ This crate contains an experimental fork of `windows-clang`.
 | Vendored directory | `vendored/windows-clang` |
 | License | MIT OR Apache-2.0 |
 
-The vendored directory started as an exact copy of the upstream crate at the
-recorded revision, including its original manifest, README, and license
-files. The upstream manifest is stored as `Cargo.toml.upstream` so Cargo does
-not exclude the vendored source as a nested package. The bnd package manifest
-lives one level above it and points its library target at the vendored source.
-
-Local experiments should modify files under `vendored/windows-clang` so the
-fork remains easy to compare with upstream.
+The original manifest is retained as `Cargo.toml.upstream`; the bnd package
+manifest points its library target at the vendored source. The upstream README
+and license files are retained alongside it.
 
 ## Local changes
 
-- Crate-level documentation uses the bnd package README while the upstream
-  README remains preserved in the vendored directory.
-- Runtime libclang loading is optional behind the bnd package's `runtime`
-  feature. Workspace builds use the linked libclang selected by `clang-sys`,
-  avoiding feature unification with the existing `clang` wrapper and keeping
-  binding regeneration deterministic.
-- Plain functions and callbacks parsed from C translation units are emitted
-  with the C calling convention. This preserves their source ABI instead of
-  falling back to the Windows platform-default convention in RDL.
-- C `long` and `unsigned long` are mapped from the widths reported by Clang
-  for the active host ABI.
-- Typedefs that shadow Rust primitive names are omitted to prevent recursive
-  generated aliases such as `pub type bool = bool`.
-- Direct and chained 128-bit integer, 128-bit floating-point, and C complex
-  typedefs are omitted because WinMD cannot represent them.
-- Compiler `va_list` records and typedef chains are projected as opaque
-  pointers, matching their decayed C parameter ABI without exposing
-  compiler-private record layouts.
-- Macro-expanded records without a source-file cursor retain an assigned
-  generated name, allowing named nested records to remain concrete while
-  unnamed compiler builtins stay opaque.
-- Deferred macro probes use C `__auto_type` or C++ `constexpr auto` so
-  expression macros retain native signedness and pointer-sized typedef
-  identity in either language mode.
-- Macros cast to function-pointer typedefs are omitted because WinMD cannot
-  represent function-pointer constants.
-- Pointers to bare function-type typedefs collapse to the generated callback
-  alias, avoiding an extra pointer indirection in callback tables.
-- Typedefs whose native size is not a multiple of their required alignment,
-  and functions depending on those types, are omitted because Rust cannot
-  represent those layouts as concrete value types.
-- Leading-underscore macros remain excluded by default; callers can
-  explicitly include public names through `include_macro(s)`.
-- Callers can exclude declarations for unavailable native symbols through
-  `exclude_symbol(s)`.
-- Function redeclaration selection preserves Clang assembly labels, ensuring
-  glibc redirects such as `scanf` to `__isoc99_scanf` reach the correct
-  exported symbol.
-- Partial bitfield allocation units use Clang field offsets to preserve their
-  exact occupied byte span and the enclosing record's native alignment.
-- Explicit `scope_headers` activate the per-header reachability sweep without
-  requiring an unrelated directory scope.
-- Flat per-header output preserves namespaces from referenced WinMD types and
-  accepts generic defining-header library overrides.
-- `remap_by_header` structurally maps flat per-header metadata into canonical
-  header namespaces and repairs external TypeRef scopes through an RDL
-  round trip. Header stems that are Rust keywords receive a trailing
-  underscore.
-- Function declarations enumerate their direct Clang arguments so parameter
-  declarations nested under function-pointer return types are not duplicated.
+- Optional runtime libclang loading is provided by the `runtime` feature.
+- C calling conventions, Clang-reported integer widths, function assembly labels,
+  bitfield offsets and callback types are preserved in the emitted metadata.
+- Unsupported 128-bit and complex typedefs, function-pointer constants, and
+  types with unrepresentable size/alignment are omitted. Compiler `va_list` types
+  are represented as opaque pointers.
+- Macro probing preserves native signedness and pointer-sized typedef identity;
+  callers can include otherwise excluded macros or exclude unavailable symbols.
+- Per-header output and remapping preserve referenced namespaces and external
+  TypeRef scopes. Explicit scope headers enable reachability filtering.
+
+Additional generator-specific changes are described in `LOCAL-PATCHES.md`.
