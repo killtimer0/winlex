@@ -1,30 +1,32 @@
 //! Native MDI shell lifecycle and content-specific message dispatch.
 use super::content::Content;
-use super::{dpi, history, metadata::MetadataView, read, workspace};
+use super::{history, metadata::MetadataView, workspace};
+use crate::app::context::Context;
 use crate::native::*;
 use std::{cell::RefCell, rc::Rc};
 use windows::Win32::UI::Controls::RichEdit::{EN_LINK, ENLINK};
 
 pub(super) const FOLLOW_REFERENCE: u32 = WM_APP + 42;
-pub(super) fn status_changed(hwnd: HWND) {
-    if workspace::content(hwnd).is_some() && workspace::active() == hwnd {
-        super::status::refresh_status();
+pub(super) fn status_changed(ctx: &Context, hwnd: HWND) {
+    if workspace::content(ctx, hwnd).is_some() && workspace::active(ctx) == hwnd {
+        super::status::refresh_status(ctx);
     }
 }
-pub(super) fn update_title(hwnd: HWND, title: &str) {
+pub(super) fn update_title(ctx: &Context, hwnd: HWND, title: &str) {
     set_text(hwnd, title);
-    if workspace::content(hwnd).is_some() {
-        workspace::refresh_document_tabs();
-        super::commands::update_commands();
+    if workspace::content(ctx, hwnd).is_some() {
+        workspace::refresh_document_tabs(ctx);
+        super::commands::update_commands(ctx);
     }
 }
 pub(super) fn update_icons(
+    ctx: &Context,
     hwnd: HWND,
     icon: crate::icons::Icon,
     current: &RefCell<Option<Rc<crate::icons::WindowIcons>>>,
 ) -> anyhow::Result<()> {
-    let value = dpi().window(hwnd);
-    let icons = super::write(|a| a.workspace.icons.get(icon, value))?;
+    let value = ctx.dpi().window(hwnd);
+    let icons = ctx.write(|a| a.workspace.icons.get(icon, value))?;
     if current
         .borrow()
         .as_ref()
@@ -34,8 +36,8 @@ pub(super) fn update_icons(
     }
     icons.apply(hwnd);
     current.replace(Some(icons));
-    if unsafe { IsZoomed(hwnd) } != 0 && workspace::active() == hwnd {
-        unsafe { DrawMenuBar(read(|a| a.frame)) };
+    if unsafe { IsZoomed(hwnd) } != 0 && workspace::active(ctx) == hwnd {
+        unsafe { DrawMenuBar(ctx.read(|a| a.frame)) };
     }
     Ok(())
 }
@@ -58,12 +60,15 @@ pub(super) unsafe extern "system" fn document_proc(
     l: isize,
 ) -> isize {
     unsafe {
+        let Some(ctx) = Context::from_window(hwnd) else {
+            return DefMDIChildProcW(hwnd, msg, w, l);
+        };
         match msg {
             WM_GETMINMAXINFO => {
                 let result = DefMDIChildProcW(hwnd, msg, w, l);
                 if IsZoomed(hwnd) == 0 && IsIconic(hwnd) == 0 {
                     let info = &mut *(l as *mut MINMAXINFO);
-                    let value = dpi().window(hwnd);
+                    let value = ctx.dpi().window(hwnd);
                     info.ptMinTrackSize.x = crate::layout::scale(320, value);
                     info.ptMinTrackSize.y = crate::layout::scale(400, value);
                 }
@@ -73,8 +78,10 @@ pub(super) unsafe extern "system" fn document_proc(
                 let result = DefMDIChildProcW(hwnd, msg, w, l);
                 // These messages also arrive before WM_CREATE registers the document.
                 // Native MDI uses system DPI; match the PMv2 child's nonclient metrics.
-                if dpi().mode == crate::dpi::Mode::Pmv2 && IsZoomed(hwnd) != 0 {
-                    let r = dpi().child_outer(hwnd, client(read(|a| a.workspace.mdi)));
+                if ctx.dpi().mode == crate::dpi::Mode::Pmv2 && IsZoomed(hwnd) != 0 {
+                    let r = ctx
+                        .dpi()
+                        .child_outer(hwnd, client(ctx.read(|a| a.workspace.mdi)));
                     let p = &mut *(l as *mut WINDOWPOS);
                     if p.flags & SWP_NOMOVE == 0 {
                         p.x = r.left;
@@ -93,7 +100,7 @@ pub(super) unsafe extern "system" fn document_proc(
                 let init = &mut *(mdi_create.lParam as *mut Init);
                 let create = init.create.take().expect("content factory");
                 match create(hwnd) {
-                    Ok(content) => workspace::register_document(content),
+                    Ok(content) => workspace::register_document(ctx, content),
                     Err(error) => {
                         init.error = Some(error);
                         return -1;
@@ -103,22 +110,25 @@ pub(super) unsafe extern "system" fn document_proc(
                 return 0;
             }
             WM_NCDESTROY => {
-                let content = workspace::content(hwnd);
-                workspace::unregister_document(hwnd);
+                let content = workspace::content(ctx, hwnd);
+                workspace::unregister_document(ctx, hwnd);
                 let result = DefMDIChildProcW(hwnd, msg, w, l);
                 drop(content);
-                workspace::refresh_document_tabs();
+                workspace::refresh_document_tabs(ctx);
                 return result;
             }
             _ => {}
         }
-        if let Some(content) = workspace::content(hwnd) {
+        if let Some(content) = workspace::content(ctx, hwnd) {
             match msg {
                 WM_CLOSE => {
-                    if workspace::active() == hwnd {
-                        super::status::begin_status(super::status::StatusContext::Document(hwnd));
+                    if workspace::active(ctx) == hwnd {
+                        super::status::begin_status(
+                            ctx,
+                            super::status::StatusContext::Document(hwnd),
+                        );
                     }
-                    workspace::close_document(hwnd);
+                    workspace::close_document(ctx, hwnd);
                     return 0;
                 }
                 WM_SIZE => {
@@ -130,13 +140,16 @@ pub(super) unsafe extern "system" fn document_proc(
                 }
                 WM_SYSCOMMAND if matches!((w & 0xfff0) as u32, SC_MAXIMIZE | SC_RESTORE) => {
                     let result = DefMDIChildProcW(hwnd, msg, w, l);
-                    workspace::set_maximized(IsZoomed(hwnd) != 0);
-                    workspace::capture_placements();
+                    workspace::set_maximized(ctx, IsZoomed(hwnd) != 0);
+                    workspace::capture_placements(ctx);
                     return result;
                 }
-                WM_EXITSIZEMOVE => workspace::capture_placements(),
+                WM_EXITSIZEMOVE => workspace::capture_placements(ctx),
                 WM_SETFOCUS => {
-                    super::status::status_context(super::status::StatusContext::Document(hwnd));
+                    super::status::status_context(
+                        ctx,
+                        super::status::StatusContext::Document(hwnd),
+                    );
                     let result = DefMDIChildProcW(hwnd, msg, w, l);
                     if content.is_live() {
                         content.focus();
@@ -145,15 +158,18 @@ pub(super) unsafe extern "system" fn document_proc(
                 }
                 WM_MDIACTIVATE => {
                     if w as HWND == hwnd {
-                        history::content_activation(&content, false);
+                        history::content_activation(ctx, &content, false);
                     }
                     let result = DefMDIChildProcW(hwnd, msg, w, l);
-                    workspace::sync_document_selection();
+                    workspace::sync_document_selection(ctx);
                     if l as HWND == hwnd {
-                        super::status::begin_status(super::status::StatusContext::Document(hwnd));
-                        history::content_activation(&content, true);
+                        super::status::begin_status(
+                            ctx,
+                            super::status::StatusContext::Document(hwnd),
+                        );
+                        history::content_activation(ctx, &content, true);
                     }
-                    super::commands::update_commands();
+                    super::commands::update_commands(ctx);
                     return result;
                 }
                 WM_DESTROY => {
@@ -161,12 +177,18 @@ pub(super) unsafe extern "system" fn document_proc(
                     return DefMDIChildProcW(hwnd, msg, w, l);
                 }
                 WM_COMMAND if l == 0 || matches!((w >> 16) as u32, BN_CLICKED | CBN_SELENDOK) => {
-                    if workspace::active() == hwnd {
-                        super::status::begin_status(super::status::StatusContext::Document(hwnd));
+                    if workspace::active(ctx) == hwnd {
+                        super::status::begin_status(
+                            ctx,
+                            super::status::StatusContext::Document(hwnd),
+                        );
                     }
                 }
                 WM_COMMAND if (w >> 16) as u32 == EN_SETFOCUS => {
-                    super::status::status_context(super::status::StatusContext::Document(hwnd));
+                    super::status::status_context(
+                        ctx,
+                        super::status::StatusContext::Document(hwnd),
+                    );
                 }
                 _ => {}
             }
@@ -235,7 +257,10 @@ unsafe extern "system" fn editor_proc(
     owner: usize,
 ) -> isize {
     unsafe {
-        let document = workspace::view(owner as HWND);
+        let Some(ctx) = Context::from_window(owner as HWND) else {
+            return default_subclass(hwnd, msg, w, l);
+        };
+        let document = workspace::view(ctx, owner as HWND);
         if let Some(document) = &document {
             if matches!(
                 msg,

@@ -1,5 +1,6 @@
 //! The two sidebar views and their shared owner-data list presentation.
-use super::{bind, catalog, dpi, read, sidebar, sources};
+use super::{bind, catalog, sidebar, sources};
+use crate::app::context::Context;
 use crate::list::List;
 use crate::{
     layout,
@@ -22,8 +23,8 @@ const SEARCH_MODES: &[(u16, SearchMode, u16)] = &[
     ),
 ];
 
-pub(super) fn search_mode() -> SearchMode {
-    SEARCH_MODES[search().mode.get()].1
+pub(super) fn search_mode(ctx: &Context) -> SearchMode {
+    SEARCH_MODES[search(ctx).mode.get()].1
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -63,8 +64,8 @@ pub(super) struct Search {
     pub composing: Cell<bool>,
     deadline: Cell<Option<std::time::Instant>>,
 }
-pub(super) fn search() -> Rc<Search> {
-    read(|a| a.sidebar.search.as_ref().unwrap().clone())
+pub(super) fn search(ctx: &Context) -> Rc<Search> {
+    ctx.read(|a| a.sidebar.search.as_ref().unwrap().clone())
 }
 const SEARCH_TIMER: usize = 1;
 fn search_tool(input: HWND, label: u16) -> TTTOOLINFOW {
@@ -77,24 +78,26 @@ fn search_tool(input: HWND, label: u16) -> TTTOOLINFOW {
         ..unsafe { std::mem::zeroed() }
     }
 }
-pub(super) fn cancel_debounce() -> (HWND, bool) {
-    let search = search();
+pub(super) fn cancel_debounce(ctx: &Context) -> (HWND, bool) {
+    let search = search(ctx);
     search.deadline.set(None);
     unsafe {
         KillTimer(search.input, SEARCH_TIMER);
     }
     (search.input, search.composing.get())
 }
-pub(super) fn debounce(input: HWND) -> anyhow::Result<()> {
+pub(super) fn debounce(ctx: &Context, input: HWND) -> anyhow::Result<()> {
     if unsafe { SetTimer(input, SEARCH_TIMER, 200, None) } == 0 {
         return Err(error("Search debounce"));
     }
-    search().deadline.set(Some(
+    search(ctx).deadline.set(Some(
         std::time::Instant::now() + std::time::Duration::from_millis(200),
     ));
     Ok(())
 }
-pub(super) fn create(frame: HWND) -> anyhow::Result<([Rc<Panel>; 3], Rc<Search>)> {
+pub(super) fn create(ctx: &Context, frame: HWND) -> anyhow::Result<([Rc<Panel>; 3], Rc<Search>)> {
+    // Lists outlive this call; the boxed context outlives every list.
+    let state = ctx as *const Context;
     let input = unsafe {
         child_ex(
             frame,
@@ -132,10 +135,12 @@ pub(super) fn create(frame: HWND) -> anyhow::Result<([Rc<Panel>; 3], Rc<Search>)
     let list = List::new(
         frame,
         RESULTS,
-        catalog::row,
-        catalog::row_text,
-        Some(catalog::activate),
-        read(|a| a.system_version),
+        move |index, visit| catalog::row(unsafe { &*state }, index, visit),
+        move |index| catalog::row_text(unsafe { &*state }, index),
+        Some(Box::new(move |row, double| {
+            catalog::activate(unsafe { &*state }, row, double)
+        })),
+        ctx.read(|a| a.system_version),
     )?;
     let search_panel = Rc::new(Panel {
         controls: vec![input, list.hwnd, mode],
@@ -152,10 +157,10 @@ pub(super) fn create(frame: HWND) -> anyhow::Result<([Rc<Panel>; 3], Rc<Search>)
     let list = List::new(
         frame,
         SOURCE_LIST,
-        sources::row,
-        sources::row_text,
+        move |index, visit| sources::row(unsafe { &*state }, index, visit),
+        move |index| sources::row_text(unsafe { &*state }, index),
         None,
-        read(|a| a.system_version),
+        ctx.read(|a| a.system_version),
     )?;
     let mut controls = vec![list.hwnd];
     for (id, label) in [
@@ -173,15 +178,17 @@ pub(super) fn create(frame: HWND) -> anyhow::Result<([Rc<Panel>; 3], Rc<Search>)
             )
         }?);
     }
-    sources::update_actions();
+    sources::update_actions(ctx);
     let sources_panel = Rc::new(Panel { controls, list });
     let list = List::new(
         frame,
         TOOL_LIST,
         super::tools::row,
         super::tools::row_text,
-        Some(super::tools::activate),
-        read(|a| a.system_version),
+        Some(Box::new(move |row, double| {
+            super::tools::activate(unsafe { &*state }, row, double)
+        })),
+        ctx.read(|a| a.system_version),
     )?;
     send(list.hwnd, LVM_SETITEMCOUNT, super::tools::REGISTRY.len(), 0);
     let controls = vec![list.hwnd, unsafe {
@@ -206,14 +213,14 @@ impl Panel {
     pub fn focus(&self) {
         focus(self.controls[0]);
     }
-    pub fn prepare(&self, m: &layout::Metrics) {
+    pub fn prepare(&self, ctx: &Context, m: &layout::Metrics) {
         for &h in &self.controls {
             bind(h, m.font);
         }
-        super::checked(self.list.prepare(m));
+        ctx.checked(self.list.prepare(m));
     }
-    pub fn recolor(&self) {
-        super::checked(self.list.recolor());
+    pub fn recolor(&self, ctx: &Context) {
+        ctx.checked(self.list.recolor());
     }
 }
 impl Search {
@@ -221,8 +228,14 @@ impl Search {
         bind(self.tooltip, m.font);
         send(self.tooltip, TTM_SETMAXTIPWIDTH, 0, m.px(480) as isize);
     }
-    pub fn layout(&self, area: &mut RECT, m: &layout::Metrics, positions: &mut Vec<(HWND, RECT)>) {
-        let mut row = layout::take_top(area, m.edit_height(self.input, dpi()));
+    pub fn layout(
+        &self,
+        ctx: &Context,
+        area: &mut RECT,
+        m: &layout::Metrics,
+        positions: &mut Vec<(HWND, RECT)>,
+    ) {
+        let mut row = layout::take_top(area, m.edit_height(self.input, ctx.dpi()));
         let width = m
             .label_width(
                 SEARCH_MODES
@@ -240,30 +253,30 @@ impl Search {
         ));
         layout::take_top(area, m.px(4));
     }
-    fn command(&self, id: u16, code: u32) -> bool {
+    fn command(&self, ctx: &Context, id: u16, code: u32) -> bool {
         match id {
             SEARCH if code == EN_SETFOCUS => {
-                super::status::status_context(super::status::StatusContext::Catalog);
+                super::status::status_context(ctx, super::status::StatusContext::Catalog);
             }
             SEARCH_MODE if code == CBN_SETFOCUS => {
-                super::status::status_context(super::status::StatusContext::Catalog);
+                super::status::status_context(ctx, super::status::StatusContext::Catalog);
             }
-            SEARCH if code == EN_CHANGE => catalog::input_changed(),
+            SEARCH if code == EN_CHANGE => catalog::input_changed(ctx),
             SEARCH_MODE if code == CBN_SELENDOK => {
-                super::status::begin_status(super::status::StatusContext::Catalog);
+                super::status::begin_status(ctx, super::status::StatusContext::Catalog);
                 let index = send(self.selector, CB_GETCURSEL, 0, 0) as usize;
                 if index < SEARCH_MODES.len() && self.mode.replace(index) != index {
                     let tool = search_tool(self.input, SEARCH_MODES[index].2);
                     send(self.tooltip, TTM_POP, 0, 0);
                     send_ref(self.tooltip, TTM_UPDATETIPTEXTW, 0, &tool);
-                    catalog::search();
+                    catalog::search(ctx);
                 }
             }
             SEARCH_MODE if code == CBN_SELENDCANCEL => {
                 send(self.selector, CB_SETCURSEL, self.mode.get(), 0);
             }
             FOCUS_SEARCH => {
-                sidebar::show(SEARCH_PANEL, false);
+                sidebar::show(ctx, SEARCH_PANEL, false);
                 send(self.input, EM_SETSEL, 0, -1);
             }
             _ => return false,
@@ -271,21 +284,21 @@ impl Search {
         true
     }
 }
-pub(super) fn command(w: usize, control: HWND) -> bool {
+pub(super) fn command(ctx: &Context, w: usize, control: HWND) -> bool {
     let id = w as u16;
     if id == TOOL_NEW {
-        super::tools::selected(true);
+        super::tools::selected(ctx, true);
         return true;
     }
     if let Some(panel) = PanelId::ALL.into_iter().find(|p| p.presentation().0 == id) {
-        sidebar::show(panel, true);
+        sidebar::show(ctx, panel, true);
         return true;
     }
     // Ignore notifications from controls that have not finished initialization.
-    if !control.is_null() && read(|a| a.sidebar.owner(control)).is_none() {
+    if !control.is_null() && ctx.read(|a| a.sidebar.owner(control)).is_none() {
         return false;
     }
-    search().command(id, (w >> 16) as u32) || sources::command(id)
+    search(ctx).command(ctx, id, (w >> 16) as u32) || sources::command(ctx, id)
 }
 unsafe extern "system" fn edit_proc(
     h: HWND,
@@ -296,24 +309,27 @@ unsafe extern "system" fn edit_proc(
     _data: usize,
 ) -> isize {
     unsafe {
+        let Some(ctx) = Context::from_window(h) else {
+            return default_subclass(h, msg, w, l);
+        };
         if msg == WM_TIMER && w == SEARCH_TIMER {
-            if search()
+            if search(ctx)
                 .deadline
                 .get()
                 .is_some_and(|deadline| std::time::Instant::now() >= deadline)
             {
-                catalog::search();
+                catalog::search(ctx);
             }
             return 0;
         }
         if msg == WM_IME_STARTCOMPOSITION {
-            search().composing.set(true);
-            catalog::input_changed();
+            search(ctx).composing.set(true);
+            catalog::input_changed(ctx);
         }
         let result = default_subclass(h, msg, w, l);
         if msg == WM_IME_ENDCOMPOSITION {
-            search().composing.set(false);
-            catalog::input_changed();
+            search(ctx).composing.set(false);
+            catalog::input_changed(ctx);
         }
         if msg == WM_NCDESTROY {
             remove_subclass(h, Some(edit_proc), 1);

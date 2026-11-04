@@ -1,5 +1,6 @@
 //! Internal registration and content contract. No dynamic plugins or persisted sessions.
-use super::{history, read, workspace};
+use super::{history, workspace};
+use crate::app::context::Context;
 use crate::{
     icons::Icon,
     list::{Display, TextSegment},
@@ -23,14 +24,14 @@ pub(super) static REGISTRY: &[Descriptor] = &[Descriptor {
     icon: Icon::Constant,
 }];
 thread_local! {static CLOCK:Cell<u64>=const{Cell::new(0)};}
-pub(super) fn open(index: isize, new: bool) {
+pub(super) fn open(ctx: &Context, index: isize, new: bool) {
     let Some(descriptor) = REGISTRY.get(index as usize) else {
         return;
     };
-    history::visit(|| {
+    history::visit(ctx, || {
         let existing = (!new)
             .then(|| {
-                workspace::contents()
+                workspace::contents(ctx)
                     .into_iter()
                     .filter_map(|content| content.tool())
                     .filter(|view| view.descriptor.id == descriptor.id)
@@ -38,26 +39,27 @@ pub(super) fn open(index: isize, new: bool) {
             })
             .flatten();
         let hwnd = if let Some(view) = existing {
-            workspace::show_document(view.hwnd);
+            workspace::show_document(ctx, view.hwnd);
             Some(view.hwnd)
         } else {
-            super::status::report(workspace::create_tool(descriptor))
+            super::status::report(ctx, workspace::create_tool(ctx, descriptor))
         };
-        if let Some(content) = hwnd.and_then(workspace::content) {
+        if let Some(content) = hwnd.and_then(|hwnd| workspace::content(ctx, hwnd)) {
             content.activated();
             content.focus();
         }
     });
 }
-pub(super) fn activate(index: isize, _double: bool) {
-    open(index, false)
+pub(super) fn activate(ctx: &Context, index: isize, _double: bool) {
+    open(ctx, index, false)
 }
-pub(super) fn list() -> HWND {
-    unsafe { GetDlgItem(read(|a| a.frame), TOOL_LIST as i32) }
+pub(super) fn list(ctx: &Context) -> HWND {
+    unsafe { GetDlgItem(ctx.read(|a| a.frame), TOOL_LIST as i32) }
 }
-pub(super) fn selected(new: bool) {
+pub(super) fn selected(ctx: &Context, new: bool) {
     open(
-        crate::list::selected(list()).map_or(-1, |index| index as isize),
+        ctx,
+        crate::list::selected(list(ctx)).map_or(-1, |index| index as isize),
         new,
     );
 }
@@ -89,7 +91,7 @@ pub(super) fn row_text(index: usize) -> Vec<u16> {
         })
         .unwrap_or_default()
 }
-pub(super) fn context_menu(hwnd: HWND, l: isize) -> anyhow::Result<()> {
+pub(super) fn context_menu(ctx: &Context, hwnd: HWND, l: isize) -> anyhow::Result<()> {
     let menu = Popup::new()?;
     menu.item(1, resources::wide_text(IDS_TOOL_OPEN), true)?;
     menu.item(2, resources::wide_text(IDS_TOOL_NEW), true)?;
@@ -102,9 +104,9 @@ pub(super) fn context_menu(hwnd: HWND, l: isize) -> anyhow::Result<()> {
     } else {
         point_from_lparam(l)
     };
-    match menu.track(read(|a| a.frame), point) {
-        1 => selected(false),
-        2 => selected(true),
+    match menu.track(ctx.read(|a| a.frame), point) {
+        1 => selected(ctx, false),
+        2 => selected(ctx, true),
         _ => {}
     }
     Ok(())

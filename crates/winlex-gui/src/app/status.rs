@@ -1,5 +1,6 @@
 //! Catalog/document status ownership and command feedback.
-use super::{read, workspace, write};
+use super::workspace;
+use crate::app::context::Context;
 use crate::native::{HWND, IsChild, set_status_text};
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -32,41 +33,41 @@ impl Status {
         })
     }
 }
-pub(super) fn begin_status(context: StatusContext) {
-    write(|a| a.status_state.begin(context));
-    refresh_status();
+pub(super) fn begin_status(ctx: &Context, context: StatusContext) {
+    ctx.write(|a| a.status_state.begin(context));
+    refresh_status(ctx);
 }
-pub(super) fn status_context(context: StatusContext) {
-    if read(|a| a.status_state.context != context) {
-        begin_status(context);
+pub(super) fn status_context(ctx: &Context, context: StatusContext) {
+    if ctx.read(|a| a.status_state.context != context) {
+        begin_status(ctx, context);
     }
 }
-pub(super) fn begin_operation() {
-    write(|a| a.status_state.notice = None);
-    refresh_status();
+pub(super) fn begin_operation(ctx: &Context) {
+    ctx.write(|a| a.status_state.notice = None);
+    refresh_status(ctx);
 }
-pub(super) fn status_input(hwnd: HWND) {
-    let doc = workspace::active();
+pub(super) fn status_input(ctx: &Context, hwnd: HWND) {
+    let doc = workspace::active(ctx);
     if !doc.is_null() && (hwnd == doc || unsafe { IsChild(doc, hwnd) } != 0) {
-        begin_status(StatusContext::Document(doc));
-    } else if read(|a| a.sidebar.owner(hwnd).is_some()) {
-        begin_status(StatusContext::Catalog);
+        begin_status(ctx, StatusContext::Document(doc));
+    } else if ctx.read(|a| a.sidebar.owner(hwnd).is_some()) {
+        begin_status(ctx, StatusContext::Catalog);
     }
 }
-pub(super) fn set_status(message: String) {
-    write(|a| a.status_state.notice = Some(message));
-    refresh_status();
+pub(super) fn set_status(ctx: &Context, message: String) {
+    ctx.write(|a| a.status_state.notice = Some(message));
+    refresh_status(ctx);
 }
-pub(super) fn report<T>(result: anyhow::Result<T>) -> Option<T> {
+pub(super) fn report<T>(ctx: &Context, result: anyhow::Result<T>) -> Option<T> {
     result
-        .map_err(|error| set_status(format!("{error:#}")))
+        .map_err(|error| set_status(ctx, format!("{error:#}")))
         .ok()
 }
-pub(super) fn refresh_status() {
-    let (state, hwnd) = read(|a| (a.status_state.clone(), a.status));
+pub(super) fn refresh_status(ctx: &Context) {
+    let (state, hwnd) = ctx.read(|a| (a.status_state.clone(), a.status));
     let message = state.message(
-        |hwnd| workspace::content(hwnd).and_then(|content| content.status()),
-        || read(|a| a.session.status()),
+        |hwnd| workspace::content(ctx, hwnd).and_then(|content| content.status()),
+        || ctx.read(|a| a.session.status()),
     );
     set_status_text(hwnd, &message);
 }

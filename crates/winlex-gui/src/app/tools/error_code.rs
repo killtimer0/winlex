@@ -1,5 +1,6 @@
 //! Error-code controls and instance-local asynchronous message queries.
 use super::Descriptor;
+use crate::app::context::Context;
 use crate::native::text;
 use crate::{
     layout,
@@ -31,6 +32,8 @@ const SCOPES: &[(u16, Scope)] = &[
 ];
 
 pub(in crate::app) struct View {
+    // The document lives inside the context, so the pointer cannot outlive it.
+    ctx: *const Context,
     pub id: u64,
     pub hwnd: HWND,
     pub descriptor: &'static Descriptor,
@@ -56,9 +59,13 @@ pub(in crate::app) struct View {
     body: RefCell<crate::rich_text::Content>,
 }
 impl View {
-    pub fn new(descriptor: &'static Descriptor) -> Self {
+    fn ctx(&self) -> &Context {
+        unsafe { &*self.ctx }
+    }
+    pub fn new(ctx: &Context, descriptor: &'static Descriptor) -> Self {
         Self {
-            id: super::super::workspace::next_id(),
+            ctx: ctx as *const Context,
+            id: super::super::workspace::next_id(ctx),
             hwnd: std::ptr::null_mut(),
             descriptor,
             lifetime: Rc::new(()),
@@ -103,11 +110,11 @@ impl View {
         }
     }
     fn update_icons(&self) {
-        super::super::status::report(super::super::document::update_icons(
-            self.hwnd,
-            self.descriptor.icon,
-            &self.icons,
-        ));
+        let ctx = self.ctx();
+        super::super::status::report(
+            ctx,
+            super::super::document::update_icons(ctx, self.hwnd, self.descriptor.icon, &self.icons),
+        );
     }
     pub fn activated(&self) {
         self.recent.set(super::CLOCK.with(|clock| {
@@ -160,7 +167,7 @@ impl View {
     }
     fn set_status(&self, message: &str) {
         self.status.replace(message.to_owned());
-        super::super::document::status_changed(self.hwnd);
+        super::super::document::status_changed(self.ctx(), self.hwnd);
     }
     fn custom(&self) -> bool {
         send(self.scope, CB_GETCURSEL, 0, 0) == SCOPES.len() as isize
@@ -238,7 +245,7 @@ impl View {
         self.set_languages(ids, preserve);
     }
     fn submit(&self, job: Job) -> anyhow::Result<()> {
-        super::super::write(|a| {
+        self.ctx().write(|a| {
             let ticket = a.session.ticket();
             a.worker.replace(None, ticket, job)
         })
@@ -290,6 +297,7 @@ impl View {
         let body = match result {
             Ok(result) => {
                 super::super::document::update_title(
+                    self.ctx(),
                     self.hwnd,
                     &format!(
                         "{} — 0x{:08X}",
@@ -328,7 +336,7 @@ impl View {
     fn browse(&self) {
         match crate::input::choose(
             self.hwnd,
-            super::super::read(|a| a.system_version),
+            self.ctx().read(|a| a.system_version),
             IDS_ERROR_CODE_TOOL,
             IDS_ERROR_CODE_MODULE_FILES,
             "*.exe;*.dll;*.mui",
@@ -468,7 +476,7 @@ impl View {
         if self.result.is_null() {
             return;
         }
-        let m = super::super::metrics(self.hwnd);
+        let m = self.ctx().metrics(self.hwnd);
         let mut area = layout::inset(client(self.hwnd), m.px(8));
         let mut positions = vec![];
         let gap = m.px(4);
@@ -486,7 +494,7 @@ impl View {
         .min((area.right - area.left) / 3);
         let label_column = label_width + label_gap;
         let browse = m.button_size(self.browse);
-        let dpi = super::super::dpi();
+        let dpi = self.ctx().dpi();
         let heights = [
             m.edit_height(self.input, dpi),
             {
@@ -589,7 +597,7 @@ impl View {
     }
     pub fn prepare(&self) {
         self.update_icons();
-        let m = super::super::metrics(self.hwnd);
+        let m = self.ctx().metrics(self.hwnd);
         for h in self.labels.iter().copied().chain([
             self.input,
             self.scope,

@@ -1,5 +1,6 @@
 //! The source panel projects the committed catalog; opening files is a load transaction.
-use super::{catalog, read, write};
+use super::catalog;
+use crate::app::context::Context;
 use crate::{
     icons::Icon,
     input,
@@ -18,15 +19,15 @@ struct Row {
     pub display: Display,
     pub text: Vec<u16>,
 }
-pub(super) fn row(index: usize, visit: &mut dyn FnMut(&Display)) {
-    read(|a| {
+pub(super) fn row(ctx: &Context, index: usize, visit: &mut dyn FnMut(&Display)) {
+    ctx.read(|a| {
         if let Some(row) = a.sources.rows.get(index) {
             visit(&row.display);
         }
     });
 }
-pub(super) fn row_text(index: usize) -> Vec<u16> {
-    read(|a| {
+pub(super) fn row_text(ctx: &Context, index: usize) -> Vec<u16> {
+    ctx.read(|a| {
         a.sources
             .rows
             .get(index)
@@ -34,8 +35,8 @@ pub(super) fn row_text(index: usize) -> Vec<u16> {
             .unwrap_or_default()
     })
 }
-fn rows() -> Vec<Row> {
-    read(|a| {
+fn rows(ctx: &Context) -> Vec<Row> {
+    ctx.read(|a| {
         a.session
             .inputs()
             .iter()
@@ -117,19 +118,19 @@ fn size(bytes: usize) -> String {
     resources::text(units[unit]).replace("{size}", &value)
 }
 
-fn list() -> HWND {
-    unsafe { GetDlgItem(read(|a| a.frame), SOURCE_LIST as i32) }
+fn list(ctx: &Context) -> HWND {
+    unsafe { GetDlgItem(ctx.read(|a| a.frame), SOURCE_LIST as i32) }
 }
-fn selected() -> Option<PathBuf> {
-    let index = crate::list::selected(list())?;
-    read(|a| a.sources.rows.get(index).map(|row| row.path.clone()))
+fn selected(ctx: &Context) -> Option<PathBuf> {
+    let index = crate::list::selected(list(ctx))?;
+    ctx.read(|a| a.sources.rows.get(index).map(|row| row.path.clone()))
 }
-pub(super) fn update_actions() {
-    let path = selected();
+pub(super) fn update_actions(ctx: &Context) {
+    let path = selected(ctx);
     let reload = path
         .as_ref()
-        .is_some_and(|p| !read(|a| a.session.pending(p)));
-    let frame = read(|a| a.frame);
+        .is_some_and(|p| !ctx.read(|a| a.session.pending(p)));
+    let frame = ctx.read(|a| a.frame);
     unsafe {
         EnableWindow(GetDlgItem(frame, RELOAD_SOURCE as i32), reload as i32);
         EnableWindow(
@@ -139,17 +140,17 @@ pub(super) fn update_actions() {
     }
 }
 
-pub(super) fn add(files: Vec<PathBuf>) {
+pub(super) fn add(ctx: &Context, files: Vec<PathBuf>) {
     if files.is_empty() {
         return;
     }
-    super::status::begin_status(super::status::StatusContext::Catalog);
-    let mut paths = catalog::paths();
+    super::status::begin_status(ctx, super::status::StatusContext::Catalog);
+    let mut paths = catalog::paths(ctx);
     for file in files {
         let path = match std::path::absolute(file) {
             Ok(path) => path,
             Err(error) => {
-                super::status::set_status(error.to_string());
+                super::status::set_status(ctx, error.to_string());
                 return;
             }
         };
@@ -157,65 +158,71 @@ pub(super) fn add(files: Vec<PathBuf>) {
             paths.push(path);
         }
     }
-    catalog::reload(paths, vec![]);
+    catalog::reload(ctx, paths, vec![]);
 }
 
-fn choose_add() {
-    if let Some(paths) = super::status::report(input::choose(
-        read(|a| a.frame),
-        read(|a| a.system_version),
-        IDS_LOAD_METADATA,
-        IDS_WINMD_FILES,
-        "*.winmd",
-        true,
-    )) {
-        add(paths);
+fn choose_add(ctx: &Context) {
+    if let Some(paths) = super::status::report(
+        ctx,
+        input::choose(
+            ctx.read(|a| a.frame),
+            ctx.read(|a| a.system_version),
+            IDS_LOAD_METADATA,
+            IDS_WINMD_FILES,
+            "*.winmd",
+            true,
+        ),
+    ) {
+        add(ctx, paths);
     }
 }
 
-pub(super) fn command(id: u16) -> bool {
+pub(super) fn command(ctx: &Context, id: u16) -> bool {
     if matches!(
         id,
         LOAD_METADATA | RELOAD_SOURCE | REMOVE_SOURCE | COPY_SOURCE_PATH
     ) {
-        super::status::begin_status(super::status::StatusContext::Catalog);
+        super::status::begin_status(ctx, super::status::StatusContext::Catalog);
     }
     match id {
-        LOAD_METADATA => choose_add(),
+        LOAD_METADATA => choose_add(ctx),
         RELOAD_SOURCE | REMOVE_SOURCE | COPY_SOURCE_PATH => {
-            if let Some(path) = selected() {
-                action_path(id, path);
+            if let Some(path) = selected(ctx) {
+                action_path(ctx, id, path);
             }
         }
         _ => return false,
     }
     true
 }
-fn action_path(command: u16, path: PathBuf) {
+fn action_path(ctx: &Context, command: u16, path: PathBuf) {
     if command == COPY_SOURCE_PATH {
-        super::status::report(copy_unicode(
-            list(),
-            &path.as_os_str().encode_wide().collect::<Vec<_>>(),
-        ));
+        super::status::report(
+            ctx,
+            copy_unicode(
+                list(ctx),
+                &path.as_os_str().encode_wide().collect::<Vec<_>>(),
+            ),
+        );
         return;
     }
-    if !read(|a| a.session.inputs().iter().any(|s| s.path() == path)) {
+    if !ctx.read(|a| a.session.inputs().iter().any(|s| s.path() == path)) {
         return;
     }
-    let mut paths = catalog::paths();
+    let mut paths = catalog::paths(ctx);
     if command == REMOVE_SOURCE {
         paths.retain(|p| *p != path);
-        catalog::reload(paths, vec![]);
-    } else if command == RELOAD_SOURCE && !read(|a| a.session.pending(&path)) {
-        catalog::reload(paths, vec![path]);
+        catalog::reload(ctx, paths, vec![]);
+    } else if command == RELOAD_SOURCE && !ctx.read(|a| a.session.pending(&path)) {
+        catalog::reload(ctx, paths, vec![path]);
     }
 }
 
-pub(super) fn refresh() {
-    let list = list();
+pub(super) fn refresh(ctx: &Context) {
+    let list = list(ctx);
     let mut state = crate::list::State::capture(list);
-    let rows = rows();
-    read(|a| {
+    let rows = rows(ctx);
+    ctx.read(|a| {
         for index in &mut state.indices {
             if let Some(old) = a.sources.rows.get(*index as usize) {
                 let occurrence = a.sources.rows[..*index as usize]
@@ -235,15 +242,15 @@ pub(super) fn refresh() {
         }
     });
     let count = rows.len();
-    write(|a| a.sources.rows = rows);
+    ctx.write(|a| a.sources.rows = rows);
     state.apply(list, count);
-    read(|a| a.sidebar.panel(super::panel::SOURCES_PANEL))
+    ctx.read(|a| a.sidebar.panel(super::panel::SOURCES_PANEL))
         .list
         .refresh_tooltip();
-    update_actions();
+    update_actions(ctx);
 }
 
-pub(super) fn context_menu(hwnd: HWND, location: isize) -> anyhow::Result<()> {
+pub(super) fn context_menu(ctx: &Context, hwnd: HWND, location: isize) -> anyhow::Result<()> {
     let mut point = point_from_lparam(location);
     if location == -1 {
         let Some(index) = crate::list::selected(hwnd) else {
@@ -275,10 +282,10 @@ pub(super) fn context_menu(hwnd: HWND, location: isize) -> anyhow::Result<()> {
         crate::list::set_item_state(hwnd, index, state, state);
         send(hwnd, LVM_SETSELECTIONMARK, 0, index);
     }
-    let Some(path) = selected() else {
+    let Some(path) = selected(ctx) else {
         return Ok(());
     };
-    let pending = read(|a| a.session.pending(&path));
+    let pending = ctx.read(|a| a.session.pending(&path));
     unsafe {
         let menu = Popup::new()?;
         for (id, label) in [
@@ -294,7 +301,7 @@ pub(super) fn context_menu(hwnd: HWND, location: isize) -> anyhow::Result<()> {
         }
         let command = menu.track(hwnd, point);
         if command != 0 && IsWindow(hwnd) != 0 {
-            action_path(command, path);
+            action_path(ctx, command, path);
         }
     }
     Ok(())

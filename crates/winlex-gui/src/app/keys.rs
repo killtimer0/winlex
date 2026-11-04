@@ -2,7 +2,8 @@
 //!
 //! Semantic keys are resolved before the dialog manager sees them. Controls
 //! keep their default behavior for every key the table does not claim.
-use super::{catalog, panel, read, workspace};
+use super::{catalog, panel, workspace};
+use crate::app::context::Context;
 use crate::native::*;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -35,23 +36,23 @@ pub(super) fn action(region: Region, key: usize) -> Option<Action> {
 }
 
 /// Claim a key press for the region that currently owns the keyboard.
-pub(super) fn translate(msg: &MSG) -> bool {
+pub(super) fn translate(ctx: &Context, msg: &MSG) -> bool {
     if msg.message != WM_KEYDOWN {
         return false;
     }
-    if msg.hwnd == super::tools::list() && msg.wParam == VK_RETURN as usize {
-        super::tools::selected(unsafe { GetKeyState(VK_CONTROL as i32) } < 0);
+    if msg.hwnd == super::tools::list(ctx) && msg.wParam == VK_RETURN as usize {
+        super::tools::selected(ctx, unsafe { GetKeyState(VK_CONTROL as i32) } < 0);
         return true;
     }
-    let Some(action) = action(region(msg.hwnd), msg.wParam) else {
+    let Some(action) = action(region(ctx, msg.hwnd), msg.wParam) else {
         return false;
     };
-    dispatch(action);
+    dispatch(ctx, action);
     true
 }
 
-fn region(hwnd: HWND) -> Region {
-    let (search, results, tabs) = read(|a| {
+fn region(ctx: &Context, hwnd: HWND) -> Region {
+    let (search, results, tabs) = ctx.read(|a| {
         (
             a.sidebar.search.clone(),
             a.sidebar.panel(panel::SEARCH_PANEL).list.hwnd,
@@ -74,13 +75,13 @@ fn region(hwnd: HWND) -> Region {
     Region::Other
 }
 
-fn dispatch(action: Action) {
+fn dispatch(ctx: &Context, action: Action) {
     match action {
-        Action::Search => catalog::search(),
-        Action::Preview => catalog::open_selected(catalog::Open::Preview),
-        Action::Pin => catalog::open_selected(catalog::Open::Pin),
+        Action::Search => catalog::search(ctx),
+        Action::Preview => catalog::open_selected(ctx, catalog::Open::Preview),
+        Action::Pin => catalog::open_selected(ctx, catalog::Open::Pin),
         Action::FocusDocument => {
-            if let Some(document) = workspace::content(workspace::active()) {
+            if let Some(document) = workspace::content(ctx, workspace::active(ctx)) {
                 document.focus();
             }
         }

@@ -218,14 +218,16 @@ pub fn tooltip_field(text: &mut Vec<u16>, label: u16, value: impl IntoIterator<I
     text.extend(value);
 }
 
-type ReadRow = fn(usize, &mut dyn FnMut(&Display));
+type RowReader = Box<dyn Fn(usize, &mut dyn FnMut(&Display))>;
+type TextReader = Box<dyn Fn(usize) -> Vec<u16>>;
+type OpenHandler = Box<dyn Fn(isize, bool)>;
 
 pub struct List {
     pub hwnd: HWND,
     visuals: RefCell<Option<Visuals>>,
-    row: ReadRow,
-    text: fn(usize) -> Vec<u16>,
-    open: Option<fn(isize, bool)>,
+    row: RowReader,
+    text: TextReader,
+    open: Option<OpenHandler>,
     native_background: bool,
     tooltip_item: Cell<i32>,
 }
@@ -233,9 +235,9 @@ impl List {
     pub fn new(
         frame: HWND,
         id: u16,
-        row: ReadRow,
-        text: fn(usize) -> Vec<u16>,
-        open: Option<fn(isize, bool)>,
+        row: impl Fn(usize, &mut dyn FnMut(&Display)) + 'static,
+        text: impl Fn(usize) -> Vec<u16> + 'static,
+        open: Option<Box<dyn Fn(isize, bool)>>,
         version: WindowsVersion,
     ) -> anyhow::Result<Self> {
         let hwnd = unsafe {
@@ -264,8 +266,8 @@ impl List {
         Ok(Self {
             hwnd,
             visuals: RefCell::new(None),
-            row,
-            text,
+            row: Box::new(row),
+            text: Box::new(text),
             open,
             native_background: version.at_least(WindowsVersion::VISTA),
             tooltip_item: Cell::new(-1),
@@ -375,7 +377,7 @@ impl List {
                 NM_CLICK | NM_DBLCLK => {
                     let i = &*(l as *const NMITEMACTIVATE);
                     if i.iItem >= 0
-                        && let Some(open) = self.open
+                        && let Some(open) = &self.open
                     {
                         open(i.iItem as isize, hdr.code == NM_DBLCLK);
                     }
@@ -1090,13 +1092,13 @@ mod tests {
         let list = List {
             hwnd: ptr::null_mut(),
             visuals: RefCell::new(None),
-            row: |_, visit| {
+            row: Box::new(|_, visit: &mut dyn FnMut(&Display)| {
                 visit(&Display {
                     tooltip: vec![65, 0xD83D, 0xDE00, 0xD800, 66],
                     ..Default::default()
                 })
-            },
-            text: |_| vec![90],
+            }),
+            text: Box::new(|_| vec![90]),
             open: None,
             native_background: true,
             tooltip_item: Cell::new(-1),

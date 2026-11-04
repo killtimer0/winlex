@@ -2,8 +2,9 @@
 use super::{
     catalog,
     metadata::{ArchitectureChoice, Binding, MetadataView},
-    read, workspace, write,
+    workspace,
 };
+use crate::app::context::Context;
 use crate::{native::*, resources::*, rich_text::ViewState};
 use std::sync::{Arc, Weak};
 use winlex_core::{Architecture, Catalog, EntityId};
@@ -164,8 +165,8 @@ impl History {
     }
 }
 
-fn active_entry() -> Option<Entry> {
-    workspace::content(workspace::active()).map(|doc| capture_content(&doc))
+fn active_entry(ctx: &Context) -> Option<Entry> {
+    workspace::content(ctx, workspace::active(ctx)).map(|doc| capture_content(&doc))
 }
 fn capture_content(content: &super::content::Content) -> Entry {
     match content {
@@ -176,15 +177,15 @@ fn capture_content(content: &super::content::Content) -> Entry {
         },
     }
 }
-pub(super) fn content_activation(content: &super::content::Content, active: bool) {
+pub(super) fn content_activation(ctx: &Context, content: &super::content::Content, active: bool) {
     if active {
         content.activated();
     }
-    if read(|a| a.workspace.history.depth != 0) {
+    if ctx.read(|a| a.workspace.history.depth != 0) {
         return;
     }
     let entry = capture_content(content);
-    write(|a| {
+    ctx.write(|a| {
         if active {
             a.workspace.history.visit(entry)
         } else {
@@ -193,59 +194,60 @@ pub(super) fn content_activation(content: &super::content::Content, active: bool
     });
 }
 
-struct Scope {
+struct Scope<'a> {
+    ctx: &'a Context,
     outer: bool,
 }
-impl Scope {
-    fn begin() -> Self {
-        let outer = write(|a| {
+impl<'a> Scope<'a> {
+    fn begin(ctx: &'a Context) -> Self {
+        let outer = ctx.write(|a| {
             let history = &mut a.workspace.history;
             history.depth += 1;
             history.depth == 1
         });
-        if outer && let Some(entry) = active_entry() {
-            write(|a| a.workspace.history.visit(entry));
+        if outer && let Some(entry) = active_entry(ctx) {
+            ctx.write(|a| a.workspace.history.visit(entry));
         }
-        Self { outer }
+        Self { ctx, outer }
     }
 }
-impl Drop for Scope {
+impl Drop for Scope<'_> {
     fn drop(&mut self) {
-        write(|a| a.workspace.history.depth -= 1);
+        self.ctx.write(|a| a.workspace.history.depth -= 1);
     }
 }
 
-pub(super) fn visit<T>(action: impl FnOnce() -> T) -> T {
-    let scope = Scope::begin();
+pub(super) fn visit<T>(ctx: &Context, action: impl FnOnce() -> T) -> T {
+    let scope = Scope::begin(ctx);
     let result = action();
     if scope.outer
-        && let Some(entry) = active_entry()
+        && let Some(entry) = active_entry(ctx)
     {
-        write(|a| a.workspace.history.visit(entry));
+        ctx.write(|a| a.workspace.history.visit(entry));
     }
     drop(scope);
-    refresh();
+    refresh(ctx);
     result
 }
 
-pub(super) fn closing(action: impl FnOnce()) {
-    let scope = Scope::begin();
+pub(super) fn closing(ctx: &Context, action: impl FnOnce()) {
+    let scope = Scope::begin(ctx);
     action();
     if scope.outer {
-        let entry = active_entry();
-        write(|a| a.workspace.history.after_close(entry));
+        let entry = active_entry(ctx);
+        ctx.write(|a| a.workspace.history.after_close(entry));
     }
     drop(scope);
-    refresh();
+    refresh(ctx);
 }
 
-pub(super) fn navigate(direction: Direction) {
-    if read(|a| a.workspace.history.depth != 0) {
+pub(super) fn navigate(ctx: &Context, direction: Direction) {
+    if ctx.read(|a| a.workspace.history.depth != 0) {
         return;
     }
-    let scope = Scope::begin();
+    let scope = Scope::begin(ctx);
     loop {
-        let target = write(|a| {
+        let target = ctx.write(|a| {
             let history = &mut a.workspace.history;
             history.prune();
             let index = history.next(direction)?;
@@ -253,44 +255,48 @@ pub(super) fn navigate(direction: Direction) {
         });
         let Some((index, entry)) = target else { break };
         if matches!(entry.target, Target::Live(_)) {
-            if let Some(content) = workspace::content_by_id(entry.document) {
-                workspace::show_document(content.hwnd());
+            if let Some(content) = workspace::content_by_id(ctx, entry.document) {
+                workspace::show_document(ctx, content.hwnd());
                 content.focus();
-                write(|a| a.workspace.history.arrived(index, content.id()));
+                ctx.write(|a| a.workspace.history.arrived(index, content.id()));
                 break;
             }
-            write(|a| a.workspace.history.remove(index));
+            ctx.write(|a| a.workspace.history.remove(index));
             continue;
         }
         let Target::Declaration(target) = entry.target else {
             unreachable!()
         };
         let Some(snapshot) = target.catalog.upgrade() else {
-            write(|a| a.workspace.history.remove(index));
+            ctx.write(|a| a.workspace.history.remove(index));
             continue;
         };
-        let Some(binding) = super::status::report(Binding::resolve(
-            snapshot,
-            target.entity,
-            ArchitectureChoice::Exact(target.architecture),
-        )) else {
-            write(|a| a.workspace.history.remove(index));
+        let Some(binding) = super::status::report(
+            ctx,
+            Binding::resolve(
+                snapshot,
+                target.entity,
+                ArchitectureChoice::Exact(target.architecture),
+            ),
+        ) else {
+            ctx.write(|a| a.workspace.history.remove(index));
             continue;
         };
-        let hwnd = catalog::open_binding(binding, catalog::Open::Preview, Some(entry.document));
-        if let Some(doc) = hwnd.and_then(workspace::view) {
+        let hwnd =
+            catalog::open_binding(ctx, binding, catalog::Open::Preview, Some(entry.document));
+        if let Some(doc) = hwnd.and_then(|hwnd| workspace::view(ctx, hwnd)) {
             doc.focus();
             doc.restore_position(target.position);
-            write(|a| a.workspace.history.arrived(index, doc.id));
+            ctx.write(|a| a.workspace.history.arrived(index, doc.id));
         }
         break;
     }
     drop(scope);
-    refresh();
+    refresh(ctx);
 }
 
-pub(super) fn refresh() {
-    let update = write(|a| {
+pub(super) fn refresh(ctx: &Context) {
+    let update = ctx.write(|a| {
         let history = &mut a.workspace.history;
         if history.depth != 0 || a.frame.is_null() {
             return None;

@@ -2,8 +2,9 @@
 use super::{
     history,
     metadata::{self, ArchitectureChoice, Binding},
-    read, workspace, write,
+    workspace,
 };
+use crate::app::context::Context;
 use crate::native::text;
 use crate::results::Items;
 use crate::{
@@ -198,54 +199,54 @@ impl Session {
         }
     }
 }
-pub(super) fn paths() -> Vec<PathBuf> {
-    read(|a| a.session.paths())
+pub(super) fn paths(ctx: &Context) -> Vec<PathBuf> {
+    ctx.read(|a| a.session.paths())
 }
-pub(super) fn reload(paths: Vec<PathBuf>, reload: Vec<PathBuf>) {
-    let result = write(|a| {
+pub(super) fn reload(ctx: &Context, paths: Vec<PathBuf>, reload: Vec<PathBuf>) {
+    let result = ctx.write(|a| {
         let (previous, ticket, job) = a.session.begin_load(paths, reload);
         a.worker.replace(previous, ticket, job)
     });
     if let Err(e) = result {
-        write(|a| a.session.fail_load(format!("{e:#}")));
+        ctx.write(|a| a.session.fail_load(format!("{e:#}")));
     }
-    super::status::refresh_status();
-    super::sources::refresh();
+    super::status::refresh_status(ctx);
+    super::sources::refresh(ctx);
 }
 
-pub(super) fn input_changed() {
-    super::status::begin_status(super::status::StatusContext::Catalog);
-    let (input, composing) = super::panel::cancel_debounce();
-    write(|a| {
+pub(super) fn input_changed(ctx: &Context) {
+    super::status::begin_status(ctx, super::status::StatusContext::Catalog);
+    let (input, composing) = super::panel::cancel_debounce(ctx);
+    ctx.write(|a| {
         if let Some(id) = a.session.reset_search() {
             a.worker.cancel(id);
         }
         a.session.load_error = None;
     });
-    update_results();
+    update_results(ctx);
     if !composing && !text(input).trim().is_empty() {
-        let state = match super::panel::debounce(input) {
+        let state = match super::panel::debounce(ctx, input) {
             Ok(()) => Search::Waiting,
             Err(e) => Search::Failed(e),
         };
-        write(|a| a.session.search = state);
+        ctx.write(|a| a.session.search = state);
     }
-    super::status::refresh_status();
+    super::status::refresh_status(ctx);
 }
-pub(super) fn search() {
-    write(|a| {
+pub(super) fn search(ctx: &Context) {
+    ctx.write(|a| {
         a.session.load_error = None;
     });
-    submit_search();
+    submit_search(ctx);
 }
-fn submit_search() {
-    let (input, composing) = super::panel::cancel_debounce();
+fn submit_search(ctx: &Context) {
+    let (input, composing) = super::panel::cancel_debounce(ctx);
     if composing {
         return;
     }
     let query = text(input).trim().to_owned();
-    let mode = super::panel::search_mode();
-    let sent = write(|a| {
+    let mode = super::panel::search_mode(ctx);
+    let sent = ctx.write(|a| {
         let s = &mut a.session;
         if let Some(id) = s.reset_search() {
             a.worker.cancel(id);
@@ -292,18 +293,18 @@ fn submit_search() {
             },
         )
     });
-    update_results();
+    update_results(ctx);
     if let Err(e) = sent {
-        write(|a| a.session.search = Search::Failed(e));
+        ctx.write(|a| a.session.search = Search::Failed(e));
     }
-    super::status::refresh_status();
+    super::status::refresh_status(ctx);
 }
-fn results_list() -> HWND {
-    unsafe { GetDlgItem(read(|a| a.frame), RESULTS as i32) }
+fn results_list(ctx: &Context) -> HWND {
+    unsafe { GetDlgItem(ctx.read(|a| a.frame), RESULTS as i32) }
 }
-fn update_results() {
-    let hwnd = results_list();
-    let count = read(|a| a.session.results.len());
+fn update_results(ctx: &Context) {
+    let hwnd = results_list(ctx);
+    let count = ctx.read(|a| a.session.results.len());
     send(hwnd, LVM_SETITEMCOUNT, count, 0);
     crate::list::fit(hwnd);
     unsafe {
@@ -329,32 +330,32 @@ fn merge_results(results: &mut Items, batch: &mut Items, tracked: &mut [isize; 4
     }
 }
 
-pub(super) fn flush_results() {
-    if !read(|a| !a.session.pending_results.is_empty()) {
-        super::status::refresh_status();
+pub(super) fn flush_results(ctx: &Context) {
+    if !ctx.read(|a| !a.session.pending_results.is_empty()) {
+        super::status::refresh_status(ctx);
         return;
     }
-    let hwnd = results_list();
+    let hwnd = results_list(ctx);
     let mut state = crate::list::State::capture(hwnd);
-    write(|a| {
+    ctx.write(|a| {
         let s = &mut a.session;
         merge_results(&mut s.results, &mut s.pending_results, &mut state.indices);
     });
-    state.apply(hwnd, read(|a| a.session.results.len()));
-    read(|a| a.sidebar.panel(super::panel::SEARCH_PANEL))
+    state.apply(hwnd, ctx.read(|a| a.session.results.len()));
+    ctx.read(|a| a.sidebar.panel(super::panel::SEARCH_PANEL))
         .list
         .refresh_tooltip();
-    super::status::refresh_status();
+    super::status::refresh_status(ctx);
 }
-pub(super) fn row(index: usize, visit: &mut dyn FnMut(&crate::list::Display)) {
-    read(|a| {
+pub(super) fn row(ctx: &Context, index: usize, visit: &mut dyn FnMut(&crate::list::Display)) {
+    ctx.read(|a| {
         if let Some(item) = a.session.results.get(index) {
             visit(&item.display);
         }
     });
 }
-pub(super) fn row_text(row: usize) -> Vec<u16> {
-    read(|a| {
+pub(super) fn row_text(ctx: &Context, row: usize) -> Vec<u16> {
+    ctx.read(|a| {
         let Some(e) = a.session.results.get(row) else {
             return Vec::new();
         };
@@ -380,37 +381,37 @@ pub(super) enum Open {
     Pin,
     New,
 }
-pub(super) fn activate(row: isize, double: bool) {
-    open(row, if double { Open::Pin } else { Open::Preview });
+pub(super) fn activate(ctx: &Context, row: isize, double: bool) {
+    open(ctx, row, if double { Open::Pin } else { Open::Preview });
 }
-pub(super) fn open_selected(mode: Open) {
-    let row = crate::list::selected(results_list()).map_or(-1, |index| index as isize);
-    open(row, mode);
+pub(super) fn open_selected(ctx: &Context, mode: Open) {
+    let row = crate::list::selected(results_list(ctx)).map_or(-1, |index| index as isize);
+    open(ctx, row, mode);
 }
-pub(super) fn open(row: isize, mode: Open) {
-    history::visit(|| open_document(row, mode));
+pub(super) fn open(ctx: &Context, row: isize, mode: Open) {
+    history::visit(ctx, || open_document(ctx, row, mode));
 }
-fn open_document(row: isize, mode: Open) {
+fn open_document(ctx: &Context, row: isize, mode: Open) {
     match mode {
         // A preview shows the document but leaves the keyboard in the sidebar.
-        Open::Preview => workspace::keep_focus(|| {
-            open_now(row, mode);
+        Open::Preview => workspace::keep_focus(ctx, || {
+            open_now(ctx, row, mode);
         }),
         // An explicit open enters the document: show it, then focus its body.
         Open::Pin | Open::New => {
-            if let Some(hwnd) = open_now(row, mode)
-                && let Some(document) = workspace::view(hwnd)
+            if let Some(hwnd) = open_now(ctx, row, mode)
+                && let Some(document) = workspace::view(ctx, hwnd)
             {
                 document.focus();
             }
         }
     }
 }
-fn open_now(row: isize, mode: Open) -> Option<HWND> {
+fn open_now(ctx: &Context, row: isize, mode: Open) -> Option<HWND> {
     if row < 0 {
         return None;
     }
-    let item = read(|a| {
+    let item = ctx.read(|a| {
         a.session.results.get(row as usize).map(|e| {
             (
                 e.id,
@@ -426,21 +427,29 @@ fn open_now(row: isize, mode: Open) -> Option<HWND> {
     let current = if mode == Open::New {
         None
     } else {
-        metadata::binding(workspace::active()).map(|binding| binding.architecture)
+        metadata::binding(ctx, workspace::active(ctx)).map(|binding| binding.architecture)
     };
-    let binding = super::status::report(Binding::resolve(
-        catalog,
-        id,
-        ArchitectureChoice::Preferred { current, preferred },
-    ))?;
-    open_binding(binding, mode, None)
+    let binding = super::status::report(
+        ctx,
+        Binding::resolve(
+            catalog,
+            id,
+            ArchitectureChoice::Preferred { current, preferred },
+        ),
+    )?;
+    open_binding(ctx, binding, mode, None)
 }
-pub(super) fn open_binding(binding: Binding, mode: Open, original: Option<u64>) -> Option<HWND> {
-    let preview = workspace::preview_document();
+pub(super) fn open_binding(
+    ctx: &Context,
+    binding: Binding,
+    mode: Open,
+    original: Option<u64>,
+) -> Option<HWND> {
+    let preview = workspace::preview_document(ctx);
     let existing = (mode != Open::New)
         .then(|| {
             original
-                .and_then(workspace::by_id)
+                .and_then(|id| workspace::by_id(ctx, id))
                 .filter(|doc| doc.binding().same_entity(&binding))
                 .map(|doc| {
                     if !doc.binding().same_location(&binding) {
@@ -448,61 +457,65 @@ pub(super) fn open_binding(binding: Binding, mode: Open, original: Option<u64>) 
                     }
                     doc.hwnd
                 })
-                .or_else(|| metadata::find(&binding))
+                .or_else(|| metadata::find(ctx, &binding))
                 .or_else(|| {
                     preview.and_then(|hwnd| {
-                        workspace::view(hwnd)?.rebind(binding.clone());
+                        workspace::view(ctx, hwnd)?.rebind(binding.clone());
                         Some(hwnd)
                     })
                 })
         })
         .flatten();
-    let hwnd = existing
-        .or_else(|| super::status::report(metadata::open(binding, mode == Open::Preview)))?;
+    let hwnd = existing.or_else(|| {
+        super::status::report(ctx, metadata::open(ctx, binding, mode == Open::Preview))
+    })?;
     if mode == Open::Pin {
-        workspace::pin_document(hwnd);
+        workspace::pin_document(ctx, hwnd);
     }
-    workspace::show_document(hwnd);
+    workspace::show_document(ctx, hwnd);
     Some(hwnd)
 }
-pub(super) fn worker_stopped() {
-    write(|a| {
+pub(super) fn worker_stopped(ctx: &Context) {
+    ctx.write(|a| {
         a.session.fail_load(resources::text(IDS_WORKER_STOPPED));
         a.session.search = Search::Idle;
     });
-    super::status::set_status(resources::text(IDS_WORKER_STOPPED));
-    super::sources::refresh();
+    super::status::set_status(ctx, resources::text(IDS_WORKER_STOPPED));
+    super::sources::refresh(ctx);
 }
-pub(super) fn loaded(id: u64, result: anyhow::Result<Option<Arc<Catalog>>>) {
+pub(super) fn loaded(ctx: &Context, id: u64, result: anyhow::Result<Option<Arc<Catalog>>>) {
     let result = result.map_err(|error| {
         resources::text(IDS_LOAD_FAILED).replace("{error}", &format!("{error:#}"))
     });
     let committed = result.is_ok();
-    if !write(|a| a.session.accept_load(id, result)) {
+    if !ctx.write(|a| a.session.accept_load(id, result)) {
         return;
     }
     if committed {
-        submit_search();
-        super::status::report(read(|a| {
-            if a.session.remember_sources {
-                a.config
-                    .write_key()?
-                    .set_paths("AutoLoad", &a.session.paths())?;
-            }
-            Ok::<_, anyhow::Error>(())
-        }));
-        for view in workspace::views() {
+        submit_search(ctx);
+        super::status::report(
+            ctx,
+            ctx.read(|a| {
+                if a.session.remember_sources {
+                    a.config
+                        .write_key()?
+                        .set_paths("AutoLoad", &a.session.paths())?;
+                }
+                Ok::<_, anyhow::Error>(())
+            }),
+        );
+        for view in workspace::views(ctx) {
             view.layout();
         }
     }
-    super::sources::refresh();
-    super::status::refresh_status();
+    super::sources::refresh(ctx);
+    super::status::refresh_status(ctx);
 }
-pub(super) fn matches(id: u64, items: Items) {
-    write(|a| a.session.accept_matches(id, items));
+pub(super) fn matches(ctx: &Context, id: u64, items: Items) {
+    ctx.write(|a| a.session.accept_matches(id, items));
 }
-pub(super) fn search_done(id: u64, result: anyhow::Result<()>) {
-    write(|a| a.session.finish_search(id, result));
+pub(super) fn search_done(ctx: &Context, id: u64, result: anyhow::Result<()>) {
+    ctx.write(|a| a.session.finish_search(id, result));
 }
 
 #[cfg(test)]

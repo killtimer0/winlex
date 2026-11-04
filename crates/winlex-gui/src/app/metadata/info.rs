@@ -304,13 +304,18 @@ impl Info {
         };
         open_url(owner, &target)
     }
-    pub fn menu(&self, owner: HWND, binding: &Binding) -> anyhow::Result<()> {
+    pub fn menu(
+        &self,
+        ctx: &crate::app::context::Context,
+        owner: HWND,
+        binding: &Binding,
+    ) -> anyhow::Result<()> {
         let entity = &binding.entity;
         let path = &binding.catalog.sources()[entity.id.source_id].path;
         let copies = copies(entity, path);
         unsafe {
             let menu = Popup::new()?;
-            let m = super::super::metrics(owner);
+            let m = ctx.metrics(owner);
             with_window_font(owner, m.font, |dc| {
                 if dc.is_null() {
                     return Err(error("Measure document information menu"));

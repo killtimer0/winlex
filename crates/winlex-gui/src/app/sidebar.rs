@@ -1,9 +1,9 @@
 //! Sidebar visibility, toolbar, width and focus handoff.
 use super::{
-    bind, dpi,
+    bind,
     panel::{self, Panel, PanelId, Search},
-    read, write,
 };
+use crate::app::context::Context;
 use crate::{
     config::Config,
     icons::Images,
@@ -58,8 +58,8 @@ impl Sidebar {
             .cloned()
     }
 }
-pub(super) fn focus() {
-    let (toolbar, panel) = read(|a| {
+pub(super) fn focus(ctx: &Context) {
+    let (toolbar, panel) = ctx.read(|a| {
         (
             a.sidebar.toolbar,
             (!a.sidebar.collapsed).then(|| a.sidebar.panel(a.sidebar.active)),
@@ -71,7 +71,7 @@ pub(super) fn focus() {
         crate::native::focus(toolbar);
     }
 }
-pub(super) fn create(frame: HWND) -> anyhow::Result<()> {
+pub(super) fn create(ctx: &Context, frame: HWND) -> anyhow::Result<()> {
     let toolbar = unsafe {
         child(
             frame,
@@ -86,7 +86,7 @@ pub(super) fn create(frame: HWND) -> anyhow::Result<()> {
         )
     }?;
     let splitter = unsafe { child(frame, w!("Winlex.Splitter"), &[0], 0, 0) }?;
-    write(|a| {
+    ctx.write(|a| {
         a.sidebar.toolbar = toolbar;
         a.sidebar.splitter = splitter;
     });
@@ -117,27 +117,27 @@ pub(super) fn create(frame: HWND) -> anyhow::Result<()> {
             anyhow::bail!("Add panel toolbar button failed");
         }
     }
-    let (panels, search) = panel::create(frame)?;
-    write(|a| {
+    let (panels, search) = panel::create(ctx, frame)?;
+    ctx.write(|a| {
         a.sidebar.panels = panels.into();
         a.sidebar.search = Some(search);
     });
-    sync_visibility();
+    sync_visibility(ctx);
     Ok(())
 }
-pub(super) fn show(id: PanelId, toggle: bool) {
-    super::status::begin_status(super::status::StatusContext::Catalog);
-    write(|a| {
+pub(super) fn show(ctx: &Context, id: PanelId, toggle: bool) {
+    super::status::begin_status(ctx, super::status::StatusContext::Catalog);
+    ctx.write(|a| {
         let s = &mut a.sidebar;
         s.collapsed = toggle && s.active == id && !s.collapsed;
         s.active = id;
     });
-    sync_visibility();
-    super::frame::layout_frame();
-    focus();
+    sync_visibility(ctx);
+    super::frame::layout_frame(ctx);
+    focus(ctx);
 }
-fn sync_visibility() {
-    let (toolbar, splitter, collapsed, active, panels) = read(|a| {
+fn sync_visibility(ctx: &Context) {
+    let (toolbar, splitter, collapsed, active, panels) = ctx.read(|a| {
         let s = &a.sidebar;
         (
             s.toolbar,
@@ -161,11 +161,12 @@ fn sync_visibility() {
     }
     crate::native::show(splitter, !collapsed);
 }
-pub(super) fn prepare() {
-    let (frame, toolbar, panels) = read(|a| (a.frame, a.sidebar.toolbar, a.sidebar.panels.clone()));
-    let m = super::metrics(frame);
+pub(super) fn prepare(ctx: &Context) {
+    let (frame, toolbar, panels) =
+        ctx.read(|a| (a.frame, a.sidebar.toolbar, a.sidebar.panels.clone()));
+    let m = ctx.metrics(frame);
     bind(toolbar, m.font);
-    update_images(toolbar, m.px(24));
+    update_images(ctx, toolbar, m.px(24));
     for (message, size) in [
         (TB_SETPADDING, 12),
         (TB_SETBUTTONWIDTH, 36),
@@ -175,28 +176,29 @@ pub(super) fn prepare() {
         send(toolbar, message, 0, (size | (size << 16)) as isize);
     }
     for panel in panels {
-        panel.prepare(&m);
+        panel.prepare(ctx, &m);
     }
-    panel::search().prepare(&m);
+    panel::search(ctx).prepare(&m);
 }
-fn update_images(toolbar: HWND, size: i32) {
-    if let Some(images) = super::checked(Images::toolbar(
+fn update_images(ctx: &Context, toolbar: HWND, size: i32) {
+    if let Some(images) = ctx.checked(Images::toolbar(
         size,
         PanelId::ALL.into_iter().map(|id| id.presentation().2),
     )) {
         send(toolbar, TB_SETIMAGELIST, 0, images.handle());
-        write(|a| a.sidebar.images = Some(images));
+        ctx.write(|a| a.sidebar.images = Some(images));
     }
 }
-pub(super) fn recolor() {
-    let (frame, toolbar, panels) = read(|a| (a.frame, a.sidebar.toolbar, a.sidebar.panels.clone()));
-    update_images(toolbar, layout::scale(24, dpi().window(frame)));
+pub(super) fn recolor(ctx: &Context) {
+    let (frame, toolbar, panels) =
+        ctx.read(|a| (a.frame, a.sidebar.toolbar, a.sidebar.panels.clone()));
+    update_images(ctx, toolbar, layout::scale(24, ctx.dpi().window(frame)));
     for panel in panels {
-        panel.recolor();
+        panel.recolor(ctx);
     }
 }
-pub(super) fn layout(bottom: i32, positions: &mut Vec<(HWND, RECT)>) -> i32 {
-    let (frame, toolbar, splitter, width, panel) = read(|a| {
+pub(super) fn layout(ctx: &Context, bottom: i32, positions: &mut Vec<(HWND, RECT)>) -> i32 {
+    let (frame, toolbar, splitter, width, panel) = ctx.read(|a| {
         let s = &a.sidebar;
         (
             a.frame,
@@ -206,7 +208,7 @@ pub(super) fn layout(bottom: i32, positions: &mut Vec<(HWND, RECT)>) -> i32 {
             (!s.collapsed).then(|| s.panel(s.active)),
         )
     });
-    let m = super::metrics(frame);
+    let m = ctx.metrics(frame);
     let s = |n| m.px(n);
     let x = (send(toolbar, TB_GETBUTTONSIZE, 0, 0) & 0xffff) as i32 + s(8);
     let width = s(width).min((client(frame).right - x - s(160)).max(0));
@@ -215,8 +217,8 @@ pub(super) fn layout(bottom: i32, positions: &mut Vec<(HWND, RECT)>) -> i32 {
         return x;
     };
     let mut area = layout::inset(layout::rect(x, 0, width, bottom), m.px(4));
-    match read(|a| a.sidebar.active) {
-        PanelId::Search => panel::search().layout(&mut area, &m, positions),
+    match ctx.read(|a| a.sidebar.active) {
+        PanelId::Search => panel::search(ctx).layout(ctx, &mut area, &m, positions),
         PanelId::Sources => m.buttons(&mut area, panel.controls[1..].iter().copied(), positions),
         PanelId::Tools => m.buttons(&mut area, panel.controls[1..].iter().copied(), positions),
     }
@@ -224,8 +226,8 @@ pub(super) fn layout(bottom: i32, positions: &mut Vec<(HWND, RECT)>) -> i32 {
     positions.push((splitter, layout::rect(x + width, 0, s(3), bottom)));
     x + width + s(3)
 }
-pub(super) unsafe fn translate(frame: HWND, msg: &MSG) -> bool {
-    let (toolbar, panel) = read(|a| (a.sidebar.toolbar, a.sidebar.owner(msg.hwnd)));
+pub(super) unsafe fn translate(ctx: &Context, frame: HWND, msg: &MSG) -> bool {
+    let (toolbar, panel) = ctx.read(|a| (a.sidebar.toolbar, a.sidebar.owner(msg.hwnd)));
     (msg.hwnd == toolbar || panel.is_some()) && unsafe { IsDialogMessageW(frame, msg) != 0 }
 }
 pub(super) unsafe extern "system" fn splitter_proc(
@@ -235,6 +237,9 @@ pub(super) unsafe extern "system" fn splitter_proc(
     l: isize,
 ) -> isize {
     unsafe {
+        let Some(ctx) = Context::from_window(hwnd) else {
+            return DefWindowProcW(hwnd, msg, w, l);
+        };
         match msg {
             WM_SETCURSOR => {
                 SetCursor(LoadCursorW(ptr::null_mut(), IDC_SIZEWE));
@@ -246,17 +251,17 @@ pub(super) unsafe extern "system" fn splitter_proc(
             }
             WM_MOUSEMOVE if GetCapture() == hwnd => {
                 let mut p = point_from_lparam(l);
-                let (frame, toolbar) = read(|a| (a.frame, a.sidebar.toolbar));
+                let (frame, toolbar) = ctx.read(|a| (a.frame, a.sidebar.toolbar));
                 MapWindowPoints(hwnd, frame, &mut p, 1);
-                let x = bounds(toolbar, frame).right + layout::scale(4, dpi().window(frame));
+                let x = bounds(toolbar, frame).right + layout::scale(4, ctx.dpi().window(frame));
                 let width = MulDiv(
                     p.x - x,
                     USER_DEFAULT_SCREEN_DPI as i32,
-                    dpi().window(frame) as i32,
+                    ctx.dpi().window(frame) as i32,
                 )
                 .clamp(MIN_WIDTH, MAX_WIDTH);
-                write(|a| a.sidebar.width = width);
-                super::frame::layout_frame();
+                ctx.write(|a| a.sidebar.width = width);
+                super::frame::layout_frame(ctx);
                 return 0;
             }
             WM_LBUTTONUP => {

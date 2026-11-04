@@ -1,5 +1,6 @@
 //! Snapshot-bound declaration documents. Catalog changes update only the version hint.
-use super::{bind, catalog, document, dpi, font_for, history, read, workspace, write};
+use super::{bind, catalog, document, history, workspace};
+use crate::app::context::Context;
 use crate::{
     layout,
     native::*,
@@ -102,6 +103,8 @@ impl State {
     }
 }
 pub(super) struct MetadataView {
+    // The document lives inside the context, so the pointer cannot outlive it.
+    ctx: *const Context,
     pub id: u64,
     pub hwnd: HWND,
     pub placement: Cell<Option<layout::Placement>>,
@@ -115,18 +118,19 @@ pub(super) struct MetadataView {
     info: info::Info,
     find: find::Find,
 }
-pub(super) fn binding(hwnd: HWND) -> Option<Binding> {
-    Some(workspace::view(hwnd)?.binding())
+pub(super) fn binding(ctx: &Context, hwnd: HWND) -> Option<Binding> {
+    Some(workspace::view(ctx, hwnd)?.binding())
 }
-pub(super) fn find(binding: &Binding) -> Option<HWND> {
-    workspace::views().into_iter().find_map(|content| {
+pub(super) fn find(ctx: &Context, binding: &Binding) -> Option<HWND> {
+    workspace::views(ctx).into_iter().find_map(|content| {
         let matches = content.state.borrow().binding.same_location(binding);
         matches.then_some(content.hwnd)
     })
 }
-pub(super) fn open(binding: Binding, preview: bool) -> anyhow::Result<HWND> {
+pub(super) fn open(ctx: &Context, binding: Binding, preview: bool) -> anyhow::Result<HWND> {
     let content = MetadataView {
-        id: workspace::next_id(),
+        ctx: ctx as *const Context,
+        id: workspace::next_id(ctx),
         hwnd: std::ptr::null_mut(),
         placement: Cell::new(None),
         preview: Cell::new(preview),
@@ -140,11 +144,14 @@ pub(super) fn open(binding: Binding, preview: bool) -> anyhow::Result<HWND> {
         find: find::Find::default(),
     };
     let title = content.title();
-    let content = workspace::create_document(&title, content)?;
+    let content = workspace::create_document(ctx, &title, content)?;
     content.request();
     Ok(content.hwnd)
 }
 impl MetadataView {
+    fn ctx(&self) -> &Context {
+        unsafe { &*self.ctx }
+    }
     pub(super) fn is_live(&self) -> bool {
         self.live.get()
     }
@@ -158,8 +165,8 @@ impl MetadataView {
             state.clear_interactions();
         }
         self.fill_architectures();
-        super::checked(self.info.fill(&self.binding()));
-        super::checked(self.update_icons());
+        self.ctx().checked(self.info.fill(&self.binding()));
+        self.ctx().checked(self.update_icons());
         self.request();
     }
     pub(super) fn title(&self) -> String {
@@ -175,7 +182,7 @@ impl MetadataView {
             let state = self.state.borrow();
             crate::icons::Icon::for_kind(&state.binding.entity.kind)
         };
-        super::document::update_icons(self.hwnd, icon, &self.icons)
+        super::document::update_icons(self.ctx(), self.hwnd, icon, &self.icons)
     }
     fn fill_architectures(&self) {
         let binding = self.state.borrow().binding.clone();
@@ -196,14 +203,15 @@ impl MetadataView {
         if !self.is_live() {
             return;
         }
-        let ticket = write(|a| a.session.ticket());
+        let ctx = self.ctx();
+        let ticket = ctx.write(|a| a.session.ticket());
         let (binding, previous) = {
             let mut state = self.state.borrow_mut();
             state.restore = None;
             let previous = state.ticket.replace(ticket.id);
             (state.binding.clone(), previous)
         };
-        document::update_title(self.hwnd, &self.title());
+        document::update_title(ctx, self.hwnd, &self.title());
         self.layout();
         let job = Job::Describe {
             document: self.id,
@@ -211,7 +219,7 @@ impl MetadataView {
             entity: binding.entity.id,
             arch: binding.architecture,
         };
-        let body = match read(|a| a.worker.replace(previous, ticket, job)) {
+        let body = match ctx.read(|a| a.worker.replace(previous, ticket, job)) {
             Ok(()) => resources::text(IDS_QUERYING),
             Err(error) => {
                 self.state.borrow_mut().ticket = None;
@@ -227,7 +235,10 @@ impl MetadataView {
             state.clear_interactions();
             state.content = Some(content.clone());
         }
-        super::status::report(crate::rich_text::set_content(self.editor, &content));
+        super::status::report(
+            self.ctx(),
+            crate::rich_text::set_content(self.editor, &content),
+        );
         self.find.refresh(self.editor, false);
     }
     fn select_architecture(&self, code: u32) {
@@ -250,13 +261,15 @@ impl MetadataView {
             return;
         };
         if supported.len() > 1 {
-            super::status::report(write(|a| {
-                a.settings.set_preferred_architecture(&a.config, arch)
-            }));
+            super::status::report(
+                self.ctx(),
+                self.ctx()
+                    .write(|a| a.settings.set_preferred_architecture(&a.config, arch)),
+            );
         }
         if arch != binding.architecture {
             binding.architecture = arch;
-            history::visit(|| {
+            history::visit(self.ctx(), || {
                 self.rebind(binding);
             });
         }
@@ -286,7 +299,7 @@ impl MetadataView {
     }
     pub(super) fn cancel(&self) {
         if let Some(ticket) = &self.state.borrow().ticket {
-            read(|a| a.worker.cancel(*ticket));
+            self.ctx().read(|a| a.worker.cancel(*ticket));
         }
     }
     pub(super) fn complete(&self, ticket: u64, result: anyhow::Result<crate::rich_text::Content>) {
@@ -335,12 +348,10 @@ impl MetadataView {
                 .filter(|current| Rc::ptr_eq(current, clicked))?;
             regions.iter().find(|region| &region.range == range)
         });
-        if let Some(Some(target)) = super::status::report(crate::rich_text::context_menu(
-            self.editor,
-            location,
-            regions,
-            mouse_region,
-        )) {
+        if let Some(Some(target)) = super::status::report(
+            self.ctx(),
+            crate::rich_text::context_menu(self.editor, location, regions, mouse_region),
+        ) {
             self.queue_navigation(Navigation {
                 content: content.expect("reference content"),
                 binding,
@@ -435,7 +446,10 @@ impl MetadataView {
         } == 0
         {
             self.state.borrow_mut().navigation = None;
-            super::status::set_status(format!("{:#}", error("Queue declaration navigation")));
+            super::status::set_status(
+                self.ctx(),
+                format!("{:#}", error("Queue declaration navigation")),
+            );
         }
     }
     pub(super) fn follow_reference(&self) {
@@ -447,16 +461,20 @@ impl MetadataView {
                 .filter(|request| state.contains(request))
         };
         let Some(navigation) = navigation else { return };
-        let Some(binding) = super::status::report(Binding::resolve(
-            navigation.binding.catalog,
-            navigation.target,
-            ArchitectureChoice::Exact(navigation.binding.architecture),
-        )) else {
+        let Some(binding) = super::status::report(
+            self.ctx(),
+            Binding::resolve(
+                navigation.binding.catalog,
+                navigation.target,
+                ArchitectureChoice::Exact(navigation.binding.architecture),
+            ),
+        ) else {
             return;
         };
-        history::visit(|| {
-            if let Some(hwnd) = catalog::open_binding(binding, catalog::Open::Preview, None)
-                && let Some(document) = workspace::view(hwnd)
+        history::visit(self.ctx(), || {
+            if let Some(hwnd) =
+                catalog::open_binding(self.ctx(), binding, catalog::Open::Preview, None)
+                && let Some(document) = workspace::view(self.ctx(), hwnd)
             {
                 document.focus();
             }
@@ -496,38 +514,39 @@ impl MetadataView {
     }
     pub(super) fn prepare(&self) {
         let hwnd = self.hwnd;
-        super::checked(self.update_icons());
-        let (font, _) = font_for(dpi().window(hwnd));
+        let ctx = self.ctx();
+        ctx.checked(self.update_icons());
+        let (font, _) = ctx.font_for(ctx.dpi().window(hwnd));
         for h in [self.editor, self.header] {
             bind(h, font);
         }
         self.find.prepare(font);
-        super::checked(self.info.prepare(&super::metrics(hwnd)));
+        ctx.checked(self.info.prepare(&ctx.metrics(hwnd)));
         crate::rich_text::font(self.editor);
         self.layout();
     }
     pub(super) fn recolor(&self) {
-        super::checked(self.update_icons());
+        self.ctx().checked(self.update_icons());
         self.cancel_link_press();
         let content = self.state.borrow().content.clone();
         if let Some(content) = content {
-            super::status::report(crate::rich_text::recolor(self.editor, &content));
+            super::status::report(self.ctx(), crate::rich_text::recolor(self.editor, &content));
         }
     }
     pub(super) fn layout(&self) {
         let hwnd = self.hwnd;
-        let old = old_version(&self.state.borrow().binding);
+        let old = old_version(self.ctx(), &self.state.borrow().binding);
         show(self.header, old);
-        let m = super::metrics(hwnd);
+        let m = self.ctx().metrics(hwnd);
         let mut area = layout::inset(client(hwnd), m.px(8));
         let mut positions = Vec::new();
         if old {
             positions.push((self.header, layout::take_top(&mut area, m.height + m.px(8))));
         }
         self.info.layout(&mut area, &m, &mut positions);
-        self.find.layout(&mut area, &m, &mut positions);
+        self.find.layout(self.ctx(), &mut area, &m, &mut positions);
         positions.push((self.editor, area));
-        super::checked(place_all(&positions));
+        self.ctx().checked(place_all(&positions));
     }
     pub(super) fn command(&self, id: u16, code: u32) -> bool {
         let visible = self.find.visible();
@@ -540,10 +559,13 @@ impl MetadataView {
         match id {
             SELECT_ARCH => self.select_architecture(code),
             DOCUMENT_MORE if code == BN_CLICKED => {
-                super::status::report(self.info.menu(self.hwnd, &self.binding()));
+                super::status::report(
+                    self.ctx(),
+                    self.info.menu(self.ctx(), self.hwnd, &self.binding()),
+                );
             }
             DOCUMENT_ONLINE if code == BN_CLICKED => {
-                super::status::report(self.info.open_online(self.hwnd));
+                super::status::report(self.ctx(), self.info.open_online(self.hwnd));
             }
             _ => return false,
         }
@@ -578,9 +600,9 @@ fn preferred_for(mask: i32, preferred: Option<Architecture>) -> Option<Architect
         .filter(|arch| arch.supports(mask))
         .or_else(|| Architecture::supported(mask).next())
 }
-fn old_version(binding: &Binding) -> bool {
+fn old_version(ctx: &Context, binding: &Binding) -> bool {
     let path = &binding.catalog.sources()[binding.entity.id.source_id].path;
-    read(|a| {
+    ctx.read(|a| {
         a.session.catalog.as_ref().is_some_and(|current| {
             !Arc::ptr_eq(current, &binding.catalog)
                 && current.sources().iter().any(|s| &s.path == path)

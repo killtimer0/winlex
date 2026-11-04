@@ -1,4 +1,5 @@
-use super::{Preferences, THEMES, catalog, dpi, read, write};
+use super::{Preferences, THEMES, catalog};
+use crate::app::context::Context;
 use crate::{
     dialog::{property_sheet, template_size},
     native::*,
@@ -21,28 +22,30 @@ const FILTERS: &[(u16, EntityCategory)] = &[
     (FILTER_REFERENCE, EntityCategory::TypeReference),
 ];
 
-struct Dialog {
+struct Dialog<'a> {
+    ctx: &'a Context,
     initial: Preferences,
     pages: Cell<[HWND; 2]>,
     failure: RefCell<Option<anyhow::Error>>,
 }
-impl Dialog {
+impl Dialog<'_> {
     fn fail(&self, hwnd: HWND, error: anyhow::Error) {
         *self.failure.borrow_mut() = Some(error);
         unsafe { PostMessageW(hwnd, WM_CLOSE, 0, 0) };
     }
 }
-thread_local! { static CURRENT: Cell<*const Dialog> = const { Cell::new(ptr::null()) }; }
+thread_local! { static CURRENT: Cell<*const ()> = const { Cell::new(ptr::null()) }; }
 
-pub(in super::super) fn open() {
-    super::super::status::report(show());
+pub(in super::super) fn open(ctx: &Context) {
+    super::super::status::report(ctx, show(ctx));
 }
 
-fn show() -> anyhow::Result<()> {
+fn show(ctx: &Context) -> anyhow::Result<()> {
     let general = resources::dialog(IDD_SETTINGS_GENERAL)?;
     let search = resources::dialog(IDD_SETTINGS_SEARCH)?;
     let state = Dialog {
-        initial: read(|a| a.settings.preferences),
+        ctx,
+        initial: ctx.read(|a| a.settings.preferences),
         pages: Cell::new([ptr::null_mut(); 2]),
         failure: RefCell::new(None),
     };
@@ -58,27 +61,27 @@ fn show() -> anyhow::Result<()> {
         page.Anonymous1.pResource = template.as_ptr().cast_mut().cast();
         page.pszTitle = resources::wide_text(title).as_ptr();
         page.pfnDlgProc = Some(page_proc);
-        page.lParam = &state as *const Dialog as isize;
+        page.lParam = &state as *const Dialog<'_> as isize;
     }
     let mut header: PROPSHEETHEADERW_V2 = unsafe { std::mem::zeroed() };
     header.dwSize = size_of::<PROPSHEETHEADERW_V2>() as u32;
     header.dwFlags = PSH_PROPSHEETPAGE | PSH_NOAPPLYNOW | PSH_NOCONTEXTHELP | PSH_USECALLBACK;
-    header.hwndParent = read(|a| a.frame);
+    header.hwndParent = ctx.read(|a| a.frame);
     header.hInstance = instance();
     header.pszCaption = resources::wide_text(IDS_SETTINGS).as_ptr();
     header.nPages = pages.len() as u32;
     header.Anonymous3.ppsp = pages.as_mut_ptr();
     header.pfnCallback = Some(sheet_callback);
     let baseline = vec![template_size(general)?, template_size(search)?];
-    let previous = CURRENT.with(|current| current.replace(&state));
-    let result = property_sheet::show(&mut header, dpi(), baseline);
+    let previous = CURRENT.with(|current| current.replace(&state as *const Dialog as *const ()));
+    let result = property_sheet::show(&mut header, ctx.dpi(), baseline);
     CURRENT.with(|current| current.set(previous));
     result?;
     if let Some(error) = state.failure.into_inner() {
         return Err(error);
     }
-    if state.initial.categories != read(|a| a.settings.preferences.categories) {
-        catalog::search();
+    if state.initial.categories != ctx.read(|a| a.settings.preferences.categories) {
+        catalog::search(ctx);
     }
     Ok(())
 }
@@ -86,7 +89,7 @@ fn show() -> anyhow::Result<()> {
 unsafe extern "system" fn sheet_callback(hwnd: HWND, message: u32, _l: isize) -> i32 {
     unsafe {
         CURRENT.with(|current| {
-            let Some(state) = current.get().as_ref() else {
+            let Some(state) = (current.get() as *const Dialog).as_ref() else {
                 return 0;
             };
             if message == PSCB_INITIALIZED {
@@ -108,7 +111,7 @@ unsafe extern "system" fn page_proc(hwnd: HWND, message: u32, _w: usize, l: isiz
     unsafe {
         if message == WM_INITDIALOG {
             let page = &*(l as *const PROPSHEETPAGEW);
-            let state = &*(page.lParam as *const Dialog);
+            let state = &*(page.lParam as *const Dialog<'_>);
             let language = GetDlgItem(hwnd, SETTINGS_LANGUAGE as i32);
             let mut pages = state.pages.get();
             if !language.is_null() {
@@ -168,7 +171,7 @@ unsafe extern "system" fn sheet_proc(
     data: usize,
 ) -> isize {
     unsafe {
-        let state = &*(data as *const Dialog);
+        let state = &*(data as *const Dialog<'_>);
         match message {
             WM_COMMAND if w as u16 == IDOK as u16 => match commit(state) {
                 Ok(()) => {}
@@ -191,7 +194,7 @@ unsafe extern "system" fn sheet_proc(
     }
 }
 
-fn commit(state: &Dialog) -> anyhow::Result<()> {
+fn commit(state: &Dialog<'_>) -> anyhow::Result<()> {
     let [general, search] = state.pages.get();
     anyhow::ensure!(
         !general.is_null() && !search.is_null(),
@@ -235,10 +238,12 @@ fn commit(state: &Dialog) -> anyhow::Result<()> {
         categories,
         theme,
     };
-    write(|a| a.settings.set_preferences(&a.config, preferences))?;
+    state
+        .ctx
+        .write(|a| a.settings.set_preferences(&a.config, preferences))?;
     if state.initial.theme != theme {
         crate::theme::set_mode(theme as u32);
-        send(read(|a| a.frame), WM_THEMECHANGED, 0, 0);
+        send(state.ctx.read(|a| a.frame), WM_THEMECHANGED, 0, 0);
     }
     Ok(())
 }

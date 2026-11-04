@@ -1,4 +1,4 @@
-use super::{dpi, read};
+use crate::app::context::Context;
 use crate::{
     dialog::{MOVE_X, MOVE_Y, SIZE_X, SIZE_Y, modal},
     icons::WindowIcons,
@@ -7,10 +7,10 @@ use crate::{
 };
 use std::cell::RefCell;
 
-pub(super) fn search() -> anyhow::Result<()> {
+pub(super) fn search(ctx: &Context) -> anyhow::Result<()> {
     modal::show(
-        read(|a| a.frame),
-        dpi(),
+        ctx.read(|a| a.frame),
+        ctx.dpi(),
         resources::dialog(IDD_SEARCH_HELP)?,
         &[
             (SEARCH_HELP_TEXT as i32, SIZE_X | SIZE_Y),
@@ -28,11 +28,11 @@ pub(super) fn search() -> anyhow::Result<()> {
     )
 }
 
-pub(super) fn about() -> anyhow::Result<()> {
+pub(super) fn about(ctx: &Context) -> anyhow::Result<()> {
     let icons = RefCell::new(None);
     modal::show(
-        read(|a| a.frame),
-        dpi(),
+        ctx.read(|a| a.frame),
+        ctx.dpi(),
         resources::dialog(IDD_ABOUT)?,
         &[],
         &|hwnd, message, w, l| {
@@ -40,7 +40,7 @@ pub(super) fn about() -> anyhow::Result<()> {
                 let value = if message == WM_DPICHANGED {
                     (w & 0xffff) as u32
                 } else {
-                    dpi().window(hwnd)
+                    ctx.dpi().window(hwnd)
                 };
                 let new_icons = WindowIcons::load(value)?;
                 new_icons.apply(hwnd);

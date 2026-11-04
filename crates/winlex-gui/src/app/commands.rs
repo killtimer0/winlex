@@ -1,5 +1,6 @@
 //! Frame menu commands and their enabled/checked state.
-use super::{catalog, help, history, panel, read, settings, sidebar, status, tools, workspace};
+use super::{catalog, help, history, panel, settings, sidebar, status, tools, workspace};
+use crate::app::context::Context;
 use crate::{layout::Arrangement, native::*, resources::*};
 use windows_sys::Win32::System::SystemServices::{
     APPCOMMAND_BROWSER_BACKWARD, APPCOMMAND_BROWSER_FORWARD,
@@ -9,10 +10,10 @@ fn is_topmost(hwnd: HWND) -> bool {
     unsafe { GetWindowLongW(hwnd, GWL_EXSTYLE) as u32 & WS_EX_TOPMOST != 0 }
 }
 
-pub(super) fn command(id: u16) -> bool {
+pub(super) fn command(ctx: &Context, id: u16) -> bool {
     if let Some(direction) = history::Direction::from_command(id) {
-        status::begin_operation();
-        history::navigate(direction);
+        status::begin_operation(ctx);
+        history::navigate(ctx, direction);
         return true;
     }
     if matches!(
@@ -34,17 +35,17 @@ pub(super) fn command(id: u16) -> bool {
             | MAXIMIZE
             | ALWAYS_ON_TOP
     ) {
-        status::begin_operation();
+        status::begin_operation(ctx);
     }
     match id {
         FIND_DOCUMENT | FIND_NEXT | FIND_PREVIOUS => {
-            if let Some(document) = workspace::content(workspace::active()) {
+            if let Some(document) = workspace::content(ctx, workspace::active(ctx)) {
                 document.command(id, 0);
             }
         }
-        SETTINGS => settings::open(),
+        SETTINGS => settings::open(ctx),
         ALWAYS_ON_TOP => {
-            let frame = read(|a| a.frame);
+            let frame = ctx.read(|a| a.frame);
             unsafe {
                 let after = if is_topmost(frame) {
                     HWND_NOTOPMOST
@@ -61,50 +62,52 @@ pub(super) fn command(id: u16) -> bool {
                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
                 ) == 0
                 {
-                    status::report::<()>(Err(error("Set window topmost state")));
+                    status::report::<()>(ctx, Err(error("Set window topmost state")));
                 }
             }
-            update_commands();
+            update_commands(ctx);
         }
         ABOUT => {
-            status::report(help::about());
+            status::report(ctx, help::about(ctx));
         }
         SEARCH_HELP => {
-            status::report(help::search());
+            status::report(ctx, help::search(ctx));
         }
         FOCUS_NEXT_REGION => {
             let h = unsafe { GetFocus() };
-            let d = workspace::active();
+            let d = workspace::active(ctx);
             if !d.is_null() && (h == d || unsafe { IsChild(d, h) } != 0) {
-                sidebar::focus();
-            } else if h == read(|a| a.workspace.tabs) {
+                sidebar::focus(ctx);
+            } else if h == ctx.read(|a| a.workspace.tabs) {
                 if d.is_null() {
-                    sidebar::focus();
-                } else if let Some(document) = workspace::content(d) {
+                    sidebar::focus(ctx);
+                } else if let Some(document) = workspace::content(ctx, d) {
                     document.focus();
                 }
             } else {
-                focus(read(|a| a.workspace.tabs));
+                focus(ctx.read(|a| a.workspace.tabs));
             }
         }
-        CLOSE => workspace::close_document(workspace::active()),
-        OPEN_RESULT if read(|a| a.sidebar.active == panel::PanelId::Tools) => {
-            tools::selected(false)
+        CLOSE => workspace::close_document(ctx, workspace::active(ctx)),
+        OPEN_RESULT if ctx.read(|a| a.sidebar.active == panel::PanelId::Tools) => {
+            tools::selected(ctx, false)
         }
-        OPEN_NEW if read(|a| a.sidebar.active == panel::PanelId::Tools) => tools::selected(true),
-        OPEN_RESULT => catalog::open_selected(catalog::Open::Pin),
-        OPEN_NEW => catalog::open_selected(catalog::Open::New),
+        OPEN_NEW if ctx.read(|a| a.sidebar.active == panel::PanelId::Tools) => {
+            tools::selected(ctx, true)
+        }
+        OPEN_RESULT => catalog::open_selected(ctx, catalog::Open::Pin),
+        OPEN_NEW => catalog::open_selected(ctx, catalog::Open::New),
         EXIT => {
-            send(read(|a| a.frame), WM_CLOSE, 0, 0);
+            send(ctx.read(|a| a.frame), WM_CLOSE, 0, 0);
         }
-        COLUMNS => workspace::set_arrangement(Arrangement::Columns),
-        ROWS => workspace::set_arrangement(Arrangement::Rows),
-        FREE => workspace::set_arrangement(Arrangement::Free),
+        COLUMNS => workspace::set_arrangement(ctx, Arrangement::Columns),
+        ROWS => workspace::set_arrangement(ctx, Arrangement::Rows),
+        FREE => workspace::set_arrangement(ctx, Arrangement::Free),
         MAXIMIZE => {
-            let h = workspace::active();
+            let h = workspace::active(ctx);
             if !h.is_null() {
-                workspace::set_maximized(true);
-                send(read(|a| a.workspace.mdi), WM_MDIMAXIMIZE, h as usize, 0);
+                workspace::set_maximized(ctx, true);
+                send(ctx.read(|a| a.workspace.mdi), WM_MDIMAXIMIZE, h as usize, 0);
             }
         }
         _ => return false,
@@ -112,9 +115,10 @@ pub(super) fn command(id: u16) -> bool {
     true
 }
 
-pub(super) fn update_commands() {
-    let enabled = workspace::content(workspace::active()).is_some_and(|c| c.supports_find());
-    let frame = read(|a| a.frame);
+pub(super) fn update_commands(ctx: &Context) {
+    let enabled =
+        workspace::content(ctx, workspace::active(ctx)).is_some_and(|c| c.supports_find());
+    let frame = ctx.read(|a| a.frame);
     if frame.is_null() {
         return;
     }

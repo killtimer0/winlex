@@ -1,5 +1,6 @@
 //! Window placement and settings commands, using the single process configuration root.
-use super::{catalog, dpi, read, write};
+use super::catalog;
+use crate::app::context::Context;
 use crate::{config::Config, layout, native::*, resources::Language};
 use std::ptr;
 use winlex_core::{Architecture, EntityCategory};
@@ -239,9 +240,9 @@ impl Settings {
     }
 }
 
-pub(super) fn restore_window(hwnd: HWND) {
-    let value = dpi().window(hwnd);
-    let saved = read(|a| a.settings.window);
+pub(super) fn restore_window(ctx: &Context, hwnd: HWND) {
+    let value = ctx.dpi().window(hwnd);
+    let saved = ctx.read(|a| a.settings.window);
     let mut bounds = crate::native::bounds(hwnd, ptr::null_mut());
     let (mut width, mut height) = match saved {
         Some(w) => {
@@ -269,7 +270,7 @@ pub(super) fn restore_window(hwnd: HWND) {
     let _ = set_bounds(hwnd, layout::rect(bounds.left, bounds.top, width, height));
 }
 
-pub(super) fn save_window(hwnd: HWND) -> anyhow::Result<()> {
+pub(super) fn save_window(ctx: &Context, hwnd: HWND) -> anyhow::Result<()> {
     unsafe {
         let placement = window_placement(hwnd, "Read window placement")?;
         let mut r = placement.rcNormalPosition;
@@ -282,10 +283,10 @@ pub(super) fn save_window(hwnd: HWND) -> anyhow::Result<()> {
             r.top += y;
             r.bottom += y;
         }
-        let dpi = dpi().window(hwnd);
+        let dpi = ctx.dpi().window(hwnd);
         let maximized = IsZoomed(hwnd) != 0
             || (IsIconic(hwnd) != 0 && placement.flags & WPF_RESTORETOMAXIMIZED != 0);
-        read(|a| {
+        ctx.read(|a| {
             let key = a.config.write_key()?;
             let bytes: Vec<_> = [
                 r.left,

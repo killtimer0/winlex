@@ -61,13 +61,19 @@ impl Find {
             super::super::bind(h, font);
         }
     }
-    pub fn layout(&self, area: &mut RECT, m: &layout::Metrics, positions: &mut Vec<(HWND, RECT)>) {
+    pub fn layout(
+        &self,
+        ctx: &crate::app::context::Context,
+        area: &mut RECT,
+        m: &layout::Metrics,
+        positions: &mut Vec<(HWND, RECT)>,
+    ) {
         if !self.visible.get() {
             return;
         }
         let gap = m.px(4);
         let label_width = m.text_width(&text_wide(self.controls[0])) + gap;
-        let edit_height = m.edit_height(self.controls[1], super::super::dpi());
+        let edit_height = m.edit_height(self.controls[1], ctx.dpi());
         let buttons = &self.controls[2..5];
         let button = m.button_group_size(buttons);
         let actions_width = (button.cx + gap) * buttons.len() as i32;
