@@ -3,7 +3,7 @@ use serde_json::Value;
 use std::{ffi::OsString, io::Write, path::PathBuf};
 use winlex_core::{Architecture, Catalog, SearchMode, SearchOptions};
 
-pub(crate) const SCHEMA: &str = "winlex-cli-7";
+pub(crate) const SCHEMA: &str = "winlex-cli-1";
 pub const HELP: &str = r#"Winlex - offline Win32 metadata queries
 
 Usage: winlex FILE... COMMAND [QUERY] [options]

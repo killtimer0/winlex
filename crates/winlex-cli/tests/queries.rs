@@ -48,7 +48,6 @@ fn search_mode_flags_are_exclusive_and_only_apply_to_search() {
     ] {
         let (code, result, _) = cli(&arguments);
         assert_eq!(code, 2, "{arguments:?}");
-        assert_eq!(result["schema"], "winlex-cli-7");
         assert_eq!(result["ok"], false);
     }
     for (query, flag) in [
@@ -101,7 +100,6 @@ fn conditions_find_real_constants_and_report_input_spans() {
 #[test]
 fn guid_fragments_bytes_and_numeric_radices_share_the_cli_search_contract() {
     let (_, expected, _) = cli(&["search", "2147483648", "--value", "--limit", "1000"]);
-    assert_eq!(expected["schema"], "winlex-cli-7");
     assert_eq!(expected["sources"][0]["id"], 0);
     for query in [
         "+0x80000000",
@@ -229,17 +227,18 @@ fn cli(args: &[&str]) -> (u8, Value, String) {
     let mut argv = vec![input().into_os_string(), OsString::from("--json")];
     argv.extend(args.iter().map(OsString::from));
     let (code, out, err) = invoke(argv);
-    (
-        code,
-        serde_json::from_str(&out).expect("exactly one JSON response"),
-        err,
-    )
+    let response: Value = serde_json::from_str(&out).expect("exactly one JSON response");
+    assert_eq!(response["schema"], "winlex-cli-1", "{args:?}");
+    (code, response, err)
 }
 
 #[test]
 fn cli_errors_are_machine_readable() {
     for (args, code) in [
+        (vec!["summary", "--unknown"], 2),
         (vec!["layout", "OPENFILENAMEW"], 2),
+        (vec!["vtable", "IStream"], 2),
+        (vec!["references", "LPOFNHOOKPROC"], 2),
         (vec!["search", "x", "--limit", "1001"], 2),
         (vec!["show", "0x02ffffff"], 3),
         (vec!["show", "OPENFILENAMEW"], 3),
@@ -249,7 +248,41 @@ fn cli_errors_are_machine_readable() {
         assert_eq!(c, code);
         assert_eq!(v["ok"], false);
         assert!(e.is_empty());
+        assert_eq!(v.as_object().unwrap().len(), 3);
         assert!(v["error"]["code"].is_string());
+    }
+}
+
+#[test]
+fn error_code_json_uses_the_same_schema_without_metadata() {
+    for (args, expected) in [
+        (vec!["error-code", "5", "--scope", "win32", "--json"], 0),
+        (vec!["error-code", "invalid", "--json"], 2),
+        (
+            vec![
+                "error-code",
+                "5",
+                "--module",
+                "winlex-missing-message-module-for-schema-test.dll",
+                "--json",
+            ],
+            3,
+        ),
+    ] {
+        let (code, out, err) = invoke(args.iter().map(OsString::from));
+        assert_eq!(code, expected, "{args:?}: {out}");
+        assert!(err.is_empty());
+        let response: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(response["schema"], "winlex-cli-1");
+        assert_eq!(response["ok"], expected == 0);
+        if expected == 2 {
+            assert_eq!(response.as_object().unwrap().len(), 3);
+            assert_eq!(response["error"]["code"], "invalid_arguments");
+        } else {
+            assert_eq!(response.as_object().unwrap().len(), 4);
+            assert_eq!(response["command"], "error-code");
+            assert!(response["result"].is_object());
+        }
     }
 }
 
@@ -551,7 +584,6 @@ fn json_commands_preserve_the_envelope_and_paged_result_shapes() {
         for field in ["schema", "ok", "sources", "command", "result"] {
             assert!(object.contains_key(field), "{args:?}: {field}");
         }
-        assert_eq!(response["schema"], "winlex-cli-7");
         assert_eq!(response["ok"], true);
         assert_eq!(response["command"], args[0]);
         assert_eq!(response["sources"].as_array().unwrap().len(), 1);

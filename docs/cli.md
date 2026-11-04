@@ -98,13 +98,13 @@ winlex Windows.Win32.winmd search --where 'value = nan or value = inf'
 默认输出文本；`--json` 输出一份完整 JSON 至 stdout：
 
 ```json
-{"schema":"winlex-cli-7","ok":true,"sources":[],"command":"show","result":{}}
+{"schema":"winlex-cli-1","ok":true,"sources":[],"command":"show","result":{}}
 ```
 
 失败时：
 
 ```json
-{"schema":"winlex-cli-7","ok":false,"error":{"code":"query_error","message":"..."}}
+{"schema":"winlex-cli-1","ok":false,"error":{"code":"query_error","message":"..."}}
 ```
 
 退出码：0成功、2参数错误、3输入或查询失败、4输出失败。文本模式错误写入 stderr。
