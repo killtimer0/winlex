@@ -5,7 +5,7 @@ use crate::{
     layout,
     native::*,
     resources::{self, *},
-    tasks::ToolJob,
+    tasks::Job,
 };
 use std::{
     cell::{Cell, RefCell},
@@ -237,10 +237,10 @@ impl View {
         ids.push(resources::interface_langid());
         self.set_languages(ids, preserve);
     }
-    fn submit(&self, job: ToolJob) -> anyhow::Result<()> {
+    fn submit(&self, job: Job) -> anyhow::Result<()> {
         super::super::write(|a| {
             let ticket = a.session.ticket();
-            a.tool_worker.replace(None, ticket, job)
+            a.worker.replace(None, ticket, job)
         })
     }
     fn refresh_module_languages(&self) {
@@ -251,7 +251,7 @@ impl View {
         if path.as_os_str().is_empty() {
             return;
         }
-        if let Err(error) = self.submit(ToolJob::ErrorCodeLanguages {
+        if let Err(error) = self.submit(Job::ErrorCodeLanguages {
             document: self.id,
             path,
         }) {
@@ -273,7 +273,7 @@ impl View {
             }
         };
         let revision = self.revision.get();
-        match self.submit(ToolJob::ErrorCode {
+        match self.submit(Job::ErrorCode {
             document: self.id,
             revision,
             request,

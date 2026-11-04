@@ -42,6 +42,15 @@ pub enum Job {
         entity: EntityId,
         arch: Architecture,
     },
+    ErrorCode {
+        document: u64,
+        revision: u64,
+        request: winlex_core::tools::error_code::Request,
+    },
+    ErrorCodeLanguages {
+        document: u64,
+        path: PathBuf,
+    },
 }
 pub enum Completion {
     Loaded {
@@ -61,21 +70,6 @@ pub enum Completion {
         document: u64,
         result: anyhow::Result<crate::rich_text::Content>,
     },
-}
-
-pub enum ToolJob {
-    ErrorCode {
-        document: u64,
-        revision: u64,
-        request: winlex_core::tools::error_code::Request,
-    },
-    ErrorCodeLanguages {
-        document: u64,
-        path: PathBuf,
-    },
-}
-
-pub enum ToolCompletion {
     ErrorCodeQuery {
         document: u64,
         revision: u64,
@@ -128,25 +122,18 @@ pub fn run(job: Job, ticket: &Ticket, publish: &dyn Fn(Completion) -> anyhow::Re
             document,
             result: winlex_format::declaration::render(&catalog, entity, arch).map(Into::into),
         },
-    };
-    let _ = publish(completion);
-}
-
-pub fn run_tool(job: ToolJob, _: &Ticket, publish: &dyn Fn(ToolCompletion) -> anyhow::Result<()>) {
-    use winlex_core::tools::error_code;
-    let completion = match job {
-        ToolJob::ErrorCode {
+        Job::ErrorCode {
             document,
             revision,
             request,
-        } => ToolCompletion::ErrorCodeQuery {
+        } => Completion::ErrorCodeQuery {
             document,
             revision,
-            result: error_code::query(&request),
+            result: winlex_core::tools::error_code::query(&request),
         },
-        ToolJob::ErrorCodeLanguages { document, path } => ToolCompletion::ErrorCodeLanguages {
+        Job::ErrorCodeLanguages { document, path } => Completion::ErrorCodeLanguages {
             document,
-            result: error_code::module_languages(&path),
+            result: winlex_core::tools::error_code::module_languages(&path),
             path,
         },
     };
