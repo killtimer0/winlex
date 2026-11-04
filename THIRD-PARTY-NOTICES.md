@@ -3,7 +3,7 @@
 Third-party components retain their own licenses. Cargo dependency versions are
 recorded in `Cargo.lock`; source packages and their original copyright and license
 texts are available from the linked crates.io pages. The list below includes
-normal and build dependencies for Windows x86/x64, not just runtime libraries.
+normal and build dependencies for Windows x86/x64/ARM64, not just runtime libraries.
 When distributing binaries, retain the applicable copyright notices and license
 texts alongside this document.
 
@@ -14,7 +14,7 @@ texts alongside this document.
 | [anyhow](https://crates.io/crates/anyhow), [block-buffer](https://crates.io/crates/block-buffer), [cfg-if](https://crates.io/crates/cfg-if), [cpufeatures](https://crates.io/crates/cpufeatures), [crypto-common](https://crates.io/crates/crypto-common), [digest](https://crates.io/crates/digest) | MIT OR Apache-2.0 |
 | [itoa](https://crates.io/crates/itoa), [proc-macro2](https://crates.io/crates/proc-macro2), [quote](https://crates.io/crates/quote), [repc](https://crates.io/crates/repc), [repc-impl](https://crates.io/crates/repc-impl) | MIT OR Apache-2.0 |
 | [serde](https://crates.io/crates/serde), [serde_core](https://crates.io/crates/serde_core), [serde_derive](https://crates.io/crates/serde_derive), [serde_json](https://crates.io/crates/serde_json), [sha1](https://crates.io/crates/sha1), [syn](https://crates.io/crates/syn), [typenum](https://crates.io/crates/typenum), [version_check](https://crates.io/crates/version_check) | MIT OR Apache-2.0 |
-| [windows](https://crates.io/crates/windows), [windows-core](https://crates.io/crates/windows-core), [windows-implement](https://crates.io/crates/windows-implement), [windows-interface](https://crates.io/crates/windows-interface), [windows-metadata](https://crates.io/crates/windows-metadata), [windows-result](https://crates.io/crates/windows-result), [windows-strings](https://crates.io/crates/windows-strings), [windows-sys](https://crates.io/crates/windows-sys), [windows-targets](https://crates.io/crates/windows-targets), [windows_i686_msvc](https://crates.io/crates/windows_i686_msvc), [windows_x86_64_msvc](https://crates.io/crates/windows_x86_64_msvc) | MIT OR Apache-2.0 |
+| [windows](https://crates.io/crates/windows), [windows-core](https://crates.io/crates/windows-core), [windows-implement](https://crates.io/crates/windows-implement), [windows-interface](https://crates.io/crates/windows-interface), [windows-metadata](https://crates.io/crates/windows-metadata), [windows-result](https://crates.io/crates/windows-result), [windows-strings](https://crates.io/crates/windows-strings), [windows-sys](https://crates.io/crates/windows-sys), [windows-targets](https://crates.io/crates/windows-targets), [windows_aarch64_msvc](https://crates.io/crates/windows_aarch64_msvc), [windows_i686_msvc](https://crates.io/crates/windows_i686_msvc), [windows_x86_64_msvc](https://crates.io/crates/windows_x86_64_msvc) | MIT OR Apache-2.0 |
 | [generic-array](https://crates.io/crates/generic-array), [winnow](https://crates.io/crates/winnow), [zmij](https://crates.io/crates/zmij) | MIT |
 | [memchr](https://crates.io/crates/memchr) | Unlicense OR MIT |
 | [unicode-ident](https://crates.io/crates/unicode-ident) | (MIT OR Apache-2.0) AND Unicode-3.0 |
@@ -35,6 +35,9 @@ for incorporated components. The matching Rust installation provides these in
 `share/doc/rust/COPYRIGHT-library.html` and `share/doc/rust/licenses/`.
 
 ## Windows compatibility libraries
+
+x86/x64 use the compatibility libraries below. ARM64 instead links the static
+MSVC CRT supplied by Visual Studio, subject to the corresponding Microsoft terms.
 
 - [YY-Thunks 1.2.3](https://github.com/Chuyu-Team/YY-Thunks/tree/v1.2.3):
   Copyright (c) 2018 Chuyu-Team, MIT. The linked compatibility objects come from

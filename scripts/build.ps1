@@ -1,18 +1,26 @@
+#requires -Version 7.2
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory=$true)][string]$YyThunksObject,
+    [string]$YyThunksObject,
     [Parameter(Mandatory=$true)][string]$LinkExe,
-    [Parameter(Mandatory=$true)][string]$VcLtlRoot,
-    [ValidateSet('x86','x64')][string]$Architecture = 'x86',
-    [ValidateSet('Debug','Release','Dist')][string]$Configuration = 'Release',
+    [string]$VcLtlRoot,
+    [ValidateSet('x86','x64','arm64')][string]$Architecture = 'x86',
+    [ValidateSet('Debug','Release','Dist')][string]$Configuration = 'Debug',
     [string]$TargetDir,
     [string]$RcExe
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
-$object = (Resolve-Path $YyThunksObject).Path
 $linker = (Resolve-Path $LinkExe).Path
-$ltlRoot = (Resolve-Path $VcLtlRoot).Path
+$object = $null
+$ltlRoot = $null
+if ($Architecture -ne 'arm64') {
+    if (-not $YyThunksObject -or -not $VcLtlRoot) {
+        throw 'Specify -YyThunksObject and -VcLtlRoot for x86 and x64 builds.'
+    }
+    $object = (Resolve-Path $YyThunksObject).Path
+    $ltlRoot = (Resolve-Path $VcLtlRoot).Path
+}
 if (-not $RcExe) {
     $sdkBins = @(
         $env:WindowsSdkVerBinPath
@@ -48,7 +56,11 @@ if ((Split-Path $linkerDirectory -Leaf) -ine $Architecture -or
     (Split-Path (Split-Path $linkerDirectory -Parent) -Leaf) -ine 'Hostx64') {
     throw "Use the Hostx64/$Architecture Microsoft linker for this target."
 }
-$target = if ($Architecture -eq 'x86') { 'i686-pc-windows-msvc' } else { 'x86_64-pc-windows-msvc' }
+$target = switch ($Architecture) {
+    'x86' { 'i686-pc-windows-msvc' }
+    'x64' { 'x86_64-pc-windows-msvc' }
+    'arm64' { 'aarch64-pc-windows-msvc' }
+}
 $libdir = & rustc --print target-libdir --target $target
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path $libdir)) {
     throw "Rust standard library for $target is missing. Install a Rust MSVC toolchain and this target first."
@@ -107,7 +119,14 @@ try {
     }
     $compatibility = Get-Content (Join-Path $buildOutputs[$packageId] 'compatibility.json') -Raw | ConvertFrom-Json
     if ($compatibility.target -ne $target) { throw 'Build compatibility metadata target mismatch.' }
-    $ltlLib = Join-Path $ltlRoot "TargetPlatform/$($compatibility.vc_ltl_platform)"
+    if ($Architecture -eq 'arm64') {
+        if ($compatibility.vc_ltl_platform -or $compatibility.minimum_windows -ne '10.0.17763.0') {
+            throw 'Build compatibility metadata does not match the ARM64 policy.'
+        }
+    } else {
+        if (-not $compatibility.vc_ltl_platform) { throw 'Build compatibility metadata is missing the VC-LTL platform.' }
+        $ltlLib = Join-Path $ltlRoot "TargetPlatform/$($compatibility.vc_ltl_platform)"
+    }
     foreach ($binary in @('winlex', 'winlex-gui')) {
         $exe = $executables[$binary]
         if (-not $exe) { throw "Cargo did not report an executable for $binary" }
@@ -119,16 +138,20 @@ try {
             linker_version = (Get-Item $linker).VersionInfo.FileVersion
             resource_compiler = $rc
             resource_compiler_version = (Get-Item $rc).VersionInfo.FileVersion
-            thunks_object = $object
-            thunks_sha256 = (Get-FileHash $object -Algorithm SHA256).Hash.ToLowerInvariant()
             minimum_windows = $compatibility.minimum_windows
-            crt = 'VC-LTL5 system msvcrt'
-            vc_ltl_root = $ltlRoot
-            vc_ltl_libraries = @(Get-ChildItem "$ltlLib/*.lib" | ForEach-Object {
-                @{ name = $_.Name; sha256 = (Get-FileHash $_.FullName).Hash.ToLowerInvariant() }
-            })
             executable = $exe
             executable_sha256 = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLowerInvariant()
+        }
+        if ($Architecture -eq 'arm64') {
+            $report.crt = 'static MSVC CRT'
+        } else {
+            $report.thunks_object = $object
+            $report.thunks_sha256 = (Get-FileHash $object -Algorithm SHA256).Hash.ToLowerInvariant()
+            $report.crt = 'VC-LTL5 system msvcrt'
+            $report.vc_ltl_root = $ltlRoot
+            $report.vc_ltl_libraries = @(Get-ChildItem "$ltlLib/*.lib" | ForEach-Object {
+                @{ name = $_.Name; sha256 = (Get-FileHash $_.FullName).Hash.ToLowerInvariant() }
+            })
         }
         $report | ConvertTo-Json -Depth 5 | Set-Content "$exe.build.json" -Encoding utf8
         Write-Host "Built $exe"

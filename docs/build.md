@@ -3,6 +3,7 @@
 ## 环境与依赖
 
 - Windows 开发机，Rust MSVC 工具链。
+- PowerShell 7.2+（`pwsh`）；构建与打包脚本不使用 Windows PowerShell 5.1。
 - Visual Studio C++ 工具和 Windows SDK。
 - Python 3；下载构建依赖另需 PATH 中的 `7z` 或 `7zz`。
 - 独立读取器验证需 .NET SDK 10；ABI 验证另需 Clang。
@@ -29,6 +30,12 @@ $link = Join-Path $env:VCToolsInstallDir 'bin/Hostx64/x86/link.exe'
 ```
 
 x64 构建将架构、链接器和 OBJ 路径改为 x64。
+ARM64 需要 Rust 的 `aarch64-pc-windows-msvc` target 及 Visual Studio C++ ARM64 生成工具，使用 `Hostx64/arm64/link.exe`；不传 YY-Thunks 和 VC-LTL 参数：
+
+```powershell
+$link = Join-Path $env:VCToolsInstallDir 'bin/Hostx64/arm64/link.exe'
+./scripts/build.ps1 -Architecture arm64 -Configuration Debug -LinkExe $link
+```
 开发构建使用 `-Configuration Debug`；优化版本和分发版本分别使用 `Release` 和 `Dist`。
 脚本自动查找 Microsoft `rc.exe`，也可用 `-RcExe PATH` 指定；输出目录可用 `-TargetDir PATH` 指定，否则遵循 Cargo 配置。
 构建结束后显示 `winlex.exe`、`winlex-gui.exe` 的实际路径；对应的 `.build.json` 可用于生成消息资源 fixture。
@@ -58,8 +65,9 @@ Codicon SVG 与生成的 EMF+ 位于 `crates/winlex-gui/res/codicons/`。
 |---|---|---|
 | x86 | XP RTM 5.1.2600.0 | i686-pc-windows-msvc |
 | x64 | XP x64 / Server 2003，5.2.3790 系列 | x86_64-pc-windows-msvc |
+| ARM64 | Windows 10 1809，10.0.17763.0（构建目标基线） | aarch64-pc-windows-msvc |
 
-兼容构建需要上述 YY-Thunks 和 VC-LTL5 依赖。
+x86／x64 兼容构建需要上述 YY-Thunks 和 VC-LTL5 依赖。ARM64 使用静态 MSVC CRT，不走 XP 回退链路。目标基线、交叉编译成功及目标系统实际运行验证是不同的保证；设置 PE 子系统版本本身不能证明旧系统兼容性。
 
 ## 测试与独立验证
 
