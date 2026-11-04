@@ -162,10 +162,26 @@ impl Key {
         let bytes: Vec<_> = wide(value).into_iter().flat_map(u16::to_le_bytes).collect();
         self.set(name, REG_SZ, &bytes)
     }
-    pub fn paths(&self, name: &str) -> Vec<PathBuf> {
-        self.value(name, REG_MULTI_SZ)
-            .and_then(|bytes| decode_paths(&bytes))
-            .unwrap_or_default()
+    pub fn paths_if_readable(&self, name: &str) -> Option<Vec<PathBuf>> {
+        let name_wide = wide(name);
+        let status = unsafe {
+            RegQueryValueExW(
+                self.0,
+                name_wide.as_ptr(),
+                ptr::null(),
+                ptr::null_mut(),
+                ptr::null_mut(),
+                ptr::null_mut(),
+            )
+        };
+        if status == ERROR_FILE_NOT_FOUND {
+            Some(Vec::new())
+        } else if status == ERROR_SUCCESS {
+            self.value(name, REG_MULTI_SZ)
+                .and_then(|bytes| decode_paths(&bytes))
+        } else {
+            None
+        }
     }
     pub fn set_paths(&self, name: &str, paths: &[PathBuf]) -> anyhow::Result<()> {
         let mut words = Vec::new();
@@ -287,7 +303,7 @@ mod tests {
         key.set_text("Text", "中文").unwrap();
         let loaded = one.load();
         let key = loaded.key.as_ref().unwrap();
-        assert_eq!(key.paths("Paths"), vec![path]);
+        assert_eq!(key.paths_if_readable("Paths"), Some(vec![path]));
         assert_eq!(key.number("Number"), Some(144));
         assert_eq!(key.text("Text").as_deref(), Some("中文"));
         assert!(two.load().key.is_none());
@@ -297,11 +313,23 @@ mod tests {
         let profile = Profile::new();
         let config = profile.load();
         let key = config.write_key().unwrap();
+        key.set_number("WrongType", 1).unwrap();
         key.set_bytes("Number", &[0; 4]).unwrap();
         key.set("Paths", REG_MULTI_SZ, &[1, 0]).unwrap();
         let loaded = profile.load();
+        assert_eq!(
+            loaded.key.as_ref().unwrap().paths_if_readable("Missing"),
+            Some(vec![])
+        );
+        assert_eq!(
+            loaded.key.as_ref().unwrap().paths_if_readable("WrongType"),
+            None
+        );
         assert!(loaded.key.as_ref().unwrap().number("Number").is_none());
-        assert!(loaded.key.as_ref().unwrap().paths("Paths").is_empty());
+        assert_eq!(
+            loaded.key.as_ref().unwrap().paths_if_readable("Paths"),
+            None
+        );
         key.set_number("Version", 99).unwrap();
         let future = profile.load();
         assert!(future.warning.is_some() && future.key.is_none());

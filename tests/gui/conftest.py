@@ -91,9 +91,18 @@ def profile(request):
 @pytest.fixture
 def launch(request, settings, profile):
     sessions = []
-    def start(arguments=(), dpi=None):
+    def start(arguments=(), dpi=None, *, metadata_prompt=False):
         session = Session(settings[0], profile, arguments, dpi or request.config.getoption("--dpi"))
         sessions.append(session)
+        if not metadata_prompt and not arguments and profile.get("Version") == 1 and profile.get("AutoLoad") in (None, []):
+            owner = n.api(n.user, "GetWindow", n.w.HWND, n.w.HWND, n.w.UINT)
+            prompt = n.wait(lambda: next((hwnd for hwnd in n.windows()
+                if n.class_name(hwnd) == "#32770" and n.is_visible(hwnd)
+                and owner(hwnd, win32con.GW_OWNER) == session.frame
+                and n.get_item(hwnd, win32con.IDYES) and n.get_item(hwnd, win32con.IDNO)), None),
+                "empty-startup metadata guide prompt")
+            n.post(prompt, win32con.WM_COMMAND, win32con.IDNO, 0)
+            n.wait(lambda: not n.is_window(prompt), "metadata guide prompt dismissed")
         return session
     yield start
     errors = []

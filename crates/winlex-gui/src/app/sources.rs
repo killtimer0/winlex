@@ -10,6 +10,60 @@ use crate::{
 };
 use std::{os::windows::ffi::OsStrExt, path::PathBuf};
 
+const METADATA_GUIDE: &str = "https://github.com/killtimer0/winlex/blob/main/docs/metadata.md";
+
+pub(super) fn should_prompt(command_line: &[PathBuf], saved: Option<&[PathBuf]>) -> bool {
+    command_line.is_empty() && saved.is_some_and(|paths| paths.is_empty())
+}
+
+pub(super) fn prompt_guide(ctx: &Context) {
+    let answer = unsafe {
+        MessageBoxW(
+            ctx.frame(),
+            resources::wide_text(IDS_METADATA_PROMPT).as_ptr(),
+            resources::wide_text(IDS_APP_TITLE).as_ptr(),
+            MB_YESNO | MB_ICONQUESTION,
+        )
+    };
+    if answer == IDYES {
+        open_guide(ctx);
+    }
+}
+
+fn open_guide(ctx: &Context) {
+    if open_url(ctx.frame(), METADATA_GUIDE).is_err() {
+        let result = resources::dialog(IDD_SEARCH_HELP).and_then(|template| {
+            crate::dialog::modal::show(
+                ctx.frame(),
+                ctx.dpi(),
+                template,
+                &[
+                    (
+                        SEARCH_HELP_TEXT as i32,
+                        crate::dialog::SIZE_X | crate::dialog::SIZE_Y,
+                    ),
+                    (IDOK, crate::dialog::MOVE_X | crate::dialog::MOVE_Y),
+                ],
+                &|hwnd, message, _, _| {
+                    if message == WM_INITDIALOG {
+                        set_text(hwnd, &resources::text(IDS_GET_METADATA));
+                        set_text(
+                            unsafe { GetDlgItem(hwnd, SEARCH_HELP_TEXT as i32) },
+                            &format!(
+                                "{}\r\n\r\n{}",
+                                resources::text(IDS_METADATA_BROWSER_FAILED),
+                                METADATA_GUIDE
+                            ),
+                        );
+                    }
+                    Ok(())
+                },
+            )
+        });
+        super::status::report(ctx, result);
+    }
+}
+
 #[derive(Default)]
 pub(super) struct Sources {
     rows: Vec<Row>,
@@ -187,6 +241,7 @@ pub(super) fn command(ctx: &Context, id: u16) -> bool {
     }
     match id {
         LOAD_METADATA => choose_add(ctx),
+        GET_METADATA => open_guide(ctx),
         RELOAD_SOURCE | REMOVE_SOURCE | COPY_SOURCE_PATH => {
             if let Some(path) = selected(ctx) {
                 action_path(ctx, id, path);
@@ -196,6 +251,7 @@ pub(super) fn command(ctx: &Context, id: u16) -> bool {
     }
     true
 }
+
 fn action_path(ctx: &Context, command: u16, path: PathBuf) {
     if command == COPY_SOURCE_PATH {
         super::status::report(
@@ -278,4 +334,18 @@ pub(super) fn context_menu(ctx: &Context, hwnd: HWND, location: isize) -> anyhow
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn startup_guide_requires_known_empty_configuration() {
+        let file = PathBuf::from("missing.winmd");
+        assert!(should_prompt(&[], Some(&[])));
+        assert!(!should_prompt(&[], None));
+        assert!(!should_prompt(&[], Some(std::slice::from_ref(&file))));
+        assert!(!should_prompt(&[file], Some(&[])));
+    }
 }

@@ -1,6 +1,9 @@
 LANGUAGE 9, 1
 STRINGTABLE
 BEGIN
+    IDS_GET_METADATA "Get metadata"
+    IDS_METADATA_PROMPT "No metadata sources are configured. Open the guide to getting metadata?"
+    IDS_METADATA_BROWSER_FAILED "Could not open the browser. Copy this address into your browser:"
     IDS_RESULT_OPEN "Open"
     IDS_SOURCE_STATUS "Sources: {count}"
     IDS_RESULT_NEW "Open in New Window"

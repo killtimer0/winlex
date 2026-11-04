@@ -53,11 +53,17 @@ pub fn run(
     resources::initialize(settings.preferences.language)?;
     let session = catalog::Session::new(paths.is_empty());
     let worker = crate::worker::Worker::new(crate::tasks::run)?;
-    let paths = if paths.is_empty() {
+    let saved_paths = if config.warning().is_some() {
+        None
+    } else {
         config
             .key
             .as_ref()
-            .map_or_else(Vec::new, |key| key.paths("AutoLoad"))
+            .map_or_else(|| Some(Vec::new()), |key| key.paths_if_readable("AutoLoad"))
+    };
+    let prompt = sources::should_prompt(&paths, saved_paths.as_deref());
+    let paths = if paths.is_empty() {
+        saved_paths.unwrap_or_default()
     } else {
         paths
     };
@@ -71,9 +77,13 @@ pub fn run(
         worker,
         sidebar,
     ));
-    unsafe { run_windows(&context, paths) }
+    unsafe { run_windows(&context, paths, prompt) }
 }
-unsafe fn run_windows(ctx: &Context, paths: Vec<std::path::PathBuf>) -> anyhow::Result<()> {
+unsafe fn run_windows(
+    ctx: &Context,
+    paths: Vec<std::path::PathBuf>,
+    prompt: bool,
+) -> anyhow::Result<()> {
     unsafe {
         let controls = INITCOMMONCONTROLSEX {
             dwSize: std::mem::size_of::<INITCOMMONCONTROLSEX>() as u32,
@@ -152,6 +162,9 @@ unsafe fn run_windows(ctx: &Context, paths: Vec<std::path::PathBuf>) -> anyhow::
         );
         UpdateWindow(frame);
         sidebar::focus(ctx);
+        if prompt {
+            sources::prompt_guide(ctx);
+        }
         let mut msg: MSG = std::mem::zeroed();
         loop {
             history::refresh(ctx);

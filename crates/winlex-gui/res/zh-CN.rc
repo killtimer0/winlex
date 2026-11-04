@@ -1,6 +1,9 @@
 LANGUAGE 4, 2
 STRINGTABLE
 BEGIN
+    IDS_GET_METADATA "获取元数据"
+    IDS_METADATA_PROMPT "尚未配置元数据源。是否打开获取元数据的指南？"
+    IDS_METADATA_BROWSER_FAILED "无法打开浏览器。请将此地址复制到浏览器中："
     IDS_RESULT_OPEN "打开"
     IDS_SOURCE_STATUS "来源：{count}"
     IDS_RESULT_NEW "在新窗口打开"
