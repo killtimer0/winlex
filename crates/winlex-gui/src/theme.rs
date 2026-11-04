@@ -1798,7 +1798,7 @@ mod tests {
                 default_subclass(hwnd, message, w, l)
             }
         }
-        unsafe extern "system" fn callback(hwnd: HWND, message: u32, _: isize) -> i32 {
+        unsafe extern "system" fn callback(hwnd: HWND, message: u32, _: isize, _: usize) -> i32 {
             if message == PSCB_INITIALIZED {
                 OBSERVATIONS.with(|current| unsafe {
                     if let Some(observations) = current.get().as_ref() {
@@ -1903,11 +1903,16 @@ mod tests {
             header.pszCaption = w!("Property sheet rendering contract");
             header.nPages = pages.len() as u32;
             header.Anonymous3.ppsp = pages.as_mut_ptr();
-            header.pfnCallback = Some(callback);
             set_mode(2);
             let expected = color(COLOR_BTNFACE);
             OBSERVATIONS.with(|current| current.set(&observations));
-            let result = property_sheet::show(&mut header, Dpi { mode: Mode::System }, baseline);
+            let result = property_sheet::show(
+                &mut header,
+                Dpi { mode: Mode::System },
+                baseline,
+                0,
+                Some(callback),
+            );
             OBSERVATIONS.with(|current| current.set(ptr::null()));
             SelectObject(dc, original);
             DeleteDC(dc);

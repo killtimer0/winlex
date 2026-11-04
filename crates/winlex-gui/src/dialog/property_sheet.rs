@@ -8,6 +8,8 @@ use std::{
     ptr,
 };
 
+pub type Callback = unsafe extern "system" fn(HWND, u32, isize, usize) -> i32;
+
 struct Sheet {
     dpi: Dpi,
     owner: HWND,
@@ -15,7 +17,8 @@ struct Sheet {
     pages: RefCell<Vec<HWND>>,
     layouts: RefCell<Vec<Layout>>,
     prepared: Cell<bool>,
-    callback: PFNPROPSHEETCALLBACK,
+    callback: Option<Callback>,
+    data: usize,
     failure: RefCell<Option<anyhow::Error>>,
 }
 impl Sheet {
@@ -134,6 +137,8 @@ pub fn show(
     header: &mut PROPSHEETHEADERW_V2,
     dpi: Dpi,
     baseline: Vec<SIZE>,
+    data: usize,
+    callback: Option<Callback>,
 ) -> anyhow::Result<isize> {
     anyhow::ensure!(
         header.dwFlags & PSH_MODELESS == 0 && header.nPages as usize == baseline.len(),
@@ -146,17 +151,19 @@ pub fn show(
         pages: RefCell::new(Vec::new()),
         layouts: RefCell::new(Vec::new()),
         prepared: Cell::new(false),
-        callback: header.pfnCallback,
+        callback,
+        data,
         failure: RefCell::new(None),
     };
     let _hook = CreationHook::new(dpi, header.hwndParent)?;
     let previous = CURRENT.with(|current| current.replace(&state));
     let flags = header.dwFlags;
+    let header_callback = header.pfnCallback;
     header.dwFlags |= PSH_USECALLBACK;
     header.pfnCallback = Some(sheet_callback);
     let result = unsafe { PropertySheetW(header) };
     CURRENT.with(|current| current.set(previous));
-    header.pfnCallback = state.callback;
+    header.pfnCallback = header_callback;
     header.dwFlags = flags;
     if let Some(error) = state.failure.into_inner() {
         return Err(error);
@@ -173,7 +180,7 @@ unsafe extern "system" fn sheet_callback(hwnd: HWND, message: u32, l: isize) -> 
             };
             let result = state
                 .callback
-                .map_or(0, |callback| callback(hwnd, message, l));
+                .map_or(0, |callback| callback(hwnd, message, l, state.data));
             if message == PSCB_INITIALIZED {
                 crate::theme::apply(hwnd);
                 if set_subclass(hwnd, Some(sheet_proc), 1, current.get() as usize) == 0 {

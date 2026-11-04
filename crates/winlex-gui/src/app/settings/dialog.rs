@@ -35,8 +35,6 @@ impl Dialog<'_> {
         unsafe { PostMessageW(hwnd, WM_CLOSE, 0, 0) };
     }
 }
-thread_local! { static CURRENT: Cell<*const ()> = const { Cell::new(ptr::null()) }; }
-
 pub(in super::super) fn open(ctx: &Context) {
     super::super::status::report(ctx, show(ctx));
 }
@@ -72,11 +70,9 @@ fn show(ctx: &Context) -> anyhow::Result<()> {
     header.pszCaption = resources::wide_text(IDS_SETTINGS).as_ptr();
     header.nPages = pages.len() as u32;
     header.Anonymous3.ppsp = pages.as_mut_ptr();
-    header.pfnCallback = Some(sheet_callback);
     let baseline = vec![template_size(general)?, template_size(search)?];
-    let previous = CURRENT.with(|current| current.replace(&state as *const Dialog as *const ()));
-    let result = property_sheet::show(&mut header, ctx.dpi(), baseline);
-    CURRENT.with(|current| current.set(previous));
+    let data = &state as *const Dialog<'_> as usize;
+    let result = property_sheet::show(&mut header, ctx.dpi(), baseline, data, Some(sheet_callback));
     result?;
     if let Some(error) = state.failure.into_inner() {
         return Err(error);
@@ -87,24 +83,22 @@ fn show(ctx: &Context) -> anyhow::Result<()> {
     Ok(())
 }
 
-unsafe extern "system" fn sheet_callback(hwnd: HWND, message: u32, _l: isize) -> i32 {
+unsafe extern "system" fn sheet_callback(hwnd: HWND, message: u32, _l: isize, data: usize) -> i32 {
     unsafe {
-        CURRENT.with(|current| {
-            let Some(state) = (current.get() as *const Dialog).as_ref() else {
-                return 0;
-            };
-            if message == PSCB_INITIALIZED {
-                set_text(GetDlgItem(hwnd, IDOK), &resources::text(IDS_SETTINGS_OK));
-                set_text(
-                    GetDlgItem(hwnd, IDCANCEL),
-                    &resources::text(IDS_SETTINGS_CANCEL),
-                );
-                if set_subclass(hwnd, Some(sheet_proc), 2, current.get() as usize) == 0 {
-                    state.fail(hwnd, error("Subclass settings property sheet"));
-                }
+        let Some(state) = (data as *const Dialog<'_>).as_ref() else {
+            return 0;
+        };
+        if message == PSCB_INITIALIZED {
+            set_text(GetDlgItem(hwnd, IDOK), &resources::text(IDS_SETTINGS_OK));
+            set_text(
+                GetDlgItem(hwnd, IDCANCEL),
+                &resources::text(IDS_SETTINGS_CANCEL),
+            );
+            if set_subclass(hwnd, Some(sheet_proc), 2, data) == 0 {
+                state.fail(hwnd, error("Subclass settings property sheet"));
             }
-            0
-        })
+        }
+        0
     }
 }
 
