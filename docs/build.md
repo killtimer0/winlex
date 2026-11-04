@@ -38,6 +38,7 @@ $link = Join-Path $env:VCToolsInstallDir 'bin/Hostx64/arm64/link.exe'
 ```
 开发构建使用 `-Configuration Debug`；优化版本和分发版本分别使用 `Release` 和 `Dist`。
 脚本自动查找 Microsoft `rc.exe`，也可用 `-RcExe PATH` 指定；输出目录可用 `-TargetDir PATH` 指定，否则遵循 Cargo 配置。
+手动工作流、分发打包及上传前检查见[手动构建与交付](release.md)。
 构建结束后显示 `winlex.exe`、`winlex-gui.exe` 的实际路径；对应的 `.build.json` 可用于生成消息资源 fixture。
 
 ## 独立元数据工具
@@ -80,9 +81,11 @@ cargo fmt --all --check
 cargo clippy -p winlex-core -p winlex-format -p winlex-cli --all-targets --locked -- -D warnings
 python tests/metadata/run.py
 python -m unittest discover -s tests/metadata -p test_artifacts.py
+python -m unittest discover -s tests/scripts -v
 ```
 
 `tests/metadata/run.py` 比较 Rust 读取结果与 .NET `System.Reflection.Metadata`，并验证布局、泛型及跨源引用样例。报告写入 `tmp/verify/`。
+打包契约测试默认读取标准输出目录下的 Debug 构建记录；可用 `WINLEX_PACKAGE_X86_BUILD_DIR`／`WINLEX_PACKAGE_X64_BUILD_DIR` 指定其他目录，缺少记录时跳过打包用例。工作流 YAML 验证另需 PyYAML。
 默认使用 Debug 和 Cargo 的 target、输出目录配置；可用 `--target`、`--target-dir`、`--profile` 显式选择。
 各 gate 也可独立运行，默认读取 `tmp/verify/artifacts.json` 中的可执行文件路径；用 `--artifacts PATH` 更改记录位置后，通过 `WINLEX_GATE_ARTIFACTS` 指定该记录。
 

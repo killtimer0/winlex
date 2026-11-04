@@ -48,6 +48,10 @@ MSVC CRT supplied by Visual Studio, subject to the corresponding Microsoft terms
   is EPL-2.0. The source also includes Microsoft SDK terms under
   `Sources/ucrt/Licenses/`. The libraries are linked into Winlex; their applicable
   object-level grants and GPL combination terms remain to be confirmed.
+  The upstream [EPL text](licenses/VC-LTL-LICENSE),
+  [SDK terms](licenses/VC-LTL-sdk-license.rtf) and
+  [SDK notices](licenses/VC-LTL-sdk-third-party-notices.rtf) are retained unchanged;
+  retaining these texts does not resolve the outstanding distribution questions.
 
 ## External metadata
 
