@@ -59,28 +59,28 @@ impl Sidebar {
     }
 }
 pub(super) fn active(ctx: &Context) -> PanelId {
-    ctx.read(|a| a.sidebar.active)
+    ctx.with_sidebar(|sidebar| sidebar.active)
 }
 pub(super) fn panel(ctx: &Context, id: PanelId) -> Rc<Panel> {
-    ctx.read(|a| a.sidebar.panel(id))
+    ctx.with_sidebar(|sidebar| sidebar.panel(id))
 }
 pub(super) fn owner(ctx: &Context, hwnd: HWND) -> Option<Rc<Panel>> {
-    ctx.read(|a| a.sidebar.owner(hwnd))
+    ctx.with_sidebar(|sidebar| sidebar.owner(hwnd))
 }
 pub(super) fn search(ctx: &Context) -> Option<Rc<Search>> {
-    ctx.read(|a| a.sidebar.search.clone())
+    ctx.with_sidebar(|sidebar| sidebar.search.clone())
 }
 pub(super) fn current(ctx: &Context) -> Option<Rc<Panel>> {
-    ctx.read(|a| {
-        let s = &a.sidebar;
+    ctx.with_sidebar(|sidebar| {
+        let s = &sidebar;
         (!s.collapsed).then(|| s.panel(s.active))
     })
 }
 pub(super) fn focus(ctx: &Context) {
-    let (toolbar, panel) = ctx.read(|a| {
+    let (toolbar, panel) = ctx.with_sidebar(|sidebar| {
         (
-            a.sidebar.toolbar,
-            (!a.sidebar.collapsed).then(|| a.sidebar.panel(a.sidebar.active)),
+            sidebar.toolbar,
+            (!sidebar.collapsed).then(|| sidebar.panel(sidebar.active)),
         )
     });
     if let Some(panel) = panel {
@@ -104,9 +104,9 @@ pub(super) fn create(ctx: &Context, frame: HWND) -> anyhow::Result<()> {
         )
     }?;
     let splitter = unsafe { child(frame, w!("Winlex.Splitter"), &[0], 0, 0) }?;
-    ctx.write(|a| {
-        a.sidebar.toolbar = toolbar;
-        a.sidebar.splitter = splitter;
+    ctx.with_sidebar(|sidebar| {
+        sidebar.toolbar = toolbar;
+        sidebar.splitter = splitter;
     });
     send(
         toolbar,
@@ -136,17 +136,17 @@ pub(super) fn create(ctx: &Context, frame: HWND) -> anyhow::Result<()> {
         }
     }
     let (panels, search) = panel::create(ctx, frame)?;
-    ctx.write(|a| {
-        a.sidebar.panels = panels.into();
-        a.sidebar.search = Some(search);
+    ctx.with_sidebar(|sidebar| {
+        sidebar.panels = panels.into();
+        sidebar.search = Some(search);
     });
     sync_visibility(ctx);
     Ok(())
 }
 pub(super) fn show(ctx: &Context, id: PanelId, toggle: bool) {
     super::status::begin_status(ctx, super::status::StatusContext::Catalog);
-    ctx.write(|a| {
-        let s = &mut a.sidebar;
+    ctx.with_sidebar(|sidebar| {
+        let s = &mut *sidebar;
         s.collapsed = toggle && s.active == id && !s.collapsed;
         s.active = id;
     });
@@ -155,8 +155,8 @@ pub(super) fn show(ctx: &Context, id: PanelId, toggle: bool) {
     focus(ctx);
 }
 fn sync_visibility(ctx: &Context) {
-    let (toolbar, splitter, collapsed, active, panels) = ctx.read(|a| {
-        let s = &a.sidebar;
+    let (toolbar, splitter, collapsed, active, panels) = ctx.with_sidebar(|sidebar| {
+        let s = &sidebar;
         (
             s.toolbar,
             s.splitter,
@@ -181,7 +181,7 @@ fn sync_visibility(ctx: &Context) {
 }
 pub(super) fn prepare(ctx: &Context) {
     let frame = frame::hwnd(ctx);
-    let (toolbar, panels) = ctx.read(|a| (a.sidebar.toolbar, a.sidebar.panels.clone()));
+    let (toolbar, panels) = ctx.with_sidebar(|sidebar| (sidebar.toolbar, sidebar.panels.clone()));
     let m = ctx.metrics(frame);
     bind(toolbar, m.font);
     update_images(ctx, toolbar, m.px(24));
@@ -204,12 +204,12 @@ fn update_images(ctx: &Context, toolbar: HWND, size: i32) {
         PanelId::ALL.into_iter().map(|id| id.presentation().2),
     )) {
         send(toolbar, TB_SETIMAGELIST, 0, images.handle());
-        ctx.write(|a| a.sidebar.images = Some(images));
+        ctx.with_sidebar(|sidebar| sidebar.images = Some(images));
     }
 }
 pub(super) fn recolor(ctx: &Context) {
     let frame = frame::hwnd(ctx);
-    let (toolbar, panels) = ctx.read(|a| (a.sidebar.toolbar, a.sidebar.panels.clone()));
+    let (toolbar, panels) = ctx.with_sidebar(|sidebar| (sidebar.toolbar, sidebar.panels.clone()));
     update_images(ctx, toolbar, layout::scale(24, ctx.dpi().window(frame)));
     for panel in panels {
         panel.recolor(ctx);
@@ -217,8 +217,8 @@ pub(super) fn recolor(ctx: &Context) {
 }
 pub(super) fn layout(ctx: &Context, bottom: i32, positions: &mut Vec<(HWND, RECT)>) -> i32 {
     let frame = frame::hwnd(ctx);
-    let (toolbar, splitter, width, panel) = ctx.read(|a| {
-        let s = &a.sidebar;
+    let (toolbar, splitter, width, panel) = ctx.with_sidebar(|sidebar| {
+        let s = &sidebar;
         (
             s.toolbar,
             s.splitter,
@@ -235,7 +235,7 @@ pub(super) fn layout(ctx: &Context, bottom: i32, positions: &mut Vec<(HWND, RECT
         return x;
     };
     let mut area = layout::inset(layout::rect(x, 0, width, bottom), m.px(4));
-    match ctx.read(|a| a.sidebar.active) {
+    match ctx.with_sidebar(|sidebar| sidebar.active) {
         PanelId::Search => panel::search(ctx).layout(ctx, &mut area, &m, positions),
         PanelId::Sources => m.buttons(&mut area, panel.controls[1..].iter().copied(), positions),
         PanelId::Tools => m.buttons(&mut area, panel.controls[1..].iter().copied(), positions),
@@ -245,7 +245,7 @@ pub(super) fn layout(ctx: &Context, bottom: i32, positions: &mut Vec<(HWND, RECT
     x + width + s(3)
 }
 pub(super) unsafe fn translate(ctx: &Context, frame: HWND, msg: &MSG) -> bool {
-    let (toolbar, panel) = ctx.read(|a| (a.sidebar.toolbar, a.sidebar.owner(msg.hwnd)));
+    let (toolbar, panel) = ctx.with_sidebar(|sidebar| (sidebar.toolbar, sidebar.owner(msg.hwnd)));
     (msg.hwnd == toolbar || panel.is_some()) && unsafe { IsDialogMessageW(frame, msg) != 0 }
 }
 pub(super) unsafe extern "system" fn splitter_proc(
@@ -270,7 +270,7 @@ pub(super) unsafe extern "system" fn splitter_proc(
             WM_MOUSEMOVE if GetCapture() == hwnd => {
                 let mut p = point_from_lparam(l);
                 let frame = frame::hwnd(ctx);
-                let toolbar = ctx.read(|a| a.sidebar.toolbar);
+                let toolbar = ctx.with_sidebar(|sidebar| sidebar.toolbar);
                 MapWindowPoints(hwnd, frame, &mut p, 1);
                 let x = bounds(toolbar, frame).right + layout::scale(4, ctx.dpi().window(frame));
                 let width = MulDiv(
@@ -279,7 +279,7 @@ pub(super) unsafe extern "system" fn splitter_proc(
                     ctx.dpi().window(frame) as i32,
                 )
                 .clamp(MIN_WIDTH, MAX_WIDTH);
-                ctx.write(|a| a.sidebar.width = width);
+                ctx.with_sidebar(|sidebar| sidebar.width = width);
                 super::frame::layout_frame(ctx);
                 return 0;
             }

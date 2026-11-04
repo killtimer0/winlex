@@ -20,15 +20,15 @@ struct Row {
     pub text: Vec<u16>,
 }
 pub(super) fn row(ctx: &Context, index: usize, visit: &mut dyn FnMut(&Display)) {
-    ctx.read(|a| {
-        if let Some(row) = a.sources.rows.get(index) {
+    ctx.with_sources(|sources| {
+        if let Some(row) = sources.rows.get(index) {
             visit(&row.display);
         }
     });
 }
 pub(super) fn row_text(ctx: &Context, index: usize) -> Vec<u16> {
-    ctx.read(|a| {
-        a.sources
+    ctx.with_sources(|sources| {
+        sources
             .rows
             .get(index)
             .map(|r| r.text.clone())
@@ -121,7 +121,7 @@ fn list(ctx: &Context) -> HWND {
 }
 fn selected(ctx: &Context) -> Option<PathBuf> {
     let index = crate::list::selected(list(ctx))?;
-    ctx.read(|a| a.sources.rows.get(index).map(|row| row.path.clone()))
+    ctx.with_sources(|sources| sources.rows.get(index).map(|row| row.path.clone()))
 }
 pub(super) fn update_actions(ctx: &Context) {
     let path = selected(ctx);
@@ -218,10 +218,10 @@ pub(super) fn refresh(ctx: &Context) {
     let list = list(ctx);
     let mut state = crate::list::State::capture(list);
     let rows = rows(ctx);
-    ctx.read(|a| {
+    ctx.with_sources(|sources| {
         for index in &mut state.indices {
-            if let Some(old) = a.sources.rows.get(*index as usize) {
-                let occurrence = a.sources.rows[..*index as usize]
+            if let Some(old) = sources.rows.get(*index as usize) {
+                let occurrence = sources.rows[..*index as usize]
                     .iter()
                     .filter(|row| row.path == old.path)
                     .count();
@@ -238,7 +238,7 @@ pub(super) fn refresh(ctx: &Context) {
         }
     });
     let count = rows.len();
-    ctx.write(|a| a.sources.rows = rows);
+    ctx.with_sources(|sources| sources.rows = rows);
     state.apply(list, count);
     super::sidebar::panel(ctx, super::panel::SOURCES_PANEL)
         .list

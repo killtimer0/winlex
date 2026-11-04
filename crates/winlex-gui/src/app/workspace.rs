@@ -35,15 +35,15 @@ impl Default for Workspace {
 }
 
 pub(super) fn mdi(ctx: &Context) -> HWND {
-    ctx.read(|a| a.workspace.mdi)
+    ctx.with_workspace(|workspace| workspace.mdi)
 }
 pub(super) fn tabs(ctx: &Context) -> HWND {
-    ctx.read(|a| a.workspace.tabs)
+    ctx.with_workspace(|workspace| workspace.tabs)
 }
 pub(super) fn attach(ctx: &Context, tabs: HWND, mdi: HWND) {
-    ctx.write(|a| {
-        a.workspace.tabs = tabs;
-        a.workspace.mdi = mdi;
+    ctx.with_workspace(|workspace| {
+        workspace.tabs = tabs;
+        workspace.mdi = mdi;
     });
 }
 pub(super) fn document_icons(
@@ -51,20 +51,20 @@ pub(super) fn document_icons(
     icon: crate::icons::Icon,
     dpi: u32,
 ) -> anyhow::Result<Rc<crate::icons::WindowIcons>> {
-    ctx.write(|a| a.workspace.icons.get(icon, dpi))
+    ctx.with_workspace(|workspace| workspace.icons.get(icon, dpi))
 }
 pub(super) fn history_depth(ctx: &Context) -> usize {
-    ctx.read(|a| a.workspace.history.depth())
+    ctx.with_workspace(|workspace| workspace.history.depth())
 }
 pub(super) fn with_history<T>(ctx: &Context, f: impl FnOnce(&mut history::History) -> T) -> T {
-    ctx.write(|a| f(&mut a.workspace.history))
+    ctx.with_workspace(|workspace| f(&mut workspace.history))
 }
 pub(super) fn active(ctx: &Context) -> HWND {
     let mdi = mdi(ctx);
     send(mdi, WM_MDIGETACTIVE, 0, 0) as HWND
 }
 pub(super) fn show_document(ctx: &Context, hwnd: HWND) {
-    let mdi = ctx.read(|a| a.workspace.mdi);
+    let mdi = ctx.with_workspace(|workspace| workspace.mdi);
     if unsafe { IsIconic(hwnd) } != 0 {
         send(mdi, WM_MDIRESTORE, hwnd as usize, 0);
     }
@@ -85,11 +85,11 @@ pub(super) fn keep_focus(ctx: &Context, open: impl FnOnce()) {
     }
 }
 pub(super) fn register_document(ctx: &Context, doc: Content) {
-    ctx.write(|a| a.workspace.documents.push(doc));
+    ctx.with_workspace(|workspace| workspace.documents.push(doc));
 }
 pub(super) fn unregister_document(ctx: &Context, hwnd: HWND) {
-    let removed = ctx.write(|a| {
-        let docs = &mut a.workspace.documents;
+    let removed = ctx.with_workspace(|workspace| {
+        let docs = &mut workspace.documents;
         docs.iter().position(|d| d.hwnd() == hwnd).map(|index| {
             let document = docs.remove(index);
             document.mark_closed();
@@ -102,14 +102,14 @@ pub(super) fn close_document(ctx: &Context, hwnd: HWND) {
     history::closing(ctx, || close_now(ctx, hwnd));
 }
 fn close_now(ctx: &Context, hwnd: HWND) {
-    let mdi = ctx.read(|a| a.workspace.mdi);
+    let mdi = ctx.with_workspace(|workspace| workspace.mdi);
     if content(ctx, hwnd).is_some() {
-        let tabs = ctx.read(|a| a.workspace.tabs);
+        let tabs = ctx.with_workspace(|workspace| workspace.tabs);
         let previous = unsafe { GetFocus() };
         let tab_focus = previous == tabs;
         let next = if active(ctx) == hwnd {
-            ctx.read(|a| {
-                let docs = &a.workspace.documents;
+            ctx.with_workspace(|workspace| {
+                let docs = &workspace.documents;
                 let index = docs.iter().position(|d| d.hwnd() == hwnd)?;
                 docs.get(index + 1)
                     .or_else(|| index.checked_sub(1).and_then(|i| docs.get(i)))
@@ -123,12 +123,12 @@ fn close_now(ctx: &Context, hwnd: HWND) {
             keep_focus(ctx, || show_document(ctx, next));
         }
         if tab_focus {
-            if ctx.read(|a| a.workspace.documents.is_empty()) {
+            if ctx.with_workspace(|workspace| workspace.documents.is_empty()) {
                 super::sidebar::focus(ctx);
             } else {
                 focus(tabs);
             }
-        } else if ctx.read(|a| a.workspace.documents.is_empty())
+        } else if ctx.with_workspace(|workspace| workspace.documents.is_empty())
             && (previous == hwnd || unsafe { IsWindow(previous) } == 0)
         {
             super::sidebar::focus(ctx);
@@ -149,13 +149,13 @@ pub(super) fn pin_document(ctx: &Context, hwnd: HWND) {
 }
 pub(super) fn sync_document_selection(ctx: &Context) {
     let current = active(ctx);
-    let tabs = ctx.read(|a| a.workspace.tabs);
+    let tabs = ctx.with_workspace(|workspace| workspace.tabs);
     let selected = content(ctx, current).map(|d| d.id());
     tabs::select(tabs, selected);
     super::status::refresh_status(ctx);
 }
 pub(super) fn refresh_document_tabs(ctx: &Context) {
-    let tabs = ctx.read(|a| a.workspace.tabs);
+    let tabs = ctx.with_workspace(|workspace| workspace.tabs);
     let docs = contents(ctx);
     let mut ordinals = std::collections::HashMap::new();
     let items = docs
@@ -197,8 +197,8 @@ pub(super) fn tab_notification(ctx: &Context, n: &tabs::Notification) {
         tabs::CLOSE => close_document(ctx, hwnd),
         tabs::ACTIVATE => pin_document(ctx, hwnd),
         tabs::REORDER => {
-            ctx.write(|a| {
-                let docs = &mut a.workspace.documents;
+            ctx.with_workspace(|workspace| {
+                let docs = &mut workspace.documents;
                 if let Some(index) = docs.iter().position(|d| d.id() == n.id) {
                     let doc = docs.remove(index);
                     docs.insert(n.index.min(docs.len()), doc);
@@ -238,7 +238,7 @@ pub(super) fn scale_documents(ctx: &Context) {
     let _ = place_all(&positions);
 }
 pub(super) fn capture_placements(ctx: &Context) {
-    let mdi = ctx.read(|a| a.workspace.mdi);
+    let mdi = ctx.with_workspace(|workspace| workspace.mdi);
     for doc in contents(ctx) {
         let hwnd = doc.hwnd();
         if unsafe { IsZoomed(hwnd) != 0 || IsIconic(hwnd) != 0 } {
@@ -253,7 +253,7 @@ pub(super) fn capture_placements(ctx: &Context) {
 }
 pub(super) fn set_arrangement(ctx: &Context, arrangement: Arrangement) {
     set_maximized(ctx, false);
-    let mdi = ctx.read(|a| a.workspace.mdi);
+    let mdi = ctx.with_workspace(|workspace| workspace.mdi);
     let current = active(ctx);
     if !current.is_null() && unsafe { IsZoomed(current) } != 0 {
         send(mdi, WM_MDIRESTORE, current as usize, 0);
@@ -273,7 +273,7 @@ pub(super) fn set_arrangement(ctx: &Context, arrangement: Arrangement) {
     capture_placements(ctx);
 }
 pub(super) fn set_maximized(ctx: &Context, maximized: bool) {
-    ctx.write(|a| a.workspace.maximized = maximized);
+    ctx.with_workspace(|workspace| workspace.maximized = maximized);
 }
 fn normal_placement(ctx: &Context, hwnd: HWND) -> anyhow::Result<Placement> {
     Ok(Placement {
@@ -282,9 +282,9 @@ fn normal_placement(ctx: &Context, hwnd: HWND) -> anyhow::Result<Placement> {
     })
 }
 pub(super) fn next_id(ctx: &Context) -> u64 {
-    ctx.write(|a| {
-        a.workspace.serial += 1;
-        a.workspace.serial
+    ctx.with_workspace(|workspace| {
+        workspace.serial += 1;
+        workspace.serial
     })
 }
 fn create_window(
@@ -293,7 +293,7 @@ fn create_window(
     create: Box<dyn FnOnce(HWND) -> anyhow::Result<Content>>,
     context: &str,
 ) -> anyhow::Result<HWND> {
-    let (mdi, maximized) = ctx.read(|a| (a.workspace.mdi, a.workspace.maximized));
+    let (mdi, maximized) = ctx.with_workspace(|workspace| (workspace.mdi, workspace.maximized));
     let mut init = host::Init {
         create: Some(create),
         error: None,
@@ -350,8 +350,8 @@ pub(super) fn view(ctx: &Context, hwnd: HWND) -> Option<Rc<MetadataView>> {
     content(ctx, hwnd)?.declaration()
 }
 pub(super) fn views(ctx: &Context) -> Vec<Rc<MetadataView>> {
-    ctx.read(|a| {
-        a.workspace
+    ctx.with_workspace(|workspace| {
+        workspace
             .documents
             .iter()
             .filter_map(Content::declaration)
@@ -362,11 +362,11 @@ pub(super) fn by_id(ctx: &Context, id: u64) -> Option<Rc<MetadataView>> {
     content_by_id(ctx, id)?.declaration()
 }
 pub(super) fn contents(ctx: &Context) -> Vec<Content> {
-    ctx.read(|a| a.workspace.documents.clone())
+    ctx.with_workspace(|workspace| workspace.documents.clone())
 }
 pub(super) fn content(ctx: &Context, hwnd: HWND) -> Option<Content> {
-    ctx.read(|a| {
-        a.workspace
+    ctx.with_workspace(|workspace| {
+        workspace
             .documents
             .iter()
             .find(|d| d.hwnd() == hwnd)
@@ -374,7 +374,7 @@ pub(super) fn content(ctx: &Context, hwnd: HWND) -> Option<Content> {
     })
 }
 pub(super) fn content_by_id(ctx: &Context, id: u64) -> Option<Content> {
-    ctx.read(|a| a.workspace.documents.iter().find(|d| d.id() == id).cloned())
+    ctx.with_workspace(|workspace| workspace.documents.iter().find(|d| d.id() == id).cloned())
 }
 pub(super) fn create_tool(
     ctx: &Context,

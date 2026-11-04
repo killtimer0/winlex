@@ -200,27 +200,22 @@ impl Session {
     }
 }
 pub(super) fn paths(ctx: &Context) -> Vec<PathBuf> {
-    ctx.read(|a| a.session.paths())
+    ctx.with_session(|session| session.paths())
 }
 pub(super) fn next_ticket(ctx: &Context) -> Ticket {
-    ctx.write(|a| a.session.ticket())
+    ctx.with_session(|session| session.ticket())
 }
 pub(super) fn pending(ctx: &Context, path: &std::path::Path) -> bool {
-    ctx.read(|a| a.session.pending(path))
+    ctx.with_session(|session| session.pending(path))
 }
 pub(super) fn contains_path(ctx: &Context, path: &std::path::Path) -> bool {
-    ctx.read(|a| {
-        a.session
-            .inputs()
-            .iter()
-            .any(|source| source.path() == path)
-    })
+    ctx.with_session(|session| session.inputs().iter().any(|source| source.path() == path))
 }
 pub(super) fn status(ctx: &Context) -> String {
-    ctx.read(|a| a.session.status())
+    ctx.with_session(|session| session.status())
 }
 pub(super) fn current_catalog(ctx: &Context) -> Option<Arc<Catalog>> {
-    ctx.read(|a| a.session.catalog.clone())
+    ctx.with_session(|session| session.catalog.clone())
 }
 pub(super) struct SourceState {
     pub path: PathBuf,
@@ -229,8 +224,8 @@ pub(super) struct SourceState {
     pub pending: bool,
 }
 pub(super) fn source_states(ctx: &Context) -> Vec<SourceState> {
-    ctx.read(|a| {
-        a.session
+    ctx.with_session(|session| {
+        session
             .inputs()
             .iter()
             .map(|source| {
@@ -238,18 +233,18 @@ pub(super) fn source_states(ctx: &Context) -> Vec<SourceState> {
                 SourceState {
                     path: path.to_path_buf(),
                     len: source.len(),
-                    error: a.session.source_error(path).map(str::to_owned),
-                    pending: a.session.pending(path),
+                    error: session.source_error(path).map(str::to_owned),
+                    pending: session.pending(path),
                 }
             })
             .collect()
     })
 }
 pub(super) fn reload(ctx: &Context, paths: Vec<PathBuf>, reload: Vec<PathBuf>) {
-    let (previous, ticket, job) = ctx.write(|a| a.session.begin_load(paths, reload));
+    let (previous, ticket, job) = ctx.with_session(|session| session.begin_load(paths, reload));
     let result = ctx.replace_job(previous, ticket, job);
     if let Err(e) = result {
-        ctx.write(|a| a.session.fail_load(format!("{e:#}")));
+        ctx.with_session(|session| session.fail_load(format!("{e:#}")));
     }
     super::status::refresh_status(ctx);
     super::sources::refresh(ctx);
@@ -258,9 +253,9 @@ pub(super) fn reload(ctx: &Context, paths: Vec<PathBuf>, reload: Vec<PathBuf>) {
 pub(super) fn input_changed(ctx: &Context) {
     super::status::begin_status(ctx, super::status::StatusContext::Catalog);
     let (input, composing) = super::panel::cancel_debounce(ctx);
-    let cancelled = ctx.write(|a| {
-        let cancelled = a.session.reset_search();
-        a.session.load_error = None;
+    let cancelled = ctx.with_session(|session| {
+        let cancelled = session.reset_search();
+        session.load_error = None;
         cancelled
     });
     if let Some(id) = cancelled {
@@ -272,13 +267,13 @@ pub(super) fn input_changed(ctx: &Context) {
             Ok(()) => Search::Waiting,
             Err(e) => Search::Failed(e),
         };
-        ctx.write(|a| a.session.search = state);
+        ctx.with_session(|session| session.search = state);
     }
     super::status::refresh_status(ctx);
 }
 pub(super) fn search(ctx: &Context) {
-    ctx.write(|a| {
-        a.session.load_error = None;
+    ctx.with_session(|session| {
+        session.load_error = None;
     });
     submit_search(ctx);
 }
@@ -291,8 +286,8 @@ fn submit_search(ctx: &Context) {
     let mode = super::panel::search_mode(ctx);
     let categories = settings::categories(ctx);
     let mut submitted = None;
-    let cancelled = ctx.write(|a| {
-        let s = &mut a.session;
+    let cancelled = ctx.with_session(|session| {
+        let s = &mut *session;
         let cancelled = s.reset_search();
         let Some(catalog) = s.catalog.clone().filter(|_| !query.is_empty()) else {
             return cancelled;
@@ -345,7 +340,7 @@ fn submit_search(ctx: &Context) {
     };
     update_results(ctx);
     if let Err(e) = sent {
-        ctx.write(|a| a.session.search = Search::Failed(e));
+        ctx.with_session(|session| session.search = Search::Failed(e));
     }
     super::status::refresh_status(ctx);
 }
@@ -354,7 +349,7 @@ fn results_list(ctx: &Context) -> HWND {
 }
 fn update_results(ctx: &Context) {
     let hwnd = results_list(ctx);
-    let count = ctx.read(|a| a.session.results.len());
+    let count = ctx.with_session(|session| session.results.len());
     send(hwnd, LVM_SETITEMCOUNT, count, 0);
     crate::list::fit(hwnd);
     unsafe {
@@ -381,36 +376,36 @@ fn merge_results(results: &mut Items, batch: &mut Items, tracked: &mut [isize; 4
 }
 
 pub(super) fn flush_results(ctx: &Context) {
-    if !ctx.read(|a| !a.session.pending_results.is_empty()) {
+    if !ctx.with_session(|session| !session.pending_results.is_empty()) {
         super::status::refresh_status(ctx);
         return;
     }
     let hwnd = results_list(ctx);
     let mut state = crate::list::State::capture(hwnd);
-    ctx.write(|a| {
-        let s = &mut a.session;
+    ctx.with_session(|session| {
+        let s = &mut *session;
         merge_results(&mut s.results, &mut s.pending_results, &mut state.indices);
     });
-    state.apply(hwnd, ctx.read(|a| a.session.results.len()));
+    state.apply(hwnd, ctx.with_session(|session| session.results.len()));
     super::sidebar::panel(ctx, super::panel::SEARCH_PANEL)
         .list
         .refresh_tooltip();
     super::status::refresh_status(ctx);
 }
 pub(super) fn row(ctx: &Context, index: usize, visit: &mut dyn FnMut(&crate::list::Display)) {
-    ctx.read(|a| {
-        if let Some(item) = a.session.results.get(index) {
+    ctx.with_session(|session| {
+        if let Some(item) = session.results.get(index) {
             visit(&item.display);
         }
     });
 }
 pub(super) fn row_text(ctx: &Context, row: usize) -> Vec<u16> {
-    ctx.read(|a| {
-        let Some(e) = a.session.results.get(row) else {
+    ctx.with_session(|session| {
+        let Some(e) = session.results.get(row) else {
             return Vec::new();
         };
         // Results are cleared when the catalog changes; each ID belongs to this snapshot.
-        let catalog = a.session.catalog.as_ref().expect("search result snapshot");
+        let catalog = session.catalog.as_ref().expect("search result snapshot");
         let source = &catalog.sources()[e.id.source_id];
         let mut value: Vec<u16> = format!("{}\r\n{} · ", e.full_name, e.kind)
             .encode_utf16()
@@ -461,11 +456,11 @@ fn open_now(ctx: &Context, row: isize, mode: Open) -> Option<HWND> {
     if row < 0 {
         return None;
     }
-    let item = ctx.read(|a| {
-        a.session
+    let item = ctx.with_session(|session| {
+        session
             .results
             .get(row as usize)
-            .map(|e| (e.id, a.session.catalog.clone()))
+            .map(|e| (e.id, session.catalog.clone()))
     });
     let (id, Some(catalog)) = item? else {
         return None;
@@ -524,9 +519,9 @@ pub(super) fn open_binding(
     Some(hwnd)
 }
 pub(super) fn worker_stopped(ctx: &Context) {
-    ctx.write(|a| {
-        a.session.fail_load(resources::text(IDS_WORKER_STOPPED));
-        a.session.search = Search::Idle;
+    ctx.with_session(|session| {
+        session.fail_load(resources::text(IDS_WORKER_STOPPED));
+        session.search = Search::Idle;
     });
     super::status::set_status(ctx, resources::text(IDS_WORKER_STOPPED));
     super::sources::refresh(ctx);
@@ -536,18 +531,18 @@ pub(super) fn loaded(ctx: &Context, id: u64, result: anyhow::Result<Option<Arc<C
         resources::text(IDS_LOAD_FAILED).replace("{error}", &format!("{error:#}"))
     });
     let committed = result.is_ok();
-    if !ctx.write(|a| a.session.accept_load(id, result)) {
+    if !ctx.with_session(|session| session.accept_load(id, result)) {
         return;
     }
     if committed {
         submit_search(ctx);
         super::status::report(
             ctx,
-            ctx.read(|a| {
-                if a.session.remember_sources {
-                    a.config
+            ctx.with_session_and_config(|session, config| {
+                if session.remember_sources {
+                    config
                         .write_key()?
-                        .set_paths("AutoLoad", &a.session.paths())?;
+                        .set_paths("AutoLoad", &session.paths())?;
                 }
                 Ok::<_, anyhow::Error>(())
             }),
@@ -560,10 +555,10 @@ pub(super) fn loaded(ctx: &Context, id: u64, result: anyhow::Result<Option<Arc<C
     super::status::refresh_status(ctx);
 }
 pub(super) fn matches(ctx: &Context, id: u64, items: Items) {
-    ctx.write(|a| a.session.accept_matches(id, items));
+    ctx.with_session(|session| session.accept_matches(id, items));
 }
 pub(super) fn search_done(ctx: &Context, id: u64, result: anyhow::Result<()>) {
-    ctx.write(|a| a.session.finish_search(id, result));
+    ctx.with_session(|session| session.finish_search(id, result));
 }
 
 #[cfg(test)]

@@ -1,5 +1,5 @@
 //! Owns UI-thread state and exposes it to native window procedures.
-use super::App;
+use super::{catalog, settings, sidebar, sources, status, workspace};
 use crate::{
     dpi::{Dpi, Font},
     layout,
@@ -9,20 +9,116 @@ use crate::{
 };
 use std::{cell::RefCell, ptr};
 
+struct App {
+    config: crate::config::Config,
+    settings: settings::Settings,
+    dpi: Dpi,
+    system_version: crate::platform::WindowsVersion,
+    frame: HWND,
+    icons: Option<crate::icons::WindowIcons>,
+    status: HWND,
+    status_state: status::Status,
+    session: catalog::Session,
+    sources: sources::Sources,
+    worker: crate::worker::Worker<crate::tasks::Job, crate::tasks::Completion>,
+    sidebar: sidebar::Sidebar,
+    workspace: workspace::Workspace,
+    fonts: Vec<Font>,
+    failure: Option<anyhow::Error>,
+}
+
 pub(super) struct Context {
     state: RefCell<App>,
 }
 impl Context {
-    pub fn new(app: App) -> Self {
+    pub fn new(
+        config: crate::config::Config,
+        settings: settings::Settings,
+        dpi: Dpi,
+        system_version: crate::platform::WindowsVersion,
+        session: catalog::Session,
+        worker: crate::worker::Worker<crate::tasks::Job, crate::tasks::Completion>,
+        sidebar: sidebar::Sidebar,
+    ) -> Self {
         Self {
-            state: RefCell::new(app),
+            state: RefCell::new(App {
+                config,
+                settings,
+                dpi,
+                system_version,
+                frame: std::ptr::null_mut(),
+                icons: None,
+                status: std::ptr::null_mut(),
+                status_state: status::Status::default(),
+                session,
+                sources: sources::Sources::default(),
+                worker,
+                sidebar,
+                workspace: workspace::Workspace::default(),
+                fonts: Vec::new(),
+                failure: None,
+            }),
         }
     }
+    pub fn with_config<T>(&self, f: impl FnOnce(&crate::config::Config) -> T) -> T {
+        self.read(|a| f(&a.config))
+    }
+    pub fn with_session<T>(&self, f: impl FnOnce(&mut catalog::Session) -> T) -> T {
+        self.write(|a| f(&mut a.session))
+    }
+    pub fn with_workspace<T>(&self, f: impl FnOnce(&mut workspace::Workspace) -> T) -> T {
+        self.write(|a| f(&mut a.workspace))
+    }
+    pub fn with_sidebar<T>(&self, f: impl FnOnce(&mut sidebar::Sidebar) -> T) -> T {
+        self.write(|a| f(&mut a.sidebar))
+    }
+    pub fn with_sources<T>(&self, f: impl FnOnce(&mut sources::Sources) -> T) -> T {
+        self.write(|a| f(&mut a.sources))
+    }
+    pub fn with_status<T>(&self, f: impl FnOnce(&mut status::Status) -> T) -> T {
+        self.write(|a| f(&mut a.status_state))
+    }
+    pub fn with_session_and_config<T>(
+        &self,
+        f: impl FnOnce(&mut catalog::Session, &crate::config::Config) -> T,
+    ) -> T {
+        self.write(|a| f(&mut a.session, &a.config))
+    }
+    pub fn with_settings<T>(&self, f: impl FnOnce(&mut settings::Settings) -> T) -> T {
+        self.write(|a| f(&mut a.settings))
+    }
+    pub fn with_settings_and_config<T>(
+        &self,
+        f: impl FnOnce(&mut settings::Settings, &crate::config::Config) -> T,
+    ) -> T {
+        self.write(|a| f(&mut a.settings, &a.config))
+    }
+    pub fn frame(&self) -> HWND {
+        self.read(|a| a.frame)
+    }
+    pub fn set_frame(&self, hwnd: HWND) {
+        self.write(|a| a.frame = hwnd);
+    }
+    pub fn status_bar(&self) -> HWND {
+        self.read(|a| a.status)
+    }
+    pub fn set_status_bar(&self, hwnd: HWND) {
+        self.write(|a| a.status = hwnd);
+    }
+    pub fn set_icons(&self, icons: crate::icons::WindowIcons) {
+        self.write(|a| a.icons = Some(icons));
+    }
+    pub fn take_fonts(&self) -> Vec<Font> {
+        self.write(|a| std::mem::take(&mut a.fonts))
+    }
+    pub fn take_failure(&self) -> Option<anyhow::Error> {
+        self.write(|a| a.failure.take())
+    }
     // Closures only inspect/update owned data; never send messages inside them.
-    pub fn read<T>(&self, f: impl FnOnce(&App) -> T) -> T {
+    fn read<T>(&self, f: impl FnOnce(&App) -> T) -> T {
         f(&self.state.borrow())
     }
-    pub fn write<T>(&self, f: impl FnOnce(&mut App) -> T) -> T {
+    fn write<T>(&self, f: impl FnOnce(&mut App) -> T) -> T {
         f(&mut self.state.borrow_mut())
     }
     pub fn checked<T>(&self, result: anyhow::Result<T>) -> Option<T> {

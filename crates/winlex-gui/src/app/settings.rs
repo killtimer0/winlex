@@ -241,29 +241,28 @@ impl Settings {
 }
 
 pub(super) fn preferences(ctx: &Context) -> Preferences {
-    ctx.read(|a| a.settings.preferences)
+    ctx.with_settings(|settings| settings.preferences)
 }
 pub(super) fn categories(ctx: &Context) -> u32 {
     preferences(ctx).categories
 }
 pub(super) fn preferred_architecture(ctx: &Context) -> Option<Architecture> {
-    ctx.read(|a| a.settings.preferred_architecture)
+    ctx.with_settings(|settings| settings.preferred_architecture)
 }
 pub(super) fn set_preferred_architecture(
     ctx: &Context,
     architecture: Architecture,
 ) -> anyhow::Result<()> {
-    ctx.write(|a| {
-        a.settings
-            .set_preferred_architecture(&a.config, architecture)
+    ctx.with_settings_and_config(|settings, config| {
+        settings.set_preferred_architecture(config, architecture)
     })
 }
 pub(super) fn set_preferences(ctx: &Context, preferences: Preferences) -> anyhow::Result<()> {
-    ctx.write(|a| a.settings.set_preferences(&a.config, preferences))
+    ctx.with_settings_and_config(|settings, config| settings.set_preferences(config, preferences))
 }
 pub(super) fn restore_window(ctx: &Context, hwnd: HWND) {
     let value = ctx.dpi().window(hwnd);
-    let saved = ctx.read(|a| a.settings.window);
+    let saved = ctx.with_settings(|settings| settings.window);
     let mut bounds = crate::native::bounds(hwnd, ptr::null_mut());
     let (mut width, mut height) = match saved {
         Some(w) => {
@@ -307,21 +306,19 @@ pub(super) fn save_window(ctx: &Context, hwnd: HWND) -> anyhow::Result<()> {
         let dpi = ctx.dpi().window(hwnd);
         let maximized = IsZoomed(hwnd) != 0
             || (IsIconic(hwnd) != 0 && placement.flags & WPF_RESTORETOMAXIMIZED != 0);
-        ctx.read(|a| {
-            let key = a.config.write_key()?;
-            let bytes: Vec<_> = [
-                r.left,
-                r.top,
-                r.right - r.left,
-                r.bottom - r.top,
-                dpi as i32,
-                i32::from(maximized),
-            ]
-            .into_iter()
-            .flat_map(i32::to_le_bytes)
-            .collect();
-            key.set_bytes("Window", &bytes)?;
-            a.sidebar.save(&key)
-        })
+        let key = ctx.with_config(|config| config.write_key())?;
+        let bytes: Vec<_> = [
+            r.left,
+            r.top,
+            r.right - r.left,
+            r.bottom - r.top,
+            dpi as i32,
+            i32::from(maximized),
+        ]
+        .into_iter()
+        .flat_map(i32::to_le_bytes)
+        .collect();
+        key.set_bytes("Window", &bytes)?;
+        ctx.with_sidebar(|sidebar| sidebar.save(&key))
     }
 }

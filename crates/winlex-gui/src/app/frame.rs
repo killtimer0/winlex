@@ -5,20 +5,20 @@ use crate::{layout, native::*, resources::*};
 use std::ptr;
 
 pub(super) fn hwnd(ctx: &Context) -> HWND {
-    ctx.read(|a| a.frame)
+    ctx.frame()
 }
 pub(super) fn status_bar(ctx: &Context) -> HWND {
-    ctx.read(|a| a.status)
+    ctx.status_bar()
 }
 fn prepare(ctx: &Context) {
-    let frame = ctx.read(|a| a.frame);
+    let frame = ctx.frame();
     let tabs = workspace::tabs(ctx);
-    let status = ctx.read(|a| a.status);
+    let status = ctx.status_bar();
     let docs = workspace::contents(ctx);
     let value = ctx.dpi().window(frame);
     if let Some(icons) = ctx.checked(crate::icons::WindowIcons::load(value)) {
         icons.apply(frame);
-        ctx.write(|a| a.icons = Some(icons));
+        ctx.set_icons(icons);
     }
     let (font, _) = ctx.font_for(value);
     super::bind(tabs, font);
@@ -41,10 +41,10 @@ fn recolor(ctx: &Context) {
     workspace::refresh_document_tabs(ctx);
 }
 pub(super) fn layout_frame(ctx: &Context) {
-    let frame = ctx.read(|a| a.frame);
+    let frame = ctx.frame();
     let mdi = workspace::mdi(ctx);
     let tabs = workspace::tabs(ctx);
-    let status = ctx.read(|a| a.status);
+    let status = ctx.status_bar();
     if mdi.is_null() {
         return;
     }
@@ -75,7 +75,7 @@ pub(super) unsafe extern "system" fn frame_proc(hwnd: HWND, msg: u32, w: usize, 
         };
         match msg {
             WM_NCCREATE => {
-                ctx.write(|a| a.frame = hwnd);
+                ctx.set_frame(hwnd);
                 ctx.dpi().enable_nonclient(hwnd);
             }
             WM_CREATE => {
@@ -114,7 +114,7 @@ pub(super) unsafe extern "system" fn frame_proc(hwnd: HWND, msg: u32, w: usize, 
                     if mdi.is_null() {
                         return Err(error("Create MDI client"));
                     }
-                    ctx.write(|a| a.status = status);
+                    ctx.set_status_bar(status);
                     workspace::attach(ctx, tabs, mdi);
                     sidebar::create(ctx, hwnd)?;
                     windows_sys::Win32::UI::Shell::DragAcceptFiles(hwnd, 1);
@@ -141,7 +141,7 @@ pub(super) unsafe extern "system" fn frame_proc(hwnd: HWND, msg: u32, w: usize, 
             }
             WM_SETTINGCHANGE => {
                 if w == 0 || w as u32 == SPI_SETNONCLIENTMETRICS {
-                    let old = ctx.write(|a| std::mem::take(&mut a.fonts));
+                    let old = ctx.take_fonts();
                     prepare(ctx);
                     drop(old);
                 }

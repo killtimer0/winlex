@@ -6,11 +6,7 @@
 //! reached from window procedures through the frame's user data. State borrows
 //! must end before Win32 calls that can synchronously reenter a window
 //! procedure.
-use crate::{
-    dpi::{Dpi, Font},
-    layout,
-    native::*,
-};
+use crate::{dpi::Dpi, layout, native::*};
 use std::ptr;
 
 mod catalog;
@@ -37,23 +33,6 @@ use document::document_proc;
 use frame::frame_proc;
 use workspace::active;
 
-struct App {
-    config: crate::config::Config,
-    settings: settings::Settings,
-    dpi: Dpi,
-    system_version: crate::platform::WindowsVersion,
-    frame: HWND,
-    icons: Option<crate::icons::WindowIcons>,
-    status: HWND,
-    status_state: status::Status,
-    session: catalog::Session,
-    sources: sources::Sources,
-    worker: crate::worker::Worker<crate::tasks::Job, crate::tasks::Completion>,
-    sidebar: sidebar::Sidebar,
-    workspace: workspace::Workspace,
-    fonts: Vec<Font>,
-    failure: Option<anyhow::Error>,
-}
 fn bind(hwnd: HWND, font: HFONT) {
     if send(hwnd, WM_GETFONT, 0, 0) != font as isize {
         send(hwnd, WM_SETFONT, font as usize, 1);
@@ -82,23 +61,15 @@ pub fn run(
         paths
     };
     let sidebar = sidebar::Sidebar::new(&config);
-    let context = Box::new(Context::new(App {
+    let context = Box::new(Context::new(
         config,
         settings,
         dpi,
         system_version,
-        frame: ptr::null_mut(),
-        icons: None,
-        status: ptr::null_mut(),
-        status_state: status::Status::default(),
         session,
-        sources: sources::Sources::default(),
         worker,
         sidebar,
-        workspace: workspace::Workspace::default(),
-        fonts: Vec::new(),
-        failure: None,
-    }));
+    ));
     unsafe { run_windows(&context, paths) }
 }
 unsafe fn run_windows(ctx: &Context, paths: Vec<std::path::PathBuf>) -> anyhow::Result<()> {
@@ -131,7 +102,7 @@ unsafe fn run_windows(ctx: &Context, paths: Vec<std::path::PathBuf>) -> anyhow::
         }
         let menu = resources::menu()?;
         let value = ctx.dpi().system();
-        let saved = ctx.read(|a| a.settings.window);
+        let saved = ctx.with_settings(|settings| settings.window);
         let frame = CreateWindowExW(
             WS_EX_CONTROLPARENT,
             w!("Winlex.Frame"),
@@ -148,12 +119,12 @@ unsafe fn run_windows(ctx: &Context, paths: Vec<std::path::PathBuf>) -> anyhow::
         );
         if frame.is_null() {
             let failure = ctx
-                .write(|a| a.failure.take())
+                .take_failure()
                 .unwrap_or_else(|| error("Create main window"));
             DestroyMenu(menu);
             return Err(failure);
         }
-        if let Some(error) = ctx.write(|a| a.failure.take()) {
+        if let Some(error) = ctx.take_failure() {
             DestroyWindow(frame);
             return Err(error);
         }
@@ -167,7 +138,7 @@ unsafe fn run_windows(ctx: &Context, paths: Vec<std::path::PathBuf>) -> anyhow::
         if !paths.is_empty() {
             catalog::reload(ctx, paths, vec![]);
         }
-        if let Some(warning) = ctx.read(|a| a.config.warning()) {
+        if let Some(warning) = ctx.with_config(|config| config.warning()) {
             status::set_status(ctx, format!("{warning:#}"));
         }
         ShowWindow(
@@ -183,7 +154,7 @@ unsafe fn run_windows(ctx: &Context, paths: Vec<std::path::PathBuf>) -> anyhow::
         let mut msg: MSG = std::mem::zeroed();
         loop {
             history::refresh(ctx);
-            if let Some(error) = ctx.write(|a| a.failure.take()) {
+            if let Some(error) = ctx.take_failure() {
                 DestroyWindow(frame);
                 return Err(error);
             }

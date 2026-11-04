@@ -34,16 +34,16 @@ impl Status {
     }
 }
 pub(super) fn begin_status(ctx: &Context, context: StatusContext) {
-    ctx.write(|a| a.status_state.begin(context));
+    ctx.with_status(|status| status.begin(context));
     refresh_status(ctx);
 }
 pub(super) fn status_context(ctx: &Context, context: StatusContext) {
-    if ctx.read(|a| a.status_state.context != context) {
+    if ctx.with_status(|status| status.context != context) {
         begin_status(ctx, context);
     }
 }
 pub(super) fn begin_operation(ctx: &Context) {
-    ctx.write(|a| a.status_state.notice = None);
+    ctx.with_status(|status| status.notice = None);
     refresh_status(ctx);
 }
 pub(super) fn status_input(ctx: &Context, hwnd: HWND) {
@@ -55,7 +55,7 @@ pub(super) fn status_input(ctx: &Context, hwnd: HWND) {
     }
 }
 pub(super) fn set_status(ctx: &Context, message: String) {
-    ctx.write(|a| a.status_state.notice = Some(message));
+    ctx.with_status(|status| status.notice = Some(message));
     refresh_status(ctx);
 }
 pub(super) fn report<T>(ctx: &Context, result: anyhow::Result<T>) -> Option<T> {
@@ -64,7 +64,7 @@ pub(super) fn report<T>(ctx: &Context, result: anyhow::Result<T>) -> Option<T> {
         .ok()
 }
 pub(super) fn refresh_status(ctx: &Context) {
-    let state = ctx.read(|a| a.status_state.clone());
+    let state = ctx.with_status(|status| status.clone());
     let hwnd = frame::status_bar(ctx);
     let message = state.message(
         |hwnd| workspace::content(ctx, hwnd).and_then(|content| content.status()),
