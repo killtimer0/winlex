@@ -40,8 +40,10 @@ pub(super) fn translate(ctx: &Context, msg: &MSG) -> bool {
     if msg.message != WM_KEYDOWN {
         return false;
     }
-    if msg.hwnd == super::tools::list(ctx) && msg.wParam == VK_RETURN as usize {
-        super::tools::selected(ctx, unsafe { GetKeyState(VK_CONTROL as i32) } < 0);
+    if msg.wParam == VK_RETURN as usize
+        && let Some(panel) = sidebar::owner(ctx, msg.hwnd)
+        && panel.list.activate_selected()
+    {
         return true;
     }
     let Some(action) = action(region(ctx, msg.hwnd), msg.wParam) else {

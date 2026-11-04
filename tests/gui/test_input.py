@@ -32,7 +32,11 @@ def test_real_tool_toolbar_and_list_click(launch):
                 point = win32gui.ClientToScreen(panel, ((left + right) // 2, (top + bottom) // 2))
                 assert win32gui.WindowFromPoint(point) == panel
                 input_state.click(*point)
-            n.wait(lambda: n.get_item(app.active_document(), 1816), "tool opened by list click")
+            assert not n.get_item(app.active_document(), 1816)
+            with n.window_dpi_context(app.frame):
+                input_state.click(*point)
+                input_state.click(*point)
+            n.wait(lambda: n.get_item(app.active_document(), 1816), "tool opened by list double click")
         finally:
             win32gui.SetWindowPos(app.frame, win32con.HWND_NOTOPMOST, 0, 0, 0, 0,
                                   win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_NOACTIVATE)

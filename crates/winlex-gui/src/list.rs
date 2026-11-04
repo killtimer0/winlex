@@ -322,6 +322,15 @@ impl List {
             send(tooltip, TTM_POP, 0, 0);
         }
     }
+    pub fn activate_selected(&self) -> bool {
+        let Some(open) = &self.open else {
+            return false;
+        };
+        if let Some(row) = selected(self.hwnd) {
+            open(row as isize, true);
+        }
+        true
+    }
     pub unsafe fn notify(&self, l: isize) -> Option<isize> {
         unsafe {
             let hdr = &*(l as *const NMHDR);
@@ -456,6 +465,43 @@ impl List {
             }
         }
     }
+}
+pub fn context_target(hwnd: HWND, location: isize) -> Option<(usize, POINT)> {
+    let (index, point) = if location == -1 {
+        let index = selected(hwnd)?;
+        send(hwnd, LVM_ENSUREVISIBLE, index, 0);
+        let rect = item_rect(hwnd, index)?;
+        let mut point = POINT {
+            x: rect.left,
+            y: rect.bottom,
+        };
+        unsafe {
+            ClientToScreen(hwnd, &mut point);
+        }
+        (index, point)
+    } else {
+        let point = point_from_lparam(location);
+        let mut hit = LVHITTESTINFO {
+            pt: point,
+            ..unsafe { std::mem::zeroed() }
+        };
+        unsafe {
+            ScreenToClient(hwnd, &mut hit.pt);
+        }
+        let index = send_mut(hwnd, LVM_HITTEST, 0, &mut hit);
+        if index < 0 {
+            return None;
+        }
+        set_item_state(
+            hwnd,
+            index,
+            LVIS_SELECTED | LVIS_FOCUSED,
+            LVIS_SELECTED | LVIS_FOCUSED,
+        );
+        send(hwnd, LVM_SETSELECTIONMARK, 0, index);
+        (index as usize, point)
+    };
+    Some((index, point))
 }
 pub fn fit(hwnd: HWND) {
     send(
@@ -886,6 +932,42 @@ mod tests {
             DeleteObject(bitmap);
             DeleteDC(dc);
             DestroyWindow(parent);
+        }
+    }
+
+    #[test]
+    fn context_target_uses_hit_row_or_keyboard_selection_and_ignores_blank_space() {
+        unsafe {
+            let controls = INITCOMMONCONTROLSEX {
+                dwSize: std::mem::size_of::<INITCOMMONCONTROLSEX>() as u32,
+                dwICC: ICC_LISTVIEW_CLASSES,
+            };
+            assert_ne!(InitCommonControlsEx(&controls), 0);
+            let hwnd = test_window(
+                w!("SysListView32"),
+                ptr::null(),
+                WS_POPUP | LVS_REPORT | LVS_OWNERDATA | LVS_SINGLESEL,
+                layout::rect(30, 40, 300, 200),
+            );
+            list_column(hwnd, 0, "", 100);
+            send(hwnd, LVM_SETITEMCOUNT, 2, 0);
+            assert!(context_target(hwnd, -1).is_none());
+            let rect = item_rect(hwnd, 1).unwrap();
+            let mut point = POINT {
+                x: rect.left + 4,
+                y: (rect.top + rect.bottom) / 2,
+            };
+            ClientToScreen(hwnd, &mut point);
+            let location = ((point.x as u16 as u32) | ((point.y as u16 as u32) << 16)) as isize;
+            assert_eq!(context_target(hwnd, location).unwrap().0, 1);
+            assert_eq!(selected(hwnd), Some(1));
+            assert_eq!(context_target(hwnd, -1).unwrap().0, 1);
+            let mut blank = POINT { x: 10, y: 180 };
+            ClientToScreen(hwnd, &mut blank);
+            let location = ((blank.x as u16 as u32) | ((blank.y as u16 as u32) << 16)) as isize;
+            assert!(context_target(hwnd, location).is_none());
+            assert_eq!(selected(hwnd), Some(1));
+            DestroyWindow(hwnd);
         }
     }
 

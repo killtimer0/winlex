@@ -119,21 +119,15 @@ pub(super) fn row_text(index: usize) -> Vec<u16> {
         .unwrap_or_default()
 }
 pub(super) fn context_menu(ctx: &Context, hwnd: HWND, l: isize) -> anyhow::Result<()> {
+    let Some((index, point)) = crate::list::context_target(hwnd, l) else {
+        return Ok(());
+    };
     let menu = Popup::new()?;
     menu.item(1, resources::wide_text(IDS_TOOL_OPEN), true)?;
     menu.item(2, resources::wide_text(IDS_TOOL_NEW), true)?;
-    let point = if l == -1 {
-        let b = bounds(hwnd, std::ptr::null_mut());
-        POINT {
-            x: b.left + 8,
-            y: b.top + 8,
-        }
-    } else {
-        point_from_lparam(l)
-    };
     match menu.track(ctx.frame(), point) {
-        1 => selected(ctx, false),
-        2 => selected(ctx, true),
+        1 => open(ctx, index as isize, false),
+        2 => open(ctx, index as isize, true),
         _ => {}
     }
     Ok(())

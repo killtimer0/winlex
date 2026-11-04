@@ -185,8 +185,14 @@ pub(super) fn create(ctx: &Context, frame: HWND) -> anyhow::Result<([Rc<Panel>; 
         TOOL_LIST,
         super::tools::row,
         super::tools::row_text,
-        Some(Box::new(move |row, _| {
-            super::tools::open(unsafe { &*state }, row, false)
+        Some(Box::new(move |row, double| {
+            if double {
+                super::tools::open(
+                    unsafe { &*state },
+                    row,
+                    unsafe { GetKeyState(VK_CONTROL as i32) } < 0,
+                );
+            }
         })),
         ctx.system_version(),
     )?;

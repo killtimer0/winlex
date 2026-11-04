@@ -247,37 +247,9 @@ pub(super) fn refresh(ctx: &Context) {
 }
 
 pub(super) fn context_menu(ctx: &Context, hwnd: HWND, location: isize) -> anyhow::Result<()> {
-    let mut point = point_from_lparam(location);
-    if location == -1 {
-        let Some(index) = crate::list::selected(hwnd) else {
-            return Ok(());
-        };
-        send(hwnd, LVM_ENSUREVISIBLE, index, 0);
-        let rect =
-            crate::list::item_rect(hwnd, index).unwrap_or_else(|| crate::layout::rect(0, 0, 0, 0));
-        point = POINT {
-            x: rect.left,
-            y: rect.bottom,
-        };
-        unsafe {
-            ClientToScreen(hwnd, &mut point);
-        }
-    } else {
-        let mut hit = LVHITTESTINFO {
-            pt: point,
-            ..unsafe { std::mem::zeroed() }
-        };
-        unsafe {
-            ScreenToClient(hwnd, &mut hit.pt);
-        }
-        let index = send_mut(hwnd, LVM_HITTEST, 0, &mut hit);
-        if index < 0 {
-            return Ok(());
-        }
-        let state = LVIS_SELECTED | LVIS_FOCUSED;
-        crate::list::set_item_state(hwnd, index, state, state);
-        send(hwnd, LVM_SETSELECTIONMARK, 0, index);
-    }
+    let Some((_, point)) = crate::list::context_target(hwnd, location) else {
+        return Ok(());
+    };
     let Some(path) = selected(ctx) else {
         return Ok(());
     };
