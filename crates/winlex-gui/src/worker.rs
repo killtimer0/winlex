@@ -1,4 +1,4 @@
-//! Single-threaded executor with explicit replacement, cooperative cancellation and bounded output.
+//! Bounded worker pool with explicit replacement, cooperative cancellation and bounded output.
 use anyhow::Context;
 use std::{
     collections::VecDeque,
@@ -44,7 +44,7 @@ impl Ticket {
 }
 struct Pending<J> {
     jobs: VecDeque<(Ticket, J)>,
-    active: Option<Ticket>,
+    active: Vec<Ticket>,
 }
 struct Requests<J> {
     pending: Mutex<Pending<J>>,
@@ -56,7 +56,7 @@ impl<J> Default for Requests<J> {
         Self {
             pending: Mutex::new(Pending {
                 jobs: VecDeque::new(),
-                active: None,
+                active: Vec::new(),
             }),
             wake: Condvar::new(),
             stop: AtomicBool::new(false),
@@ -77,10 +77,10 @@ impl<J> Requests<J> {
         Ok(())
     }
     fn cancel_locked(pending: &mut Pending<J>, id: u64) {
-        if let Some(active) = &pending.active
-            && active.id == id
-        {
-            active.cancel();
+        for active in &pending.active {
+            if active.id == id {
+                active.cancel();
+            }
         }
         pending.jobs.retain(|(ticket, _)| {
             if ticket.id == id {
@@ -92,9 +92,11 @@ impl<J> Requests<J> {
     fn cancel(&self, id: u64) {
         Self::cancel_locked(&mut self.pending.lock().unwrap(), id);
     }
-    fn next(&self) -> Option<(Ticket, J)> {
+    fn next(&self, previous: Option<u64>) -> Option<(Ticket, J)> {
         let mut pending = self.pending.lock().unwrap();
-        pending.active = None;
+        if let Some(id) = previous {
+            pending.active.retain(|ticket| ticket.id != id);
+        }
         loop {
             if self.stop.load(Ordering::Relaxed) {
                 return None;
@@ -103,7 +105,7 @@ impl<J> Requests<J> {
                 if ticket.cancelled() {
                     continue;
                 }
-                pending.active = Some(ticket.clone());
+                pending.active.push(ticket.clone());
                 return Some((ticket, job));
             }
             pending = self.wake.wait(pending).unwrap();
@@ -112,13 +114,13 @@ impl<J> Requests<J> {
     fn close(&self) {
         self.stop.store(true, Ordering::Relaxed);
         let mut pending = self.pending.lock().unwrap();
-        if let Some(ticket) = &pending.active {
+        for ticket in &pending.active {
             ticket.cancel();
         }
         for (ticket, _) in pending.jobs.drain(..) {
             ticket.cancel();
         }
-        self.wake.notify_one();
+        self.wake.notify_all();
     }
 }
 struct Results<J, O> {
@@ -138,10 +140,20 @@ pub struct Worker<J, O> {
     pub rx: Receiver<O>,
     ready: Arc<ReadyEvent>,
 }
+/// Worker threads. One restores strict FIFO; two keep interactive jobs from
+/// waiting behind a catalog load.
+const THREADS: usize = 2;
 impl<J: Send + 'static, O: Send + 'static> Worker<J, O> {
     pub fn new(
-        execute: impl Fn(J, &Ticket, &dyn Fn(O) -> anyhow::Result<()>) + Send + 'static,
+        execute: impl Fn(J, &Ticket, &dyn Fn(O) -> anyhow::Result<()>) + Send + Sync + 'static,
     ) -> anyhow::Result<Self> {
+        Self::with_threads(execute, THREADS)
+    }
+    fn with_threads(
+        execute: impl Fn(J, &Ticket, &dyn Fn(O) -> anyhow::Result<()>) + Send + Sync + 'static,
+        threads: usize,
+    ) -> anyhow::Result<Self> {
+        anyhow::ensure!(threads > 0, "Worker requires at least one thread");
         let requests = Arc::new(Requests::default());
         let (tx, rx) = mpsc::sync_channel(8);
         let handle = unsafe { CreateEventW(std::ptr::null(), 0, 0, std::ptr::null()) };
@@ -149,21 +161,33 @@ impl<J: Send + 'static, O: Send + 'static> Worker<J, O> {
             return Err(crate::native::error("Create completion event"));
         }
         let ready = Arc::new(ReadyEvent(unsafe { OwnedHandle::from_raw_handle(handle) }));
-        let results = Results {
+        let results = Arc::new(Results {
             tx: Some(tx),
             ready: ready.clone(),
             requests: requests.clone(),
-        };
-        let queue = requests.clone();
-        thread::Builder::new()
-            .name("winlex-worker".into())
-            .spawn(move || {
-                while let Some((ticket, job)) = queue.next() {
-                    let publish = |value| publish(&results, &ticket, value);
-                    execute(job, &ticket, &publish);
-                }
-            })
-            .context("Start background worker")?;
+        });
+        let execute = Arc::new(execute);
+        for index in 0..threads {
+            let queue = requests.clone();
+            let results = results.clone();
+            let execute = execute.clone();
+            let name = if threads == 1 {
+                "winlex-worker".to_owned()
+            } else {
+                format!("winlex-worker-{index}")
+            };
+            thread::Builder::new()
+                .name(name)
+                .spawn(move || {
+                    let mut previous = None;
+                    while let Some((ticket, job)) = queue.next(previous) {
+                        let publish = |value| publish(&results, &ticket, value);
+                        execute(job, &ticket, &publish);
+                        previous = Some(ticket.id);
+                    }
+                })
+                .context("Start background worker")?;
+        }
         Ok(Self {
             requests,
             rx,
@@ -225,14 +249,31 @@ mod tests {
         requests.replace(Some(1), Ticket::new(3), None).unwrap();
         assert!(old.cancelled());
         assert!(weak.upgrade().is_none());
-        let active = requests.next().unwrap().0;
+        let active = requests.next(None).unwrap().0;
         assert_eq!(active.id, 2);
         requests.replace(Some(2), Ticket::new(4), None).unwrap();
         assert!(active.cancelled());
-        assert_eq!(requests.next().unwrap().0.id, 3);
-        assert_eq!(requests.next().unwrap().0.id, 4);
+        assert_eq!(requests.next(Some(2)).unwrap().0.id, 3);
+        assert_eq!(requests.next(Some(3)).unwrap().0.id, 4);
         requests.close();
-        assert!(requests.next().is_none());
+        assert!(requests.next(Some(4)).is_none());
+    }
+    #[test]
+    fn cancellation_targets_each_running_job() {
+        let requests = Requests::default();
+        let first = Ticket::new(1);
+        let second = Ticket::new(2);
+        requests.replace(None, first.clone(), ()).unwrap();
+        requests.replace(None, second.clone(), ()).unwrap();
+        let a = requests.next(None).unwrap().0;
+        let b = requests.next(None).unwrap().0;
+        assert_eq!((a.id, b.id), (1, 2));
+        requests.cancel(2);
+        assert!(!a.cancelled());
+        assert!(b.cancelled());
+        requests.cancel(1);
+        assert!(a.cancelled());
+        requests.close();
     }
     #[test]
     fn completion_and_shutdown_wake_ui() {
@@ -258,14 +299,42 @@ mod tests {
         assert!(worker.replace(None, Ticket::new(8), ()).is_err());
     }
     #[test]
+    fn two_threads_run_jobs_concurrently() {
+        use std::sync::Barrier;
+        let barrier = Arc::new(Barrier::new(2));
+        let worker = Worker::with_threads(
+            {
+                let barrier = barrier.clone();
+                move |(), _, publish| {
+                    barrier.wait();
+                    let _ = publish(());
+                }
+            },
+            2,
+        )
+        .unwrap();
+        worker.replace(None, Ticket::new(1), ()).unwrap();
+        worker.replace(None, Ticket::new(2), ()).unwrap();
+        for _ in 0..2 {
+            worker
+                .rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+        }
+    }
+    #[test]
     fn cancelling_full_output_keeps_executor_alive() {
         let (started, ready) = mpsc::channel();
-        let worker = Worker::new(move |(), ticket, publish| {
-            if ticket.id == 9 {
-                started.send(()).unwrap();
-            }
-            let _ = publish(ticket.id);
-        })
+        let started = std::sync::Mutex::new(started);
+        let worker = Worker::with_threads(
+            move |(), ticket, publish| {
+                if ticket.id == 9 {
+                    started.lock().unwrap().send(()).unwrap();
+                }
+                let _ = publish(ticket.id);
+            },
+            1,
+        )
         .unwrap();
         let tickets: Vec<_> = (1..=9).map(Ticket::new).collect();
         for ticket in &tickets {
