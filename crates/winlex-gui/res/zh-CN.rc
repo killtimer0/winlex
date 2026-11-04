@@ -6,6 +6,7 @@ BEGIN
     IDS_RESULT_COPY_NAME "复制完整名称"
     IDS_RESULT_COPY_VALUE "复制值"
     IDS_RESULT_COPY_HEX "复制十六进制值"
+    IDS_ERROR_CODE_SEARCH "搜索错误码"
     IDS_PANEL_TOOLS "工具"
     IDS_TOOL_OPEN "打开"
     IDS_TOOL_NEW "新建实例"

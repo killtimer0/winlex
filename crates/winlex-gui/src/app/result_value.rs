@@ -5,6 +5,7 @@ use winlex_core::{Architecture, Catalog, Declaration, EntityId, guid};
 pub(super) struct ResultValue {
     pub text: String,
     pub hexadecimal: Option<String>,
+    pub integer: Option<(i128, u32)>,
 }
 
 pub(super) fn read(
@@ -22,6 +23,7 @@ pub(super) fn read(
         return Ok(Some(ResultValue {
             text: format!("{{{}}}", guid.to_ascii_uppercase()),
             hexadecimal: None,
+            integer: None,
         }));
     }
     let Some(field) = field else { return Ok(None) };
@@ -32,6 +34,7 @@ pub(super) fn read(
         return Ok(Some(ResultValue {
             text: "null".into(),
             hexadecimal: None,
+            integer: None,
         }));
     }
     let value = constant.value();
@@ -46,6 +49,7 @@ pub(super) fn read(
         Ok(Some(ResultValue {
             text: number.to_string(),
             hexadecimal: Some(format!("0x{raw:0width$X}", width = (bits / 4) as usize)),
+            integer: Some((number, bits)),
         }))
     } else {
         Ok(Some(ResultValue {
@@ -54,6 +58,7 @@ pub(super) fn read(
                 _ => winlex_format::constant(&value),
             },
             hexadecimal: None,
+            integer: None,
         }))
     }
 }

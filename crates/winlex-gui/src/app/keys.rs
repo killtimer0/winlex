@@ -18,7 +18,6 @@ pub(super) enum Region {
 pub(super) enum Action {
     Search,
     Preview,
-    Pin,
     FocusDocument,
 }
 
@@ -28,7 +27,6 @@ pub(super) fn action(region: Region, key: usize) -> Option<Action> {
         (Region::SearchEntry { composing: false }, k) if k == VK_RETURN as usize => {
             Some(Action::Search)
         }
-        (Region::Results, k) if k == VK_RETURN as usize => Some(Action::Pin),
         (Region::Results, k) if k == VK_SPACE as usize => Some(Action::Preview),
         (Region::Tabs, k) if k == VK_RETURN as usize => Some(Action::FocusDocument),
         _ => None,
@@ -42,6 +40,7 @@ pub(super) fn translate(ctx: &Context, msg: &MSG) -> bool {
     }
     if msg.wParam == VK_RETURN as usize
         && let Some(panel) = sidebar::owner(ctx, msg.hwnd)
+        && msg.hwnd == panel.list.hwnd
         && panel.list.activate_selected()
     {
         return true;
@@ -77,7 +76,6 @@ fn dispatch(ctx: &Context, action: Action) {
     match action {
         Action::Search => catalog::search(ctx),
         Action::Preview => catalog::open_selected(ctx, catalog::Open::Preview),
-        Action::Pin => catalog::open_selected(ctx, catalog::Open::Pin),
         Action::FocusDocument => {
             if let Some(document) = workspace::content(ctx, workspace::active(ctx)) {
                 document.focus();
@@ -102,7 +100,7 @@ mod tests {
                 None,
             ),
             (Region::SearchEntry { composing: true }, None, None),
-            (Region::Results, Some(Action::Pin), Some(Action::Preview)),
+            (Region::Results, None, Some(Action::Preview)),
             (Region::Tabs, Some(Action::FocusDocument), None),
             (Region::Other, None, None),
         ] {

@@ -1,5 +1,5 @@
 //! Internal registration and content contract. No dynamic plugins or persisted sessions.
-use super::{history, workspace};
+use super::{history, metadata::Binding, result_value::ResultValue, workspace};
 use crate::app::context::Context;
 use crate::{
     icons::Icon,
@@ -43,17 +43,41 @@ pub(super) struct Descriptor {
     pub title: u16,
     pub description: u16,
     pub icon: Icon,
+    item_actions: fn(&'static Descriptor, &Binding, Option<&ResultValue>) -> Vec<ItemAction>,
+}
+pub(super) struct ItemAction {
+    pub label: u16,
+    run: Box<dyn FnOnce(&Context)>,
+}
+impl ItemAction {
+    pub fn execute(self, ctx: &Context) {
+        (self.run)(ctx);
+    }
+}
+pub(super) fn item_actions(binding: &Binding, value: Option<&ResultValue>) -> Vec<ItemAction> {
+    REGISTRY
+        .iter()
+        .flat_map(|descriptor| (descriptor.item_actions)(descriptor, binding, value))
+        .collect()
 }
 pub(super) static REGISTRY: &[Descriptor] = &[Descriptor {
     id: "error_code",
     title: IDS_ERROR_CODE_TOOL,
     description: IDS_ERROR_CODE_DESCRIPTION,
     icon: Icon::Constant,
+    item_actions: error_code::item_actions,
 }];
 pub(super) fn open(ctx: &Context, index: isize, new: bool) {
     let Some(descriptor) = REGISTRY.get(index as usize) else {
         return;
     };
+    open_descriptor(ctx, descriptor, new);
+}
+fn open_descriptor(
+    ctx: &Context,
+    descriptor: &'static Descriptor,
+    new: bool,
+) -> Option<std::rc::Rc<ToolView>> {
     history::visit(ctx, || {
         let existing = (!new)
             .then(|| {
@@ -70,11 +94,11 @@ pub(super) fn open(ctx: &Context, index: isize, new: bool) {
         } else {
             super::status::report(ctx, workspace::create_tool(ctx, descriptor))
         };
-        if let Some(content) = hwnd.and_then(|hwnd| workspace::content(ctx, hwnd)) {
-            content.activated();
-            content.focus();
-        }
-    });
+        let content = hwnd.and_then(|hwnd| workspace::content(ctx, hwnd))?;
+        content.activated();
+        content.focus();
+        content.tool()
+    })
 }
 pub(super) fn list(ctx: &Context) -> HWND {
     unsafe { GetDlgItem(ctx.frame(), TOOL_LIST as i32) }

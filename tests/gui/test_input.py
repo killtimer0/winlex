@@ -1,12 +1,48 @@
 """Actual mouse/keyboard delivery, deliberately separate from message checks."""
 import pytest
 import struct
+import win32api
 import win32con
 import win32gui
 from support import native as n
 from support.input_state import InputState
 
 pytestmark = pytest.mark.interactive
+
+
+@pytest.mark.parametrize("command,control", [(1040, 1103), (1021, 1112), (1800, 1801)])
+def test_real_sidebar_context_keys(launch, settings, command, control):
+    from support.input_state import foreground
+    from test_context import find_popup, wait_closed
+
+    with InputState() as inputs:
+        app = launch([settings[1]])
+        app.query("ERROR_ACCESS_DENIED")
+        with foreground(app, inputs):
+            target = n.get_item(app.frame, control)
+            if not n.is_visible(target):
+                app.command(command)
+            assert target and n.is_visible(target)
+            app.select(0, target)
+            app.focus(target)
+            for gesture in ("apps", "shift-f10"):
+                if gesture == "apps":
+                    inputs.key(win32con.VK_APPS)
+                else:
+                    inputs.state["held"].append(win32con.VK_SHIFT)
+                    inputs.save()
+                    win32api.keybd_event(win32con.VK_SHIFT, 0, 0, 0)
+                    try:
+                        inputs.key(win32con.VK_F10)
+                    finally:
+                        win32api.keybd_event(win32con.VK_SHIFT, 0, win32con.KEYEVENTF_KEYUP, 0)
+                        inputs.state["held"].remove(win32con.VK_SHIFT)
+                        inputs.save()
+                _, ids = find_popup(app)
+                assert ids
+                inputs.key(win32con.VK_ESCAPE)
+                wait_closed(target)
+                assert app.selected_row(target) == 0
 
 
 def test_real_tool_toolbar_and_list_click(launch):

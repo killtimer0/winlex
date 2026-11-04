@@ -23,6 +23,31 @@ use winlex_core::{
 };
 
 const TEXT_SUBCLASS: usize = 1810;
+fn item_code(value: Option<&crate::app::result_value::ResultValue>) -> Option<u32> {
+    let (number, _) = value?.integer?;
+    if number < 0 {
+        i32::try_from(number).ok().map(|number| number as u32)
+    } else {
+        u32::try_from(number).ok()
+    }
+}
+pub(super) fn item_actions(
+    descriptor: &'static Descriptor,
+    _binding: &crate::app::metadata::Binding,
+    value: Option<&crate::app::result_value::ResultValue>,
+) -> Vec<super::ItemAction> {
+    let Some(code) = item_code(value) else {
+        return Vec::new();
+    };
+    vec![super::ItemAction {
+        label: IDS_ERROR_CODE_SEARCH,
+        run: Box::new(move |ctx| {
+            if let Some(view) = super::open_descriptor(ctx, descriptor, false) {
+                view.search_code(code);
+            }
+        }),
+    }]
+}
 const SCOPES: &[(u16, Scope)] = &[
     (IDS_ERROR_CODE_AUTO, Scope::Auto),
     (IDS_ERROR_CODE_WIN32, Scope::Win32),
@@ -112,6 +137,25 @@ impl View {
         } else {
             text(self.hwnd)
         }
+    }
+    fn search_code(&self, code: u32) {
+        self.cancel_languages();
+        if let Some(id) = self.query_ticket.take() {
+            self.ctx().cancel_job(id);
+        }
+        self.setting.set(true);
+        send(self.scope, CB_SETCURSEL, 0, 0);
+        set_text(self.input, &format!("0x{code:08X}"));
+        unsafe {
+            EnableWindow(self.language, 1);
+            EnableWindow(self.query, 1);
+        }
+        self.system_languages(false);
+        self.setting.set(false);
+        self.changed();
+        self.layout();
+        self.execute();
+        self.focus();
     }
     fn update_icons(&self) {
         let ctx = self.ctx();
@@ -915,6 +959,33 @@ fn render_message(lines: &mut Vec<String>, message: &Message) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn item_actions_accept_only_checked_32_bit_integer_codes() {
+        use crate::app::result_value::ResultValue;
+        assert_eq!(item_code(None), None);
+        for (number, bits, expected) in [
+            (0, 8, Some(0)),
+            (-1, 8, Some(u32::MAX)),
+            (i32::MIN as i128, 32, Some(0x80000000)),
+            (u32::MAX as i128, 64, Some(u32::MAX)),
+            (i32::MIN as i128 - 1, 64, None),
+            (u32::MAX as i128 + 1, 64, None),
+        ] {
+            let value = ResultValue {
+                text: number.to_string(),
+                hexadecimal: None,
+                integer: Some((number, bits)),
+            };
+            assert_eq!(item_code(Some(&value)), expected);
+        }
+        let value = ResultValue {
+            text: "5".into(),
+            hexadecimal: None,
+            integer: None,
+        };
+        assert_eq!(item_code(Some(&value)), None);
+    }
     #[test]
     fn language_identity_requires_the_selected_label_to_match_editable_text() {
         let ids = [0x409, 0x804];

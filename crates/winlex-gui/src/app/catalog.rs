@@ -448,6 +448,13 @@ pub(super) fn context_menu(ctx: &Context, hwnd: HWND, location: isize) -> anyhow
             menu.item(5, resources::wide_text(IDS_RESULT_COPY_HEX), true)?;
         }
     }
+    let actions = super::tools::item_actions(&binding, value.as_ref());
+    if !actions.is_empty() {
+        menu.separator()?;
+        for (index, action) in actions.iter().enumerate() {
+            menu.item(100 + index as u16, resources::wide_text(action.label), true)?;
+        }
+    }
     match menu.track(hwnd, point) {
         command @ (1 | 2) => {
             let mode = if command == 1 { Open::Pin } else { Open::New };
@@ -482,6 +489,11 @@ pub(super) fn context_menu(ctx: &Context, hwnd: HWND, location: isize) -> anyhow
                 if let Some(text) = text {
                     copy_unicode(hwnd, &text.encode_utf16().collect::<Vec<_>>())?;
                 }
+            }
+        }
+        command if command >= 100 => {
+            if let Some(action) = actions.into_iter().nth((command - 100) as usize) {
+                action.execute(ctx);
             }
         }
         _ => {}

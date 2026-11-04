@@ -6,6 +6,7 @@ BEGIN
     IDS_RESULT_COPY_NAME "Copy Full Name"
     IDS_RESULT_COPY_VALUE "Copy Value"
     IDS_RESULT_COPY_HEX "Copy Hexadecimal Value"
+    IDS_ERROR_CODE_SEARCH "Search Error Code"
     IDS_PANEL_TOOLS "Tools"
     IDS_TOOL_OPEN "Open"
     IDS_TOOL_NEW "New instance"

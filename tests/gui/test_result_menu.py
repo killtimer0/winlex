@@ -9,7 +9,8 @@ from test_context import clipboard_text, dismiss, popup, wait_clipboard_availabl
 
 
 def result(app, name):
-    app.command(1040)
+    if not n.is_visible(app.results):
+        app.command(1040)
     app.query(name)
     row = app.named_rows(name)[0]
     app.select(row)
@@ -53,6 +54,16 @@ def test_result_menu_shapes_and_keyboard(launch, settings, request):
                 assert labels == {ident: names[ident] for ident in expected}
         finally:
             dismiss(app.results)
+
+
+def test_search_entry_enter_does_not_open_selected_result(launch, settings):
+    app = launch([settings[1]])
+    result(app, "CreateFileW")
+    app.focus(app.search)
+    n.key_message(app.search, win32con.VK_RETURN)
+    n.wait(lambda: app.status_text().startswith(("Results ", "共 ")), "explicit search completed", 45)
+    assert not app.documents()
+    assert app.focused() == app.search
 
 
 def test_guid_result_menu_has_value_without_hexadecimal(launch, settings):
