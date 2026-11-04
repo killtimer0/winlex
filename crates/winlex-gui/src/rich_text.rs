@@ -799,7 +799,7 @@ mod tests {
             WS_POPUP | WS_VISIBLE,
             crate::layout::rect(-10000, -10000, 600, 200),
         );
-        place(fixture.1, crate::layout::rect(0, 0, 500, 100));
+        set_bounds(fixture.1, crate::layout::rect(0, 0, 500, 100)).unwrap();
         fixture.font_size(360);
         let mut rendered = Rendered::from("Target");
         rendered.regions.push(Region {
@@ -856,7 +856,7 @@ mod tests {
                 crate::layout::rect(-10000, -10000, 900, 600),
             );
             let Editor(parent, editor) = fixture;
-            place(editor, crate::layout::rect(0, 0, 750, 500));
+            set_bounds(editor, crate::layout::rect(0, 0, 750, 500)).unwrap();
             let mut received = Vec::<ENLINK>::new();
             assert_ne!(
                 set_subclass(parent, Some(observe), 1, &mut received as *mut _ as usize),
@@ -982,7 +982,7 @@ mod tests {
         unsafe {
             let fixture = Editor::new(WS_POPUP, crate::layout::rect(0, 0, 900, 600));
             let editor = fixture.1;
-            place(editor, crate::layout::rect(0, 0, 800, 400));
+            set_bounds(editor, crate::layout::rect(0, 0, 800, 400)).unwrap();
             let body = "ERROR_ACCESS_DENIED  next_value(x);";
             set_content(editor, &Content::new(body.into())).unwrap();
             for (index, expected) in [(8, (0, 19)), (25, (21, 31)), (31, (31, 32))] {
@@ -1058,7 +1058,7 @@ mod tests {
         let content = Content::from(rendered);
         let fixture = Editor::new(WS_POPUP | WS_VISIBLE, crate::layout::rect(0, 0, 900, 600));
         let editor = fixture.1;
-        place(editor, crate::layout::rect(0, 0, 750, 500));
+        set_bounds(editor, crate::layout::rect(0, 0, 750, 500)).unwrap();
         focus(editor);
         let start = Instant::now();
         set_content(editor, &content).unwrap();
@@ -1085,7 +1085,7 @@ mod tests {
 
         let fixture = Editor::new(WS_POPUP | WS_VISIBLE, crate::layout::rect(0, 0, 900, 600));
         let editor = fixture.1;
-        place(editor, crate::layout::rect(0, 0, 750, 500));
+        set_bounds(editor, crate::layout::rect(0, 0, 750, 500)).unwrap();
         focus(editor);
         fixture.font_size(210);
         for body in [
@@ -1155,10 +1155,10 @@ mod tests {
         let fixture = Editor::new(WS_POPUP, crate::layout::rect(0, 0, 900, 600));
         let editor = fixture.1;
         let body = "const UINT32 example = 123; // a long declaration with several words that wrap without changing the copied text 😀";
-        place(editor, crate::layout::rect(0, 0, 800, 400));
+        set_bounds(editor, crate::layout::rect(0, 0, 800, 400)).unwrap();
         set_content(editor, &Content::new(body.into())).unwrap();
         let wide_lines = send(editor, EM_GETLINECOUNT, 0, 0);
-        place(editor, crate::layout::rect(0, 0, 180, 400));
+        set_bounds(editor, crate::layout::rect(0, 0, 180, 400)).unwrap();
         assert!(send(editor, EM_GETLINECOUNT, 0, 0) > wide_lines);
         assert_eq!(text(editor), body);
         recolor(editor, &Content::new(body.into())).unwrap();

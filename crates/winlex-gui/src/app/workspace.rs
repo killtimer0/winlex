@@ -201,11 +201,12 @@ pub(super) fn scale_documents() {
         .into_iter()
         .filter_map(|d| d.placement().map(|p| (d.hwnd(), p)))
         .collect();
-    for (hwnd, placement) in docs {
-        if unsafe { IsZoomed(hwnd) == 0 && IsIconic(hwnd) == 0 } {
-            place(hwnd, placement.at(dpi().window(hwnd)));
-        }
-    }
+    let positions: Vec<_> = docs
+        .into_iter()
+        .filter(|(hwnd, _)| unsafe { IsZoomed(*hwnd) == 0 && IsIconic(*hwnd) == 0 })
+        .map(|(hwnd, placement)| (hwnd, placement.at(dpi().window(hwnd))))
+        .collect();
+    let _ = place_all(&positions);
 }
 pub(super) fn capture_placements() {
     let mdi = read(|a| a.workspace.mdi);

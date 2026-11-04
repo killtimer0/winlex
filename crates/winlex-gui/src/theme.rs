@@ -1121,7 +1121,7 @@ mod tests {
                 3,
             )
             .unwrap();
-            place(
+            set_bounds(
                 button,
                 RECT {
                     left: 200,
@@ -1129,7 +1129,8 @@ mod tests {
                     right: 300,
                     bottom: 30,
                 },
-            );
+            )
+            .unwrap();
             let status = child(parent, w!("msctls_statusbar32"), &[0], 0, 4).unwrap();
             let parts = [150i32, -1];
             assert_ne!(
@@ -1140,7 +1141,7 @@ mod tests {
                 send(status, SB_SETTEXTW, 0, wide("Ready").as_ptr() as isize),
                 0
             );
-            place(
+            set_bounds(
                 checkbox,
                 RECT {
                     left: 0,
@@ -1148,9 +1149,10 @@ mod tests {
                     right: 180,
                     bottom: 30,
                 },
-            );
+            )
+            .unwrap();
             let tabs = child(parent, w!("SysTabControl32"), &[0], WS_TABSTOP, 2).unwrap();
-            place(
+            set_bounds(
                 tabs,
                 RECT {
                     left: 0,
@@ -1158,7 +1160,8 @@ mod tests {
                     right: 200,
                     bottom: 160,
                 },
-            );
+            )
+            .unwrap();
             for (index, title) in ["First", "Second"].iter().enumerate() {
                 let mut label = wide(title);
                 let item = TCITEMW {
@@ -1304,7 +1307,7 @@ mod tests {
                 right: 220,
                 bottom: 40,
             };
-            place(checkbox, area);
+            set_bounds(checkbox, area).unwrap();
             set_subclass(parent, Some(native_glyph), SUBCLASS + 1, 0);
             set_mode(2);
             apply(parent);
@@ -1447,7 +1450,7 @@ mod tests {
                 1,
             )
             .unwrap();
-            place(
+            set_bounds(
                 link,
                 RECT {
                     left: 0,
@@ -1455,7 +1458,8 @@ mod tests {
                     right: 250,
                     bottom: 40,
                 },
-            );
+            )
+            .unwrap();
             let mut item = LITEM {
                 mask: LIF_ITEMINDEX | LIF_STATE,
                 iLink: 0,

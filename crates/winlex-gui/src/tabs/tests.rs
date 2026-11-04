@@ -44,7 +44,7 @@ impl Fixture {
                 crate::layout::rect(0, 0, 600, 150),
             );
             let tabs = create(parent, 42, "Pages".into(), "Select".into()).unwrap();
-            place(tabs, crate::layout::rect(0, 0, 500, 32));
+            set_bounds(tabs, crate::layout::rect(0, 0, 500, 32)).unwrap();
             REQUESTS.with(|r| r.borrow_mut().clear());
             Self {
                 parent,

@@ -195,11 +195,6 @@ pub fn window_placement(hwnd: HWND, action: &str) -> anyhow::Result<WINDOWPLACEM
         Ok(placement)
     }
 }
-pub fn place(hwnd: HWND, r: RECT) {
-    if !hwnd.is_null() {
-        let _ = place_all(&[(hwnd, r)]);
-    }
-}
 pub fn set_bounds(hwnd: HWND, r: RECT) -> anyhow::Result<()> {
     if unsafe {
         SetWindowPos(
@@ -631,8 +626,8 @@ mod tests {
             );
             let edit = child(parent, w!("EDIT"), &[0], 0, 1).unwrap();
             let sibling = child(parent, w!("STATIC"), &[0], 0, 2).unwrap();
-            place(edit, crate::layout::rect(10, 10, 200, 28));
-            place(sibling, crate::layout::rect(220, 10, 100, 28));
+            set_bounds(edit, crate::layout::rect(10, 10, 200, 28)).unwrap();
+            set_bounds(sibling, crate::layout::rect(220, 10, 100, 28)).unwrap();
             let mut observation = Observation {
                 sibling,
                 edges: vec![],

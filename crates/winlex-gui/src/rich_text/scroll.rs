@@ -65,7 +65,7 @@ mod tests {
                 crate::layout::rect(-10000, -10000, 900, 600),
             );
             let hwnd = editor.1;
-            place(hwnd, crate::layout::rect(0, 0, 750, 500));
+            set_bounds(hwnd, crate::layout::rect(0, 0, 750, 500)).unwrap();
             set_content(
                 hwnd,
                 &Content::new("const UINT32 value = 42;\n".repeat(15000)),
@@ -121,7 +121,7 @@ mod tests {
         assert_eq!(position(hwnd).y, original);
         assert_eq!(editor.selection(), (70009, 70023));
         editor.font_size(420);
-        place(hwnd, crate::layout::rect(0, 0, 470, 500));
+        set_bounds(hwnd, crate::layout::rect(0, 0, 470, 500)).unwrap();
         send(hwnd, EM_GETLINECOUNT, 0, 0);
         before.restore(hwnd);
         assert_eq!(editor.selection(), (70009, 70023));
