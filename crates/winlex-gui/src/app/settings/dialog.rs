@@ -1,4 +1,3 @@
-use super::super::frame;
 use super::{Preferences, THEMES, catalog};
 use crate::app::context::Context;
 use crate::{
@@ -65,7 +64,7 @@ fn show(ctx: &Context) -> anyhow::Result<()> {
     let mut header: PROPSHEETHEADERW_V2 = unsafe { std::mem::zeroed() };
     header.dwSize = size_of::<PROPSHEETHEADERW_V2>() as u32;
     header.dwFlags = PSH_PROPSHEETPAGE | PSH_NOAPPLYNOW | PSH_NOCONTEXTHELP | PSH_USECALLBACK;
-    header.hwndParent = frame::hwnd(ctx);
+    header.hwndParent = ctx.frame();
     header.hInstance = instance();
     header.pszCaption = resources::wide_text(IDS_SETTINGS).as_ptr();
     header.nPages = pages.len() as u32;
@@ -236,7 +235,7 @@ fn commit(state: &Dialog<'_>) -> anyhow::Result<()> {
     super::set_preferences(state.ctx, preferences)?;
     if state.initial.theme != theme {
         crate::theme::set_mode(theme as u32);
-        send(frame::hwnd(state.ctx), WM_THEMECHANGED, 0, 0);
+        send(state.ctx.frame(), WM_THEMECHANGED, 0, 0);
     }
     Ok(())
 }

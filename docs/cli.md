@@ -128,7 +128,7 @@ winlex Windows.Win32.winmd search --where 'value = nan or value = inf'
 `winlex_core::Catalog` 提供同步查询，可通过 `Arc` 跨线程共享。搜索和布局结果拥有独立数据，声明视图借用所属 `Catalog`。
 搜索和反向引用支持 `SearchOptions.cancel` 协作式取消；单次描述和布局查询不提供取消点。
 `SearchOptions.mode` 选择 `SearchMode::{Combined, Name, Value, Guid, Condition}`，默认 `Combined`。无效输入返回带 `InvalidSearchInput` 上下文的错误；表达式错误可读取 `QueryError`。`Catalog::search_exact` 独立提供严格名称选择，不进行范围浏览。
-可用 `Query::parse` 或构造 `Query` 条件树，再调用 `Catalog::search_query`；需要分离编译和执行时使用 `CompiledQuery` 与 `Catalog::search_compiled`。
+可用 `CompiledQuery::compile` 编译搜索文本，或通过 `Query::parse`／构造 `Query` 条件树后调用 `CompiledQuery::from_query`；编译结果交给 `Catalog::search_compiled` 执行。
 搜索迭代器逐条返回 `SearchMatch`，其中 `entity` 是实体信息，`quality` 是排序质量，`evidence` 是实际命中字段。迭代顺序是扫描顺序，展示前使用 `SearchMatch::compare` 排序。
 需要在未命中候选之间处理进度时，可用 `Search::step` 逐项扫描，区分命中、跳过和结束状态。
 

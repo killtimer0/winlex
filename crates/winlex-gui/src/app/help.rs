@@ -1,4 +1,3 @@
-use super::frame;
 use crate::app::context::Context;
 use crate::{
     dialog::{MOVE_X, MOVE_Y, SIZE_X, SIZE_Y, modal},
@@ -10,7 +9,7 @@ use std::cell::RefCell;
 
 pub(super) fn search(ctx: &Context) -> anyhow::Result<()> {
     modal::show(
-        frame::hwnd(ctx),
+        ctx.frame(),
         ctx.dpi(),
         resources::dialog(IDD_SEARCH_HELP)?,
         &[
@@ -32,7 +31,7 @@ pub(super) fn search(ctx: &Context) -> anyhow::Result<()> {
 pub(super) fn about(ctx: &Context) -> anyhow::Result<()> {
     let icons = RefCell::new(None);
     modal::show(
-        frame::hwnd(ctx),
+        ctx.frame(),
         ctx.dpi(),
         resources::dialog(IDD_ABOUT)?,
         &[],

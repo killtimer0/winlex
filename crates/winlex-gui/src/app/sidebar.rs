@@ -1,6 +1,6 @@
 //! Sidebar visibility, toolbar, width and focus handoff.
 use super::{
-    bind, frame,
+    bind,
     panel::{self, Panel, PanelId, Search},
 };
 use crate::app::context::Context;
@@ -180,7 +180,7 @@ fn sync_visibility(ctx: &Context) {
     crate::native::show(splitter, !collapsed);
 }
 pub(super) fn prepare(ctx: &Context) {
-    let frame = frame::hwnd(ctx);
+    let frame = ctx.frame();
     let (toolbar, panels) = ctx.with_sidebar(|sidebar| (sidebar.toolbar, sidebar.panels.clone()));
     let m = ctx.metrics(frame);
     bind(toolbar, m.font);
@@ -208,7 +208,7 @@ fn update_images(ctx: &Context, toolbar: HWND, size: i32) {
     }
 }
 pub(super) fn recolor(ctx: &Context) {
-    let frame = frame::hwnd(ctx);
+    let frame = ctx.frame();
     let (toolbar, panels) = ctx.with_sidebar(|sidebar| (sidebar.toolbar, sidebar.panels.clone()));
     update_images(ctx, toolbar, layout::scale(24, ctx.dpi().window(frame)));
     for panel in panels {
@@ -216,7 +216,7 @@ pub(super) fn recolor(ctx: &Context) {
     }
 }
 pub(super) fn layout(ctx: &Context, bottom: i32, positions: &mut Vec<(HWND, RECT)>) -> i32 {
-    let frame = frame::hwnd(ctx);
+    let frame = ctx.frame();
     let (toolbar, splitter, width, panel) = ctx.with_sidebar(|sidebar| {
         let s = &sidebar;
         (
@@ -269,7 +269,7 @@ pub(super) unsafe extern "system" fn splitter_proc(
             }
             WM_MOUSEMOVE if GetCapture() == hwnd => {
                 let mut p = point_from_lparam(l);
-                let frame = frame::hwnd(ctx);
+                let frame = ctx.frame();
                 let toolbar = ctx.with_sidebar(|sidebar| sidebar.toolbar);
                 MapWindowPoints(hwnd, frame, &mut p, 1);
                 let x = bounds(toolbar, frame).right + layout::scale(4, ctx.dpi().window(frame));

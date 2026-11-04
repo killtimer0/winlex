@@ -4,12 +4,6 @@ use crate::app::context::Context;
 use crate::{layout, native::*, resources::*};
 use std::ptr;
 
-pub(super) fn hwnd(ctx: &Context) -> HWND {
-    ctx.frame()
-}
-pub(super) fn status_bar(ctx: &Context) -> HWND {
-    ctx.status_bar()
-}
 fn prepare(ctx: &Context) {
     let frame = ctx.frame();
     let tabs = workspace::tabs(ctx);

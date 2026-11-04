@@ -316,14 +316,13 @@ pub fn run(
 }
 
 fn finish_output(written: std::io::Result<()>, err: &mut dyn Write, exit: u8) -> u8 {
-    match written {
-        Ok(()) => exit,
-        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => exit,
-        Err(e) => {
-            let _ = writeln!(err, "output error: {e}");
-            4
-        }
+    if let Err(e) = written
+        && e.kind() != std::io::ErrorKind::BrokenPipe
+    {
+        let _ = writeln!(err, "output error: {e}");
+        return 4;
     }
+    exit
 }
 
 mod text;

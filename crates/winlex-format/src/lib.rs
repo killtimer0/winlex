@@ -200,6 +200,16 @@ pub fn member_ids<'a, R: HasAttributes<'a> + AsRow<'a>>(
     rows.filter(move |r| arch.is_none_or(|a| winlex_core::metadata::supports(*r, a.bit())))
         .map(move |r| key(r, table))
 }
+/// Presentation name for a type's declared layout kind.
+pub fn layout_kind(flags: TypeAttributes) -> &'static str {
+    if flags.contains(TypeAttributes::ExplicitLayout) {
+        "explicit"
+    } else if flags.contains(TypeAttributes::SequentialLayout) {
+        "sequential"
+    } else {
+        "auto"
+    }
+}
 pub fn describe(c: &Catalog, id: EntityId, arch: Option<Architecture>) -> Result<Json> {
     let row = c.declaration(id, arch)?;
     let e = c.summarize(id, &row);
@@ -215,13 +225,7 @@ pub fn describe(c: &Catalog, id: EntityId, arch: Option<Architecture>) -> Result
                     "pack_bytes": l.packing_size(),
                     "declared_size_bytes": l.class_size(),
                 })),
-                "layout_kind": if t.flags().contains(TypeAttributes::ExplicitLayout) {
-                    "explicit"
-                } else if t.flags().contains(TypeAttributes::SequentialLayout) {
-                    "sequential"
-                } else {
-                    "auto"
-                },
+                "layout_kind": layout_kind(t.flags()),
                 "fields": member_ids(t.fields(), 4, arch)
                     .map(|id| describe(c, id, arch))
                     .collect::<Result<Vec<_>>>()?,

@@ -1,7 +1,7 @@
 //! MDI lifecycle, activation projection and one-shot arrangement commands.
 use super::content::Content;
 use super::metadata::MetadataView;
-use super::{document as host, frame, history};
+use super::{document as host, history};
 use crate::app::context::Context;
 use crate::{
     layout::{Arrangement, Placement},
@@ -80,7 +80,7 @@ pub(super) fn show_document(ctx: &Context, hwnd: HWND) {
 }
 /// Opening from the sidebar shows the document without taking keyboard focus from it.
 pub(super) fn keep_focus(ctx: &Context, open: impl FnOnce()) {
-    let frame = frame::hwnd(ctx);
+    let frame = ctx.frame();
     let mdi = mdi(ctx);
     let previous = unsafe { GetFocus() };
     let sidebar = !previous.is_null()
@@ -226,7 +226,7 @@ fn tab_menu(ctx: &Context, hwnd: HWND, point: POINT) -> anyhow::Result<()> {
     if view(ctx, hwnd).is_some_and(|d| d.preview.get()) {
         menu.item(2, resources::wide_text(IDS_TAB_PIN), true)?;
     }
-    match menu.track(frame::hwnd(ctx), point) {
+    match menu.track(ctx.frame(), point) {
         1 => close_document(ctx, hwnd),
         2 => pin_document(ctx, hwnd),
         _ => {}

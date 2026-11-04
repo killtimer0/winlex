@@ -1,6 +1,6 @@
 //! UI transactions and immutable document bindings. HWNDs never cross the worker boundary.
 use super::{
-    frame, history,
+    history,
     metadata::{self, ArchitectureChoice, Binding},
     settings, workspace,
 };
@@ -345,7 +345,7 @@ fn submit_search(ctx: &Context) {
     super::status::refresh_status(ctx);
 }
 fn results_list(ctx: &Context) -> HWND {
-    unsafe { GetDlgItem(frame::hwnd(ctx), RESULTS as i32) }
+    unsafe { GetDlgItem(ctx.frame(), RESULTS as i32) }
 }
 fn update_results(ctx: &Context) {
     let hwnd = results_list(ctx);

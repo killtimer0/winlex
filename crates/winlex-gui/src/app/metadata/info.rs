@@ -325,15 +325,8 @@ impl Info {
                     GetTextExtentPoint32W(dc, value.as_ptr(), value.len() as i32, &mut size);
                     size.cx
                 };
-                let mut monitor: MONITORINFO = std::mem::zeroed();
-                monitor.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
-                if GetMonitorInfoW(
-                    MonitorFromWindow(owner, MONITOR_DEFAULTTONEAREST),
-                    &mut monitor,
-                ) == 0
-                {
-                    return Err(error("Measure information menu work area"));
-                }
+                let monitor =
+                    monitor(owner).ok_or_else(|| error("Measure information menu work area"))?;
                 let width = m
                     .px(420)
                     .min((monitor.rcWork.right - monitor.rcWork.left) / 2);

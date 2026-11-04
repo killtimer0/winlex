@@ -185,8 +185,8 @@ pub(super) fn create(ctx: &Context, frame: HWND) -> anyhow::Result<([Rc<Panel>; 
         TOOL_LIST,
         super::tools::row,
         super::tools::row_text,
-        Some(Box::new(move |row, double| {
-            super::tools::activate(unsafe { &*state }, row, double)
+        Some(Box::new(move |row, _| {
+            super::tools::open(unsafe { &*state }, row, false)
         })),
         ctx.system_version(),
     )?;

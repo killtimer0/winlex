@@ -1,5 +1,5 @@
 //! Catalog/document status ownership and command feedback.
-use super::{catalog, frame, sidebar, workspace};
+use super::{catalog, sidebar, workspace};
 use crate::app::context::Context;
 use crate::native::{HWND, IsChild, set_status_text};
 
@@ -65,7 +65,7 @@ pub(super) fn report<T>(ctx: &Context, result: anyhow::Result<T>) -> Option<T> {
 }
 pub(super) fn refresh_status(ctx: &Context) {
     let state = ctx.with_status(|status| status.clone());
-    let hwnd = frame::status_bar(ctx);
+    let hwnd = ctx.status_bar();
     let message = state.message(
         |hwnd| workspace::content(ctx, hwnd).and_then(|content| content.status()),
         || catalog::status(ctx),

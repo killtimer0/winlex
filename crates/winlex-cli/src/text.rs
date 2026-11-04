@@ -3,7 +3,7 @@ use super::{Page, Query};
 use std::fmt::Write;
 use winlex_core::windows_metadata::{reader::*, *};
 use winlex_core::{Architecture, Catalog, Declaration, EntityId, Result, guid, metadata::key};
-use winlex_format::{attribute_value as value, member_ids};
+use winlex_format::{attribute_value as value, layout_kind, member_ids};
 
 fn ty(t: &Type) -> String {
     match t {
@@ -90,14 +90,7 @@ fn declaration(
             if let Some(g) = guid(t) {
                 writeln!(out, "{pad}  GUID: {g}")?;
             }
-            let kind = if t.flags().contains(TypeAttributes::ExplicitLayout) {
-                "explicit"
-            } else if t.flags().contains(TypeAttributes::SequentialLayout) {
-                "sequential"
-            } else {
-                "auto"
-            };
-            write!(out, "{pad}  layout: {kind}")?;
+            write!(out, "{pad}  layout: {}", layout_kind(t.flags()))?;
             if let Some(l) = t.class_layout() {
                 write!(
                     out,

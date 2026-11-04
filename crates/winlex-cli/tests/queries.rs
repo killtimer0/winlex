@@ -653,6 +653,9 @@ fn text_output_and_input_error() {
         }
         assert!(err.is_empty());
     }
+    let (code, response, _) = cli(&["show", "OVERLAPPED", "--arch", "x64"]);
+    assert_eq!(code, 0);
+    assert_eq!(response["result"]["layout_kind"], "sequential");
     let args = ["/does-not-exist.winmd", "--json", "summary"].map(OsString::from);
     let (code, out, _) = invoke(args);
     assert_eq!(code, 3);

@@ -1,5 +1,5 @@
 //! The source panel projects the committed catalog; opening files is a load transaction.
-use super::{catalog, frame};
+use super::catalog;
 use crate::app::context::Context;
 use crate::{
     icons::Icon,
@@ -117,7 +117,7 @@ fn size(bytes: usize) -> String {
 }
 
 fn list(ctx: &Context) -> HWND {
-    unsafe { GetDlgItem(frame::hwnd(ctx), SOURCE_LIST as i32) }
+    unsafe { GetDlgItem(ctx.frame(), SOURCE_LIST as i32) }
 }
 fn selected(ctx: &Context) -> Option<PathBuf> {
     let index = crate::list::selected(list(ctx))?;
@@ -126,7 +126,7 @@ fn selected(ctx: &Context) -> Option<PathBuf> {
 pub(super) fn update_actions(ctx: &Context) {
     let path = selected(ctx);
     let reload = path.as_ref().is_some_and(|p| !catalog::pending(ctx, p));
-    let frame = frame::hwnd(ctx);
+    let frame = ctx.frame();
     unsafe {
         EnableWindow(GetDlgItem(frame, RELOAD_SOURCE as i32), reload as i32);
         EnableWindow(
@@ -161,7 +161,7 @@ fn choose_add(ctx: &Context) {
     if let Some(paths) = super::status::report(
         ctx,
         input::choose(
-            frame::hwnd(ctx),
+            ctx.frame(),
             ctx.system_version(),
             IDS_LOAD_METADATA,
             IDS_WINMD_FILES,
