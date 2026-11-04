@@ -31,10 +31,10 @@ impl Content {
             Self::Tool(v) => Some(v.clone()),
         }
     }
-    pub fn status(&self) -> Option<String> {
+    pub fn status(&self) -> String {
         match self {
-            Self::Declaration(_) => None,
-            Self::Tool(v) => Some(v.status()),
+            Self::Declaration(_) => String::new(),
+            Self::Tool(v) => v.status(),
         }
     }
     pub fn id(&self) -> u64 {

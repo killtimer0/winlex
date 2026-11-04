@@ -2,6 +2,7 @@ LANGUAGE 9, 1
 STRINGTABLE
 BEGIN
     IDS_RESULT_OPEN "Open"
+    IDS_SOURCE_STATUS "Sources: {count}"
     IDS_RESULT_NEW "Open in New Window"
     IDS_RESULT_COPY_NAME "Copy Full Name"
     IDS_RESULT_COPY_VALUE "Copy Value"

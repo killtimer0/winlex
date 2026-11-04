@@ -149,6 +149,8 @@ def test_restore_successful_files(launch, profile, settings):
 def test_temporary_inputs_preserve_saved_files(launch, profile, settings):
     profile.set("AutoLoad", winreg.REG_MULTI_SZ, [str(settings[1])])
     app = launch([str(settings[2] / "missing.winmd")])
+    if not n.is_visible(app.sources):
+        app.command(1021)
     n.wait(lambda: "failed" in app.status_text() or "失败" in app.status_text(), "load error")
     assert app.count(app.sources) == 0
     assert profile.get("AutoLoad") == [str(settings[1])]
@@ -170,6 +172,8 @@ def test_failed_restore_preserves_saved_files(launch, profile, settings):
     missing = str(settings[2] / "missing-restored.winmd")
     profile.set("AutoLoad", winreg.REG_MULTI_SZ, [missing])
     app = launch()
+    if not n.is_visible(app.sources):
+        app.command(1021)
     n.wait(lambda: "failed" in app.status_text() or "失败" in app.status_text(), "restore error")
     assert profile.get("AutoLoad") == [missing]
     assert app.count(app.sources) == 0

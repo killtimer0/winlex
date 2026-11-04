@@ -140,13 +140,16 @@ pub(super) fn add(ctx: &Context, files: Vec<PathBuf>) {
     if files.is_empty() {
         return;
     }
-    super::status::begin_status(ctx, super::status::StatusContext::Catalog);
+    super::status::begin_status(
+        ctx,
+        super::status::StatusContext::Panel(super::panel::PanelId::Sources),
+    );
     let mut paths = catalog::paths(ctx);
     for file in files {
         let path = match std::path::absolute(file) {
             Ok(path) => path,
             Err(error) => {
-                super::status::set_status(ctx, error.to_string());
+                super::status::show_notice(ctx, error.to_string());
                 return;
             }
         };
@@ -178,7 +181,10 @@ pub(super) fn command(ctx: &Context, id: u16) -> bool {
         id,
         LOAD_METADATA | RELOAD_SOURCE | REMOVE_SOURCE | COPY_SOURCE_PATH
     ) {
-        super::status::begin_status(ctx, super::status::StatusContext::Catalog);
+        super::status::begin_status(
+            ctx,
+            super::status::StatusContext::Panel(super::panel::PanelId::Sources),
+        );
     }
     match id {
         LOAD_METADATA => choose_add(ctx),

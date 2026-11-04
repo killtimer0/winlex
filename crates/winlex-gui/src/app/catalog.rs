@@ -177,13 +177,7 @@ impl Session {
         }
         true
     }
-    pub fn status(&self) -> String {
-        if let Some(message) = self.load_error.as_ref() {
-            return message.clone();
-        }
-        if self.load.is_some() {
-            return resources::text(IDS_LOADING);
-        }
+    fn search_status(&self) -> String {
         match &self.search {
             Search::Idle => resources::text(if self.catalog.is_some() {
                 IDS_ENTER_QUERY
@@ -198,6 +192,15 @@ impl Session {
             Search::Failed(e) => format!("{e:#}"),
         }
     }
+    fn source_status(&self) -> String {
+        if let Some(error) = &self.load_error {
+            return error.clone();
+        }
+        if self.load.is_some() {
+            return resources::text(IDS_LOADING);
+        }
+        resources::text(IDS_SOURCE_STATUS).replace("{count}", &self.inputs().len().to_string())
+    }
 }
 pub(super) fn paths(ctx: &Context) -> Vec<PathBuf> {
     ctx.with_session(|session| session.paths())
@@ -211,8 +214,11 @@ pub(super) fn pending(ctx: &Context, path: &std::path::Path) -> bool {
 pub(super) fn contains_path(ctx: &Context, path: &std::path::Path) -> bool {
     ctx.with_session(|session| session.inputs().iter().any(|source| source.path() == path))
 }
-pub(super) fn status(ctx: &Context) -> String {
-    ctx.with_session(|session| session.status())
+pub(super) fn search_status(ctx: &Context) -> String {
+    ctx.with_session(|session| session.search_status())
+}
+pub(super) fn source_status(ctx: &Context) -> String {
+    ctx.with_session(|session| session.source_status())
 }
 pub(super) fn current_catalog(ctx: &Context) -> Option<Arc<Catalog>> {
     ctx.with_session(|session| session.catalog.clone())
@@ -251,13 +257,12 @@ pub(super) fn reload(ctx: &Context, paths: Vec<PathBuf>, reload: Vec<PathBuf>) {
 }
 
 pub(super) fn input_changed(ctx: &Context) {
-    super::status::begin_status(ctx, super::status::StatusContext::Catalog);
+    super::status::begin_status(
+        ctx,
+        super::status::StatusContext::Panel(super::panel::PanelId::Search),
+    );
     let (input, composing) = super::panel::cancel_debounce(ctx);
-    let cancelled = ctx.with_session_mut(|session| {
-        let cancelled = session.reset_search();
-        session.load_error = None;
-        cancelled
-    });
+    let cancelled = ctx.with_session_mut(|session| session.reset_search());
     if let Some(id) = cancelled {
         ctx.cancel_job(id);
     }
@@ -272,9 +277,6 @@ pub(super) fn input_changed(ctx: &Context) {
     super::status::refresh_status(ctx);
 }
 pub(super) fn search(ctx: &Context) {
-    ctx.with_session_mut(|session| {
-        session.load_error = None;
-    });
     submit_search(ctx);
 }
 fn submit_search(ctx: &Context) {
@@ -604,7 +606,7 @@ pub(super) fn worker_stopped(ctx: &Context) {
         session.fail_load(resources::text(IDS_WORKER_STOPPED));
         session.search = Search::Idle;
     });
-    super::status::set_status(ctx, resources::text(IDS_WORKER_STOPPED));
+    super::status::show_notice(ctx, resources::text(IDS_WORKER_STOPPED));
     super::sources::refresh(ctx);
 }
 pub(super) fn loaded(ctx: &Context, id: u64, result: anyhow::Result<Option<Arc<Catalog>>>) {
@@ -642,6 +644,17 @@ pub(super) fn search_done(ctx: &Context, id: u64, result: anyhow::Result<()>) {
 mod tests {
     use super::*;
     use crate::results::ResultItem;
+
+    #[test]
+    fn source_failure_and_search_failure_have_independent_owners() {
+        let mut session = Session::default();
+        session.fail_load("source failed".into());
+        session.search = Search::Failed(anyhow::anyhow!("search failed"));
+        assert_eq!(session.source_status(), "source failed");
+        assert_eq!(session.search_status(), "search failed");
+        session.reset_search();
+        assert_eq!(session.source_status(), "source failed");
+    }
     fn execute_load(ticket: &Ticket, job: Job) -> Result<Option<Arc<Catalog>>, String> {
         let result = std::cell::RefCell::new(None);
         crate::tasks::run(job, ticket, &|completion| {
@@ -792,9 +805,9 @@ mod tests {
         session.load_error = Some("load transaction failed".into());
         assert!(!session.finish_search(1, Ok(())));
         assert!(session.accept_matches(2, vec![]));
-        assert_eq!(session.status(), "load transaction failed");
+        assert_eq!(session.source_status(), "load transaction failed");
         assert!(session.finish_search(2, Ok(())));
-        assert_eq!(session.status(), "load transaction failed");
+        assert_eq!(session.source_status(), "load transaction failed");
         assert!(!session.finish_search(2, Err(anyhow::anyhow!("late failure"))));
         assert!(matches!(session.search, Search::Done));
     }

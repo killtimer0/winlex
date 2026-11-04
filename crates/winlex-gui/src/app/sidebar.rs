@@ -144,13 +144,13 @@ pub(super) fn create(ctx: &Context, frame: HWND) -> anyhow::Result<()> {
     Ok(())
 }
 pub(super) fn show(ctx: &Context, id: PanelId, toggle: bool) {
-    super::status::begin_status(ctx, super::status::StatusContext::Catalog);
     ctx.with_sidebar_mut(|sidebar| {
         let s = &mut *sidebar;
         s.collapsed = toggle && s.active == id && !s.collapsed;
         s.active = id;
     });
     sync_visibility(ctx);
+    super::status::begin_status(ctx, super::status::StatusContext::Panel(id));
     super::frame::layout_frame(ctx);
     focus(ctx);
 }

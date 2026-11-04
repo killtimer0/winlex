@@ -36,6 +36,13 @@ pub(super) enum PanelId {
 }
 pub(super) const SEARCH_PANEL: PanelId = PanelId::Search;
 pub(super) const SOURCES_PANEL: PanelId = PanelId::Sources;
+pub(super) fn status(ctx: &Context, id: PanelId) -> String {
+    match id {
+        PanelId::Search => catalog::search_status(ctx),
+        PanelId::Sources => catalog::source_status(ctx),
+        PanelId::Tools => String::new(),
+    }
+}
 impl PanelId {
     pub const ALL: [Self; 3] = [Self::Search, Self::Sources, Self::Tools];
     pub fn from_saved(value: u32) -> Self {
@@ -53,6 +60,7 @@ impl PanelId {
     }
 }
 pub(super) struct Panel {
+    pub id: PanelId,
     pub controls: Vec<HWND>,
     pub list: List,
 }
@@ -143,6 +151,7 @@ pub(super) fn create(ctx: &Context, frame: HWND) -> anyhow::Result<([Rc<Panel>; 
         ctx.system_version(),
     )?;
     let search_panel = Rc::new(Panel {
+        id: PanelId::Search,
         controls: vec![input, list.hwnd, mode],
         list,
     });
@@ -179,7 +188,11 @@ pub(super) fn create(ctx: &Context, frame: HWND) -> anyhow::Result<([Rc<Panel>; 
         }?);
     }
     sources::update_actions(ctx);
-    let sources_panel = Rc::new(Panel { controls, list });
+    let sources_panel = Rc::new(Panel {
+        id: PanelId::Sources,
+        controls,
+        list,
+    });
     let list = List::new(
         frame,
         TOOL_LIST,
@@ -209,7 +222,11 @@ pub(super) fn create(ctx: &Context, frame: HWND) -> anyhow::Result<([Rc<Panel>; 
         [
             search_panel,
             sources_panel,
-            Rc::new(Panel { controls, list }),
+            Rc::new(Panel {
+                id: PanelId::Tools,
+                controls,
+                list,
+            }),
         ],
         search,
     ))
@@ -261,14 +278,23 @@ impl Search {
     fn command(&self, ctx: &Context, id: u16, code: u32) -> bool {
         match id {
             SEARCH if code == EN_SETFOCUS => {
-                super::status::status_context(ctx, super::status::StatusContext::Catalog);
+                super::status::status_context(
+                    ctx,
+                    super::status::StatusContext::Panel(PanelId::Search),
+                );
             }
             SEARCH_MODE if code == CBN_SETFOCUS => {
-                super::status::status_context(ctx, super::status::StatusContext::Catalog);
+                super::status::status_context(
+                    ctx,
+                    super::status::StatusContext::Panel(PanelId::Search),
+                );
             }
             SEARCH if code == EN_CHANGE => catalog::input_changed(ctx),
             SEARCH_MODE if code == CBN_SELENDOK => {
-                super::status::begin_status(ctx, super::status::StatusContext::Catalog);
+                super::status::begin_status(
+                    ctx,
+                    super::status::StatusContext::Panel(PanelId::Search),
+                );
                 let index = send(self.selector, CB_GETCURSEL, 0, 0) as usize;
                 if index < SEARCH_MODES.len() && self.mode.replace(index) != index {
                     let tool = search_tool(self.input, SEARCH_MODES[index].2);

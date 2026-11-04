@@ -445,7 +445,7 @@ impl MetadataView {
         } == 0
         {
             self.state.borrow_mut().navigation = None;
-            super::status::set_status(
+            super::status::show_notice(
                 self.ctx(),
                 format!("{:#}", error("Queue declaration navigation")),
             );

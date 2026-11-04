@@ -140,7 +140,7 @@ unsafe fn run_windows(ctx: &Context, paths: Vec<std::path::PathBuf>) -> anyhow::
             catalog::reload(ctx, paths, vec![]);
         }
         if let Some(warning) = ctx.with_config(|config| config.warning()) {
-            status::set_status(ctx, format!("{warning:#}"));
+            status::show_notice(ctx, format!("{warning:#}"));
         }
         ShowWindow(
             frame,

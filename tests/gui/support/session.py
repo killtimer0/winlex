@@ -181,6 +181,8 @@ class Session:
         return struct.unpack("<4i", buffer.raw)
 
     def query(self, value):
+        if not n.is_visible(self.search):
+            self.command(1040)
         n.set_text(self.search, value)
         n.wait(lambda: self.status_text().startswith(("Results ", "共 ")), "search completed", 45)
 
