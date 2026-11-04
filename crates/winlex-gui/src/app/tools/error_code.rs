@@ -5,8 +5,8 @@ use crate::{
     layout,
     native::*,
     resources::{self, *},
+    tasks::ToolJob,
 };
-use executor::{Completion, Executor};
 use std::{
     cell::{Cell, RefCell},
     ffi::OsString,
@@ -21,9 +21,6 @@ use winlex_core::{
     },
 };
 
-mod executor;
-
-const TIMER: usize = 1810;
 const TEXT_SUBCLASS: usize = 1810;
 const SCOPES: &[(u16, Scope)] = &[
     (IDS_ERROR_CODE_AUTO, Scope::Auto),
@@ -57,7 +54,6 @@ pub(in crate::app) struct View {
     revision: Cell<u64>,
     languages: RefCell<Vec<u16>>,
     body: RefCell<crate::rich_text::Content>,
-    executor: Executor,
 }
 impl View {
     pub fn new(descriptor: &'static Descriptor) -> Self {
@@ -85,7 +81,6 @@ impl View {
             revision: Cell::new(0),
             languages: RefCell::new(vec![]),
             body: RefCell::new(crate::rich_text::Content::new(String::new())),
-            executor: Executor::new(),
         }
     }
 }
@@ -242,12 +237,11 @@ impl View {
         ids.push(resources::interface_langid());
         self.set_languages(ids, preserve);
     }
-    fn start_timer(&self) -> anyhow::Result<()> {
-        if unsafe { SetTimer(self.hwnd, TIMER, 75, None) } == 0 {
-            Err(error("Start tool completion timer"))
-        } else {
-            Ok(())
-        }
+    fn submit(&self, job: ToolJob) -> anyhow::Result<()> {
+        super::super::write(|a| {
+            let ticket = a.session.ticket();
+            a.tool_worker.replace(None, ticket, job)
+        })
     }
     fn refresh_module_languages(&self) {
         if !self.custom() {
@@ -257,10 +251,10 @@ impl View {
         if path.as_os_str().is_empty() {
             return;
         }
-        if let Err(error) = self
-            .start_timer()
-            .and_then(|()| self.executor.languages(path))
-        {
+        if let Err(error) = self.submit(ToolJob::ErrorCodeLanguages {
+            document: self.id,
+            path,
+        }) {
             self.set_status(&format!("{error:#}"));
         }
     }
@@ -279,10 +273,11 @@ impl View {
             }
         };
         let revision = self.revision.get();
-        match self
-            .start_timer()
-            .and_then(|()| self.executor.query(request, revision))
-        {
+        match self.submit(ToolJob::ErrorCode {
+            document: self.id,
+            revision,
+            request,
+        }) {
             Ok(()) => {
                 unsafe { EnableWindow(self.query, 0) };
                 self.set_status(&resources::text(IDS_ERROR_CODE_QUERYING));
@@ -290,55 +285,44 @@ impl View {
             Err(error) => self.set_status(&format!("{error:#}")),
         }
     }
-    fn poll(&self) {
-        while let Some(message) = self.executor.poll() {
-            match message {
-                Completion::Query { revision, result } => {
-                    unsafe { EnableWindow(self.query, 1) };
-                    let body = match result {
-                        Ok(result) => {
-                            super::super::document::update_title(
-                                self.hwnd,
-                                &format!(
-                                    "{} — 0x{:08X}",
-                                    resources::text(IDS_ERROR_CODE_TOOL),
-                                    result.request.code
-                                ),
-                            );
-                            render(&result)
-                        }
-                        Err(error) => {
-                            format!("{}: {error:#}", resources::text(IDS_ERROR_CODE_FAILED))
-                        }
-                    };
-                    let body = crate::rich_text::Content::new(body);
-                    if let Err(error) = crate::rich_text::set_content(self.result, &body) {
-                        self.set_status(&format!("{error:#}"));
-                    } else {
-                        self.body.replace(body);
-                        self.set_status(&if revision != self.revision.get() {
-                            resources::text(IDS_ERROR_CODE_STALE)
-                        } else {
-                            String::new()
-                        });
-                    }
-                }
-                Completion::Languages { path, result } => {
-                    if self.custom() && self.path() == path {
-                        match result {
-                            Ok(ids) => self.set_languages(ids, true),
-                            Err(error) => self.set_status(&format!(
-                                "{}: {}",
-                                resources::text(IDS_ERROR_CODE_LANGUAGES_FAILED),
-                                error.detail
-                            )),
-                        }
-                    }
-                }
+    pub fn query_complete(&self, revision: u64, result: anyhow::Result<QueryResult>) {
+        unsafe { EnableWindow(self.query, 1) };
+        let body = match result {
+            Ok(result) => {
+                super::super::document::update_title(
+                    self.hwnd,
+                    &format!(
+                        "{} — 0x{:08X}",
+                        resources::text(IDS_ERROR_CODE_TOOL),
+                        result.request.code
+                    ),
+                );
+                render(&result)
             }
+            Err(error) => format!("{}: {error:#}", resources::text(IDS_ERROR_CODE_FAILED)),
+        };
+        let body = crate::rich_text::Content::new(body);
+        if let Err(error) = crate::rich_text::set_content(self.result, &body) {
+            self.set_status(&format!("{error:#}"));
+        } else {
+            self.body.replace(body);
+            self.set_status(&if revision != self.revision.get() {
+                resources::text(IDS_ERROR_CODE_STALE)
+            } else {
+                String::new()
+            });
         }
-        if self.executor.pending() == 0 {
-            unsafe { KillTimer(self.hwnd, TIMER) };
+    }
+    pub fn languages_complete(&self, path: PathBuf, result: Result<Vec<u16>, core::Failure>) {
+        if self.custom() && self.path() == path {
+            match result {
+                Ok(ids) => self.set_languages(ids, true),
+                Err(error) => self.set_status(&format!(
+                    "{}: {}",
+                    resources::text(IDS_ERROR_CODE_LANGUAGES_FAILED),
+                    error.detail
+                )),
+            }
         }
     }
     fn browse(&self) {
@@ -653,10 +637,6 @@ impl View {
     pub fn message(&self, msg: u32, w: usize, l: isize) -> Option<isize> {
         match msg {
             WM_COMMAND if self.command(w as u16, (w >> 16) as u32) => Some(0),
-            WM_TIMER if w == TIMER => {
-                self.poll();
-                Some(0)
-            }
             WM_CONTEXTMENU if w as HWND == self.result => {
                 let _ = crate::rich_text::context_menu(self.result, l, &[], None);
                 Some(0)
@@ -666,7 +646,6 @@ impl View {
     }
     pub fn destroy(&self) {
         unsafe {
-            KillTimer(self.hwnd, TIMER);
             DestroyWindow(self.tooltip);
         }
     }

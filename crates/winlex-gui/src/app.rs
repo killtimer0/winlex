@@ -45,6 +45,7 @@ struct App {
     session: catalog::Session,
     sources: sources::Sources,
     worker: crate::worker::Worker<crate::tasks::Job, crate::tasks::Completion>,
+    tool_worker: crate::worker::Worker<crate::tasks::ToolJob, crate::tasks::ToolCompletion>,
     sidebar: sidebar::Sidebar,
     workspace: workspace::Workspace,
     fonts: Vec<Font>,
@@ -107,6 +108,7 @@ pub fn run(
     resources::initialize(settings.preferences.language)?;
     let session = catalog::Session::new(paths.is_empty());
     let worker = crate::worker::Worker::new(crate::tasks::run)?;
+    let tool_worker = crate::worker::Worker::new(crate::tasks::run_tool)?;
     let paths = if paths.is_empty() {
         config
             .key
@@ -129,6 +131,7 @@ pub fn run(
             session,
             sources: sources::Sources::default(),
             worker,
+            tool_worker,
             sidebar,
             workspace: workspace::Workspace::default(),
             fonts: Vec::new(),
@@ -224,9 +227,14 @@ unsafe fn run_windows(paths: Vec<std::path::PathBuf>) -> anyhow::Result<()> {
                 DestroyWindow(frame);
                 return Err(error);
             }
-            let event = read(|a| a.worker.event());
-            let wake =
-                MsgWaitForMultipleObjectsEx(1, &event, u32::MAX, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+            let events = read(|a| [a.worker.event(), a.tool_worker.event()]);
+            let wake = MsgWaitForMultipleObjectsEx(
+                events.len() as u32,
+                events.as_ptr(),
+                u32::MAX,
+                QS_ALLINPUT,
+                MWMO_INPUTAVAILABLE,
+            );
             if wake == WAIT_FAILED {
                 let failure = error("Wait for UI messages");
                 DestroyWindow(frame);
@@ -234,6 +242,8 @@ unsafe fn run_windows(paths: Vec<std::path::PathBuf>) -> anyhow::Result<()> {
             }
             if wake == WAIT_OBJECT_0 {
                 poll_completions();
+            } else if wake == WAIT_OBJECT_0 + 1 {
+                poll_tool_completions();
             }
             if PeekMessageW(&mut msg, ptr::null_mut(), 0, 0, PM_REMOVE) == 0 {
                 continue;
@@ -307,4 +317,32 @@ fn poll_completions() {
     }
     catalog::flush_results();
     read(|a| a.worker.resignal());
+}
+fn poll_tool_completions() {
+    use crate::tasks::ToolCompletion;
+    for _ in 0..8 {
+        match read(|a| a.tool_worker.rx.try_recv()) {
+            Ok(ToolCompletion::ErrorCodeQuery {
+                document,
+                revision,
+                result,
+            }) => {
+                if let Some(tool) = workspace::content_by_id(document).and_then(|c| c.tool()) {
+                    tool.query_complete(revision, result);
+                }
+            }
+            Ok(ToolCompletion::ErrorCodeLanguages {
+                document,
+                path,
+                result,
+            }) => {
+                if let Some(tool) = workspace::content_by_id(document).and_then(|c| c.tool()) {
+                    tool.languages_complete(path, result);
+                }
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty)
+            | Err(std::sync::mpsc::TryRecvError::Disconnected) => return,
+        }
+    }
+    read(|a| a.tool_worker.resignal());
 }

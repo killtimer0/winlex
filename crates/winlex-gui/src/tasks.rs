@@ -62,6 +62,31 @@ pub enum Completion {
         result: anyhow::Result<crate::rich_text::Content>,
     },
 }
+
+pub enum ToolJob {
+    ErrorCode {
+        document: u64,
+        revision: u64,
+        request: winlex_core::tools::error_code::Request,
+    },
+    ErrorCodeLanguages {
+        document: u64,
+        path: PathBuf,
+    },
+}
+
+pub enum ToolCompletion {
+    ErrorCodeQuery {
+        document: u64,
+        revision: u64,
+        result: anyhow::Result<winlex_core::tools::error_code::QueryResult>,
+    },
+    ErrorCodeLanguages {
+        document: u64,
+        path: PathBuf,
+        result: Result<Vec<u16>, winlex_core::tools::error_code::Failure>,
+    },
+}
 pub fn run(job: Job, ticket: &Ticket, publish: &dyn Fn(Completion) -> anyhow::Result<()>) {
     let id = ticket.id;
     let completion = match job {
@@ -102,6 +127,27 @@ pub fn run(job: Job, ticket: &Ticket, publish: &dyn Fn(Completion) -> anyhow::Re
             id,
             document,
             result: winlex_format::declaration::render(&catalog, entity, arch).map(Into::into),
+        },
+    };
+    let _ = publish(completion);
+}
+
+pub fn run_tool(job: ToolJob, _: &Ticket, publish: &dyn Fn(ToolCompletion) -> anyhow::Result<()>) {
+    use winlex_core::tools::error_code;
+    let completion = match job {
+        ToolJob::ErrorCode {
+            document,
+            revision,
+            request,
+        } => ToolCompletion::ErrorCodeQuery {
+            document,
+            revision,
+            result: error_code::query(&request),
+        },
+        ToolJob::ErrorCodeLanguages { document, path } => ToolCompletion::ErrorCodeLanguages {
+            document,
+            result: error_code::module_languages(&path),
+            path,
         },
     };
     let _ = publish(completion);
