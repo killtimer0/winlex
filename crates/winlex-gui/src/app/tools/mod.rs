@@ -55,7 +55,7 @@ pub(super) fn activate(index: isize, _double: bool) {
 pub(super) fn selected(new: bool) {
     let list = unsafe { GetDlgItem(read(|a| a.frame), TOOL_LIST as i32) };
     open(
-        send(list, LVM_GETNEXTITEM, usize::MAX, LVNI_SELECTED as isize),
+        crate::list::selected(list).map_or(-1, |index| index as isize),
         new,
     );
 }
@@ -98,10 +98,7 @@ pub(super) fn context_menu(hwnd: HWND, l: isize) -> anyhow::Result<()> {
             y: b.top + 8,
         }
     } else {
-        POINT {
-            x: l as i16 as i32,
-            y: (l >> 16) as i16 as i32,
-        }
+        point_from_lparam(l)
     };
     match menu.track(read(|a| a.frame), point) {
         1 => selected(false),

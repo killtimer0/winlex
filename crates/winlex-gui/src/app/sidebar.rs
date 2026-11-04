@@ -242,10 +242,7 @@ pub(super) unsafe extern "system" fn splitter_proc(
                 return 0;
             }
             WM_MOUSEMOVE if GetCapture() == hwnd => {
-                let mut p = POINT {
-                    x: l as u16 as i16 as i32,
-                    y: (l >> 16) as u16 as i16 as i32,
-                };
+                let mut p = point_from_lparam(l);
                 let (frame, toolbar) = read(|a| (a.frame, a.sidebar.toolbar));
                 MapWindowPoints(hwnd, frame, &mut p, 1);
                 let x = bounds(toolbar, frame).right + layout::scale(4, dpi().window(frame));

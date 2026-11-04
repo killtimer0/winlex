@@ -472,7 +472,7 @@ impl View {
             }?;
         }
         let tool = TTTOOLINFOW {
-            cbSize: std::mem::offset_of!(TTTOOLINFOW, lpReserved) as u32,
+            cbSize: TOOLINFO_SIZE,
             uFlags: TTF_IDISHWND | TTF_SUBCLASS,
             hwnd: self.input,
             uId: self.input as usize,
@@ -537,17 +537,8 @@ impl View {
             },
             m.edit_height(self.module, dpi),
         ];
-        let centered = |r: RECT, height: i32| {
-            let height = height.min(r.bottom - r.top);
-            layout::rect(
-                r.left,
-                r.top + (r.bottom - r.top - height) / 2,
-                r.right - r.left,
-                height,
-            )
-        };
         let combo_bounds = |r: RECT, height: i32| {
-            let mut r = centered(r, height);
+            let mut r = layout::center_vertical(r, height);
             r.bottom = r.top + height.max(m.row() * 9);
             r
         };
@@ -573,14 +564,14 @@ impl View {
             }
             let mut line = layout::take_top(&mut area, row);
             let label = layout::take_left(&mut line, label_width);
-            positions.push((self.labels[index], centered(label, m.height)));
+            positions.push((self.labels[index], layout::center_vertical(label, m.height)));
             layout::take_left(&mut line, label_gap);
             if index == 3 && !wrap_browse {
                 let right = line.right;
                 line.right = (right - browse.cx - gap).max(line.left);
                 positions.push((
                     self.browse,
-                    centered(
+                    layout::center_vertical(
                         layout::rect(
                             right - browse.cx,
                             line.top,
@@ -597,7 +588,7 @@ impl View {
                 line.right = line.left + width;
                 language.left = line.right + label_gap;
                 let label = layout::take_left(&mut language, label_width);
-                positions.push((self.labels[2], centered(label, m.height)));
+                positions.push((self.labels[2], layout::center_vertical(label, m.height)));
                 layout::take_left(&mut language, label_gap);
                 positions.push((self.language, combo_bounds(language, heights[2])));
             }
@@ -606,7 +597,7 @@ impl View {
                 if index == 1 || index == 2 {
                     combo_bounds(line, heights[index])
                 } else {
-                    centered(line, heights[index])
+                    layout::center_vertical(line, heights[index])
                 },
             ));
             layout::take_top(&mut area, gap);

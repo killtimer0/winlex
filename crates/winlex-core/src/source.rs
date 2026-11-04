@@ -217,11 +217,12 @@ impl SourceData {
     pub fn path(&self) -> &std::path::Path {
         &self.path
     }
+    #[allow(
+        clippy::len_without_is_empty,
+        reason = "Size is a file property; empty inputs are rejected as invalid metadata."
+    )]
     pub fn len(&self) -> usize {
         self.bytes.len()
-    }
-    pub fn is_empty(&self) -> bool {
-        self.bytes.is_empty()
     }
 }
 
@@ -248,23 +249,32 @@ fn key_token(bytes: &[u8], full: bool) -> String {
 }
 
 impl AssemblyIdentity {
-    pub(crate) fn definition(a: Assembly<'_>) -> Self {
+    fn new(name: &str, version: [u16; 4], culture: &str, key: &[u8], flags: u32) -> Self {
         Self {
-            name: a.name().into(),
-            version: a.version(),
-            culture: a.culture().into(),
-            public_key_token: key_token(a.public_key(), a.flags() & 1 != 0),
-            content_type: a.flags() & 0xe00,
+            name: name.into(),
+            version,
+            culture: culture.into(),
+            public_key_token: key_token(key, flags & 1 != 0),
+            content_type: flags & 0xe00,
         }
     }
+    pub(crate) fn definition(a: Assembly<'_>) -> Self {
+        Self::new(
+            a.name(),
+            a.version(),
+            a.culture(),
+            a.public_key(),
+            a.flags(),
+        )
+    }
     pub(crate) fn reference(a: AssemblyRef<'_>) -> Self {
-        Self {
-            name: a.name().into(),
-            version: a.version(),
-            culture: a.culture().into(),
-            public_key_token: key_token(a.public_key_or_token(), a.flags() & 1 != 0),
-            content_type: a.flags() & 0xe00,
-        }
+        Self::new(
+            a.name(),
+            a.version(),
+            a.culture(),
+            a.public_key_or_token(),
+            a.flags(),
+        )
     }
     pub(crate) fn matches(&self, other: &Self) -> bool {
         self.name.eq_ignore_ascii_case(&other.name)

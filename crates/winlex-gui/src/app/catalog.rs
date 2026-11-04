@@ -52,6 +52,22 @@ impl Session {
     pub fn inputs(&self) -> &[SourceData] {
         self.catalog.as_ref().map_or(&[], |c| c.inputs())
     }
+    pub fn paths(&self) -> Vec<PathBuf> {
+        self.load.as_ref().map_or_else(
+            || {
+                self.inputs()
+                    .iter()
+                    .map(|input| input.path().to_path_buf())
+                    .collect()
+            },
+            |load| {
+                load.inputs
+                    .iter()
+                    .map(|input| input.path().to_path_buf())
+                    .collect()
+            },
+        )
+    }
     pub fn new(remember_sources: bool) -> Self {
         Self {
             remember_sources,
@@ -183,23 +199,7 @@ impl Session {
     }
 }
 pub(super) fn paths() -> Vec<PathBuf> {
-    read(|a| {
-        a.session.load.as_ref().map_or_else(
-            || {
-                a.session
-                    .inputs()
-                    .iter()
-                    .map(|i| i.path().to_path_buf())
-                    .collect()
-            },
-            |load| {
-                load.inputs
-                    .iter()
-                    .map(|input| input.path().to_path_buf())
-                    .collect()
-            },
-        )
-    })
+    read(|a| a.session.paths())
 }
 pub(super) fn reload(paths: Vec<PathBuf>, reload: Vec<PathBuf>) {
     let result = write(|a| {
@@ -387,7 +387,7 @@ pub(super) fn activate(row: isize, double: bool) {
 pub(super) fn open_selected(mode: Open) {
     let frame = read(|a| a.frame);
     let list = unsafe { GetDlgItem(frame, RESULTS as i32) };
-    let row = send(list, LVM_GETNEXTITEM, usize::MAX, LVNI_SELECTED as isize);
+    let row = crate::list::selected(list).map_or(-1, |index| index as isize);
     open(row, mode);
 }
 pub(super) fn open(row: isize, mode: Open) {

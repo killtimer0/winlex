@@ -247,10 +247,13 @@ pub(super) fn restore_window(hwnd: HWND) {
                 unsafe { MulDiv(w.height, value as i32, w.dpi as i32) },
             )
         }
-        None => (layout::scale(1000, value), layout::scale(680, value)),
+        None => (
+            layout::scale(layout::DEFAULT_WIDTH, value),
+            layout::scale(layout::DEFAULT_HEIGHT, value),
+        ),
     };
-    width = width.max(layout::scale(480, value));
-    height = height.max(layout::scale(300, value));
+    width = width.max(layout::scale(layout::MIN_WIDTH, value));
+    height = height.max(layout::scale(layout::MIN_HEIGHT, value));
     if let Some(info) = monitor(hwnd) {
         let work = info.rcWork;
         width = width.min(work.right - work.left);
@@ -263,11 +266,7 @@ pub(super) fn restore_window(hwnd: HWND) {
 
 pub(super) fn save_window(hwnd: HWND) -> anyhow::Result<()> {
     unsafe {
-        let mut placement: WINDOWPLACEMENT = std::mem::zeroed();
-        placement.length = std::mem::size_of::<WINDOWPLACEMENT>() as u32;
-        if GetWindowPlacement(hwnd, &mut placement) == 0 {
-            return Err(error("Read window placement"));
-        }
+        let placement = window_placement(hwnd, "Read window placement")?;
         let mut r = placement.rcNormalPosition;
         // WINDOWPLACEMENT uses workspace coordinates for ordinary top-level windows.
         if let Some(info) = monitor(hwnd) {

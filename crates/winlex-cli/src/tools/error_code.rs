@@ -1,3 +1,4 @@
+use crate::SCHEMA;
 use std::{ffi::OsString, fmt::Write as _, io::Write, path::PathBuf};
 use winlex_core::{
     number::IntegerLiteral,
@@ -111,7 +112,7 @@ pub(super) fn run(args: &[OsString], out: &mut dyn Write, err: &mut dyn Write) -
         serde_json::to_writer_pretty(
             &mut *out,
             &serde_json::json!({
-                "schema": "winlex-cli-7",
+                "schema": SCHEMA,
                 "ok": !failed,
                 "command": "error-code",
                 "result": result,

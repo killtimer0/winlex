@@ -69,7 +69,7 @@ pub(super) fn search() -> Rc<Search> {
 const SEARCH_TIMER: usize = 1;
 fn search_tool(input: HWND, label: u16) -> TTTOOLINFOW {
     TTTOOLINFOW {
-        cbSize: std::mem::offset_of!(TTTOOLINFOW, lpReserved) as u32,
+        cbSize: TOOLINFO_SIZE,
         uFlags: TTF_IDISHWND | TTF_SUBCLASS,
         hwnd: input,
         uId: input as usize,

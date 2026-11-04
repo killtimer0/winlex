@@ -76,11 +76,12 @@ impl Dialog<'_> {
                 }
             }
             (self.callback)(hwnd, message, w, l)?;
-            if message == WM_INITDIALOG {
+            let initialized = message == WM_INITDIALOG;
+            let rescaled = message == WM_DPICHANGED && self.dpi.mode == Mode::Pmv1;
+            if initialized {
                 crate::theme::apply(hwnd);
             }
-            if message == WM_INITDIALOG || (message == WM_DPICHANGED && self.dpi.mode == Mode::Pmv1)
-            {
+            if initialized || rescaled {
                 // Font changes intentionally defer repaint until all controls are positioned.
                 unsafe {
                     RedrawWindow(

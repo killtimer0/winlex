@@ -6,7 +6,7 @@ use crate::{
     native::*,
     resources::{self, *},
 };
-use std::{cell::RefCell, ffi::OsStr, os::windows::ffi::OsStrExt, path::PathBuf, ptr};
+use std::{cell::RefCell, ffi::OsStr, os::windows::ffi::OsStrExt, ptr};
 use windows::{
     Win32::{
         Foundation::HWND as ComHwnd,
@@ -17,29 +17,18 @@ use windows::{
 };
 use windows_sys::Win32::System::SystemServices::SS_ETCHEDHORZ;
 
-#[derive(Clone)]
-struct Snapshot {
-    entity: std::sync::Arc<winlex_core::EntitySummary>,
-    path: PathBuf,
-    online_target: String,
-}
-impl Snapshot {
-    fn copies(&self) -> Vec<(u16, Vec<u16>)> {
-        let id = self.entity.id.to_string();
-        [
-            (IDS_COPY_SOURCE_PATH, self.path.as_os_str()),
-            (IDS_COPY_ENTITY_ID, OsStr::new(&id)),
-            (IDS_COPY_SYMBOL_NAME, OsStr::new(&self.entity.name)),
-            (IDS_COPY_QUALIFIED_NAME, OsStr::new(&self.entity.full_name)),
-            (
-                IDS_COPY_SOURCE_NAME,
-                self.path.file_name().unwrap_or_default(),
-            ),
-        ]
-        .into_iter()
-        .map(|(label, value)| (label, value.encode_wide().collect()))
-        .collect()
-    }
+fn copies(entity: &winlex_core::EntitySummary, path: &std::path::Path) -> Vec<(u16, Vec<u16>)> {
+    let id = entity.id.to_string();
+    [
+        (IDS_COPY_SOURCE_PATH, path.as_os_str()),
+        (IDS_COPY_ENTITY_ID, OsStr::new(&id)),
+        (IDS_COPY_SYMBOL_NAME, OsStr::new(&entity.name)),
+        (IDS_COPY_QUALIFIED_NAME, OsStr::new(&entity.full_name)),
+        (IDS_COPY_SOURCE_NAME, path.file_name().unwrap_or_default()),
+    ]
+    .into_iter()
+    .map(|(label, value)| (label, value.encode_wide().collect()))
+    .collect()
 }
 
 #[derive(Default)]
@@ -56,7 +45,7 @@ pub(super) struct Info {
     online: HWND,
     line: HWND,
     heading: RefCell<Option<Font>>,
-    snapshot: RefCell<Option<Snapshot>>,
+    online_target: RefCell<Option<String>>,
     accessibility: RefCell<Option<IAccPropServices>>,
 }
 impl Info {
@@ -167,19 +156,15 @@ impl Info {
             .documentation_url();
         let (label, target) = online_target(documentation.as_deref(), &entity.full_name);
         set_text(self.online, &resources::text(label));
-        let path = binding.catalog.sources()[entity.id.source_id].path.clone();
-        let filename: Vec<u16> = path
+        let filename: Vec<u16> = binding.catalog.sources()[entity.id.source_id]
+            .path
             .file_name()
             .unwrap_or_default()
             .encode_wide()
             .chain(Some(0))
             .collect();
         send(self.source, WM_SETTEXT, 0, filename.as_ptr() as isize);
-        self.snapshot.replace(Some(Snapshot {
-            entity: binding.entity.clone(),
-            path,
-            online_target: target,
-        }));
+        self.online_target.replace(Some(target));
         Ok(())
     }
     pub fn prepare(&self, m: &layout::Metrics) -> anyhow::Result<()> {
@@ -271,18 +256,18 @@ impl Info {
         };
         positions.push((
             self.source_label,
-            centered(layout::take_left(&mut source_row, source_width), m.height),
+            layout::center_vertical(layout::take_left(&mut source_row, source_width), m.height),
         ));
-        positions.push((self.source, centered(source_row, m.height)));
+        positions.push((self.source, layout::center_vertical(source_row, m.height)));
         if !wide {
             row = layout::take_top(area, row_height);
             layout::take_top(area, m.px(4));
         }
         positions.push((
             self.architecture_label,
-            centered(layout::take_left(&mut row, label_width), m.height),
+            layout::center_vertical(layout::take_left(&mut row, label_width), m.height),
         ));
-        let selector = centered(layout::take_left(&mut row, m.px(70)), combo_height);
+        let selector = layout::center_vertical(layout::take_left(&mut row, m.px(70)), combo_height);
         show(
             self.architecture,
             selector.bottom - selector.top >= combo_height,
@@ -314,21 +299,15 @@ impl Info {
         layout::take_top(area, m.px(8));
     }
     pub fn open_online(&self, owner: HWND) -> anyhow::Result<()> {
-        let Some(target) = self
-            .snapshot
-            .borrow()
-            .as_ref()
-            .map(|s| s.online_target.clone())
-        else {
+        let Some(target) = self.online_target.borrow().clone() else {
             return Ok(());
         };
         open_url(owner, &target)
     }
-    pub fn menu(&self, owner: HWND) -> anyhow::Result<()> {
-        let Some(snapshot) = self.snapshot.borrow().clone() else {
-            return Ok(());
-        };
-        let copies = snapshot.copies();
+    pub fn menu(&self, owner: HWND, binding: &Binding) -> anyhow::Result<()> {
+        let entity = &binding.entity;
+        let path = &binding.catalog.sources()[entity.id.source_id].path;
+        let copies = copies(entity, path);
         unsafe {
             let menu = Popup::new()?;
             let m = super::super::metrics(owner);
@@ -424,13 +403,8 @@ fn online_target(documentation: Option<&str>, name: &str) -> (u16, String) {
     }
     (IDS_ONLINE_SEARCH, url)
 }
-fn centered(mut row: RECT, height: i32) -> RECT {
-    row.top += ((row.bottom - row.top - height) / 2).max(0);
-    row.bottom = (row.top + height).min(row.bottom);
-    row
-}
 fn place_button(control: HWND, row: &mut RECT, size: SIZE, positions: &mut Vec<(HWND, RECT)>) {
-    let rect = centered(layout::take_left(row, size.cx), size.cy);
+    let rect = layout::center_vertical(layout::take_left(row, size.cx), size.cy);
     show(
         control,
         rect.right - rect.left >= size.cx && rect.bottom - rect.top >= size.cy,
@@ -508,21 +482,17 @@ mod tests {
                 .collect();
             path.extend([0xD800]);
             path.extend(".winmd".encode_utf16());
-            let snapshot = Snapshot {
-                entity: std::sync::Arc::new(winlex_core::EntitySummary {
-                    id: winlex_core::EntityId {
-                        source_id: 2,
-                        token: 0x04000001,
-                    },
-                    name: "A&B".into(),
-                    full_name: "N.A&B".into(),
-                    kind: "field".into(),
-                    architecture_mask: 7,
-                }),
-                online_target: online_target(None, "N.A&B").1,
-                path: PathBuf::from(OsString::from_wide(&path)),
+            let entity = winlex_core::EntitySummary {
+                id: winlex_core::EntityId {
+                    source_id: 2,
+                    token: 0x04000001,
+                },
+                name: "A&B".into(),
+                full_name: "N.A&B".into(),
+                kind: "field".into(),
+                architecture_mask: 7,
             };
-            let copies = snapshot.copies();
+            let copies = copies(&entity, std::path::Path::new(&OsString::from_wide(&path)));
             assert_eq!(copies[0].1, path);
             assert_eq!(String::from_utf16(&copies[1].1).unwrap(), "2::0x04000001");
             let label = menu_label(&wide("Copy"), &copies[0].1);

@@ -98,20 +98,20 @@ pub enum Icon {
     Misc,
     File,
 }
+fn kind_entry(kind: &str) -> Option<(Icon, u16)> {
+    KINDS
+        .iter()
+        .find(|(value, _, _)| *value == kind)
+        .map(|&(_, icon, label)| (icon, label))
+}
 impl Icon {
     pub fn for_kind(kind: &str) -> Self {
-        KINDS
-            .iter()
-            .find(|(value, _, _)| *value == kind)
-            .map_or(Self::Misc, |&(_, icon, _)| icon)
+        kind_entry(kind).map_or(Self::Misc, |(icon, _)| icon)
     }
 }
 
 pub fn kind_label(kind: &str) -> u16 {
-    KINDS
-        .iter()
-        .find(|(value, _, _)| *value == kind)
-        .map_or(IDS_KIND_UNKNOWN, |&(_, _, label)| label)
+    kind_entry(kind).map_or(IDS_KIND_UNKNOWN, |(_, label)| label)
 }
 
 /// Single presentation vocabulary for metadata entity kinds.

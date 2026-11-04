@@ -3,6 +3,7 @@ use serde_json::Value;
 use std::{ffi::OsString, io::Write, path::PathBuf};
 use winlex_core::{Architecture, Catalog, SearchMode, SearchOptions};
 
+pub(crate) const SCHEMA: &str = "winlex-cli-7";
 pub const HELP: &str = r#"Winlex - offline Win32 metadata queries
 
 Usage: winlex FILE... COMMAND [QUERY] [options]
@@ -296,7 +297,7 @@ pub fn run(
             Err(e) => return error(out, err, true, 3, "query_error", &e.to_string()),
         };
         let response = serde_json::json!({
-            "schema": "winlex-cli-7",
+            "schema": SCHEMA,
             "ok": true,
             "sources": db.sources(),
             "command": o.command.as_str(),
@@ -489,7 +490,7 @@ fn error_detail(
         serde_json::to_writer(
             &mut *out,
             &serde_json::json!({
-                "schema": "winlex-cli-7",
+                "schema": SCHEMA,
                 "ok": false,
                 "error": detail,
             }),

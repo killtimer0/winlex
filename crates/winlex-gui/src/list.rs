@@ -417,7 +417,7 @@ impl List {
                                 area.bottom,
                             );
                             let visuals = self.visuals.borrow();
-                            let selected = selected(self.hwnd, d.nmcd.dwItemSpec);
+                            let selected = is_selected(self.hwnd, d.nmcd.dwItemSpec);
                             if !self.native_background {
                                 background(self.hwnd, d.nmcd.hdc, &area, selected);
                             }
@@ -470,6 +470,10 @@ pub fn item_rect(hwnd: HWND, index: usize) -> Option<RECT> {
     };
     (send_mut(hwnd, LVM_GETITEMRECT, index, &mut area) != 0).then_some(area)
 }
+pub fn selected(hwnd: HWND) -> Option<usize> {
+    let index = send(hwnd, LVM_GETNEXTITEM, usize::MAX, LVNI_SELECTED as isize);
+    (index >= 0).then_some(index as usize)
+}
 
 pub struct State {
     pub indices: [isize; 4],
@@ -482,7 +486,7 @@ impl State {
         let top = send(hwnd, LVM_GETTOPINDEX, 0, 0);
         let rect = item_rect(hwnd, top as usize);
         let indices = [
-            send(hwnd, LVM_GETNEXTITEM, usize::MAX, LVNI_SELECTED as isize),
+            selected(hwnd).map_or(-1, |index| index as isize),
             send(hwnd, LVM_GETNEXTITEM, usize::MAX, LVNI_FOCUSED as isize),
             send(hwnd, LVM_GETSELECTIONMARK, 0, 0),
             if rect.is_some() && top > 0 { top } else { -1 },
@@ -542,7 +546,7 @@ pub fn set_item_state(hwnd: HWND, index: isize, mask: u32, value: u32) {
         send_ref(hwnd, LVM_SETITEMSTATE, index as usize, &state);
     }
 }
-fn selected(hwnd: HWND, item: usize) -> bool {
+fn is_selected(hwnd: HWND, item: usize) -> bool {
     send(hwnd, LVM_GETITEMSTATE, item, LVIS_SELECTED as isize) != 0
         && unsafe {
             GetFocus() == hwnd || GetWindowLongPtrW(hwnd, GWL_STYLE) as u32 & LVS_SHOWSELALWAYS != 0

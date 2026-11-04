@@ -121,13 +121,8 @@ fn list() -> HWND {
     unsafe { GetDlgItem(read(|a| a.frame), SOURCE_LIST as i32) }
 }
 fn selected() -> Option<PathBuf> {
-    let index = send(list(), LVM_GETNEXTITEM, usize::MAX, LVNI_SELECTED as isize);
-    read(|a| {
-        a.sources
-            .rows
-            .get(index as usize)
-            .map(|row| row.path.clone())
-    })
+    let index = crate::list::selected(list())?;
+    read(|a| a.sources.rows.get(index).map(|row| row.path.clone()))
 }
 pub(super) fn update_actions() {
     let path = selected();
@@ -249,18 +244,14 @@ pub(super) fn refresh() {
 }
 
 pub(super) fn context_menu(hwnd: HWND, location: isize) -> anyhow::Result<()> {
-    let mut point = POINT {
-        x: location as i16 as i32,
-        y: (location >> 16) as i16 as i32,
-    };
+    let mut point = point_from_lparam(location);
     if location == -1 {
-        let index = send(hwnd, LVM_GETNEXTITEM, usize::MAX, LVNI_SELECTED as isize);
-        if index < 0 {
+        let Some(index) = crate::list::selected(hwnd) else {
             return Ok(());
-        }
-        send(hwnd, LVM_ENSUREVISIBLE, index as usize, 0);
-        let rect = crate::list::item_rect(hwnd, index as usize)
-            .unwrap_or_else(|| crate::layout::rect(0, 0, 0, 0));
+        };
+        send(hwnd, LVM_ENSUREVISIBLE, index, 0);
+        let rect =
+            crate::list::item_rect(hwnd, index).unwrap_or_else(|| crate::layout::rect(0, 0, 0, 0));
         point = POINT {
             x: rect.left,
             y: rect.bottom,

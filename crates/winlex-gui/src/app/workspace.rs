@@ -246,13 +246,8 @@ pub(super) fn set_maximized(maximized: bool) {
     write(|a| a.workspace.maximized = maximized);
 }
 fn normal_placement(hwnd: HWND) -> anyhow::Result<Placement> {
-    let mut placement: WINDOWPLACEMENT = unsafe { std::mem::zeroed() };
-    placement.length = std::mem::size_of::<WINDOWPLACEMENT>() as u32;
-    if unsafe { GetWindowPlacement(hwnd, &mut placement) } == 0 {
-        return Err(error("Read document placement"));
-    }
     Ok(Placement {
-        bounds: placement.rcNormalPosition,
+        bounds: window_placement(hwnd, "Read document placement")?.rcNormalPosition,
         dpi: dpi().window(hwnd),
     })
 }
@@ -322,10 +317,13 @@ pub(super) fn view(hwnd: HWND) -> Option<Rc<MetadataView>> {
     content(hwnd)?.declaration()
 }
 pub(super) fn views() -> Vec<Rc<MetadataView>> {
-    contents()
-        .into_iter()
-        .filter_map(|c| c.declaration())
-        .collect()
+    read(|a| {
+        a.workspace
+            .documents
+            .iter()
+            .filter_map(Content::declaration)
+            .collect()
+    })
 }
 pub(super) fn by_id(id: u64) -> Option<Rc<MetadataView>> {
     content_by_id(id)?.declaration()
@@ -334,10 +332,16 @@ pub(super) fn contents() -> Vec<Content> {
     read(|a| a.workspace.documents.clone())
 }
 pub(super) fn content(hwnd: HWND) -> Option<Content> {
-    contents().into_iter().find(|d| d.hwnd() == hwnd)
+    read(|a| {
+        a.workspace
+            .documents
+            .iter()
+            .find(|d| d.hwnd() == hwnd)
+            .cloned()
+    })
 }
 pub(super) fn content_by_id(id: u64) -> Option<Content> {
-    contents().into_iter().find(|d| d.id() == id)
+    read(|a| a.workspace.documents.iter().find(|d| d.id() == id).cloned())
 }
 pub(super) fn create_tool(descriptor: &'static super::tools::Descriptor) -> anyhow::Result<HWND> {
     let mut view = super::tools::ToolView::new(descriptor);

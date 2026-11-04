@@ -38,6 +38,9 @@ owned_handle! {
     pub struct GdiObject(pub HGDIOBJ); DeleteObject, null = ptr::null_mut()
 }
 
+/// XP accepts the older TTTOOLINFOW layout without the trailing reserved field.
+pub const TOOLINFO_SIZE: u32 = std::mem::offset_of!(TTTOOLINFOW, lpReserved) as u32;
+
 pub fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
 }
@@ -176,15 +179,26 @@ pub fn bounds(hwnd: HWND, parent: HWND) -> RECT {
     }
     r
 }
+/// Signed client coordinates from a message's low/high words.
+pub fn point_from_lparam(value: isize) -> POINT {
+    POINT {
+        x: value as i16 as i32,
+        y: (value >> 16) as i16 as i32,
+    }
+}
+pub fn window_placement(hwnd: HWND, action: &str) -> anyhow::Result<WINDOWPLACEMENT> {
+    let mut placement: WINDOWPLACEMENT = unsafe { std::mem::zeroed() };
+    placement.length = std::mem::size_of::<WINDOWPLACEMENT>() as u32;
+    if unsafe { GetWindowPlacement(hwnd, &mut placement) } == 0 {
+        Err(error(action))
+    } else {
+        Ok(placement)
+    }
+}
 pub fn place(hwnd: HWND, r: RECT) {
-    if hwnd.is_null() {
-        return;
+    if !hwnd.is_null() {
+        let _ = place_all(&[(hwnd, r)]);
     }
-    let old = bounds(hwnd, unsafe { GetParent(hwnd) });
-    if (old.left, old.top, old.right, old.bottom) == (r.left, r.top, r.right, r.bottom) {
-        return;
-    }
-    let _ = set_bounds(hwnd, r);
 }
 pub fn set_bounds(hwnd: HWND, r: RECT) -> anyhow::Result<()> {
     if unsafe {

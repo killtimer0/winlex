@@ -6,7 +6,6 @@ mod accessible;
 mod tests;
 
 pub const CLASS: *const u16 = w!("Winlex.Tabs");
-const TOOLINFO_SIZE: u32 = std::mem::offset_of!(TTTOOLINFOW, lpReserved) as u32;
 pub const SELECT: u32 = 0u32.wrapping_sub(800);
 pub const CLOSE: u32 = 0u32.wrapping_sub(801);
 pub const REORDER: u32 = 0u32.wrapping_sub(802);
@@ -524,10 +523,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, w: usize, l: isize) 
         let Some(shared) = state(hwnd) else {
             return DefWindowProcW(hwnd, msg, w, l);
         };
-        let p = POINT {
-            x: l as u16 as i16 as i32,
-            y: (l >> 16) as u16 as i16 as i32,
-        };
+        let p = point_from_lparam(l);
         match msg {
             WM_CREATE => {
                 let mut info: TTTOOLINFOW = std::mem::zeroed();

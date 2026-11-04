@@ -78,6 +78,22 @@ struct LinkPress {
     origin: POINT,
 }
 impl State {
+    fn new(binding: Binding) -> Self {
+        Self {
+            binding,
+            ticket: None,
+            restore: None,
+            content: None,
+            press: None,
+            navigation: None,
+            context_link: None,
+        }
+    }
+    fn clear_interactions(&mut self) {
+        self.press = None;
+        self.navigation = None;
+        self.context_link = None;
+    }
     fn contains(&self, navigation: &Navigation) -> bool {
         self.content
             .as_ref()
@@ -115,15 +131,7 @@ pub(super) fn open(binding: Binding, preview: bool) -> anyhow::Result<HWND> {
         preview: Cell::new(preview),
         releasing_link: Cell::new(false),
         icons: RefCell::new(None),
-        state: RefCell::new(State {
-            binding,
-            ticket: None,
-            restore: None,
-            content: None,
-            press: None,
-            navigation: None,
-            context_link: None,
-        }),
+        state: RefCell::new(State::new(binding)),
         editor: std::ptr::null_mut(),
         header: std::ptr::null_mut(),
         info: info::Info::default(),
@@ -145,9 +153,7 @@ impl MetadataView {
         {
             let mut state = self.state.borrow_mut();
             state.binding = binding;
-            state.press = None;
-            state.navigation = None;
-            state.context_link = None;
+            state.clear_interactions();
         }
         self.fill_architectures();
         super::checked(self.info.fill(&self.binding()));
@@ -216,9 +222,7 @@ impl MetadataView {
         let content = Rc::new(content);
         {
             let mut state = self.state.borrow_mut();
-            state.press = None;
-            state.navigation = None;
-            state.context_link = None;
+            state.clear_interactions();
             state.content = Some(content.clone());
         }
         super::frame::report(crate::rich_text::set_content(self.editor, &content));
@@ -365,10 +369,7 @@ impl MetadataView {
         {
             return;
         }
-        let point = POINT {
-            x: link.lParam.0 as i16 as i32,
-            y: (link.lParam.0 >> 16) as i16 as i32,
-        };
+        let point = point_from_lparam(link.lParam.0);
         if link.msg != WM_RBUTTONUP && !link_modifiers(link.wParam.0) {
             self.cancel_link_press();
             return;
@@ -537,7 +538,7 @@ impl MetadataView {
         match id {
             SELECT_ARCH => self.select_architecture(code),
             DOCUMENT_MORE if code == BN_CLICKED => {
-                super::frame::report(self.info.menu(self.hwnd));
+                super::frame::report(self.info.menu(self.hwnd, &self.binding()));
             }
             DOCUMENT_ONLINE if code == BN_CLICKED => {
                 super::frame::report(self.info.open_online(self.hwnd));

@@ -403,8 +403,8 @@ pub(super) unsafe extern "system" fn frame_proc(hwnd: HWND, msg: u32, w: usize, 
                     r,
                     w as u32,
                     SIZE {
-                        cx: layout::scale(480, value),
-                        cy: layout::scale(300, value),
+                        cx: layout::scale(layout::MIN_WIDTH, value),
+                        cy: layout::scale(layout::MIN_HEIGHT, value),
                     },
                 );
                 return 1;

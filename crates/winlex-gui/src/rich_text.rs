@@ -107,11 +107,8 @@ pub fn link_region<'a>(hwnd: HWND, content: &'a Content, link: &ENLINK) -> Optio
     if candidates.next().is_none() {
         return Some(first);
     }
-    let point = POINT {
-        x: link.lParam.0 as i16 as i32,
-        y: (link.lParam.0 >> 16) as i16 as i32,
-    };
-    let index = send_ref(hwnd, EM_CHARFROMPOS, 0, &point);
+    let location = point_from_lparam(link.lParam.0);
+    let index = send_ref(hwnd, EM_CHARFROMPOS, 0, &location);
     let region = region_at(&content.regions, index as usize..index as usize)?;
     matches!(region.kind, RegionKind::Reference(_)).then_some(region)
 }
@@ -134,10 +131,7 @@ pub fn context_menu(
     };
     let mut selection = CHARRANGE::default();
     send_mut(hwnd, EM_EXGETSEL, 0, &mut selection);
-    let mut point = POINT {
-        x: location as i16 as i32,
-        y: (location >> 16) as i16 as i32,
-    };
+    let mut point = point_from_lparam(location);
     if location == -1 {
         send(
             hwnd,

@@ -7,19 +7,15 @@ use windows::Win32::UI::Controls::RichEdit::{EN_LINK, ENLINK};
 
 pub(super) const FOLLOW_REFERENCE: u32 = WM_APP + 42;
 pub(super) fn status_changed(hwnd: HWND) {
-    if let Some(content) = workspace::content(hwnd) {
-        if workspace::active() == hwnd {
-            super::frame::refresh_status();
-        }
-        drop(content);
+    if workspace::content(hwnd).is_some() && workspace::active() == hwnd {
+        super::frame::refresh_status();
     }
 }
 pub(super) fn update_title(hwnd: HWND, title: &str) {
     set_text(hwnd, title);
-    if let Some(content) = workspace::content(hwnd) {
+    if workspace::content(hwnd).is_some() {
         workspace::refresh_document_tabs();
         super::frame::update_commands();
-        drop(content);
     }
 }
 pub(super) fn update_icons(
@@ -271,10 +267,7 @@ unsafe extern "system" fn editor_proc(
                 }
                 WM_LBUTTONUP => document.releasing_link.set(true),
                 WM_RBUTTONUP => document.clear_context_link(),
-                WM_MOUSEMOVE => document.move_link_press(POINT {
-                    x: l as i16 as i32,
-                    y: (l >> 16) as i16 as i32,
-                }),
+                WM_MOUSEMOVE => document.move_link_press(point_from_lparam(l)),
                 _ => {}
             }
         }

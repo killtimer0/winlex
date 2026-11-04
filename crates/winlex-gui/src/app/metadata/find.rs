@@ -82,16 +82,7 @@ impl Find {
             top.right -= actions_width;
             actions.left = top.right + gap;
         }
-        let edit_top = top.top + ((top.bottom - top.top - edit_height).max(0)) / 2;
-        positions.push((
-            self.controls[1],
-            layout::rect(
-                top.left,
-                edit_top,
-                top.right - top.left,
-                edit_height.min(top.bottom - edit_top),
-            ),
-        ));
+        positions.push((self.controls[1], layout::center_vertical(top, edit_height)));
         layout::take_top(area, gap);
         if inline {
             m.buttons(&mut actions, buttons.iter().copied(), positions);
@@ -106,11 +97,8 @@ impl Find {
                 row = layout::take_top(area, option_height);
                 layout::take_top(area, gap);
             }
-            let mut bounds = layout::take_left(&mut row, size.cx);
-            let height = size.cy.min(bounds.bottom - bounds.top);
-            bounds.top += (bounds.bottom - bounds.top - height) / 2;
-            bounds.bottom = bounds.top + height;
-            positions.push((control, bounds));
+            let bounds = layout::take_left(&mut row, size.cx);
+            positions.push((control, layout::center_vertical(bounds, size.cy)));
             layout::take_left(&mut row, gap);
         }
         if row.right - row.left < m.text_width(&text_wide(self.controls[7])) {

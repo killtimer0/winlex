@@ -1,5 +1,10 @@
 use crate::native::*;
 
+pub const DEFAULT_WIDTH: i32 = 1000;
+pub const DEFAULT_HEIGHT: i32 = 680;
+pub const MIN_WIDTH: i32 = 480;
+pub const MIN_HEIGHT: i32 = 300;
+
 pub fn scale(value: i32, dpi: u32) -> i32 {
     unsafe { MulDiv(value, dpi as i32, USER_DEFAULT_SCREEN_DPI as i32) }
 }
@@ -31,6 +36,12 @@ pub fn take_left(area: &mut RECT, width: i32) -> RECT {
     let left = area.left;
     area.left = (left + width).min(area.right);
     rect(left, area.top, area.left - left, area.bottom - area.top)
+}
+pub fn center_vertical(mut row: RECT, height: i32) -> RECT {
+    let height = height.min(row.bottom - row.top).max(0);
+    row.top += (row.bottom - row.top - height) / 2;
+    row.bottom = row.top + height;
+    row
 }
 pub fn limit_sizing(area: &mut RECT, edge: u32, minimum: SIZE) {
     if area.right - area.left < minimum.cx {
