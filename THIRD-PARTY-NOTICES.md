@@ -36,8 +36,8 @@ for incorporated components. The matching Rust installation provides these in
 
 ## Windows compatibility libraries
 
-x86/x64 use the compatibility libraries below. ARM64 instead links the static
-MSVC CRT supplied by Visual Studio, subject to the corresponding Microsoft terms.
+All architectures use VC-LTL: x86/x64 share the system MSVCRT, while ARM64 shares
+the system UCRT. Only x86/x64 link YY-Thunks compatibility objects.
 
 - [YY-Thunks 1.2.3](https://github.com/Chuyu-Team/YY-Thunks/tree/v1.2.3):
   Copyright (c) 2018 Chuyu-Team, MIT. The linked compatibility objects come from

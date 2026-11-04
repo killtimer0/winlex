@@ -36,15 +36,17 @@ class BuildPolicyContracts(unittest.TestCase):
             env.pop("WINLEX_YY_THUNKS_OBJ", None)
             env.pop("WINLEX_VC_LTL_ROOT", None)
             if target == "aarch64-pc-windows-msvc":
-                env.update(WINLEX_VC_LTL_ROOT=str(root / "absent"), WINLEX_YY_THUNKS_OBJ=str(root / "absent.obj"))
+                env["WINLEX_YY_THUNKS_OBJ"] = str(root / "absent.obj")
             if platform:
                 libdir = root / "TargetPlatform" / platform
                 libdir.mkdir(parents=True)
                 for name in ("libucrt.lib", "libvcruntime.lib"):
                     (libdir / name).touch()
-                obj = root / "thunks.obj"
-                obj.write_bytes(machine.to_bytes(2, "little") + bytes(18))
-                env.update(WINLEX_VC_LTL_ROOT=str(root), WINLEX_YY_THUNKS_OBJ=str(obj))
+                env["WINLEX_VC_LTL_ROOT"] = str(root)
+                if machine is not None:
+                    obj = root / "thunks.obj"
+                    obj.write_bytes(machine.to_bytes(2, "little") + bytes(18))
+                    env["WINLEX_YY_THUNKS_OBJ"] = str(obj)
             result = subprocess.run([str(self.build)], env=env, text=True, capture_output=True)
             metadata = json.loads((root / "compatibility.json").read_text()) if result.returncode == 0 else None
             return result, metadata
@@ -53,7 +55,7 @@ class BuildPolicyContracts(unittest.TestCase):
         cases = [
             ("i686-pc-windows-msvc", 0x14c, "5.01", "5.1.2600.0", "5.1.2600.0/lib/Win32"),
             ("x86_64-pc-windows-msvc", 0x8664, "5.02", "5.2.3790.0", "5.2.3790.0/lib/x64"),
-            ("aarch64-pc-windows-msvc", None, "10.00", "10.0.17763.0", None),
+            ("aarch64-pc-windows-msvc", None, "10.00", "10.0.17763.0", "10.0.10240.0/lib/ARM64"),
         ]
         for target, machine, subsystem, minimum, platform in cases:
             with self.subTest(target=target):
@@ -64,19 +66,27 @@ class BuildPolicyContracts(unittest.TestCase):
                     self.assertIn(f"cargo:rustc-link-arg-bin={binary}=/SUBSYSTEM:{kind},{subsystem}", result.stdout)
                     self.assertEqual(any(line.startswith(f"cargo:rustc-link-arg-bin={binary}=") and
                                          line.endswith("thunks.obj") for line in result.stdout.splitlines()),
-                                     platform is not None)
-                self.assertEqual("cargo:rustc-link-search=native=" in result.stdout, platform is not None)
+                                      machine is not None)
+                self.assertIn("cargo:rustc-link-search=native=", result.stdout)
 
-    def test_static_crt_and_legacy_dependencies_are_required(self):
+    def test_static_crt_and_vc_ltl_are_required(self):
         for target in ("i686-pc-windows-msvc", "x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"):
             with self.subTest(target=target):
                 result, _ = self.run_build(target, static=False)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("+crt-static", result.stderr)
-        for target in ("i686-pc-windows-msvc", "x86_64-pc-windows-msvc"):
+        for target in ("i686-pc-windows-msvc", "x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"):
             result, _ = self.run_build(target)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("WINLEX_VC_LTL_ROOT", result.stderr)
+
+    def test_legacy_thunks_are_required(self):
+        for target, platform in (("i686-pc-windows-msvc", "5.1.2600.0/lib/Win32"),
+                                 ("x86_64-pc-windows-msvc", "5.2.3790.0/lib/x64")):
+            with self.subTest(target=target):
+                result, _ = self.run_build(target, platform=platform)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("WINLEX_YY_THUNKS_OBJ", result.stderr)
 
     def test_legacy_object_machine_is_checked(self):
         result, _ = self.run_build("i686-pc-windows-msvc", machine=0x8664, platform="5.1.2600.0/lib/Win32")

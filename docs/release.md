@@ -9,7 +9,7 @@
 3. 运行结束后，在该次运行的 Artifacts 中分别获取 `winlex-x86`、`winlex-x64`、`winlex-arm64`。
 4. 每个 artifact 含对应 ZIP 与 `.zip.sha256`；ZIP 内包含 CLI、GUI、必要许可证和第三方声明，以及逐文件 `SHA256SUMS.txt`。
 
-流水线使用 `Dist` profile，且不生成、下载或捆绑 WinMD。x86／x64 采用固定版本 VC-LTL／YY-Thunks；ARM64 使用静态 MSVC CRT。最低系统和构建环境见[构建指南](build.md)。交叉构建不等同于目标系统实际运行验证。
+流水线使用 `Dist` profile，且不生成、下载或捆绑 WinMD。所有架构使用固定版本 VC-LTL；x86／x64 配合 YY-Thunks，ARM64 使用系统 UCRT 模式且不链接 YY-Thunks。最低系统和构建环境见[构建指南](build.md)。交叉构建不等同于目标系统实际运行验证。
 
 本地从 MSVC 开发环境使用 PowerShell 7.2+ 构建，再将构建输出显示的 `.build.json` 路径显式传给打包脚本：
 

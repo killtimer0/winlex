@@ -115,8 +115,51 @@ class PackageContracts(unittest.TestCase):
                 self.assertIn("Output already exists", result.stdout + result.stderr)
                 self.assertEqual(existing.read_bytes(), b"keep")
 
+    def test_system_crt_imports_and_build_records(self):
+        for arch in TARGETS:
+            with self.subTest(arch=arch):
+                for path in self.records(arch):
+                    record = json.loads(path.read_text(encoding="utf-8-sig"))
+                    arm64 = arch == "arm64"
+                    self.assertEqual(record["crt"], "VC-LTL5 system ucrt" if arm64 else "VC-LTL5 system msvcrt")
+                    self.assertTrue(record["vc_ltl_root"])
+                    self.assertTrue({"libucrt.lib", "libvcruntime.lib"} <=
+                                    {lib["name"] for lib in record["vc_ltl_libraries"]})
+                    self.assertEqual("thunks_object" in record, not arm64)
+                    self.assertEqual("thunks_sha256" in record, not arm64)
+                    dumpbin = Path(record["linker"]).with_name("dumpbin.exe")
+                    result = subprocess.run([str(dumpbin), "/imports", record["executable"]],
+                                            text=True, capture_output=True, errors="replace")
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    dlls = set(re.findall(r"^\s+([^\s]+\.dll)\s*$", result.stdout.lower(), re.MULTILINE))
+                    self.assertIn("ucrtbase.dll" if arm64 else "msvcrt.dll", dlls)
+                    self.assertFalse(any(name.startswith(("vcruntime", "msvcp", "concrt")) or
+                                         name in ("ucrtbased.dll", "msvcr120.dll") for name in dlls), dlls)
+
 
 class WorkflowContracts(unittest.TestCase):
+    def test_all_architectures_receive_vc_ltl_but_only_legacy_receive_thunks(self):
+        try:
+            import yaml
+        except ImportError:
+            self.skipTest("PyYAML is required for workflow YAML validation")
+        workflow = yaml.load((ROOT / ".github/workflows/build.yml").read_text(encoding="utf-8"),
+                             Loader=yaml.BaseLoader)
+        steps = workflow["jobs"]["dist"]["steps"]
+        prepare = next(step for step in steps if step.get("name") == "Prepare pinned compatibility dependencies")
+        self.assertNotIn("if", prepare)
+        build = next(step["run"] for step in steps if step.get("name") == "Build and package")
+        args = "$args = " + build.split("$args = ", 1)[1].split("./scripts/build.ps1 @args", 1)[0]
+        for arch in TARGETS:
+            with self.subTest(arch=arch):
+                script = f"$arch='{arch}'; $link='unused'\n" + args + "\n$args | ConvertTo-Json"
+                result = subprocess.run(["pwsh", "-NoProfile", "-Command", script], cwd=ROOT,
+                                        text=True, capture_output=True, encoding="utf-8")
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                arguments = json.loads(result.stdout)
+                self.assertTrue(arguments["VcLtlRoot"].endswith("/sdk"))
+                self.assertEqual("YyThunksObject" in arguments, arch != "arm64")
+
     def test_build_selects_installation_with_target_tools(self):
         try:
             import yaml

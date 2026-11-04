@@ -3,6 +3,44 @@
   "url": "https://github.com/Chuyu-Team/VC-LTL5/releases/download/v5.3.1/VC-LTL-Binary.7z",
   "archive_sha256": "7a18799ed3aa84a225610a5447a56bc534c5c98ccb8dec05caba0e3f633431ad",
   "libraries": {
+    "10.0.10240.0/lib/ARM64": [
+      {
+        "name": "libucrt.lib",
+        "sha256": "9f176a4015caa3fffd59a513f0e31706dfbcda8a9acb963ceee1bf765eb1fc87"
+      },
+      {
+        "name": "libucrtd.lib",
+        "sha256": "0843ce0faa87540807de33fbc46e0e81a7253fc67f1fcc23f9312fd6fa064ca9"
+      },
+      {
+        "name": "libvcruntime.lib",
+        "sha256": "b2c5ae4757e93bb5088b20d302eb390eb2582b97bcb3e370890eca365574a456"
+      },
+      {
+        "name": "libvcruntimed.lib",
+        "sha256": "f8c158f6c01d6a32266c1433ba6ccf5c20ce6c78ede8443708a2dc27c9d09ead"
+      },
+      {
+        "name": "ucrt.lib",
+        "sha256": "9f176a4015caa3fffd59a513f0e31706dfbcda8a9acb963ceee1bf765eb1fc87"
+      },
+      {
+        "name": "ucrtd.lib",
+        "sha256": "d8ca00a6b0c9e766e9e280f256a4b83640d9443bddc3d62a80ae9c3a146424e7"
+      },
+      {
+        "name": "vccorlib140.patch.lib",
+        "sha256": "4d3a340aba4bcd612c132b30337f1ac238d68ef9e0961b6e0a2cca35edfb3829"
+      },
+      {
+        "name": "vcruntime.lib",
+        "sha256": "e2c0ff11d941be9a3231bf1c0f6716ea4a2c0c80c76036339fe5124b9bd32f80"
+      },
+      {
+        "name": "vcruntimed.lib",
+        "sha256": "2030aeef524240e38ac5f142b7b1a89267707352981ac91aab32b95f4291f0b8"
+      }
+    ],
     "5.1.2600.0/lib/Win32": [
       {
         "name": "libucrt.lib",

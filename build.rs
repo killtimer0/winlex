@@ -18,22 +18,25 @@ fn main() {
         features.split(',').any(|f| f == "crt-static"),
         "Winlex requires +crt-static; use scripts/build.ps1"
     );
-    let platform = legacy.map(|(_, arch)| format!("{minimum}/lib/{arch}"));
-    if let (Some((machine, _)), Some(platform)) = (legacy, &platform) {
-        let ltl_root = PathBuf::from(
-            env::var_os("WINLEX_VC_LTL_ROOT")
-                .expect("Set WINLEX_VC_LTL_ROOT to the official VC-LTL5 SDK directory"),
-        );
-        let libdir = fs::canonicalize(ltl_root.join("TargetPlatform").join(platform))
-            .expect("VC-LTL library directory for the minimum Windows version is missing");
-        for name in ["libucrt.lib", "libvcruntime.lib"] {
-            let path = libdir.join(name);
-            assert!(path.is_file(), "Missing VC-LTL library: {}", path.display());
-            println!("cargo:rerun-if-changed={}", path.display());
-        }
-        // Like upstream's Rust integration, place the replacement CRT libraries
-        // on the native search path; +crt-static still selects the /MT library names.
-        println!("cargo:rustc-link-search=native={}", libdir.display());
+    let platform = legacy.map_or_else(
+        || "10.0.10240.0/lib/ARM64".to_owned(),
+        |(_, arch)| format!("{minimum}/lib/{arch}"),
+    );
+    let ltl_root = PathBuf::from(
+        env::var_os("WINLEX_VC_LTL_ROOT")
+            .expect("Set WINLEX_VC_LTL_ROOT to the official VC-LTL5 SDK directory"),
+    );
+    let libdir = fs::canonicalize(ltl_root.join("TargetPlatform").join(&platform))
+        .expect("VC-LTL library directory for the minimum Windows version is missing");
+    for name in ["libucrt.lib", "libvcruntime.lib"] {
+        let path = libdir.join(name);
+        assert!(path.is_file(), "Missing VC-LTL library: {}", path.display());
+        println!("cargo:rerun-if-changed={}", path.display());
+    }
+    // Like upstream's Rust integration, place the replacement CRT libraries
+    // on the native search path; +crt-static still selects the /MT library names.
+    println!("cargo:rustc-link-search=native={}", libdir.display());
+    if let Some((machine, _)) = legacy {
         let object =
             PathBuf::from(env::var_os("WINLEX_YY_THUNKS_OBJ").expect(
                 "Set WINLEX_YY_THUNKS_OBJ to the matching official YY_Thunks_for_WinXP.obj",
@@ -58,8 +61,7 @@ fn main() {
     fs::write(
         out.join("compatibility.json"),
         format!(
-            "{{\"target\":\"{target}\",\"minimum_windows\":\"{minimum}\",\"vc_ltl_platform\":{}}}\n",
-            platform.map_or_else(|| "null".to_owned(), |p| format!("\"{p}\""))
+            "{{\"target\":\"{target}\",\"minimum_windows\":\"{minimum}\",\"vc_ltl_platform\":\"{platform}\"}}\n"
         ),
     )
     .expect("Write build compatibility metadata");

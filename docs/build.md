@@ -30,11 +30,12 @@ $link = Join-Path $env:VCToolsInstallDir 'bin/Hostx64/x86/link.exe'
 ```
 
 x64 构建将架构、链接器和 OBJ 路径改为 x64。
-ARM64 需要 Rust 的 `aarch64-pc-windows-msvc` target 及 Visual Studio C++ ARM64 生成工具，使用 `Hostx64/arm64/link.exe`；不传 YY-Thunks 和 VC-LTL 参数：
+ARM64 需要 Rust 的 `aarch64-pc-windows-msvc` target 及 Visual Studio C++ ARM64 生成工具，使用 `Hostx64/arm64/link.exe`；传入 VC-LTL SDK，不传 YY-Thunks 参数：
 
 ```powershell
 $link = Join-Path $env:VCToolsInstallDir 'bin/Hostx64/arm64/link.exe'
-./scripts/build.ps1 -Architecture arm64 -Configuration Debug -LinkExe $link
+./scripts/build.ps1 -Architecture arm64 -Configuration Debug -LinkExe $link `
+  -VcLtlRoot tmp/deps/vc-ltl-5.3.1/sdk
 ```
 开发构建使用 `-Configuration Debug`；优化版本和分发版本分别使用 `Release` 和 `Dist`。
 脚本自动查找 Microsoft `rc.exe`，也可用 `-RcExe PATH` 指定；输出目录可用 `-TargetDir PATH` 指定，否则遵循 Cargo 配置。
@@ -68,7 +69,7 @@ Codicon SVG 与生成的 EMF+ 位于 `crates/winlex-gui/res/codicons/`。
 | x64 | XP x64 / Server 2003，5.2.3790 系列 | x86_64-pc-windows-msvc |
 | ARM64 | Windows 10 1809，10.0.17763.0（构建目标基线） | aarch64-pc-windows-msvc |
 
-x86／x64 兼容构建需要上述 YY-Thunks 和 VC-LTL5 依赖。ARM64 使用静态 MSVC CRT，不走 XP 回退链路。目标基线、交叉编译成功及目标系统实际运行验证是不同的保证；设置 PE 子系统版本本身不能证明旧系统兼容性。
+所有架构均通过 `+crt-static` 选择 VC-LTL5 替换库。x86／x64 使用系统 `msvcrt.dll` 并链接 YY-Thunks XP 对象；ARM64 使用 VC-LTL 的 `10.0.10240.0/lib/ARM64` UCRT 模式，复用系统 `ucrtbase.dll`，不要求额外安装 VC Runtime，也不链接 YY-Thunks。库目录版本不改变 ARM64 的 Windows 10 1809 目标基线。目标基线、交叉编译成功及目标系统实际运行验证是不同的保证；设置 PE 子系统版本本身不能证明旧系统兼容性。
 
 ## 测试与独立验证
 

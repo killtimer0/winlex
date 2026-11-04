@@ -3,7 +3,7 @@
 param(
     [string]$YyThunksObject,
     [Parameter(Mandatory=$true)][string]$LinkExe,
-    [string]$VcLtlRoot,
+    [Parameter(Mandatory=$true)][string]$VcLtlRoot,
     [ValidateSet('x86','x64','arm64')][string]$Architecture = 'x86',
     [ValidateSet('Debug','Release','Dist')][string]$Configuration = 'Debug',
     [string]$TargetDir,
@@ -13,13 +13,12 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 $linker = (Resolve-Path $LinkExe).Path
 $object = $null
-$ltlRoot = $null
+$ltlRoot = (Resolve-Path $VcLtlRoot).Path
 if ($Architecture -ne 'arm64') {
-    if (-not $YyThunksObject -or -not $VcLtlRoot) {
-        throw 'Specify -YyThunksObject and -VcLtlRoot for x86 and x64 builds.'
+    if (-not $YyThunksObject) {
+        throw 'Specify -YyThunksObject for x86 and x64 builds.'
     }
     $object = (Resolve-Path $YyThunksObject).Path
-    $ltlRoot = (Resolve-Path $VcLtlRoot).Path
 }
 if (-not $RcExe) {
     $sdkBins = @(
@@ -120,13 +119,12 @@ try {
     $compatibility = Get-Content (Join-Path $buildOutputs[$packageId] 'compatibility.json') -Raw | ConvertFrom-Json
     if ($compatibility.target -ne $target) { throw 'Build compatibility metadata target mismatch.' }
     if ($Architecture -eq 'arm64') {
-        if ($compatibility.vc_ltl_platform -or $compatibility.minimum_windows -ne '10.0.17763.0') {
+        if ($compatibility.vc_ltl_platform -ne '10.0.10240.0/lib/ARM64' -or $compatibility.minimum_windows -ne '10.0.17763.0') {
             throw 'Build compatibility metadata does not match the ARM64 policy.'
         }
-    } else {
-        if (-not $compatibility.vc_ltl_platform) { throw 'Build compatibility metadata is missing the VC-LTL platform.' }
-        $ltlLib = Join-Path $ltlRoot "TargetPlatform/$($compatibility.vc_ltl_platform)"
     }
+    if (-not $compatibility.vc_ltl_platform) { throw 'Build compatibility metadata is missing the VC-LTL platform.' }
+    $ltlLib = Join-Path $ltlRoot "TargetPlatform/$($compatibility.vc_ltl_platform)"
     foreach ($binary in @('winlex', 'winlex-gui')) {
         $exe = $executables[$binary]
         if (-not $exe) { throw "Cargo did not report an executable for $binary" }
@@ -143,16 +141,16 @@ try {
             executable_sha256 = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLowerInvariant()
         }
         if ($Architecture -eq 'arm64') {
-            $report.crt = 'static MSVC CRT'
+            $report.crt = 'VC-LTL5 system ucrt'
         } else {
             $report.thunks_object = $object
             $report.thunks_sha256 = (Get-FileHash $object -Algorithm SHA256).Hash.ToLowerInvariant()
             $report.crt = 'VC-LTL5 system msvcrt'
-            $report.vc_ltl_root = $ltlRoot
-            $report.vc_ltl_libraries = @(Get-ChildItem "$ltlLib/*.lib" | ForEach-Object {
-                @{ name = $_.Name; sha256 = (Get-FileHash $_.FullName).Hash.ToLowerInvariant() }
-            })
         }
+        $report.vc_ltl_root = $ltlRoot
+        $report.vc_ltl_libraries = @(Get-ChildItem "$ltlLib/*.lib" | ForEach-Object {
+            @{ name = $_.Name; sha256 = (Get-FileHash $_.FullName).Hash.ToLowerInvariant() }
+        })
         $report | ConvertTo-Json -Depth 5 | Set-Content "$exe.build.json" -Encoding utf8
         Write-Host "Built $exe"
     }
