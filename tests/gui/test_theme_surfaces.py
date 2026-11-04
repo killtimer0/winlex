@@ -40,7 +40,8 @@ def foreground(app, inputs):
 def dark_app(launch, profile, arguments=()):
     if not THEME_SUPPORTED:
         pytest.skip('requires Windows 10 build 19045 or later')
-    profile.set('Preferences', winreg.REG_SZ, 'en-US:7:dark')
+    profile.set('Language', winreg.REG_SZ, 'en-US')
+    profile.set('Theme', winreg.REG_SZ, 'dark')
     app = launch(arguments)
     return app
 

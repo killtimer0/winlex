@@ -24,7 +24,7 @@ def checked(app, sheet):
 
 
 def test_settings_cancel_and_page_state(launch, profile):
-    original = profile.get("Preferences")
+    original = profile.preferences()
     app = launch()
     sheet = app.settings()
     enabled = n.api(n.user, "IsWindowEnabled", n.w.BOOL, n.w.HWND)
@@ -44,7 +44,7 @@ def test_settings_cancel_and_page_state(launch, profile):
     assert checked(app, sheet) == 127
     app.close_settings(sheet, accept=False)
     assert enabled(app.frame)
-    assert profile.get("Preferences") == original
+    assert profile.preferences() == original
     sheet = app.settings()
     assert checked(app, sheet) == 7
     app.close_settings(sheet)
@@ -87,7 +87,7 @@ def test_menu_scopes(launch, settings):
 
 @pytest.mark.parametrize("action", ["escape", "close", "enter"])
 def test_settings_keyboard_and_close(launch, profile, action):
-    original = profile.get("Preferences")
+    original = profile.preferences()
     app = launch()
     sheet = app.settings()
     page = mask(app, sheet, 0)
@@ -101,7 +101,7 @@ def test_settings_keyboard_and_close(launch, profile, action):
     else:
         n.key_message(second, win32con.VK_RETURN if action == "enter" else win32con.VK_ESCAPE)
     n.wait(lambda: not n.is_window(sheet), "settings keyboard close")
-    assert profile.get("Preferences") == (original.split(":")[0] + ":0" if action == "enter" else original)
+    assert profile.preferences() == ((original[0], 0, original[2]) if action == "enter" else original)
 
 
 def test_settings_refresh_preserves_document(launch, profile, settings):
@@ -122,13 +122,13 @@ def test_settings_refresh_preserves_document(launch, profile, settings):
                for row in range(app.count()))
     assert app.active_document() == doc
     assert app.content(doc) == body
-    assert profile.get("Preferences").split(":")[1] == "1"
+    assert profile.get("SearchCategories") == 1
     assert profile.get("AutoLoad") is None
 
 
 @pytest.mark.parametrize("value", [0, 1, 2, 4, 8, 16, 32, 64, 127])
 def test_search_category_visibility(launch, profile, settings, value):
-    language = profile.get("Preferences").split(":")[0]
+    language = profile.get("Language")
     fixture = Path(settings[1]).with_name("SearchEntries.dll")
     if not fixture.exists():
         pytest.skip("SearchEntries.dll fixture not deployed")
@@ -145,7 +145,7 @@ def test_search_category_visibility(launch, profile, settings, value):
         if value & bit:
             expected.update(names)
     assert kinds == expected
-    assert profile.get("Preferences") == language + ":" + str(value)
+    assert profile.preferences() == (language, value, "system")
     if not value:
         assert app.count() == 0
     if value & 2:
@@ -163,7 +163,7 @@ def test_search_category_visibility(launch, profile, settings, value):
 
 
 def test_settings_save_failure_preserves_state(launch, profile):
-    original = profile.get("Preferences")
+    original = profile.preferences()
     profile.set("Version", winreg.REG_DWORD, 99)
     app = launch()
     sheet = app.settings()
@@ -177,7 +177,7 @@ def test_settings_save_failure_preserves_state(launch, profile):
     n.post(button, win32con.BM_CLICK, 0, 0)
     n.wait(lambda: not n.is_window(error), "save error dismissed")
     assert n.is_window(sheet)
-    assert profile.get("Version") == 99 and profile.get("Preferences") == original
+    assert profile.get("Version") == 99 and profile.preferences() == original
     app.close_settings(sheet, accept=False)
     sheet = app.settings()
     assert checked(app, sheet) == 7

@@ -13,7 +13,9 @@ class ConfigProfile:
             Path(ledger).mkdir(parents=True, exist_ok=True)
             (Path(ledger) / (self.root.rsplit("\\", 1)[-1] + ".profile")).write_text(self.root, encoding="utf-8")
         self.set("Version", winreg.REG_DWORD, 1)
-        self.set("Preferences", winreg.REG_SZ, language + ":7")
+        self.set("Language", winreg.REG_SZ, language)
+        self.set("SearchCategories", winreg.REG_DWORD, 7)
+        self.set("Theme", winreg.REG_SZ, "system")
 
     def set(self, name, kind, value):
         with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, self.root, 0, winreg.KEY_SET_VALUE) as key:
@@ -28,6 +30,9 @@ class ConfigProfile:
 
     def environment(self, env=None, dpi="pmv2"):
         return {**(os.environ if env is None else env), "WINLEX_CONFIG_ROOT": self.root, "WINLEX_DPI": dpi}
+
+    def preferences(self):
+        return self.get("Language"), self.get("SearchCategories"), self.get("Theme")
 
     def close(self):
         try:

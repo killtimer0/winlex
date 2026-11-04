@@ -17,7 +17,7 @@ def open_help(app):
     ('en-US', 'Search syntax', 'Close'), ('zh-CN', '搜索语法', '关闭')], ids=['english', 'chinese'])
 @pytest.mark.parametrize('mode', ['pmv1', 'pmv2', 'system', 'unaware'])
 def test_search_help_readonly_resize_and_dpi(launch, profile, language, title, close, mode):
-    profile.set('Preferences', winreg.REG_SZ, language + ':7')
+    profile.set('Language', winreg.REG_SZ, language)
     app = launch(dpi=mode)
     dialog = open_help(app)
     edit, button = n.get_item(dialog, 1410), n.get_item(dialog, 1)

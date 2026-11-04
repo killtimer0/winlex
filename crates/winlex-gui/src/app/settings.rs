@@ -39,41 +39,29 @@ pub(super) struct Preferences {
     pub categories: u32,
     pub theme: Theme,
 }
-impl Default for Preferences {
-    fn default() -> Self {
-        Self {
-            language: Language::Auto,
-            categories: EntityCategory::DEFAULT,
-            theme: Theme::System,
-        }
-    }
-}
 impl Preferences {
-    fn parse(value: &str) -> Option<Self> {
-        let (language, categories) = value.split_once(':')?;
-        let (categories, theme) = match categories.split_once(':') {
-            Some((categories, theme)) => (categories, Theme::from_name(theme)?),
-            None => (categories, Theme::System),
-        };
-        let categories: u32 = categories.parse().ok()?;
-        (categories & !EntityCategory::ALL == 0).then_some(Self {
-            language: Language::from_name(language)?,
-            categories,
-            theme,
-        })
-    }
-    fn serialize(self) -> String {
-        let mut value = format!("{}:{}", self.language.name(), self.categories);
-        if self.theme != Theme::System {
-            value.push(':');
-            value.push_str(self.theme.name());
+    fn load(config: &Config) -> Self {
+        let key = config.key.as_ref();
+        Self {
+            language: key
+                .and_then(|k| k.text("Language"))
+                .and_then(|value| Language::from_name(&value))
+                .unwrap_or(Language::Auto),
+            categories: key
+                .and_then(|k| k.number("SearchCategories"))
+                .filter(|value| value & !EntityCategory::ALL == 0)
+                .unwrap_or(EntityCategory::DEFAULT),
+            theme: key
+                .and_then(|k| k.text("Theme"))
+                .and_then(|value| Theme::from_name(&value))
+                .unwrap_or_default(),
         }
-        value
     }
     fn save(self, config: &Config) -> anyhow::Result<()> {
-        config
-            .write_key()?
-            .set_text("Preferences", &self.serialize())
+        let key = config.write_key()?;
+        key.set_text("Language", self.language.name())?;
+        key.set_number("SearchCategories", self.categories)?;
+        key.set_text("Theme", self.theme.name())
     }
 }
 
@@ -82,79 +70,13 @@ mod preference_tests {
     use super::*;
 
     #[test]
-    fn preferences_validate_language_and_category_bits() {
-        for language in crate::resources::LANGUAGES {
-            for categories in [0, EntityCategory::DEFAULT, EntityCategory::ALL] {
-                let value = format!("{}:{categories}", language.value.name());
-                assert_eq!(
-                    Preferences::parse(&value),
-                    Some(Preferences {
-                        language: language.value,
-                        categories,
-                        theme: Theme::System,
-                    })
-                );
-            }
-        }
-        for value in [
-            "auto",
-            "auto:-1",
-            "auto:128",
-            "other:7",
-            "en-US:1:2",
-            "auto:7:",
-            "auto:7:other",
-            "auto:7:dark:extra",
-        ] {
-            assert_eq!(Preferences::parse(value), None);
-        }
-    }
-
-    #[test]
-    fn theme_options_and_preferences_round_trip() {
+    fn theme_options_round_trip() {
         for (index, &(value, _, label)) in THEMES.iter().enumerate() {
             assert_eq!(value as u32, index as u32);
             assert_eq!(Theme::from_name(value.name()), Some(value));
             assert_eq!(THEMES.iter().filter(|other| other.2 == label).count(), 1);
-            for language in crate::resources::LANGUAGES {
-                for categories in [0, EntityCategory::DEFAULT, EntityCategory::ALL] {
-                    let preferences = Preferences {
-                        language: language.value,
-                        categories,
-                        theme: value,
-                    };
-                    assert_eq!(
-                        Preferences::parse(&preferences.serialize()),
-                        Some(preferences)
-                    );
-                }
-            }
         }
         assert_eq!(Theme::from_name("unknown"), None);
-    }
-
-    #[test]
-    fn system_theme_preserves_legacy_preferences_format() {
-        let preferences = Preferences {
-            language: Language::English,
-            categories: EntityCategory::DEFAULT,
-            theme: Theme::System,
-        };
-        assert_eq!(preferences.serialize(), "en-US:7");
-        assert_eq!(Preferences::parse("en-US:7:system"), Some(preferences));
-        for (theme, expected) in [
-            (Theme::Light, "en-US:7:light"),
-            (Theme::Dark, "en-US:7:dark"),
-        ] {
-            assert_eq!(
-                Preferences {
-                    theme,
-                    ..preferences
-                }
-                .serialize(),
-                expected
-            );
-        }
     }
 }
 
@@ -175,10 +97,7 @@ pub(super) struct Settings {
 impl Settings {
     pub fn load(config: &Config) -> Self {
         let key = config.key.as_ref();
-        let preferences = key
-            .and_then(|k| k.text("Preferences"))
-            .and_then(|value| Preferences::parse(&value))
-            .unwrap_or_default();
+        let preferences = Preferences::load(config);
         let preferred_architecture = key
             .and_then(|k| k.text("PreferredArchitecture"))
             .and_then(|value| value.parse::<Architecture>().ok());

@@ -32,7 +32,7 @@ def link_item(app, control):
 @pytest.mark.parametrize('language,title,ok', [('en-US', 'About Winlex', 'OK'), ('zh-CN', '关于 Winlex', '确定')], ids=['english', 'chinese'])
 @pytest.mark.parametrize('mode', ['pmv2', 'pmv1', 'system', 'unaware'])
 def test_about_content_modality_and_dpi(launch, profile, settings, language, title, ok, mode):
-    profile.set('Preferences', winreg.REG_SZ, language + ':7')
+    profile.set('Language', winreg.REG_SZ, language)
     app = launch(dpi=mode)
     dialog = open_about(app)
     assert not win32gui.IsWindowEnabled(app.frame)

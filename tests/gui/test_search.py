@@ -128,17 +128,17 @@ def test_panel_refresh_and_programmatic_mode_selection_do_not_submit_search(laun
     app.query("CreateFileW")
     app.select(0)
     mode = n.get_item(app.frame, 1114)
-    before = (app.count(), app.cell(0), app.status_text(), profile.get("Preferences"))
+    before = (app.count(), app.cell(0), app.status_text(), profile.preferences())
     # Changing the control alone is not the user's CBN_SELENDOK commitment.
     n.send(mode, win32con.CB_SETCURSEL, 1)
     n.send(app.frame, win32con.WM_SETTINGCHANGE)
     app.command(1021)
     app.command(1040)
-    assert (app.count(), app.cell(0), app.status_text(), profile.get("Preferences")) == before
+    assert (app.count(), app.cell(0), app.status_text(), profile.preferences()) == before
     assert n.send(app.results, messages.LVM_GETNEXTITEM, -1, messages.LVNI_SELECTED) == 0
     app.command(1114, code=win32con.CBN_SELENDCANCEL)
     assert n.send(mode, win32con.CB_GETCURSEL) == 0
-    assert (app.count(), app.cell(0), app.status_text(), profile.get("Preferences")) == before
+    assert (app.count(), app.cell(0), app.status_text(), profile.preferences()) == before
 
 
 def test_search_after_scrolling_keeps_new_results_in_view(launch, settings):

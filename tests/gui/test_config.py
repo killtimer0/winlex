@@ -67,7 +67,7 @@ def test_language_option_round_trip(launch, profile, index, name, label):
                                    else ["System default", "English", "简体中文"])
     n.send(control, win32con.CB_SETCURSEL, index)
     app.close_settings(sheet)
-    assert profile.get("Preferences") == name + ":7"
+    assert profile.preferences() == (name, 7, "system")
     sheet = app.settings()
     general = app.settings_page(sheet, 0)
     assert n.send(n.get_item(general, 1300), win32con.CB_GETCURSEL) == index
@@ -76,3 +76,69 @@ def test_language_option_round_trip(launch, profile, index, name, label):
     restored = launch()
     if label is not None:
         assert restored.toolbar_text(1040) == label
+
+
+@pytest.mark.parametrize("theme,index,categories", [
+    ("system", 0, 0), ("light", 1, 7), ("dark", 2, 127),
+])
+def test_preferences_survive_restart(launch, profile, theme, index, categories):
+    profile.set("Language", winreg.REG_SZ, "zh-CN")
+    profile.set("SearchCategories", winreg.REG_DWORD, categories)
+    profile.set("Theme", winreg.REG_SZ, theme)
+    app = launch()
+    sheet = app.settings()
+    general = app.settings_page(sheet, 0)
+    n.send(n.get_item(general, 1300), win32con.CB_SETCURSEL, 1)
+    app.close_settings(sheet)
+    expected = ("en-US", categories, theme)
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, profile.root) as key:
+        for name, value, kind in [("Language", "en-US", winreg.REG_SZ),
+                                  ("SearchCategories", categories, winreg.REG_DWORD),
+                                  ("Theme", theme, winreg.REG_SZ)]:
+            assert winreg.QueryValueEx(key, name) == (value, kind)
+    app.close()
+    restored = launch()
+    sheet = restored.settings()
+    general = restored.settings_page(sheet, 0)
+    assert n.send(n.get_item(general, 1300), win32con.CB_GETCURSEL) == 1
+    control = n.get_item(general, 1301)
+    assert n.send(control, win32con.CB_GETCURSEL) == (index if win32gui.IsWindowEnabled(control) else 0)
+    search = restored.settings_page(sheet, 1)
+    assert sum(n.send(n.get_item(search, 1310 + bit), win32con.BM_GETCHECK) << bit
+               for bit in range(7)) == categories
+    restored.close_settings(sheet)
+    assert profile.preferences() == expected
+
+
+@pytest.mark.parametrize("name,kind,value,expected", [
+    ("Language", None, None, (0, 15, 2)),
+    ("Language", winreg.REG_SZ, "other", (0, 15, 2)),
+    ("Language", winreg.REG_DWORD, 1, (0, 15, 2)),
+    ("SearchCategories", None, None, (2, 7, 2)),
+    ("SearchCategories", winreg.REG_DWORD, 128, (2, 7, 2)),
+    ("SearchCategories", winreg.REG_SZ, "15", (2, 7, 2)),
+    ("Theme", None, None, (2, 15, 0)),
+    ("Theme", winreg.REG_SZ, "other", (2, 15, 0)),
+    ("Theme", winreg.REG_DWORD, 2, (2, 15, 0)),
+])
+def test_invalid_preferences_fall_back_independently(launch, profile, name, kind, value, expected):
+    profile.set("Language", winreg.REG_SZ, "zh-CN")
+    profile.set("SearchCategories", winreg.REG_DWORD, 15)
+    profile.set("Theme", winreg.REG_SZ, "dark")
+    if kind is None:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, profile.root, 0, winreg.KEY_SET_VALUE) as key:
+            winreg.DeleteValue(key, name)
+    else:
+        profile.set(name, kind, value)
+    original = profile.preferences()
+    app = launch()
+    sheet = app.settings()
+    general = app.settings_page(sheet, 0)
+    assert n.send(n.get_item(general, 1300), win32con.CB_GETCURSEL) == expected[0]
+    control = n.get_item(general, 1301)
+    assert n.send(control, win32con.CB_GETCURSEL) == (expected[2] if win32gui.IsWindowEnabled(control) else 0)
+    search = app.settings_page(sheet, 1)
+    assert sum(n.send(n.get_item(search, 1310 + bit), win32con.BM_GETCHECK) << bit
+               for bit in range(7)) == expected[1]
+    app.close_settings(sheet, accept=False)
+    assert profile.preferences() == original
