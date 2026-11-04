@@ -79,6 +79,10 @@ pub(super) fn open(ctx: &Context, index: isize, new: bool) {
 pub(super) fn list(ctx: &Context) -> HWND {
     unsafe { GetDlgItem(ctx.frame(), TOOL_LIST as i32) }
 }
+pub(super) fn refresh(ctx: &Context) {
+    let list = list(ctx);
+    crate::list::State::capture(list).apply(list, REGISTRY.len());
+}
 pub(super) fn selected(ctx: &Context, new: bool) {
     open(
         ctx,

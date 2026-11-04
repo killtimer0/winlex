@@ -196,6 +196,7 @@ pub(super) fn prepare(ctx: &Context) {
     for panel in panels {
         panel.prepare(ctx, &m);
     }
+    super::tools::refresh(ctx);
     panel::search(ctx).prepare(&m);
 }
 fn update_images(ctx: &Context, toolbar: HWND, size: i32) {

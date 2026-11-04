@@ -2,6 +2,7 @@
 import struct
 import win32con
 import win32gui
+import winreg
 import pytest
 
 from support import native as n
@@ -37,6 +38,39 @@ def query(app, doc, value):
     app.command(1815, doc)
     return n.wait(lambda: body(doc) if not app.status_text()
                    and body(doc) else None, "tool explicit query", 30)
+
+
+@pytest.mark.parametrize("active_panel", [0, 2])
+def test_tool_list_rows_align_after_initialization_and_panel_switches(launch, settings, profile, active_panel):
+    profile.set("ActivePanel", winreg.REG_DWORD, active_panel)
+    app = launch()
+    panel = n.get_item(app.frame, 1801)
+    if not n.is_visible(panel):
+        app.command(1800)
+    original = app.item_rect(0, panel)
+    assert original[1] == 0 and original[3] > original[1], original
+    app.select(0, panel)
+    app.pick([settings[1]])
+    n.wait(lambda: app.count(app.sources) == 1, "source loaded", 45)
+    app.command(1040)
+    app.query("CreateFileW")
+    search = app.item_rect(0)
+    app.command(1021)
+    source = app.item_rect(0, app.sources)
+    assert source[1] == search[1] == 0
+    assert source[3] == search[3] == original[3]
+    for width, height in [(800, 600), (950, 700)]:
+        assert n.set_pos(app.frame, 0, 0, 0, width, height,
+                         win32con.SWP_NOMOVE | win32con.SWP_NOZORDER | win32con.SWP_NOACTIVATE)
+        app.command(1800)
+        row = app.item_rect(0, panel)
+        assert row[1] == 0 and row[3] == original[3], row
+        assert app.selected_row(panel) == 0
+        n.send(app.frame, win32con.WM_SETTINGCHANGE, 0, 0)
+        row = app.item_rect(0, panel)
+        assert row[1] == 0 and row[3] == original[3], row
+        assert app.selected_row(panel) == 0
+        app.command(1021)
 
 
 def test_tool_host_find_commands_are_disabled_and_harmless(launch):

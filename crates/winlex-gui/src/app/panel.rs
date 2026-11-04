@@ -1,4 +1,4 @@
-//! The two sidebar views and their shared owner-data list presentation.
+//! Sidebar views and their shared owner-data list presentation.
 use super::{bind, catalog, sidebar, sources};
 use crate::app::context::Context;
 use crate::list::List;
@@ -190,7 +190,6 @@ pub(super) fn create(ctx: &Context, frame: HWND) -> anyhow::Result<([Rc<Panel>; 
         })),
         ctx.system_version(),
     )?;
-    send(list.hwnd, LVM_SETITEMCOUNT, super::tools::REGISTRY.len(), 0);
     let controls = vec![list.hwnd, unsafe {
         child(
             frame,
