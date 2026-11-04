@@ -32,6 +32,7 @@ fn main() {
         assert!(path.is_file(), "Missing VC-LTL library: {}", path.display());
         println!("cargo:rerun-if-changed={}", path.display());
     }
+    println!("cargo:rerun-if-changed={}", libdir.display());
     // Like upstream's Rust integration, place the replacement CRT libraries
     // on the native search path; +crt-static still selects the /MT library names.
     println!("cargo:rustc-link-search=native={}", libdir.display());

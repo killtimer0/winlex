@@ -16,6 +16,30 @@ def manifest(name):
     return json.loads((ROOT / "inputs" / name).read_text(encoding="utf-8-sig"))
 
 
+def policy(architecture):
+    return manifest("targets.json")[architecture]
+
+
+def verify_inputs(architecture, sdk, object_path=None):
+    target = policy(architecture)
+    libraries = manifest("vc-ltl-source.json")["libraries"][target["vc_ltl_platform"]]
+    directory = sdk / "TargetPlatform" / target["vc_ltl_platform"]
+    expected = {library["name"] for library in libraries}
+    actual = {path.name for path in directory.glob("*.lib")}
+    if actual != expected:
+        raise ValueError(f"VC-LTL library set mismatch: {directory}")
+    for library in libraries:
+        check(directory / library["name"], library["sha256"])
+    result = {"vc_ltl_libraries": libraries}
+    if target["thunks_arch"]:
+        if object_path is None:
+            raise ValueError("Specify the YY-Thunks object for this target")
+        digest = manifest("yy-thunks-source.json")["objects"][target["thunks_arch"]]
+        check(object_path, digest)
+        result["thunks_sha256"] = digest
+    return result
+
+
 def check(path, expected):
     actual = hashlib.sha256(path.read_bytes()).hexdigest()
     if actual != expected:
@@ -51,18 +75,30 @@ def install(path, data, sha256):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build-deps", action="store_true", help="compatibility alias (dependencies are prepared by default)")
-    parser.parse_args()
-    thunks = manifest("yy-thunks-source.json")
-    directory = DEPS / f"yy-thunks-{thunks['version']}"
-    archive = download(thunks["url"], directory / "objects.zip", thunks["archive_sha256"])
-    with zipfile.ZipFile(archive) as package:
-        for arch, sha in thunks["objects"].items():
-            filename = f"{arch}/YY_Thunks_for_WinXP.obj"
-            names = [name for name in package.namelist() if name.endswith(filename)]
-            if len(names) != 1:
-                raise ValueError(f"Expected one object for {arch}")
-            path = directory / filename
-            install(path, package.read(names[0]), sha)
+    parser.add_argument("--architecture", choices=("x86", "x64", "arm64"))
+    parser.add_argument("--check", action="store_true", help="verify local inputs without downloading; emit JSON")
+    parser.add_argument("--vc-ltl-root", type=Path)
+    parser.add_argument("--thunks-object", type=Path)
+    args = parser.parse_args()
+    if args.check:
+        if not args.architecture or not args.vc_ltl_root:
+            parser.error("--check requires --architecture and --vc-ltl-root")
+        print(json.dumps(verify_inputs(args.architecture, args.vc_ltl_root, args.thunks_object)))
+        return
+    targets = manifest("targets.json")
+    selected = [targets[args.architecture]] if args.architecture else list(targets.values())
+    thunk_arches = {target["thunks_arch"] for target in selected} - {None}
+    if thunk_arches:
+        thunks = manifest("yy-thunks-source.json")
+        directory = DEPS / f"yy-thunks-{thunks['version']}"
+        archive = download(thunks["url"], directory / "objects.zip", thunks["archive_sha256"])
+        with zipfile.ZipFile(archive) as package:
+            for arch in sorted(thunk_arches):
+                filename = f"{arch}/YY_Thunks_for_WinXP.obj"
+                names = [name for name in package.namelist() if name.endswith(filename)]
+                if len(names) != 1:
+                    raise ValueError(f"Expected one object for {arch}")
+                install(directory / filename, package.read(names[0]), thunks["objects"][arch])
     ltl = manifest("vc-ltl-source.json")
     directory = DEPS / f"vc-ltl-{ltl['version']}"
     archive = download(ltl["url"], directory / "sdk.7z", ltl["archive_sha256"])
@@ -71,7 +107,8 @@ def main():
     if not sevenzip:
         raise SystemExit("Add 7z or 7zz to PATH to extract VC-LTL5")
     subprocess.run([sevenzip, "x", str(archive), f"-o{sdk}", "-y"], check=True)
-    for platform, libraries in ltl["libraries"].items():
+    for platform in {target["vc_ltl_platform"] for target in selected}:
+        libraries = ltl["libraries"][platform]
         for library in libraries:
             check(sdk / "TargetPlatform" / platform / library["name"], library["sha256"])
     print(f"Verified build dependencies in {DEPS}")

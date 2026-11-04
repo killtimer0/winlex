@@ -59,6 +59,8 @@ class PrepareInputsContracts(unittest.TestCase):
                        "libraries": {"platform": [{"name": "lib.lib", "sha256": sha(b"library")}]}}
                 (inputs / "yy-thunks-source.json").write_text(json.dumps(thunks), encoding="utf-8")
                 (inputs / "vc-ltl-source.json").write_text(json.dumps(ltl), encoding="utf-8")
+                (inputs / "targets.json").write_text(json.dumps({"x86": {
+                    "thunks_arch": "x86", "vc_ltl_platform": "platform"}}), encoding="utf-8")
                 deps = root / "deps"
                 library = deps / "vc-ltl-2/sdk/TargetPlatform/platform/lib.lib"
                 library.parent.mkdir(parents=True)
@@ -80,6 +82,40 @@ class PrepareInputsContracts(unittest.TestCase):
                     library.write_bytes(b"corrupt")
                     with self.assertRaisesRegex(ValueError, "SHA256 mismatch"):
                         prepare.main()
+
+    def test_arm64_preparation_does_not_fetch_thunks(self):
+        with patch("sys.argv", [str(SCRIPT), "--architecture", "arm64"]), \
+             patch.object(prepare, "download", side_effect=lambda url, path, digest: path) as download, \
+             patch.object(prepare.shutil, "which", return_value="7z"), \
+             patch.object(prepare.subprocess, "run"), patch.object(prepare, "check"):
+            prepare.main()
+            self.assertEqual(len(download.call_args_list), 1)
+            self.assertIn("VC-LTL", download.call_args.args[0])
+
+    def test_verify_local_inputs_rejects_modified_missing_and_extra_libraries(self):
+        with tempfile.TemporaryDirectory(dir=SCRIPT.parents[1] / "tmp") as folder:
+            sdk = Path(folder)
+            directory = sdk / "TargetPlatform/platform"
+            directory.mkdir(parents=True)
+            library = directory / "lib.lib"
+            library.write_bytes(b"library")
+            manifests = {
+                "targets.json": {"arm64": {"vc_ltl_platform": "platform", "thunks_arch": None}},
+                "vc-ltl-source.json": {"libraries": {"platform": [{"name": "lib.lib", "sha256": sha(b"library")}]}}
+            }
+            with patch.object(prepare, "manifest", side_effect=manifests.__getitem__):
+                self.assertEqual(prepare.verify_inputs("arm64", sdk)["vc_ltl_libraries"],
+                                 manifests["vc-ltl-source.json"]["libraries"]["platform"])
+                library.write_bytes(b"corrupt")
+                with self.assertRaisesRegex(ValueError, "SHA256 mismatch"):
+                    prepare.verify_inputs("arm64", sdk)
+                library.unlink()
+                with self.assertRaisesRegex(ValueError, "library set mismatch"):
+                    prepare.verify_inputs("arm64", sdk)
+                library.write_bytes(b"library")
+                (directory / "extra.lib").touch()
+                with self.assertRaisesRegex(ValueError, "library set mismatch"):
+                    prepare.verify_inputs("arm64", sdk)
 
 
 if __name__ == "__main__":

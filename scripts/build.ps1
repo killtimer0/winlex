@@ -2,8 +2,8 @@
 [CmdletBinding()]
 param(
     [string]$YyThunksObject,
-    [Parameter(Mandatory=$true)][string]$LinkExe,
-    [Parameter(Mandatory=$true)][string]$VcLtlRoot,
+    [string]$LinkExe,
+    [string]$VcLtlRoot,
     [ValidateSet('x86','x64','arm64')][string]$Architecture = 'x86',
     [ValidateSet('Debug','Release','Dist')][string]$Configuration = 'Debug',
     [string]$TargetDir,
@@ -12,14 +12,26 @@ param(
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 $policy = (Get-Content -LiteralPath "$root/inputs/targets.json" -Raw | ConvertFrom-Json).$Architecture
-$linker = (Resolve-Path $LinkExe).Path
+$ltl = Get-Content -LiteralPath "$root/inputs/vc-ltl-source.json" -Raw | ConvertFrom-Json
+if (-not $VcLtlRoot) { $VcLtlRoot = "$root/tmp/deps/vc-ltl-$($ltl.version)/sdk" }
+if ($policy.thunks_arch -and -not $YyThunksObject) {
+    $thunks = Get-Content -LiteralPath "$root/inputs/yy-thunks-source.json" -Raw | ConvertFrom-Json
+    $YyThunksObject = "$root/tmp/deps/yy-thunks-$($thunks.version)/$($policy.thunks_arch)/YY_Thunks_for_WinXP.obj"
+}
+if (-not $LinkExe) {
+    . "$PSScriptRoot/build-tools.ps1"
+    $tools = Initialize-WinlexToolchain $Architecture $policy
+    $LinkExe = $tools.LinkExe
+    if (-not $RcExe) { $RcExe = $tools.RcExe }
+}
+$linker = (Resolve-Path -LiteralPath $LinkExe).Path
 $object = $null
-$ltlRoot = (Resolve-Path $VcLtlRoot).Path
+$ltlRoot = (Resolve-Path -LiteralPath $VcLtlRoot).Path
 if ($policy.thunks_arch) {
     if (-not $YyThunksObject) {
         throw 'Specify -YyThunksObject for x86 and x64 builds.'
     }
-    $object = (Resolve-Path $YyThunksObject).Path
+    $object = (Resolve-Path -LiteralPath $YyThunksObject).Path
 }
 if (-not $RcExe) {
     $sdkBins = @(
@@ -32,7 +44,7 @@ if (-not $RcExe) {
         Join-Path $_ 'x64/rc.exe'
     } | Where-Object { Test-Path $_ -PathType Leaf } | Select-Object -First 1
 }
-if (-not $RcExe) {
+if (-not $RcExe -and $Configuration -ne 'Dist') {
     $rcCommand = Get-Command rc.exe -ErrorAction SilentlyContinue
     if ($rcCommand) { $RcExe = $rcCommand.Source }
     else {
@@ -42,8 +54,8 @@ if (-not $RcExe) {
             Select-Object -First 1 -ExpandProperty FullName
     }
 }
-if (-not $RcExe) { throw 'Microsoft rc.exe was not found. Specify -RcExe from a Windows SDK.' }
-$rc = (Resolve-Path $RcExe).Path
+if (-not $RcExe) { throw 'Microsoft rc.exe was not found in the SDK environment. Specify -RcExe or omit -LinkExe to initialize the toolchain.' }
+$rc = (Resolve-Path -LiteralPath $RcExe).Path
 if ((Get-Item $rc).VersionInfo.CompanyName -notmatch 'Microsoft') { throw 'Use Microsoft rc.exe.' }
 if ([IO.Path]::GetFileName($linker) -ine 'link.exe') {
     throw 'Use Microsoft MSVC link.exe. YY-Thunks uses a different integration for lld-link.'
@@ -57,6 +69,14 @@ if ((Split-Path $linkerDirectory -Leaf) -ine $Architecture -or
     throw "Use the Hostx64/$Architecture Microsoft linker for this target."
 }
 $target = $policy.target
+$checkArguments = @("$PSScriptRoot/prepare-inputs.py", '--check', '--architecture', $Architecture, '--vc-ltl-root', $ltlRoot)
+if ($object) { $checkArguments += @('--thunks-object', $object) }
+$checkedInputs = & python @checkArguments
+if ($LASTEXITCODE -ne 0) { throw 'Build dependency verification failed.' }
+$checkedInputs = $checkedInputs | ConvertFrom-Json
+$identity = & python "$PSScriptRoot/build-record.py"
+if ($LASTEXITCODE -ne 0) { throw 'Unable to capture build source and toolchain identity.' }
+$identity = $identity | ConvertFrom-Json
 $libdir = & rustc --print target-libdir --target $target
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path $libdir)) {
     throw "Rust standard library for $target is missing. Install a Rust MSVC toolchain and this target first."
@@ -67,7 +87,7 @@ $oldObject = $env:WINLEX_YY_THUNKS_OBJ
 $oldLtl = $env:WINLEX_VC_LTL_ROOT
 $oldRc = $env:WINLEX_RC_EXE
 try {
-    if ($oldFlags -or $oldRustFlags) { throw 'Clear existing RUSTFLAGS/CARGO_ENCODED_RUSTFLAGS before this reproducible build.' }
+    if ($oldFlags -or $oldRustFlags) { throw 'Clear existing RUSTFLAGS/CARGO_ENCODED_RUSTFLAGS before this build.' }
     $flags = @('-C','target-feature=+crt-static','-C',"linker=$linker")
     if ($Configuration -eq 'Dist') {
         $sysroot = & rustc --print sysroot
@@ -100,6 +120,9 @@ try {
     $packageId = $null
     & cargo @arguments | ForEach-Object {
         $message = $_ | ConvertFrom-Json
+        if ($message.reason -eq 'compiler-message' -and $message.message.rendered) {
+            [Console]::Error.Write($message.message.rendered)
+        }
         if ($message.reason -eq 'build-script-executed') {
             $buildOutputs[$message.package_id] = $message.out_dir
         }
@@ -121,14 +144,28 @@ try {
         }
     }
     if (-not $compatibility.vc_ltl_platform) { throw 'Build compatibility metadata is missing the VC-LTL platform.' }
-    $ltlLib = Join-Path $ltlRoot "TargetPlatform/$($compatibility.vc_ltl_platform)"
+    $after = & python "$PSScriptRoot/build-record.py"
+    if ($LASTEXITCODE -ne 0 -or ($after | ConvertFrom-Json | ConvertTo-Json -Depth 5 -Compress) -cne
+        ($identity | ConvertTo-Json -Depth 5 -Compress)) {
+        throw 'Source or toolchain changed during the build.'
+    }
+    & python @checkArguments | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Build dependencies changed during the build.' }
+    $buildId = [guid]::NewGuid().ToString()
     foreach ($binary in @('winlex', 'winlex-gui')) {
         $exe = $executables[$binary]
         if (-not $exe) { throw "Cargo did not report an executable for $binary" }
         $report = @{
+            schema_version = 1
+            build_id = $buildId
+            source = $identity.source
             target = $target
             configuration = $Configuration
-            rustc = (& rustc -Vv) -join "`n"
+            rustc = $identity.rustc
+            cargo = $identity.cargo
+            rust_licenses_sha256 = $identity.rust_licenses_sha256
+            sdk_version = $env:WindowsSDKVersion
+            policy = $policy
             linker = $linker
             linker_version = (Get-Item $linker).VersionInfo.FileVersion
             resource_compiler = $rc
@@ -140,12 +177,10 @@ try {
         $report.crt = "VC-LTL5 system $($policy.crt_mode)"
         if ($policy.thunks_arch) {
             $report.thunks_object = $object
-            $report.thunks_sha256 = (Get-FileHash $object -Algorithm SHA256).Hash.ToLowerInvariant()
+            $report.thunks_sha256 = $checkedInputs.thunks_sha256
         }
         $report.vc_ltl_root = $ltlRoot
-        $report.vc_ltl_libraries = @(Get-ChildItem "$ltlLib/*.lib" | ForEach-Object {
-            @{ name = $_.Name; sha256 = (Get-FileHash $_.FullName).Hash.ToLowerInvariant() }
-        })
+        $report.vc_ltl_libraries = $checkedInputs.vc_ltl_libraries
         $report | ConvertTo-Json -Depth 5 | Set-Content "$exe.build.json" -Encoding utf8
         Write-Host "Built $exe"
     }

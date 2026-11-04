@@ -16,11 +16,18 @@ rustup target add i686-pc-windows-msvc x86_64-pc-windows-msvc
 ```
 
 链接依赖写入 `tmp/deps/`，此脚本不获取 WinMD。
+可用 `--architecture x86|x64|arm64` 只准备目标架构需要的依赖；ARM64 不获取 YY-Thunks。
 元数据由独立的 `winmd-collection` 项目准备；测试所需 Win32 输入的版本与哈希见 `tests/metadata/source.json`，将对应文件放入 `inputs/Windows.Win32.winmd`。主程序构建不要求该文件。
 
 ## 构建程序
 
-从仓库根目录在 MSVC 开发终端中执行。先关闭待替换的 Winlex 实例，并清除已有的 `RUSTFLAGS`／`CARGO_ENCODED_RUSTFLAGS`；`$link` 须指向匹配架构的 Hostx64 Microsoft `link.exe`：
+先关闭待替换的 Winlex 实例，并清除已有的 `RUSTFLAGS`／`CARGO_ENCODED_RUSTFLAGS`。默认入口按目标组件选择 Visual Studio 并初始化匹配架构的开发环境，依赖路径取自固定清单：
+
+```powershell
+./scripts/build.ps1 -Architecture x64
+```
+
+也可在 MSVC 开发终端中显式指定工具及依赖路径；`$link` 须指向匹配架构的 Hostx64 Microsoft `link.exe`：
 
 ```powershell
 $link = Join-Path $env:VCToolsInstallDir 'bin/Hostx64/x86/link.exe'
@@ -38,7 +45,8 @@ $link = Join-Path $env:VCToolsInstallDir 'bin/Hostx64/arm64/link.exe'
   -VcLtlRoot tmp/deps/vc-ltl-5.3.1/sdk
 ```
 开发构建使用 `-Configuration Debug`；优化版本和分发版本分别使用 `Release` 和 `Dist`。
-脚本自动查找 Microsoft `rc.exe`，也可用 `-RcExe PATH` 指定；输出目录可用 `-TargetDir PATH` 指定，否则遵循 Cargo 配置。
+脚本使用所选 SDK 的 Microsoft `rc.exe`，也可用 `-RcExe PATH` 指定；Dist 不回退搜索其他 SDK。输出目录可用 `-TargetDir PATH` 指定，否则遵循 Cargo 配置。
+构建入口在编译前后校验固定库集合与 SHA-256，并记录源码身份、实际 Rust／Cargo／原生工具版本及依赖。Rust 使用当前工具链，不固定版本；这些记录用于追溯，不承诺字节级可复现。
 手动工作流、分发打包及上传前检查见[手动构建与交付](release.md)。
 构建结束后显示 `winlex.exe`、`winlex-gui.exe` 的实际路径；对应的 `.build.json` 可用于生成消息资源 fixture。
 
