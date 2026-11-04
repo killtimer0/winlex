@@ -20,7 +20,7 @@ class PackageContracts(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         (ROOT / "tmp").mkdir(exist_ok=True)
-        cls.temp = tempfile.TemporaryDirectory(prefix="package-contract-", dir=ROOT / "tmp")
+        cls.temp = tempfile.TemporaryDirectory(prefix="打包 [contract]-", dir=ROOT / "tmp")
         cls.directory = Path(cls.temp.name)
 
     @classmethod

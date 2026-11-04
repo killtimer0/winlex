@@ -72,8 +72,7 @@ try {
         "$( (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() )  $relative"
     }
     [IO.File]::WriteAllLines((Join-Path $stage 'SHA256SUMS.txt'), [string[]]$manifest, [Text.UTF8Encoding]::new($false))
-    Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip
-    & python @verifyArguments --archive $zip
+    & python @verifyArguments --archive $zip --stage $stage
     if ($LASTEXITCODE -ne 0) { throw 'Archive validation failed.' }
     $hash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
     [IO.File]::WriteAllText("$zip.sha256", "$hash  $([IO.Path]::GetFileName($zip))`n", [Text.UTF8Encoding]::new($false))

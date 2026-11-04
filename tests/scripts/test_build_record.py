@@ -2,6 +2,7 @@
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 import struct
 import subprocess
@@ -46,6 +47,24 @@ def pe_image(policy, dlls, kind=3, delay=False):
 
 
 class BuildRecordContracts(unittest.TestCase):
+    def test_archive_literal_paths_old_timestamps_and_existing_output(self):
+        with tempfile.TemporaryDirectory(prefix="打包 [contract] ", dir=ROOT / "tmp") as folder:
+            directory = Path(folder)
+            stage = directory / "来源 [files]"
+            stage.mkdir()
+            license = stage / "许可.txt"
+            license.write_bytes(b"license")
+            os.utime(license, (1, 1))
+            archive = directory / "成品 [archive].zip"
+            record.create_archive(stage, archive)
+            with zipfile.ZipFile(archive) as package:
+                self.assertEqual(package.read("许可.txt"), b"license")
+                self.assertEqual(package.getinfo("许可.txt").date_time[:3], (1980, 1, 1))
+            before = archive.read_bytes()
+            with self.assertRaises(FileExistsError):
+                record.create_archive(stage, archive)
+            self.assertEqual(archive.read_bytes(), before)
+
     def test_pe_contract_for_all_targets_and_delay_imports(self):
         for arch, policy in POLICIES.items():
             for delay in (False, True):

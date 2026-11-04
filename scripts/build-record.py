@@ -171,19 +171,31 @@ def verify_archive(path, records):
                   f"Archive executable mismatch: {name}")
 
 
+def create_archive(stage, path):
+    with zipfile.ZipFile(path, "x", compression=zipfile.ZIP_DEFLATED, strict_timestamps=False) as archive:
+        for member in sorted(stage.rglob("*")):
+            if member.is_file():
+                archive.write(member, member.relative_to(stage).as_posix())
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--records", type=Path, nargs=2)
     parser.add_argument("--architecture", choices=("x86", "x64", "arm64"))
     parser.add_argument("--configuration", choices=("Debug", "Release", "Dist"), default="Dist")
     parser.add_argument("--archive", type=Path)
+    parser.add_argument("--stage", type=Path, help="create the archive from a prepared directory before validation")
     parser.add_argument("--json", action="store_true", help="emit validated records as JSON")
     args = parser.parse_args()
+    if args.stage and (not args.archive or not args.records):
+        parser.error("--stage requires --archive and --records")
     if args.records:
         if not args.architecture:
             parser.error("--records requires --architecture")
         records = verify_records(args.records, args.architecture, args.configuration)
         if args.archive:
+            if args.stage:
+                create_archive(args.stage, args.archive)
             verify_archive(args.archive, records)
         if args.json:
             print(json.dumps(records))
