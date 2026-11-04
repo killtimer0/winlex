@@ -100,21 +100,36 @@ pub enum Icon {
 }
 impl Icon {
     pub fn for_kind(kind: &str) -> Self {
-        match kind {
-            "class" | "attribute" => Self::Class,
-            "interface" => Self::Interface,
-            "struct" => Self::Struct,
-            "enum" => Self::Enum,
-            "method" | "delegate" => Self::Method,
-            "constant" => Self::Constant,
-            "field" => Self::Field,
-            "property" => Self::Property,
-            "event" => Self::Event,
-            "type_reference" => Self::Reference,
-            _ => Self::Misc,
-        }
+        KINDS
+            .iter()
+            .find(|(value, _, _)| *value == kind)
+            .map_or(Self::Misc, |&(_, icon, _)| icon)
     }
 }
+
+pub fn kind_label(kind: &str) -> u16 {
+    KINDS
+        .iter()
+        .find(|(value, _, _)| *value == kind)
+        .map_or(IDS_KIND_UNKNOWN, |&(_, _, label)| label)
+}
+
+/// Single presentation vocabulary for metadata entity kinds.
+const KINDS: &[(&str, Icon, u16)] = &[
+    ("class", Icon::Class, IDS_KIND_CLASS),
+    ("interface", Icon::Interface, IDS_KIND_INTERFACE),
+    ("struct", Icon::Struct, IDS_KIND_STRUCT),
+    ("enum", Icon::Enum, IDS_KIND_ENUM),
+    ("delegate", Icon::Method, IDS_KIND_DELEGATE),
+    ("attribute", Icon::Class, IDS_KIND_ATTRIBUTE),
+    ("module", Icon::Misc, IDS_KIND_MODULE),
+    ("method", Icon::Method, IDS_KIND_METHOD),
+    ("constant", Icon::Constant, IDS_KIND_CONSTANT),
+    ("field", Icon::Field, IDS_KIND_FIELD),
+    ("property", Icon::Property, IDS_KIND_PROPERTY),
+    ("event", Icon::Event, IDS_KIND_EVENT),
+    ("type_reference", Icon::Reference, IDS_KIND_REFERENCE),
+];
 
 const ICONS: &[(u16, u32)] = &[
     (IDR_SYMBOL_CLASS, 0x993366),
@@ -322,6 +337,20 @@ impl Images {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn kind_presentation_preserves_shared_icons_and_distinct_labels() {
+        for (kind, icon, label) in [
+            ("attribute", Icon::Class, IDS_KIND_ATTRIBUTE),
+            ("delegate", Icon::Method, IDS_KIND_DELEGATE),
+            ("module", Icon::Misc, IDS_KIND_MODULE),
+        ] {
+            assert_eq!(Icon::for_kind(kind), icon);
+            assert_eq!(kind_label(kind), label);
+        }
+        assert_eq!(Icon::for_kind("unknown"), Icon::Misc);
+        assert_eq!(kind_label("unknown"), IDS_KIND_UNKNOWN);
+    }
+
     #[test]
     fn dark_symbol_colors_keep_hues_and_lift_each_channel() {
         assert_eq!(lighten(0), 0x7f7f7f);

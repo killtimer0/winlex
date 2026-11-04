@@ -12,7 +12,7 @@ use nucleo_matcher::{
     Config, Matcher, Utf32Str,
     pattern::{Atom, AtomKind, CaseMatching, Normalization},
 };
-pub use number::Comparison;
+pub(crate) use number::Comparison;
 use std::cmp::Ordering;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -77,13 +77,6 @@ pub enum MatchQuality {
     Filter,
 }
 impl MatchQuality {
-    pub fn field(&self) -> Option<MatchField> {
-        match self {
-            Self::NameExact(field) | Self::Fuzzy { field, .. } => Some(*field),
-            Self::NameScope => Some(MatchField::FullName),
-            _ => None,
-        }
-    }
     pub fn compare(&self, other: &Self) -> Ordering {
         let rank = |quality: &Self| match quality {
             Self::NameExact(_)
@@ -154,7 +147,7 @@ impl NameQuery {
 pub struct SearchQuery {
     condition: Condition,
     filter_quality: bool,
-    context_needed: bool,
+    pub(crate) context_needed: bool,
     value_needed: bool,
     guid_needed: bool,
 }
@@ -213,10 +206,7 @@ impl SearchQuery {
             filter_quality,
         }
     }
-    pub fn needs_full_name(&self) -> bool {
-        self.context_needed
-    }
-    pub fn matches(
+    pub(crate) fn matches(
         &mut self,
         row: &Declaration<'_>,
         full_name: &str,
@@ -359,7 +349,13 @@ mod tests {
         assert!(query.matches("File", "Namespace.File").is_none());
         let mut query = NameQuery::compile("CW", true, false);
         let hit = query.matches("CreateWindow", "CW.CreateWindow").unwrap();
-        assert_eq!(hit.quality.field(), Some(MatchField::Name));
+        assert!(matches!(
+            hit.quality,
+            MatchQuality::Fuzzy {
+                field: MatchField::Name,
+                ..
+            }
+        ));
         let other = query.matches("CreateWindow", "Other.CreateWindow").unwrap();
         assert_eq!(other.quality, hit.quality);
         assert_eq!(other.evidence, hit.evidence);

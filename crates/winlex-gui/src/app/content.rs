@@ -111,8 +111,8 @@ impl Content {
                 let b = v.binding();
                 format!(
                     "{} · {:08X}",
-                    b.catalog.sources()[b.id.source_id].path.display(),
-                    b.id.token
+                    b.catalog.sources()[b.entity.id.source_id].path.display(),
+                    b.entity.id.token
                 )
             }
             Self::Tool(v) => crate::resources::text(v.descriptor.description),

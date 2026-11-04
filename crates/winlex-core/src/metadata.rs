@@ -22,9 +22,16 @@ pub fn key<'a>(row: impl AsRow<'a>, table: u32) -> EntityId {
         token: token(row, table),
     }
 }
-pub fn supports<'a>(r: impl HasAttributes<'a>, arch: i32) -> bool {
+pub(crate) fn mask<'a>(r: impl HasAttributes<'a>) -> i32 {
     let mask = r.arches();
-    mask == 0 || mask & arch != 0
+    if mask == 0 {
+        Architecture::ALL_MASK
+    } else {
+        mask
+    }
+}
+pub fn supports<'a>(r: impl HasAttributes<'a>, arch: i32) -> bool {
+    mask(r) & arch != 0
 }
 
 pub fn bitfields(f: Field<'_>) -> Result<Vec<Bitfield>> {

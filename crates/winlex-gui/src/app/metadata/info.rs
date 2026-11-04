@@ -1,6 +1,7 @@
 use super::Binding;
 use crate::{
     dpi::Font,
+    icons::kind_label,
     layout,
     native::*,
     resources::{self, *},
@@ -16,38 +17,20 @@ use windows::{
 };
 use windows_sys::Win32::System::SystemServices::SS_ETCHEDHORZ;
 
-const KINDS: &[(&str, u16)] = &[
-    ("class", IDS_KIND_CLASS),
-    ("interface", IDS_KIND_INTERFACE),
-    ("struct", IDS_KIND_STRUCT),
-    ("enum", IDS_KIND_ENUM),
-    ("delegate", IDS_KIND_DELEGATE),
-    ("attribute", IDS_KIND_ATTRIBUTE),
-    ("module", IDS_KIND_MODULE),
-    ("method", IDS_KIND_METHOD),
-    ("constant", IDS_KIND_CONSTANT),
-    ("field", IDS_KIND_FIELD),
-    ("property", IDS_KIND_PROPERTY),
-    ("event", IDS_KIND_EVENT),
-    ("type_reference", IDS_KIND_REFERENCE),
-];
-
 #[derive(Clone)]
 struct Snapshot {
-    name: String,
-    full_name: String,
+    entity: std::sync::Arc<winlex_core::EntitySummary>,
     path: PathBuf,
-    id: winlex_core::EntityId,
     online_target: String,
 }
 impl Snapshot {
     fn copies(&self) -> Vec<(u16, Vec<u16>)> {
-        let id = self.id.to_string();
+        let id = self.entity.id.to_string();
         [
             (IDS_COPY_SOURCE_PATH, self.path.as_os_str()),
             (IDS_COPY_ENTITY_ID, OsStr::new(&id)),
-            (IDS_COPY_SYMBOL_NAME, OsStr::new(&self.name)),
-            (IDS_COPY_QUALIFIED_NAME, OsStr::new(&self.full_name)),
+            (IDS_COPY_SYMBOL_NAME, OsStr::new(&self.entity.name)),
+            (IDS_COPY_QUALIFIED_NAME, OsStr::new(&self.entity.full_name)),
             (
                 IDS_COPY_SOURCE_NAME,
                 self.path.file_name().unwrap_or_default(),
@@ -166,8 +149,8 @@ impl Info {
         }
     }
     pub fn fill(&self, binding: &Binding) -> anyhow::Result<()> {
-        let entity = binding.catalog.entity(binding.id)?;
-        let context = binding.catalog.entity_context(binding.id)?;
+        let entity = &binding.entity;
+        let context = binding.catalog.entity_context(entity.id)?;
         let scope = match context.owner {
             Some(owner) if !context.namespace.is_empty() => {
                 format!("{} · {owner}", context.namespace)
@@ -180,11 +163,11 @@ impl Info {
         set_text(self.kind, &resources::text(kind_label(&entity.kind)));
         let documentation = binding
             .catalog
-            .declaration(binding.id, Some(binding.architecture))?
+            .declaration(entity.id, Some(binding.architecture))?
             .documentation_url();
         let (label, target) = online_target(documentation.as_deref(), &entity.full_name);
         set_text(self.online, &resources::text(label));
-        let path = binding.catalog.sources()[binding.id.source_id].path.clone();
+        let path = binding.catalog.sources()[entity.id.source_id].path.clone();
         let filename: Vec<u16> = path
             .file_name()
             .unwrap_or_default()
@@ -193,10 +176,8 @@ impl Info {
             .collect();
         send(self.source, WM_SETTEXT, 0, filename.as_ptr() as isize);
         self.snapshot.replace(Some(Snapshot {
-            name: entity.name,
-            full_name: entity.full_name,
+            entity: binding.entity.clone(),
             path,
-            id: binding.id,
             online_target: target,
         }));
         Ok(())
@@ -443,12 +424,6 @@ fn online_target(documentation: Option<&str>, name: &str) -> (u16, String) {
     }
     (IDS_ONLINE_SEARCH, url)
 }
-fn kind_label(kind: &str) -> u16 {
-    KINDS
-        .iter()
-        .find(|(value, _)| *value == kind)
-        .map_or(IDS_KIND_UNKNOWN, |(_, label)| *label)
-}
 fn centered(mut row: RECT, height: i32) -> RECT {
     row.top += ((row.bottom - row.top - height) / 2).max(0);
     row.bottom = (row.top + height).min(row.bottom);
@@ -534,14 +509,18 @@ mod tests {
             path.extend([0xD800]);
             path.extend(".winmd".encode_utf16());
             let snapshot = Snapshot {
-                name: "A&B".into(),
-                full_name: "N.A&B".into(),
+                entity: std::sync::Arc::new(winlex_core::EntitySummary {
+                    id: winlex_core::EntityId {
+                        source_id: 2,
+                        token: 0x04000001,
+                    },
+                    name: "A&B".into(),
+                    full_name: "N.A&B".into(),
+                    kind: "field".into(),
+                    architecture_mask: 7,
+                }),
                 online_target: online_target(None, "N.A&B").1,
                 path: PathBuf::from(OsString::from_wide(&path)),
-                id: winlex_core::EntityId {
-                    source_id: 2,
-                    token: 0x04000001,
-                },
             };
             let copies = snapshot.copies();
             assert_eq!(copies[0].1, path);

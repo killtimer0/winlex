@@ -19,11 +19,9 @@ mod info;
 
 #[derive(Clone)]
 pub(super) struct Binding {
-    pub id: EntityId,
     pub catalog: Arc<Catalog>,
+    pub entity: Arc<winlex_core::EntitySummary>,
     pub architecture: Architecture,
-    pub architecture_mask: i32,
-    name: String,
 }
 pub(super) enum ArchitectureChoice {
     Exact(Architecture),
@@ -48,15 +46,13 @@ impl Binding {
         }
         .ok_or_else(|| anyhow::anyhow!(resources::text(IDS_UNSUPPORTED_ARCH)))?;
         Ok(Self {
-            id,
             catalog,
+            entity: Arc::new(entity),
             architecture,
-            architecture_mask: mask,
-            name: entity.name,
         })
     }
     pub(super) fn same_entity(&self, other: &Self) -> bool {
-        self.id == other.id && Arc::ptr_eq(&self.catalog, &other.catalog)
+        self.entity.id == other.entity.id && Arc::ptr_eq(&self.catalog, &other.catalog)
     }
     pub(super) fn same_location(&self, other: &Self) -> bool {
         self.same_entity(other) && self.architecture == other.architecture
@@ -162,22 +158,21 @@ impl MetadataView {
         let state = self.state.borrow();
         format!(
             "{} - {}",
-            state.binding.name,
+            state.binding.entity.name,
             state.binding.architecture.name()
         )
     }
     fn update_icons(&self) -> anyhow::Result<()> {
         let icon = {
             let state = self.state.borrow();
-            let entity = state.binding.catalog.entity(state.binding.id)?;
-            crate::icons::Icon::for_kind(&entity.kind)
+            crate::icons::Icon::for_kind(&state.binding.entity.kind)
         };
         super::document::update_icons(self.hwnd, icon, &self.icons)
     }
     fn fill_architectures(&self) {
         let binding = self.state.borrow().binding.clone();
         send(self.info.architecture, CB_RESETCONTENT, 0, 0);
-        for arch in super::architecture::supported(binding.architecture_mask) {
+        for arch in super::architecture::supported(binding.entity.architecture_mask) {
             let index = send(
                 self.info.architecture,
                 CB_ADDSTRING,
@@ -205,7 +200,7 @@ impl MetadataView {
         let job = Job::Describe {
             document: self.id,
             catalog: binding.catalog,
-            entity: binding.id,
+            entity: binding.entity.id,
             arch: binding.architecture,
         };
         let body = match read(|a| a.worker.replace(previous, ticket, job)) {
@@ -231,7 +226,8 @@ impl MetadataView {
     }
     fn select_architecture(&self, code: u32) {
         let mut binding = self.binding();
-        let supported: Vec<_> = super::architecture::supported(binding.architecture_mask).collect();
+        let supported: Vec<_> =
+            super::architecture::supported(binding.entity.architecture_mask).collect();
         if code == CBN_SELENDCANCEL {
             if let Some(index) = supported
                 .iter()
@@ -576,7 +572,7 @@ fn click_distance(origin: POINT, point: POINT) -> bool {
         && (point.y - origin.y).abs() < unsafe { GetSystemMetrics(SM_CYDRAG) }.max(1)
 }
 fn old_version(binding: &Binding) -> bool {
-    let path = &binding.catalog.sources()[binding.id.source_id].path;
+    let path = &binding.catalog.sources()[binding.entity.id.source_id].path;
     read(|a| {
         a.session.catalog.as_ref().is_some_and(|current| {
             !Arc::ptr_eq(current, &binding.catalog)
@@ -614,8 +610,8 @@ mod tests {
             ArchitectureChoice::Exact(Architecture::X86),
         )
         .unwrap();
-        assert_eq!(first.name, entity.name);
-        assert_eq!(first.architecture_mask, entity.architecture_mask);
+        assert_eq!(first.entity.name, entity.name);
+        assert_eq!(first.entity.architecture_mask, entity.architecture_mask);
         assert_eq!(first.architecture, Architecture::X86);
         assert!(Arc::ptr_eq(&first.catalog, &snapshot));
         let other_architecture = Binding::resolve(

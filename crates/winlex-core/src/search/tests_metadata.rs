@@ -623,9 +623,10 @@ fn search_entry_points_preserve_scan_order_quality_evidence_and_filters() {
                 );
                 if mode == SearchMode::Condition {
                     let parsed = Query::parse(text).unwrap();
+                    let compiled = SearchQuery::from_query(&parsed, false).unwrap();
                     assert_eq!(
                         direct,
-                        snapshot(db.search_query(&parsed, options()).unwrap())
+                        snapshot(db.search_compiled(compiled, options()).unwrap())
                     );
                 }
             }
@@ -658,10 +659,7 @@ fn search_entry_points_preserve_input_diagnostic_wrappers() {
         }
     }
     let parsed = Query::parse("unknown = 1").unwrap();
-    let error = db
-        .search_query(&parsed, SearchOptions::default())
-        .err()
-        .unwrap();
+    let error = SearchQuery::from_query(&parsed, false).err().unwrap();
     assert!(error.downcast_ref::<crate::InvalidSearchInput>().is_none());
     assert_eq!(
         error.downcast_ref::<QueryError>().unwrap().kind,

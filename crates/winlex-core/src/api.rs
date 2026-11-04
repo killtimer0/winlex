@@ -1,5 +1,5 @@
 use crate::{
-    metadata::{Db, key, supports},
+    metadata::{Db, key, mask, supports},
     model::*,
     search::{MatchField, MatchQuality, SearchMatch, SearchQuery},
     source::{EntityId, Source},
@@ -139,10 +139,6 @@ pub struct Catalog {
     names: HashMap<EntityId, TypeName>,
     search_index: Vec<EntityId>,
 }
-fn raw_mask<'a>(r: impl HasAttributes<'a>) -> i32 {
-    let a = r.arches();
-    if a == 0 { Architecture::ALL_MASK } else { a }
-}
 pub fn integer(v: &Value) -> Option<i128> {
     Some(match v {
         Value::U8(x) => *x as i128,
@@ -224,14 +220,14 @@ impl<'a> Declaration<'a> {
     }
     pub fn architecture_mask(&self) -> i32 {
         let member = match self {
-            Self::Type(r) => return raw_mask(*r),
-            Self::Field(r) => raw_mask(*r),
-            Self::Method(r) => raw_mask(*r),
-            Self::Property(r) => raw_mask(*r),
-            Self::Event(r) => raw_mask(*r),
+            Self::Type(r) => return mask(*r),
+            Self::Field(r) => mask(*r),
+            Self::Method(r) => mask(*r),
+            Self::Property(r) => mask(*r),
+            Self::Event(r) => mask(*r),
             Self::Reference(_) => Architecture::ALL_MASK,
         };
-        member & self.owner().map(raw_mask).unwrap_or(Architecture::ALL_MASK)
+        member & self.owner().map(mask).unwrap_or(Architecture::ALL_MASK)
     }
     pub fn category(&self) -> EntityCategory {
         match self {
@@ -463,16 +459,6 @@ impl Catalog {
             options,
         )
     }
-    pub fn search_query<'a>(
-        &'a self,
-        query: &crate::Query,
-        options: SearchOptions<'a>,
-    ) -> Result<Search<'a>> {
-        self.search_compiled(
-            SearchQuery::from_query(query, options.case_sensitive)?,
-            options,
-        )
-    }
     pub fn search_compiled<'a>(
         &'a self,
         query: crate::CompiledQuery,
@@ -618,12 +604,12 @@ impl Search<'_> {
                     }
                 }
                 Matcher::Query(query) => {
-                    let full = if query.needs_full_name() {
+                    let full = if query.context_needed {
                         self.catalog.full_name(&row)
                     } else {
                         String::new()
                     };
-                    let namespace = if query.needs_full_name() {
+                    let namespace = if query.context_needed {
                         self.catalog.name_context(&row).0
                     } else {
                         ""

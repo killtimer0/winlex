@@ -56,7 +56,7 @@ impl Entry {
             document: document.id,
             target: Target::Declaration(DeclarationTarget {
                 catalog: Arc::downgrade(&binding.catalog),
-                entity: binding.id,
+                entity: binding.entity.id,
                 architecture: binding.architecture,
                 position: document.position(),
             }),
