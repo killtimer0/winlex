@@ -1,5 +1,5 @@
 //! Internal registration and content contract. No dynamic plugins or persisted sessions.
-use super::{history, workspace};
+use super::{frame, history, workspace};
 use crate::app::context::Context;
 use crate::{
     icons::Icon,
@@ -54,7 +54,7 @@ pub(super) fn activate(ctx: &Context, index: isize, _double: bool) {
     open(ctx, index, false)
 }
 pub(super) fn list(ctx: &Context) -> HWND {
-    unsafe { GetDlgItem(ctx.read(|a| a.frame), TOOL_LIST as i32) }
+    unsafe { GetDlgItem(frame::hwnd(ctx), TOOL_LIST as i32) }
 }
 pub(super) fn selected(ctx: &Context, new: bool) {
     open(
@@ -104,7 +104,7 @@ pub(super) fn context_menu(ctx: &Context, hwnd: HWND, l: isize) -> anyhow::Resul
     } else {
         point_from_lparam(l)
     };
-    match menu.track(ctx.read(|a| a.frame), point) {
+    match menu.track(frame::hwnd(ctx), point) {
         1 => selected(ctx, false),
         2 => selected(ctx, true),
         _ => {}

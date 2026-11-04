@@ -240,6 +240,27 @@ impl Settings {
     }
 }
 
+pub(super) fn preferences(ctx: &Context) -> Preferences {
+    ctx.read(|a| a.settings.preferences)
+}
+pub(super) fn categories(ctx: &Context) -> u32 {
+    preferences(ctx).categories
+}
+pub(super) fn preferred_architecture(ctx: &Context) -> Option<Architecture> {
+    ctx.read(|a| a.settings.preferred_architecture)
+}
+pub(super) fn set_preferred_architecture(
+    ctx: &Context,
+    architecture: Architecture,
+) -> anyhow::Result<()> {
+    ctx.write(|a| {
+        a.settings
+            .set_preferred_architecture(&a.config, architecture)
+    })
+}
+pub(super) fn set_preferences(ctx: &Context, preferences: Preferences) -> anyhow::Result<()> {
+    ctx.write(|a| a.settings.set_preferences(&a.config, preferences))
+}
 pub(super) fn restore_window(ctx: &Context, hwnd: HWND) {
     let value = ctx.dpi().window(hwnd);
     let saved = ctx.read(|a| a.settings.window);

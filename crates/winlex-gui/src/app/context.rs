@@ -4,6 +4,8 @@ use crate::{
     dpi::{Dpi, Font},
     layout,
     native::*,
+    tasks::{Completion, Job},
+    worker::Ticket,
 };
 use std::{cell::RefCell, ptr};
 
@@ -31,6 +33,9 @@ impl Context {
     pub fn dpi(&self) -> Dpi {
         self.read(|a| a.dpi)
     }
+    pub fn system_version(&self) -> crate::platform::WindowsVersion {
+        self.read(|a| a.system_version)
+    }
     pub fn font_for(&self, value: u32) -> (HFONT, i32) {
         if let Some(font) = self.read(|a| {
             a.fonts
@@ -52,6 +57,26 @@ impl Context {
         let dpi = self.dpi().window(hwnd);
         let (font, height) = self.font_for(dpi);
         layout::Metrics { dpi, font, height }
+    }
+    pub fn worker_event(&self) -> HANDLE {
+        self.read(|a| a.worker.event())
+    }
+    pub fn replace_job(
+        &self,
+        previous: Option<u64>,
+        ticket: Ticket,
+        job: Job,
+    ) -> anyhow::Result<()> {
+        self.read(|a| a.worker.replace(previous, ticket, job))
+    }
+    pub fn cancel_job(&self, id: u64) {
+        self.read(|a| a.worker.cancel(id));
+    }
+    pub fn try_completion(&self) -> Result<Completion, std::sync::mpsc::TryRecvError> {
+        self.read(|a| a.worker.rx.try_recv())
+    }
+    pub fn resignal_worker(&self) {
+        self.read(|a| a.worker.resignal());
     }
     /// Resolve the context from a window created under the frame.
     ///

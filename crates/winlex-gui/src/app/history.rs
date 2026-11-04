@@ -1,6 +1,6 @@
 //! Workspace navigation keeps weak snapshot locators and per-visit reading positions.
 use super::{
-    catalog,
+    catalog, frame,
     metadata::{ArchitectureChoice, Binding, MetadataView},
     workspace,
 };
@@ -297,7 +297,7 @@ pub(super) fn navigate(ctx: &Context, direction: Direction) {
 }
 
 pub(super) fn refresh(ctx: &Context) {
-    let frame = ctx.read(|a| a.frame);
+    let frame = frame::hwnd(ctx);
     if frame.is_null() {
         return;
     }

@@ -245,10 +245,9 @@ impl View {
         self.set_languages(ids, preserve);
     }
     fn submit(&self, job: Job) -> anyhow::Result<()> {
-        self.ctx().write(|a| {
-            let ticket = a.session.ticket();
-            a.worker.replace(None, ticket, job)
-        })
+        let ctx = self.ctx();
+        let ticket = crate::app::catalog::next_ticket(ctx);
+        ctx.replace_job(None, ticket, job)
     }
     fn refresh_module_languages(&self) {
         if !self.custom() {
@@ -336,7 +335,7 @@ impl View {
     fn browse(&self) {
         match crate::input::choose(
             self.hwnd,
-            self.ctx().read(|a| a.system_version),
+            self.ctx().system_version(),
             IDS_ERROR_CODE_TOOL,
             IDS_ERROR_CODE_MODULE_FILES,
             "*.exe;*.dll;*.mui",

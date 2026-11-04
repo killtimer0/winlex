@@ -1,6 +1,6 @@
 //! Native MDI shell lifecycle and content-specific message dispatch.
 use super::content::Content;
-use super::{history, metadata::MetadataView, workspace};
+use super::{frame, history, metadata::MetadataView, workspace};
 use crate::app::context::Context;
 use crate::native::*;
 use std::{cell::RefCell, rc::Rc};
@@ -37,7 +37,7 @@ pub(super) fn update_icons(
     icons.apply(hwnd);
     current.replace(Some(icons));
     if unsafe { IsZoomed(hwnd) } != 0 && workspace::active(ctx) == hwnd {
-        unsafe { DrawMenuBar(ctx.read(|a| a.frame)) };
+        unsafe { DrawMenuBar(frame::hwnd(ctx)) };
     }
     Ok(())
 }

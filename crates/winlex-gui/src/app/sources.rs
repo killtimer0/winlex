@@ -1,5 +1,5 @@
 //! The source panel projects the committed catalog; opening files is a load transaction.
-use super::catalog;
+use super::{catalog, frame};
 use crate::app::context::Context;
 use crate::{
     icons::Icon,
@@ -36,64 +36,62 @@ pub(super) fn row_text(ctx: &Context, index: usize) -> Vec<u16> {
     })
 }
 fn rows(ctx: &Context) -> Vec<Row> {
-    ctx.read(|a| {
-        a.session
-            .inputs()
-            .iter()
-            .map(|source| {
-                let path = source.path();
-                let failure = a.session.source_error(path);
-                let status = resources::text(if a.session.pending(path) {
-                    IDS_RELOADING
-                } else if failure.is_some() {
-                    IDS_RELOAD_FAILED
-                } else {
-                    IDS_LOADED
-                });
-                let mut detail = TextLine::default();
-                detail.push(TextSegment::plain(&format!(
-                    "{status} · {} · ",
-                    size(source.len())
-                )));
-                if let Some(parent) = path.parent() {
-                    detail.push(TextSegment::new(
-                        parent.as_os_str().encode_wide(),
-                        FoldKind::Path,
-                    ));
-                }
-                let exact =
-                    resources::text(IDS_SIZE_BYTES).replace("{size}", &source.len().to_string());
-                let native_path: Vec<_> = path.as_os_str().encode_wide().collect();
-                let title: Vec<_> = path.file_name().unwrap_or_default().encode_wide().collect();
-                let mut info = native_path.clone();
-                info.extend(format!("\r\n{status} · {exact}").encode_utf16());
-                if let Some(error) = failure {
-                    info.extend(format!("\r\n{error}").encode_utf16());
-                }
-                let mut tooltip = title.clone();
+    catalog::source_states(ctx)
+        .into_iter()
+        .map(|source| {
+            let catalog::SourceState {
+                path,
+                len,
+                error,
+                pending,
+            } = source;
+            let failure = error.as_deref();
+            let status = resources::text(if pending {
+                IDS_RELOADING
+            } else if failure.is_some() {
+                IDS_RELOAD_FAILED
+            } else {
+                IDS_LOADED
+            });
+            let mut detail = TextLine::default();
+            detail.push(TextSegment::plain(&format!("{status} · {} · ", size(len))));
+            if let Some(parent) = path.parent() {
+                detail.push(TextSegment::new(
+                    parent.as_os_str().encode_wide(),
+                    FoldKind::Path,
+                ));
+            }
+            let exact = resources::text(IDS_SIZE_BYTES).replace("{size}", &len.to_string());
+            let native_path: Vec<_> = path.as_os_str().encode_wide().collect();
+            let title: Vec<_> = path.file_name().unwrap_or_default().encode_wide().collect();
+            let mut info = native_path.clone();
+            info.extend(format!("\r\n{status} · {exact}").encode_utf16());
+            if let Some(error) = failure {
+                info.extend(format!("\r\n{error}").encode_utf16());
+            }
+            let mut tooltip = title.clone();
+            tooltip.extend("\r\n".encode_utf16());
+            tooltip_field(&mut tooltip, IDS_TIP_STATUS, status.encode_utf16());
+            tooltip_field(&mut tooltip, IDS_TIP_SIZE, exact.encode_utf16());
+            tooltip_field(&mut tooltip, IDS_TIP_PATH, native_path);
+            if let Some(error) = failure {
+                tooltip_field(&mut tooltip, IDS_TIP_ERROR, error.encode_utf16());
                 tooltip.extend("\r\n".encode_utf16());
-                tooltip_field(&mut tooltip, IDS_TIP_STATUS, status.encode_utf16());
-                tooltip_field(&mut tooltip, IDS_TIP_SIZE, exact.encode_utf16());
-                tooltip_field(&mut tooltip, IDS_TIP_PATH, native_path);
-                if let Some(error) = failure {
-                    tooltip_field(&mut tooltip, IDS_TIP_ERROR, error.encode_utf16());
-                    tooltip.extend("\r\n".encode_utf16());
-                    tooltip.extend(resources::text(IDS_TIP_PREVIOUS_DATA).encode_utf16());
-                }
-                Row {
-                    path: path.to_path_buf(),
-                    display: Display {
-                        title,
-                        detail,
-                        icon: Some(Icon::File),
-                        tooltip,
-                        ..Default::default()
-                    },
-                    text: info,
-                }
-            })
-            .collect()
-    })
+                tooltip.extend(resources::text(IDS_TIP_PREVIOUS_DATA).encode_utf16());
+            }
+            Row {
+                path,
+                display: Display {
+                    title,
+                    detail,
+                    icon: Some(Icon::File),
+                    tooltip,
+                    ..Default::default()
+                },
+                text: info,
+            }
+        })
+        .collect()
 }
 
 fn size(bytes: usize) -> String {
@@ -119,7 +117,7 @@ fn size(bytes: usize) -> String {
 }
 
 fn list(ctx: &Context) -> HWND {
-    unsafe { GetDlgItem(ctx.read(|a| a.frame), SOURCE_LIST as i32) }
+    unsafe { GetDlgItem(frame::hwnd(ctx), SOURCE_LIST as i32) }
 }
 fn selected(ctx: &Context) -> Option<PathBuf> {
     let index = crate::list::selected(list(ctx))?;
@@ -127,10 +125,8 @@ fn selected(ctx: &Context) -> Option<PathBuf> {
 }
 pub(super) fn update_actions(ctx: &Context) {
     let path = selected(ctx);
-    let reload = path
-        .as_ref()
-        .is_some_and(|p| !ctx.read(|a| a.session.pending(p)));
-    let frame = ctx.read(|a| a.frame);
+    let reload = path.as_ref().is_some_and(|p| !catalog::pending(ctx, p));
+    let frame = frame::hwnd(ctx);
     unsafe {
         EnableWindow(GetDlgItem(frame, RELOAD_SOURCE as i32), reload as i32);
         EnableWindow(
@@ -165,8 +161,8 @@ fn choose_add(ctx: &Context) {
     if let Some(paths) = super::status::report(
         ctx,
         input::choose(
-            ctx.read(|a| a.frame),
-            ctx.read(|a| a.system_version),
+            frame::hwnd(ctx),
+            ctx.system_version(),
             IDS_LOAD_METADATA,
             IDS_WINMD_FILES,
             "*.winmd",
@@ -206,14 +202,14 @@ fn action_path(ctx: &Context, command: u16, path: PathBuf) {
         );
         return;
     }
-    if !ctx.read(|a| a.session.inputs().iter().any(|s| s.path() == path)) {
+    if !catalog::contains_path(ctx, &path) {
         return;
     }
     let mut paths = catalog::paths(ctx);
     if command == REMOVE_SOURCE {
         paths.retain(|p| *p != path);
         catalog::reload(ctx, paths, vec![]);
-    } else if command == RELOAD_SOURCE && !ctx.read(|a| a.session.pending(&path)) {
+    } else if command == RELOAD_SOURCE && !catalog::pending(ctx, &path) {
         catalog::reload(ctx, paths, vec![path]);
     }
 }
@@ -285,7 +281,7 @@ pub(super) fn context_menu(ctx: &Context, hwnd: HWND, location: isize) -> anyhow
     let Some(path) = selected(ctx) else {
         return Ok(());
     };
-    let pending = ctx.read(|a| a.session.pending(&path));
+    let pending = catalog::pending(ctx, &path);
     unsafe {
         let menu = Popup::new()?;
         for (id, label) in [

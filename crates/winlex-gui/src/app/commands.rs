@@ -1,5 +1,5 @@
 //! Frame menu commands and their enabled/checked state.
-use super::{catalog, help, history, panel, settings, sidebar, status, tools, workspace};
+use super::{catalog, frame, help, history, panel, settings, sidebar, status, tools, workspace};
 use crate::app::context::Context;
 use crate::{layout::Arrangement, native::*, resources::*};
 use windows_sys::Win32::System::SystemServices::{
@@ -45,7 +45,7 @@ pub(super) fn command(ctx: &Context, id: u16) -> bool {
         }
         SETTINGS => settings::open(ctx),
         ALWAYS_ON_TOP => {
-            let frame = ctx.read(|a| a.frame);
+            let frame = frame::hwnd(ctx);
             unsafe {
                 let after = if is_topmost(frame) {
                     HWND_NOTOPMOST
@@ -94,7 +94,7 @@ pub(super) fn command(ctx: &Context, id: u16) -> bool {
         OPEN_RESULT => catalog::open_selected(ctx, catalog::Open::Pin),
         OPEN_NEW => catalog::open_selected(ctx, catalog::Open::New),
         EXIT => {
-            send(ctx.read(|a| a.frame), WM_CLOSE, 0, 0);
+            send(frame::hwnd(ctx), WM_CLOSE, 0, 0);
         }
         COLUMNS => workspace::set_arrangement(ctx, Arrangement::Columns),
         ROWS => workspace::set_arrangement(ctx, Arrangement::Rows),
@@ -114,7 +114,7 @@ pub(super) fn command(ctx: &Context, id: u16) -> bool {
 pub(super) fn update_commands(ctx: &Context) {
     let enabled =
         workspace::content(ctx, workspace::active(ctx)).is_some_and(|c| c.supports_find());
-    let frame = ctx.read(|a| a.frame);
+    let frame = frame::hwnd(ctx);
     if frame.is_null() {
         return;
     }

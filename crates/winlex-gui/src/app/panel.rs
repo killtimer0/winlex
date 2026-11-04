@@ -140,7 +140,7 @@ pub(super) fn create(ctx: &Context, frame: HWND) -> anyhow::Result<([Rc<Panel>; 
         Some(Box::new(move |row, double| {
             catalog::activate(unsafe { &*state }, row, double)
         })),
-        ctx.read(|a| a.system_version),
+        ctx.system_version(),
     )?;
     let search_panel = Rc::new(Panel {
         controls: vec![input, list.hwnd, mode],
@@ -160,7 +160,7 @@ pub(super) fn create(ctx: &Context, frame: HWND) -> anyhow::Result<([Rc<Panel>; 
         move |index, visit| sources::row(unsafe { &*state }, index, visit),
         move |index| sources::row_text(unsafe { &*state }, index),
         None,
-        ctx.read(|a| a.system_version),
+        ctx.system_version(),
     )?;
     let mut controls = vec![list.hwnd];
     for (id, label) in [
@@ -188,7 +188,7 @@ pub(super) fn create(ctx: &Context, frame: HWND) -> anyhow::Result<([Rc<Panel>; 
         Some(Box::new(move |row, double| {
             super::tools::activate(unsafe { &*state }, row, double)
         })),
-        ctx.read(|a| a.system_version),
+        ctx.system_version(),
     )?;
     send(list.hwnd, LVM_SETITEMCOUNT, super::tools::REGISTRY.len(), 0);
     let controls = vec![list.hwnd, unsafe {

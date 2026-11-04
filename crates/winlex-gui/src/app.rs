@@ -187,7 +187,7 @@ unsafe fn run_windows(ctx: &Context, paths: Vec<std::path::PathBuf>) -> anyhow::
                 DestroyWindow(frame);
                 return Err(error);
             }
-            let event = ctx.read(|a| a.worker.event());
+            let event = ctx.worker_event();
             let wake =
                 MsgWaitForMultipleObjectsEx(1, &event, u32::MAX, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
             if wake == WAIT_FAILED {
@@ -241,7 +241,7 @@ unsafe fn run_windows(ctx: &Context, paths: Vec<std::path::PathBuf>) -> anyhow::
 fn poll_completions(ctx: &Context) {
     use crate::tasks::Completion;
     for _ in 0..8 {
-        match ctx.read(|a| a.worker.rx.try_recv()) {
+        match ctx.try_completion() {
             Ok(Completion::Loaded { id, result }) => catalog::loaded(ctx, id, result),
             Ok(Completion::Matches { id, items }) => catalog::matches(ctx, id, items),
             Ok(Completion::SearchDone { id, result }) => catalog::search_done(ctx, id, result),
@@ -288,5 +288,5 @@ fn poll_completions(ctx: &Context) {
         }
     }
     catalog::flush_results(ctx);
-    ctx.read(|a| a.worker.resignal());
+    ctx.resignal_worker();
 }

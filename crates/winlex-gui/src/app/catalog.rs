@@ -1,8 +1,8 @@
 //! UI transactions and immutable document bindings. HWNDs never cross the worker boundary.
 use super::{
-    history,
+    frame, history,
     metadata::{self, ArchitectureChoice, Binding},
-    workspace,
+    settings, workspace,
 };
 use crate::app::context::Context;
 use crate::native::text;
@@ -202,11 +202,52 @@ impl Session {
 pub(super) fn paths(ctx: &Context) -> Vec<PathBuf> {
     ctx.read(|a| a.session.paths())
 }
+pub(super) fn next_ticket(ctx: &Context) -> Ticket {
+    ctx.write(|a| a.session.ticket())
+}
+pub(super) fn pending(ctx: &Context, path: &std::path::Path) -> bool {
+    ctx.read(|a| a.session.pending(path))
+}
+pub(super) fn contains_path(ctx: &Context, path: &std::path::Path) -> bool {
+    ctx.read(|a| {
+        a.session
+            .inputs()
+            .iter()
+            .any(|source| source.path() == path)
+    })
+}
+pub(super) fn status(ctx: &Context) -> String {
+    ctx.read(|a| a.session.status())
+}
+pub(super) fn current_catalog(ctx: &Context) -> Option<Arc<Catalog>> {
+    ctx.read(|a| a.session.catalog.clone())
+}
+pub(super) struct SourceState {
+    pub path: PathBuf,
+    pub len: usize,
+    pub error: Option<String>,
+    pub pending: bool,
+}
+pub(super) fn source_states(ctx: &Context) -> Vec<SourceState> {
+    ctx.read(|a| {
+        a.session
+            .inputs()
+            .iter()
+            .map(|source| {
+                let path = source.path();
+                SourceState {
+                    path: path.to_path_buf(),
+                    len: source.len(),
+                    error: a.session.source_error(path).map(str::to_owned),
+                    pending: a.session.pending(path),
+                }
+            })
+            .collect()
+    })
+}
 pub(super) fn reload(ctx: &Context, paths: Vec<PathBuf>, reload: Vec<PathBuf>) {
-    let result = ctx.write(|a| {
-        let (previous, ticket, job) = a.session.begin_load(paths, reload);
-        a.worker.replace(previous, ticket, job)
-    });
+    let (previous, ticket, job) = ctx.write(|a| a.session.begin_load(paths, reload));
+    let result = ctx.replace_job(previous, ticket, job);
     if let Err(e) = result {
         ctx.write(|a| a.session.fail_load(format!("{e:#}")));
     }
@@ -217,12 +258,14 @@ pub(super) fn reload(ctx: &Context, paths: Vec<PathBuf>, reload: Vec<PathBuf>) {
 pub(super) fn input_changed(ctx: &Context) {
     super::status::begin_status(ctx, super::status::StatusContext::Catalog);
     let (input, composing) = super::panel::cancel_debounce(ctx);
-    ctx.write(|a| {
-        if let Some(id) = a.session.reset_search() {
-            a.worker.cancel(id);
-        }
+    let cancelled = ctx.write(|a| {
+        let cancelled = a.session.reset_search();
         a.session.load_error = None;
+        cancelled
     });
+    if let Some(id) = cancelled {
+        ctx.cancel_job(id);
+    }
     update_results(ctx);
     if !composing && !text(input).trim().is_empty() {
         let state = match super::panel::debounce(ctx, input) {
@@ -246,13 +289,13 @@ fn submit_search(ctx: &Context) {
     }
     let query = text(input).trim().to_owned();
     let mode = super::panel::search_mode(ctx);
-    let sent = ctx.write(|a| {
+    let categories = settings::categories(ctx);
+    let mut submitted = None;
+    let cancelled = ctx.write(|a| {
         let s = &mut a.session;
-        if let Some(id) = s.reset_search() {
-            a.worker.cancel(id);
-        }
+        let cancelled = s.reset_search();
         let Some(catalog) = s.catalog.clone().filter(|_| !query.is_empty()) else {
-            return Ok(());
+            return cancelled;
         };
         let compiled = match winlex_core::CompiledQuery::compile(&query, mode, false) {
             Ok(compiled) => compiled,
@@ -278,21 +321,28 @@ fn submit_search(ctx: &Context) {
                         resources::text(IDS_QUERY_LIMIT)
                     };
                 s.search = Search::Failed(anyhow::anyhow!(diagnostic));
-                return Ok(());
+                return cancelled;
             }
         };
         let ticket = s.ticket();
         s.search = Search::Running(ticket.id);
-        a.worker.replace(
-            None,
+        submitted = Some((
             ticket,
             Job::Search {
                 catalog,
                 compiled: Box::new(compiled),
-                categories: a.settings.preferences.categories,
+                categories,
             },
-        )
+        ));
+        cancelled
     });
+    if let Some(id) = cancelled {
+        ctx.cancel_job(id);
+    }
+    let sent = match submitted {
+        Some((ticket, job)) => ctx.replace_job(None, ticket, job),
+        None => Ok(()),
+    };
     update_results(ctx);
     if let Err(e) = sent {
         ctx.write(|a| a.session.search = Search::Failed(e));
@@ -300,7 +350,7 @@ fn submit_search(ctx: &Context) {
     super::status::refresh_status(ctx);
 }
 fn results_list(ctx: &Context) -> HWND {
-    unsafe { GetDlgItem(ctx.read(|a| a.frame), RESULTS as i32) }
+    unsafe { GetDlgItem(frame::hwnd(ctx), RESULTS as i32) }
 }
 fn update_results(ctx: &Context) {
     let hwnd = results_list(ctx);
@@ -412,17 +462,15 @@ fn open_now(ctx: &Context, row: isize, mode: Open) -> Option<HWND> {
         return None;
     }
     let item = ctx.read(|a| {
-        a.session.results.get(row as usize).map(|e| {
-            (
-                e.id,
-                a.session.catalog.clone(),
-                a.settings.preferred_architecture,
-            )
-        })
+        a.session
+            .results
+            .get(row as usize)
+            .map(|e| (e.id, a.session.catalog.clone()))
     });
-    let (id, Some(catalog), preferred) = item? else {
+    let (id, Some(catalog)) = item? else {
         return None;
     };
+    let preferred = settings::preferred_architecture(ctx);
     // A new result keeps the architecture of the declaration being read.
     let current = if mode == Open::New {
         None

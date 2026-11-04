@@ -1,5 +1,5 @@
 //! Snapshot-bound declaration documents. Catalog changes update only the version hint.
-use super::{bind, catalog, document, history, workspace};
+use super::{bind, catalog, document, history, settings, workspace};
 use crate::app::context::Context;
 use crate::{
     layout,
@@ -204,7 +204,7 @@ impl MetadataView {
             return;
         }
         let ctx = self.ctx();
-        let ticket = ctx.write(|a| a.session.ticket());
+        let ticket = catalog::next_ticket(ctx);
         let (binding, previous) = {
             let mut state = self.state.borrow_mut();
             state.restore = None;
@@ -219,7 +219,7 @@ impl MetadataView {
             entity: binding.entity.id,
             arch: binding.architecture,
         };
-        let body = match ctx.read(|a| a.worker.replace(previous, ticket, job)) {
+        let body = match ctx.replace_job(previous, ticket, job) {
             Ok(()) => resources::text(IDS_QUERYING),
             Err(error) => {
                 self.state.borrow_mut().ticket = None;
@@ -263,8 +263,7 @@ impl MetadataView {
         if supported.len() > 1 {
             super::status::report(
                 self.ctx(),
-                self.ctx()
-                    .write(|a| a.settings.set_preferred_architecture(&a.config, arch)),
+                settings::set_preferred_architecture(self.ctx(), arch),
             );
         }
         if arch != binding.architecture {
@@ -299,7 +298,7 @@ impl MetadataView {
     }
     pub(super) fn cancel(&self) {
         if let Some(ticket) = &self.state.borrow().ticket {
-            self.ctx().read(|a| a.worker.cancel(*ticket));
+            self.ctx().cancel_job(*ticket);
         }
     }
     pub(super) fn complete(&self, ticket: u64, result: anyhow::Result<crate::rich_text::Content>) {
@@ -602,11 +601,9 @@ fn preferred_for(mask: i32, preferred: Option<Architecture>) -> Option<Architect
 }
 fn old_version(ctx: &Context, binding: &Binding) -> bool {
     let path = &binding.catalog.sources()[binding.entity.id.source_id].path;
-    ctx.read(|a| {
-        a.session.catalog.as_ref().is_some_and(|current| {
-            !Arc::ptr_eq(current, &binding.catalog)
-                && current.sources().iter().any(|s| &s.path == path)
-        })
+    catalog::current_catalog(ctx).is_some_and(|current| {
+        !Arc::ptr_eq(&current, &binding.catalog)
+            && current.sources().iter().any(|source| &source.path == path)
     })
 }
 

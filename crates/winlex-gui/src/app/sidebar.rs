@@ -1,6 +1,6 @@
 //! Sidebar visibility, toolbar, width and focus handoff.
 use super::{
-    bind,
+    bind, frame,
     panel::{self, Panel, PanelId, Search},
 };
 use crate::app::context::Context;
@@ -180,8 +180,8 @@ fn sync_visibility(ctx: &Context) {
     crate::native::show(splitter, !collapsed);
 }
 pub(super) fn prepare(ctx: &Context) {
-    let (frame, toolbar, panels) =
-        ctx.read(|a| (a.frame, a.sidebar.toolbar, a.sidebar.panels.clone()));
+    let frame = frame::hwnd(ctx);
+    let (toolbar, panels) = ctx.read(|a| (a.sidebar.toolbar, a.sidebar.panels.clone()));
     let m = ctx.metrics(frame);
     bind(toolbar, m.font);
     update_images(ctx, toolbar, m.px(24));
@@ -208,18 +208,18 @@ fn update_images(ctx: &Context, toolbar: HWND, size: i32) {
     }
 }
 pub(super) fn recolor(ctx: &Context) {
-    let (frame, toolbar, panels) =
-        ctx.read(|a| (a.frame, a.sidebar.toolbar, a.sidebar.panels.clone()));
+    let frame = frame::hwnd(ctx);
+    let (toolbar, panels) = ctx.read(|a| (a.sidebar.toolbar, a.sidebar.panels.clone()));
     update_images(ctx, toolbar, layout::scale(24, ctx.dpi().window(frame)));
     for panel in panels {
         panel.recolor(ctx);
     }
 }
 pub(super) fn layout(ctx: &Context, bottom: i32, positions: &mut Vec<(HWND, RECT)>) -> i32 {
-    let (frame, toolbar, splitter, width, panel) = ctx.read(|a| {
+    let frame = frame::hwnd(ctx);
+    let (toolbar, splitter, width, panel) = ctx.read(|a| {
         let s = &a.sidebar;
         (
-            a.frame,
             s.toolbar,
             s.splitter,
             s.width,
@@ -269,7 +269,8 @@ pub(super) unsafe extern "system" fn splitter_proc(
             }
             WM_MOUSEMOVE if GetCapture() == hwnd => {
                 let mut p = point_from_lparam(l);
-                let (frame, toolbar) = ctx.read(|a| (a.frame, a.sidebar.toolbar));
+                let frame = frame::hwnd(ctx);
+                let toolbar = ctx.read(|a| a.sidebar.toolbar);
                 MapWindowPoints(hwnd, frame, &mut p, 1);
                 let x = bounds(toolbar, frame).right + layout::scale(4, ctx.dpi().window(frame));
                 let width = MulDiv(

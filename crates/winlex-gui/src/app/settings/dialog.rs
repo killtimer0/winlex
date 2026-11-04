@@ -1,3 +1,4 @@
+use super::super::frame;
 use super::{Preferences, THEMES, catalog};
 use crate::app::context::Context;
 use crate::{
@@ -45,7 +46,7 @@ fn show(ctx: &Context) -> anyhow::Result<()> {
     let search = resources::dialog(IDD_SETTINGS_SEARCH)?;
     let state = Dialog {
         ctx,
-        initial: ctx.read(|a| a.settings.preferences),
+        initial: super::preferences(ctx),
         pages: Cell::new([ptr::null_mut(); 2]),
         failure: RefCell::new(None),
     };
@@ -66,7 +67,7 @@ fn show(ctx: &Context) -> anyhow::Result<()> {
     let mut header: PROPSHEETHEADERW_V2 = unsafe { std::mem::zeroed() };
     header.dwSize = size_of::<PROPSHEETHEADERW_V2>() as u32;
     header.dwFlags = PSH_PROPSHEETPAGE | PSH_NOAPPLYNOW | PSH_NOCONTEXTHELP | PSH_USECALLBACK;
-    header.hwndParent = ctx.read(|a| a.frame);
+    header.hwndParent = frame::hwnd(ctx);
     header.hInstance = instance();
     header.pszCaption = resources::wide_text(IDS_SETTINGS).as_ptr();
     header.nPages = pages.len() as u32;
@@ -80,7 +81,7 @@ fn show(ctx: &Context) -> anyhow::Result<()> {
     if let Some(error) = state.failure.into_inner() {
         return Err(error);
     }
-    if state.initial.categories != ctx.read(|a| a.settings.preferences.categories) {
+    if state.initial.categories != super::categories(ctx) {
         catalog::search(ctx);
     }
     Ok(())
@@ -238,12 +239,10 @@ fn commit(state: &Dialog<'_>) -> anyhow::Result<()> {
         categories,
         theme,
     };
-    state
-        .ctx
-        .write(|a| a.settings.set_preferences(&a.config, preferences))?;
+    super::set_preferences(state.ctx, preferences)?;
     if state.initial.theme != theme {
         crate::theme::set_mode(theme as u32);
-        send(state.ctx.read(|a| a.frame), WM_THEMECHANGED, 0, 0);
+        send(frame::hwnd(state.ctx), WM_THEMECHANGED, 0, 0);
     }
     Ok(())
 }
