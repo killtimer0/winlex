@@ -106,6 +106,7 @@ pub(super) struct MetadataView {
     pub hwnd: HWND,
     pub placement: Cell<Option<layout::Placement>>,
     pub preview: Cell<bool>,
+    pub live: Cell<bool>,
     pub releasing_link: Cell<bool>,
     state: RefCell<State>,
     icons: RefCell<Option<Rc<crate::icons::WindowIcons>>>,
@@ -129,6 +130,7 @@ pub(super) fn open(binding: Binding, preview: bool) -> anyhow::Result<HWND> {
         hwnd: std::ptr::null_mut(),
         placement: Cell::new(None),
         preview: Cell::new(preview),
+        live: Cell::new(true),
         releasing_link: Cell::new(false),
         icons: RefCell::new(None),
         state: RefCell::new(State::new(binding)),
@@ -144,7 +146,7 @@ pub(super) fn open(binding: Binding, preview: bool) -> anyhow::Result<HWND> {
 }
 impl MetadataView {
     pub(super) fn is_live(&self) -> bool {
-        workspace::by_id(self.id).is_some()
+        self.live.get()
     }
     pub(super) fn binding(&self) -> Binding {
         self.state.borrow().binding.clone()
@@ -225,7 +227,7 @@ impl MetadataView {
             state.clear_interactions();
             state.content = Some(content.clone());
         }
-        super::frame::report(crate::rich_text::set_content(self.editor, &content));
+        super::status::report(crate::rich_text::set_content(self.editor, &content));
         self.find.refresh(self.editor, false);
     }
     fn select_architecture(&self, code: u32) {
@@ -248,7 +250,7 @@ impl MetadataView {
             return;
         };
         if supported.len() > 1 {
-            super::frame::report(write(|a| {
+            super::status::report(write(|a| {
                 a.settings.set_preferred_architecture(&a.config, arch)
             }));
         }
@@ -333,7 +335,7 @@ impl MetadataView {
                 .filter(|current| Rc::ptr_eq(current, clicked))?;
             regions.iter().find(|region| &region.range == range)
         });
-        if let Some(Some(target)) = super::frame::report(crate::rich_text::context_menu(
+        if let Some(Some(target)) = super::status::report(crate::rich_text::context_menu(
             self.editor,
             location,
             regions,
@@ -433,7 +435,7 @@ impl MetadataView {
         } == 0
         {
             self.state.borrow_mut().navigation = None;
-            super::frame::set_status(format!("{:#}", error("Queue declaration navigation")));
+            super::status::set_status(format!("{:#}", error("Queue declaration navigation")));
         }
     }
     pub(super) fn follow_reference(&self) {
@@ -445,7 +447,7 @@ impl MetadataView {
                 .filter(|request| state.contains(request))
         };
         let Some(navigation) = navigation else { return };
-        let Some(binding) = super::frame::report(Binding::resolve(
+        let Some(binding) = super::status::report(Binding::resolve(
             navigation.binding.catalog,
             navigation.target,
             ArchitectureChoice::Exact(navigation.binding.architecture),
@@ -509,7 +511,7 @@ impl MetadataView {
         self.cancel_link_press();
         let content = self.state.borrow().content.clone();
         if let Some(content) = content {
-            super::frame::report(crate::rich_text::recolor(self.editor, &content));
+            super::status::report(crate::rich_text::recolor(self.editor, &content));
         }
     }
     pub(super) fn layout(&self) {
@@ -538,10 +540,10 @@ impl MetadataView {
         match id {
             SELECT_ARCH => self.select_architecture(code),
             DOCUMENT_MORE if code == BN_CLICKED => {
-                super::frame::report(self.info.menu(self.hwnd, &self.binding()));
+                super::status::report(self.info.menu(self.hwnd, &self.binding()));
             }
             DOCUMENT_ONLINE if code == BN_CLICKED => {
-                super::frame::report(self.info.open_online(self.hwnd));
+                super::status::report(self.info.open_online(self.hwnd));
             }
             _ => return false,
         }

@@ -6,13 +6,13 @@ use crate::{
     native::*,
     resources::{self, *},
 };
+use executor::{Completion, Executor};
 use std::{
     cell::{Cell, RefCell},
     ffi::OsString,
     os::windows::ffi::{OsStrExt, OsStringExt},
     path::PathBuf,
     rc::Rc,
-    sync::mpsc,
 };
 use winlex_core::{
     number::IntegerLiteral,
@@ -20,6 +20,8 @@ use winlex_core::{
         self as core, Message, MessageStatus, QueryResult, Request, Scheme, Scope, Source,
     },
 };
+
+mod executor;
 
 const TIMER: usize = 1810;
 const TEXT_SUBCLASS: usize = 1810;
@@ -31,22 +33,13 @@ const SCOPES: &[(u16, Scope)] = &[
     (IDS_ERROR_CODE_ERRNO, Scope::Errno),
 ];
 
-enum Completion {
-    Query {
-        revision: u64,
-        result: anyhow::Result<QueryResult>,
-    },
-    Languages {
-        path: PathBuf,
-        result: Result<Vec<u16>, core::Failure>,
-    },
-}
 pub(in crate::app) struct View {
     pub id: u64,
     pub hwnd: HWND,
     pub descriptor: &'static Descriptor,
     pub lifetime: Rc<()>,
     pub placement: Cell<Option<layout::Placement>>,
+    pub live: Cell<bool>,
     pub(super) recent: Cell<u64>,
     icons: RefCell<Option<Rc<crate::icons::WindowIcons>>>,
     input: HWND,
@@ -62,21 +55,19 @@ pub(in crate::app) struct View {
     labels: Vec<HWND>,
     setting: Cell<bool>,
     revision: Cell<u64>,
-    pending: Cell<usize>,
     languages: RefCell<Vec<u16>>,
     body: RefCell<crate::rich_text::Content>,
-    tx: mpsc::Sender<Completion>,
-    rx: RefCell<mpsc::Receiver<Completion>>,
+    executor: Executor,
 }
 impl View {
     pub fn new(descriptor: &'static Descriptor) -> Self {
-        let (tx, rx) = mpsc::channel();
         Self {
             id: super::super::workspace::next_id(),
             hwnd: std::ptr::null_mut(),
             descriptor,
             lifetime: Rc::new(()),
             placement: Cell::new(None),
+            live: Cell::new(true),
             recent: Cell::new(0),
             icons: RefCell::new(None),
             input: std::ptr::null_mut(),
@@ -92,11 +83,9 @@ impl View {
             labels: vec![],
             setting: Cell::new(true),
             revision: Cell::new(0),
-            pending: Cell::new(0),
             languages: RefCell::new(vec![]),
             body: RefCell::new(crate::rich_text::Content::new(String::new())),
-            tx,
-            rx: RefCell::new(rx),
+            executor: Executor::new(),
         }
     }
 }
@@ -119,7 +108,7 @@ impl View {
         }
     }
     fn update_icons(&self) {
-        super::super::frame::report(super::super::document::update_icons(
+        super::super::status::report(super::super::document::update_icons(
             self.hwnd,
             self.descriptor.icon,
             &self.icons,
@@ -253,19 +242,12 @@ impl View {
         ids.push(resources::interface_langid());
         self.set_languages(ids, preserve);
     }
-    fn queue(
-        &self,
-        job: impl FnOnce(mpsc::Sender<Completion>) + Send + 'static,
-    ) -> anyhow::Result<()> {
+    fn start_timer(&self) -> anyhow::Result<()> {
         if unsafe { SetTimer(self.hwnd, TIMER, 75, None) } == 0 {
-            return Err(error("Start tool completion timer"));
+            Err(error("Start tool completion timer"))
+        } else {
+            Ok(())
         }
-        let tx = self.tx.clone();
-        std::thread::Builder::new()
-            .name("winlex-error-code".into())
-            .spawn(move || job(tx))?;
-        self.pending.set(self.pending.get() + 1);
-        Ok(())
     }
     fn refresh_module_languages(&self) {
         if !self.custom() {
@@ -275,10 +257,10 @@ impl View {
         if path.as_os_str().is_empty() {
             return;
         }
-        if let Err(error) = self.queue(move |tx| {
-            let result = core::module_languages(&path);
-            let _ = tx.send(Completion::Languages { path, result });
-        }) {
+        if let Err(error) = self
+            .start_timer()
+            .and_then(|()| self.executor.languages(path))
+        {
             self.set_status(&format!("{error:#}"));
         }
     }
@@ -297,10 +279,10 @@ impl View {
             }
         };
         let revision = self.revision.get();
-        match self.queue(move |tx| {
-            let result = core::query(&request);
-            let _ = tx.send(Completion::Query { revision, result });
-        }) {
+        match self
+            .start_timer()
+            .and_then(|()| self.executor.query(request, revision))
+        {
             Ok(()) => {
                 unsafe { EnableWindow(self.query, 0) };
                 self.set_status(&resources::text(IDS_ERROR_CODE_QUERYING));
@@ -309,12 +291,7 @@ impl View {
         }
     }
     fn poll(&self) {
-        loop {
-            let message = self.rx.borrow_mut().try_recv();
-            let Ok(message) = message else {
-                break;
-            };
-            self.pending.set(self.pending.get().saturating_sub(1));
+        while let Some(message) = self.executor.poll() {
             match message {
                 Completion::Query { revision, result } => {
                     unsafe { EnableWindow(self.query, 1) };
@@ -360,7 +337,7 @@ impl View {
                 }
             }
         }
-        if self.pending.get() == 0 {
+        if self.executor.pending() == 0 {
             unsafe { KillTimer(self.hwnd, TIMER) };
         }
     }

@@ -12,6 +12,7 @@ use crate::{
 use std::{cell::RefCell, ptr};
 
 mod catalog;
+mod commands;
 mod content;
 mod document;
 mod frame;
@@ -23,6 +24,7 @@ mod panel;
 mod settings;
 mod sidebar;
 mod sources;
+mod status;
 mod tools;
 mod workspace;
 
@@ -39,7 +41,7 @@ struct App {
     frame: HWND,
     icons: Option<crate::icons::WindowIcons>,
     status: HWND,
-    status_state: frame::Status,
+    status_state: status::Status,
     session: catalog::Session,
     sources: sources::Sources,
     worker: crate::worker::Worker<crate::tasks::Job, crate::tasks::Completion>,
@@ -123,7 +125,7 @@ pub fn run(
             frame: ptr::null_mut(),
             icons: None,
             status: ptr::null_mut(),
-            status_state: frame::Status::default(),
+            status_state: status::Status::default(),
             session,
             sources: sources::Sources::default(),
             worker,
@@ -203,7 +205,7 @@ unsafe fn run_windows(paths: Vec<std::path::PathBuf>) -> anyhow::Result<()> {
             catalog::reload(paths, vec![]);
         }
         if let Some(warning) = read(|a| a.config.warning()) {
-            frame::set_status(format!("{warning:#}"));
+            status::set_status(format!("{warning:#}"));
         }
         ShowWindow(
             frame,
@@ -244,7 +246,7 @@ unsafe fn run_windows(paths: Vec<std::path::PathBuf>) -> anyhow::Result<()> {
                 msg.message,
                 WM_KEYDOWN | WM_SYSKEYDOWN | WM_LBUTTONDOWN | WM_RBUTTONDOWN
             ) {
-                frame::status_input(msg.hwnd);
+                status::status_input(msg.hwnd);
             }
             if let Some(document) = workspace::content(active())
                 && document.find_key(&msg)

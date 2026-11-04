@@ -1,84 +1,7 @@
-//! Native frame orchestration; sidebar owns its controls and notifications.
-use super::workspace::{self, active};
-use super::{catalog, dpi, history, panel, read, sidebar, sources, write};
-use crate::{
-    layout::{self, Arrangement},
-    native::*,
-    resources::*,
-};
+//! Native frame window lifecycle, layout and painting.
+use super::{commands, dpi, history, panel, read, sidebar, sources, status, workspace, write};
+use crate::{layout, native::*, resources::*};
 use std::ptr;
-use windows_sys::Win32::System::SystemServices::{
-    APPCOMMAND_BROWSER_BACKWARD, APPCOMMAND_BROWSER_FORWARD,
-};
-
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
-pub(super) enum StatusContext {
-    #[default]
-    Catalog,
-    Document(HWND),
-}
-#[derive(Clone, Default)]
-pub(super) struct Status {
-    context: StatusContext,
-    notice: Option<String>,
-}
-impl Status {
-    fn begin(&mut self, context: StatusContext) {
-        self.context = context;
-        self.notice = None;
-    }
-    fn message(
-        &self,
-        content: impl FnOnce(HWND) -> Option<String>,
-        catalog: impl FnOnce() -> String,
-    ) -> String {
-        self.notice.clone().unwrap_or_else(|| {
-            match self.context {
-                StatusContext::Document(hwnd) => content(hwnd),
-                StatusContext::Catalog => None,
-            }
-            .unwrap_or_else(catalog)
-        })
-    }
-}
-pub(super) fn begin_status(context: StatusContext) {
-    write(|a| a.status_state.begin(context));
-    refresh_status();
-}
-pub(super) fn status_context(context: StatusContext) {
-    if read(|a| a.status_state.context != context) {
-        begin_status(context);
-    }
-}
-fn begin_operation() {
-    write(|a| a.status_state.notice = None);
-    refresh_status();
-}
-pub(super) fn status_input(hwnd: HWND) {
-    let doc = active();
-    if !doc.is_null() && (hwnd == doc || unsafe { IsChild(doc, hwnd) } != 0) {
-        begin_status(StatusContext::Document(doc));
-    } else if read(|a| a.sidebar.owner(hwnd).is_some()) {
-        begin_status(StatusContext::Catalog);
-    }
-}
-pub(super) fn set_status(message: String) {
-    write(|a| a.status_state.notice = Some(message));
-    refresh_status();
-}
-pub(super) fn report<T>(result: anyhow::Result<T>) -> Option<T> {
-    result
-        .map_err(|error| set_status(format!("{error:#}")))
-        .ok()
-}
-pub(super) fn refresh_status() {
-    let (state, hwnd) = read(|a| (a.status_state.clone(), a.status));
-    let message = state.message(
-        |hwnd| workspace::content(hwnd).and_then(|content| content.status()),
-        || read(|a| a.session.status()),
-    );
-    set_status_text(hwnd, &message);
-}
 
 fn prepare() {
     let (frame, tabs, status) = read(|a| (a.frame, a.workspace.tabs, a.status));
@@ -130,142 +53,6 @@ pub(super) fn layout_frame() {
         });
         if let Some(panel) = panel {
             crate::list::fit(panel.list.hwnd);
-        }
-    }
-}
-fn is_topmost(hwnd: HWND) -> bool {
-    unsafe { GetWindowLongW(hwnd, GWL_EXSTYLE) as u32 & WS_EX_TOPMOST != 0 }
-}
-
-pub(super) fn command(id: u16) -> bool {
-    if let Some(direction) = history::Direction::from_command(id) {
-        begin_operation();
-        history::navigate(direction);
-        return true;
-    }
-    if matches!(
-        id,
-        FIND_DOCUMENT
-            | FIND_NEXT
-            | FIND_PREVIOUS
-            | SETTINGS
-            | ABOUT
-            | SEARCH_HELP
-            | FOCUS_NEXT_REGION
-            | CLOSE
-            | OPEN_RESULT
-            | OPEN_NEW
-            | EXIT
-            | COLUMNS
-            | ROWS
-            | FREE
-            | MAXIMIZE
-            | ALWAYS_ON_TOP
-    ) {
-        begin_operation();
-    }
-    match id {
-        FIND_DOCUMENT | FIND_NEXT | FIND_PREVIOUS => {
-            if let Some(document) = workspace::content(active()) {
-                document.command(id, 0);
-            }
-        }
-        SETTINGS => super::settings::open(),
-        ALWAYS_ON_TOP => {
-            let frame = read(|a| a.frame);
-            unsafe {
-                let after = if is_topmost(frame) {
-                    HWND_NOTOPMOST
-                } else {
-                    HWND_TOPMOST
-                };
-                if SetWindowPos(
-                    frame,
-                    after,
-                    0,
-                    0,
-                    0,
-                    0,
-                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-                ) == 0
-                {
-                    report::<()>(Err(error("Set window topmost state")));
-                }
-            }
-            update_commands();
-        }
-        ABOUT => {
-            report(super::help::about());
-        }
-        SEARCH_HELP => {
-            report(super::help::search());
-        }
-        FOCUS_NEXT_REGION => {
-            let h = unsafe { GetFocus() };
-            let d = active();
-            if !d.is_null() && (h == d || unsafe { IsChild(d, h) != 0 }) {
-                sidebar::focus();
-            } else if h == read(|a| a.workspace.tabs) {
-                if d.is_null() {
-                    sidebar::focus();
-                } else if let Some(document) = workspace::content(d) {
-                    document.focus();
-                }
-            } else {
-                focus(read(|a| a.workspace.tabs));
-            }
-        }
-        CLOSE => workspace::close_document(active()),
-        OPEN_RESULT if read(|a| a.sidebar.active == panel::PanelId::Tools) => {
-            super::tools::selected(false)
-        }
-        OPEN_NEW if read(|a| a.sidebar.active == panel::PanelId::Tools) => {
-            super::tools::selected(true)
-        }
-        OPEN_RESULT => catalog::open_selected(catalog::Open::Pin),
-        OPEN_NEW => catalog::open_selected(catalog::Open::New),
-        EXIT => {
-            send(read(|a| a.frame), WM_CLOSE, 0, 0);
-        }
-        COLUMNS => workspace::set_arrangement(Arrangement::Columns),
-        ROWS => workspace::set_arrangement(Arrangement::Rows),
-        FREE => workspace::set_arrangement(Arrangement::Free),
-        MAXIMIZE => {
-            let h = active();
-            if !h.is_null() {
-                workspace::set_maximized(true);
-                send(read(|a| a.workspace.mdi), WM_MDIMAXIMIZE, h as usize, 0);
-            }
-        }
-        _ => return false,
-    }
-    true
-}
-pub(super) fn update_commands() {
-    let enabled = workspace::content(active()).is_some_and(|c| c.supports_find());
-    let frame = read(|a| a.frame);
-    if frame.is_null() {
-        return;
-    }
-    unsafe {
-        CheckMenuItem(
-            GetMenu(frame),
-            ALWAYS_ON_TOP as u32,
-            MF_BYCOMMAND
-                | if is_topmost(frame) {
-                    MF_CHECKED
-                } else {
-                    MF_UNCHECKED
-                },
-        );
-    }
-    for id in [FIND_DOCUMENT, FIND_NEXT, FIND_PREVIOUS] {
-        unsafe {
-            EnableMenuItem(
-                GetMenu(frame),
-                id as u32,
-                MF_BYCOMMAND | if enabled { MF_ENABLED } else { MF_GRAYED },
-            );
         }
     }
 }
@@ -350,21 +137,16 @@ pub(super) unsafe extern "system" fn frame_proc(hwnd: HWND, msg: u32, w: usize, 
             }
             WM_SYSCOLORCHANGE | WM_THEMECHANGED => recolor(),
             WM_COMMAND => {
-                if panel::command(w, l as HWND) || command(w as u16) {
+                if panel::command(w, l as HWND) || commands::command(w as u16) {
                     return 0;
                 }
             }
             WM_INITMENUPOPUP => {
                 history::refresh();
-                update_commands();
+                commands::update_commands();
             }
             WM_APPCOMMAND => {
-                let direction = match (l as u32 >> 16) & 0x0fff {
-                    APPCOMMAND_BROWSER_BACKWARD => Some(history::Direction::Back),
-                    APPCOMMAND_BROWSER_FORWARD => Some(history::Direction::Forward),
-                    _ => None,
-                };
-                if let Some(direction) = direction {
+                if let Some(direction) = commands::appcommand(l) {
                     history::navigate(direction);
                     return 1;
                 }
@@ -377,7 +159,7 @@ pub(super) unsafe extern "system" fn frame_proc(hwnd: HWND, msg: u32, w: usize, 
                 }
                 if let Some(panel) = read(|a| a.sidebar.owner(hdr.hwndFrom)) {
                     if hdr.code == NM_SETFOCUS {
-                        status_context(StatusContext::Catalog);
+                        status::status_context(status::StatusContext::Catalog);
                     }
                     if hdr.idFrom == SOURCE_LIST as usize && hdr.code == LVN_ITEMCHANGED {
                         sources::update_actions();
@@ -389,13 +171,13 @@ pub(super) unsafe extern "system" fn frame_proc(hwnd: HWND, msg: u32, w: usize, 
                 }
             }
             WM_CONTEXTMENU if w as HWND == GetDlgItem(hwnd, SOURCE_LIST as i32) => {
-                begin_status(StatusContext::Catalog);
-                report(sources::context_menu(w as HWND, l));
+                status::begin_status(status::StatusContext::Catalog);
+                status::report(sources::context_menu(w as HWND, l));
                 return 0;
             }
             WM_CONTEXTMENU if w as HWND == GetDlgItem(hwnd, TOOL_LIST as i32) => {
-                begin_status(StatusContext::Catalog);
-                report(super::tools::context_menu(w as HWND, l));
+                status::begin_status(status::StatusContext::Catalog);
+                status::report(super::tools::context_menu(w as HWND, l));
                 return 0;
             }
             // A top-level WM_GETMINMAXINFO minimum can block a DPI downscale.
@@ -429,48 +211,5 @@ pub(super) unsafe extern "system" fn frame_proc(hwnd: HWND, msg: u32, w: usize, 
             _ => {}
         }
         DefFrameProcW(hwnd, read(|a| a.workspace.mdi), msg, w, l)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn host_notice_survives_background_updates_until_next_operation() {
-        let mut status = Status::default();
-        status.begin(StatusContext::Document(ptr::null_mut()));
-        status.notice = Some("operation failed".into());
-        for background in ["querying", "done"] {
-            assert_eq!(
-                status.message(|_| Some(background.into()), || background.into()),
-                "operation failed"
-            );
-        }
-        status.begin(StatusContext::Document(ptr::null_mut()));
-        assert_eq!(
-            status.message(|_| Some("tool".into()), || "catalog".into()),
-            "tool"
-        );
-        status.notice = Some("another failure".into());
-        status.begin(StatusContext::Catalog);
-        assert_eq!(
-            status.message(
-                |_| panic!("inactive tool queried"),
-                || "search error".into()
-            ),
-            "search error"
-        );
-    }
-
-    #[test]
-    fn missing_or_unspecialized_document_falls_back_to_catalog() {
-        let mut status = Status::default();
-        status.begin(StatusContext::Document(ptr::null_mut()));
-        assert_eq!(status.message(|_| None, || "catalog".into()), "catalog");
-        assert_eq!(
-            status.message(|_| Some(String::new()), || "catalog".into()),
-            ""
-        );
     }
 }

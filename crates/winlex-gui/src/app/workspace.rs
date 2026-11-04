@@ -63,9 +63,11 @@ pub(super) fn register_document(doc: Content) {
 pub(super) fn unregister_document(hwnd: HWND) {
     let removed = write(|a| {
         let docs = &mut a.workspace.documents;
-        docs.iter()
-            .position(|d| d.hwnd() == hwnd)
-            .map(|index| docs.remove(index))
+        docs.iter().position(|d| d.hwnd() == hwnd).map(|index| {
+            let document = docs.remove(index);
+            document.mark_closed();
+            document
+        })
     });
     drop(removed);
 }
@@ -123,7 +125,7 @@ pub(super) fn sync_document_selection() {
     let tabs = read(|a| a.workspace.tabs);
     let selected = content(current).map(|d| d.id());
     tabs::select(tabs, selected);
-    super::frame::refresh_status();
+    super::status::refresh_status();
 }
 pub(super) fn refresh_document_tabs() {
     let tabs = read(|a| a.workspace.tabs);
@@ -178,7 +180,7 @@ pub(super) fn tab_notification(n: &tabs::Notification) {
             refresh_document_tabs();
         }
         tabs::CONTEXT => {
-            super::frame::report(tab_menu(hwnd, n.point));
+            super::status::report(tab_menu(hwnd, n.point));
         }
         _ => {}
     }

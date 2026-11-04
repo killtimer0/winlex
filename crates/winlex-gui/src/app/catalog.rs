@@ -209,12 +209,12 @@ pub(super) fn reload(paths: Vec<PathBuf>, reload: Vec<PathBuf>) {
     if let Err(e) = result {
         write(|a| a.session.fail_load(format!("{e:#}")));
     }
-    super::frame::refresh_status();
+    super::status::refresh_status();
     super::sources::refresh();
 }
 
 pub(super) fn input_changed() {
-    super::frame::begin_status(super::frame::StatusContext::Catalog);
+    super::status::begin_status(super::status::StatusContext::Catalog);
     let (input, composing) = super::panel::cancel_debounce();
     write(|a| {
         if let Some(id) = a.session.reset_search() {
@@ -230,7 +230,7 @@ pub(super) fn input_changed() {
         };
         write(|a| a.session.search = state);
     }
-    super::frame::refresh_status();
+    super::status::refresh_status();
 }
 pub(super) fn search() {
     write(|a| {
@@ -296,7 +296,7 @@ fn submit_search() {
     if let Err(e) = sent {
         write(|a| a.session.search = Search::Failed(e));
     }
-    super::frame::refresh_status();
+    super::status::refresh_status();
 }
 fn results_list() -> HWND {
     unsafe { GetDlgItem(read(|a| a.frame), RESULTS as i32) }
@@ -331,7 +331,7 @@ fn merge_results(results: &mut Items, batch: &mut Items, tracked: &mut [isize; 4
 
 pub(super) fn flush_results() {
     if !read(|a| !a.session.pending_results.is_empty()) {
-        super::frame::refresh_status();
+        super::status::refresh_status();
         return;
     }
     let hwnd = results_list();
@@ -344,7 +344,7 @@ pub(super) fn flush_results() {
     read(|a| a.sidebar.panel(super::panel::SEARCH_PANEL))
         .list
         .refresh_tooltip();
-    super::frame::refresh_status();
+    super::status::refresh_status();
 }
 pub(super) fn row(index: usize, visit: &mut dyn FnMut(&crate::list::Display)) {
     read(|a| {
@@ -428,7 +428,7 @@ fn open_now(row: isize, mode: Open) -> Option<HWND> {
     } else {
         metadata::binding(workspace::active()).map(|binding| binding.architecture)
     };
-    let binding = super::frame::report(Binding::resolve(
+    let binding = super::status::report(Binding::resolve(
         catalog,
         id,
         ArchitectureChoice::Preferred { current, preferred },
@@ -458,7 +458,7 @@ pub(super) fn open_binding(binding: Binding, mode: Open, original: Option<u64>) 
         })
         .flatten();
     let hwnd = existing
-        .or_else(|| super::frame::report(metadata::open(binding, mode == Open::Preview)))?;
+        .or_else(|| super::status::report(metadata::open(binding, mode == Open::Preview)))?;
     if mode == Open::Pin {
         workspace::pin_document(hwnd);
     }
@@ -470,7 +470,7 @@ pub(super) fn worker_stopped() {
         a.session.fail_load(resources::text(IDS_WORKER_STOPPED));
         a.session.search = Search::Idle;
     });
-    super::frame::set_status(resources::text(IDS_WORKER_STOPPED));
+    super::status::set_status(resources::text(IDS_WORKER_STOPPED));
     super::sources::refresh();
 }
 pub(super) fn loaded(id: u64, result: anyhow::Result<Option<Arc<Catalog>>>) {
@@ -483,7 +483,7 @@ pub(super) fn loaded(id: u64, result: anyhow::Result<Option<Arc<Catalog>>>) {
     }
     if committed {
         submit_search();
-        super::frame::report(read(|a| {
+        super::status::report(read(|a| {
             if a.session.remember_sources {
                 a.config
                     .write_key()?
@@ -496,7 +496,7 @@ pub(super) fn loaded(id: u64, result: anyhow::Result<Option<Arc<Catalog>>>) {
         }
     }
     super::sources::refresh();
-    super::frame::refresh_status();
+    super::status::refresh_status();
 }
 pub(super) fn matches(id: u64, items: Items) {
     write(|a| a.session.accept_matches(id, items));

@@ -243,14 +243,14 @@ impl Search {
     fn command(&self, id: u16, code: u32) -> bool {
         match id {
             SEARCH if code == EN_SETFOCUS => {
-                super::frame::status_context(super::frame::StatusContext::Catalog);
+                super::status::status_context(super::status::StatusContext::Catalog);
             }
             SEARCH_MODE if code == CBN_SETFOCUS => {
-                super::frame::status_context(super::frame::StatusContext::Catalog);
+                super::status::status_context(super::status::StatusContext::Catalog);
             }
             SEARCH if code == EN_CHANGE => catalog::input_changed(),
             SEARCH_MODE if code == CBN_SELENDOK => {
-                super::frame::begin_status(super::frame::StatusContext::Catalog);
+                super::status::begin_status(super::status::StatusContext::Catalog);
                 let index = send(self.selector, CB_GETCURSEL, 0, 0) as usize;
                 if index < SEARCH_MODES.len() && self.mode.replace(index) != index {
                     let tool = search_tool(self.input, SEARCH_MODES[index].2);

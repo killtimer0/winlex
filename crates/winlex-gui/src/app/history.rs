@@ -269,7 +269,7 @@ pub(super) fn navigate(direction: Direction) {
             write(|a| a.workspace.history.remove(index));
             continue;
         };
-        let Some(binding) = super::frame::report(Binding::resolve(
+        let Some(binding) = super::status::report(Binding::resolve(
             snapshot,
             target.entity,
             ArchitectureChoice::Exact(target.architecture),

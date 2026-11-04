@@ -214,6 +214,43 @@ fn class_name(hwnd: HWND) -> String {
     String::from_utf16_lossy(&name[..count.max(0) as usize]).to_ascii_lowercase()
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Surface {
+    Application,
+    Button,
+    ComboBox,
+    Dialog,
+    Edit,
+    ListView,
+    MdiClient,
+    Status,
+    SysLink,
+    Tabs,
+    Toolbar,
+    Other,
+}
+
+impl Surface {
+    fn of(class: &str) -> Self {
+        if class.starts_with("winlex") {
+            return Self::Application;
+        }
+        match class {
+            "button" => Self::Button,
+            "combobox" => Self::ComboBox,
+            "#32770" => Self::Dialog,
+            "edit" => Self::Edit,
+            "syslistview32" => Self::ListView,
+            "mdiclient" => Self::MdiClient,
+            "msctls_statusbar32" => Self::Status,
+            "syslink" => Self::SysLink,
+            "systabcontrol32" => Self::Tabs,
+            "toolbarwindow32" => Self::Toolbar,
+            _ => Self::Other,
+        }
+    }
+}
+
 /// Themes and installs message handling on a window and its descendants.
 pub fn apply(hwnd: HWND) {
     if !supported() || hwnd.is_null() || unsafe { IsWindow(hwnd) } == 0 {
@@ -244,7 +281,7 @@ pub fn apply(hwnd: HWND) {
 
 fn apply_one(hwnd: HWND) {
     let dark = is_dark();
-    let class = class_name(hwnd);
+    let surface = Surface::of(&class_name(hwnd));
     unsafe {
         set_subclass(hwnd, Some(subclass), SUBCLASS, 0);
         APIS.with(|apis| {
@@ -253,18 +290,18 @@ fn apply_one(hwnd: HWND) {
             // Application classes paint their own palette. Setting a native theme
             // on the frame would synchronously reenter its recolor handler and
             // stream every open declaration again during the same theme switch.
-            if !class.starts_with("winlex") {
+            if surface != Surface::Application {
                 let name = if dark {
                     if apis.dark_theme {
                         w!("DarkMode_DarkTheme")
-                    } else if class == "syslistview32" {
+                    } else if surface == Surface::ListView {
                         w!("Explorer")
-                    } else if class == "combobox" {
+                    } else if surface == Surface::ComboBox {
                         w!("DarkMode_CFD")
                     } else {
                         w!("DarkMode_Explorer")
                     }
-                } else if class == "syslistview32" && !high_contrast() {
+                } else if surface == Surface::ListView && !high_contrast() {
                     w!("Explorer")
                 } else {
                     ptr::null()
@@ -277,7 +314,7 @@ fn apply_one(hwnd: HWND) {
                 DwmSetWindowAttribute(hwnd, 20, data, 4);
             }
         });
-        if class == "syslistview32" {
+        if surface == Surface::ListView {
             send(hwnd, LVM_SETBKCOLOR, 0, color(COLOR_WINDOW) as isize);
             send(hwnd, LVM_SETTEXTBKCOLOR, 0, color(COLOR_WINDOW) as isize);
             send(hwnd, LVM_SETTEXTCOLOR, 0, color(COLOR_WINDOWTEXT) as isize);
@@ -318,124 +355,142 @@ unsafe extern "system" fn subclass(
             }
             return result;
         }
-        if is_dark() {
-            match msg {
-                WM_NOTIFY if l != 0 => {
-                    let notification = &*(l as *const NMHDR);
-                    if notification.code == NM_CUSTOMDRAW {
-                        let result = default_subclass(hwnd, msg, w, l);
-                        if result & CDRF_SKIPDEFAULT as isize != 0 {
-                            return result;
-                        }
-                        let draw = &*(l as *const NMCUSTOMDRAW);
-                        return result
-                            | match class_name(notification.hwndFrom).as_str() {
-                                "button" if !native_dark_theme() => checkbox_text(draw),
-                                "toolbarwindow32" => {
-                                    paint_toolbar(&mut *(l as *mut NMTBCUSTOMDRAW))
-                                }
-                                "syslink" if draw.dwDrawStage == CDDS_PREPAINT => {
-                                    CDRF_NOTIFYITEMDRAW as isize
-                                }
-                                "syslink" if draw.dwDrawStage == CDDS_ITEMPREPAINT => {
-                                    SetTextColor(
-                                        draw.hdc,
-                                        color(if draw.uItemState & CDIS_DISABLED != 0 {
-                                            COLOR_GRAYTEXT
-                                        } else {
-                                            COLOR_HOTLIGHT
-                                        }),
-                                    );
-                                    SetBkColor(draw.hdc, color(COLOR_BTNFACE));
-                                    CDRF_NEWFONT as isize
-                                }
-                                _ => 0,
-                            };
-                    }
-                }
-                0x91 | 0x92 => {
-                    if let Some(result) = paint_menu(hwnd, msg, l) {
-                        return result;
-                    }
-                }
-                WM_CTLCOLORBTN | WM_CTLCOLORDLG | WM_CTLCOLOREDIT | WM_CTLCOLORLISTBOX
-                | WM_CTLCOLORSTATIC | WM_CTLCOLORSCROLLBAR => {
-                    let dc = w as HDC;
-                    let original = default_subclass(hwnd, msg, w, l);
-                    // Preserve owner-provided backgrounds (for example a preview
-                    // swatch); only replace the standard system-color path.
-                    if original != 0
-                        && !(0..COLORS as i32)
-                            .any(|index| original == GetSysColorBrush(index) as isize)
-                    {
-                        return original;
-                    }
-                    let edit = matches!(msg, WM_CTLCOLOREDIT | WM_CTLCOLORLISTBOX)
-                        || (msg == WM_CTLCOLORSTATIC && class_name(l as HWND) == "edit");
-                    let background = if edit { COLOR_WINDOW } else { COLOR_BTNFACE };
-                    let foreground = GetTextColor(dc);
-                    if foreground == GetSysColor(COLOR_WINDOWTEXT)
-                        || foreground == GetSysColor(COLOR_BTNTEXT)
-                        || foreground == GetSysColor(COLOR_GRAYTEXT)
-                    {
-                        SetTextColor(
-                            dc,
-                            color(if IsWindowEnabled(l as HWND) == 0 {
-                                COLOR_GRAYTEXT
-                            } else {
-                                COLOR_WINDOWTEXT
-                            }),
-                        );
-                    }
-                    SetBkColor(dc, color(background));
-                    return brush(background) as isize;
-                }
-                WM_ERASEBKGND => {
-                    let class = class_name(hwnd);
-                    // Native controls have their own paint contracts. Only replace
-                    // container erasure, never list/edit/tree scrolling erasure.
-                    if class == "#32770"
-                        || class == "mdiclient"
-                        || class.starts_with("winlex")
-                        || (class == "systabcontrol32" && can_paint_tabs(hwnd))
-                    {
-                        FillRect(w as HDC, &client(hwnd), brush(COLOR_BTNFACE));
-                        return 1;
-                    }
-                }
-                WM_PAINT | WM_PRINTCLIENT => {
-                    let painter: Option<unsafe fn(HWND, HDC)> = match class_name(hwnd).as_str() {
-                        "systabcontrol32" if can_paint_tabs(hwnd) => Some(paint_tabs),
-                        "msctls_statusbar32" if !native_dark_theme() && can_paint_status(hwnd) => {
-                            Some(paint_status)
-                        }
-                        _ => None,
-                    };
-                    if let Some(painter) = painter {
-                        let mut paint: PAINTSTRUCT = std::mem::zeroed();
-                        let dc = if msg == WM_PAINT {
-                            BeginPaint(hwnd, &mut paint)
-                        } else {
-                            w as HDC
-                        };
-                        if !dc.is_null() {
-                            let saved = SaveDC(dc);
-                            control_font(hwnd, dc);
-                            painter(hwnd, dc);
-                            if saved != 0 {
-                                RestoreDC(dc, saved);
-                            }
-                        }
-                        if msg == WM_PAINT {
-                            EndPaint(hwnd, &paint);
-                        }
-                        return 0;
-                    }
-                }
-                _ => {}
-            }
+        if is_dark()
+            && let Some(result) = dark_message(hwnd, msg, w, l)
+        {
+            return result;
         }
         default_subclass(hwnd, msg, w, l)
+    }
+}
+
+unsafe fn dark_message(hwnd: HWND, msg: u32, w: usize, l: isize) -> Option<isize> {
+    unsafe {
+        match msg {
+            WM_NOTIFY if l != 0 => dark_notify(hwnd, msg, w, l),
+            0x91 | 0x92 => paint_menu(hwnd, msg, l),
+            WM_CTLCOLORBTN | WM_CTLCOLORDLG | WM_CTLCOLOREDIT | WM_CTLCOLORLISTBOX
+            | WM_CTLCOLORSTATIC | WM_CTLCOLORSCROLLBAR => Some(control_color(hwnd, msg, w, l)),
+            WM_ERASEBKGND => erase_background(hwnd, w),
+            WM_PAINT | WM_PRINTCLIENT => paint_control(hwnd, msg, w),
+            _ => None,
+        }
+    }
+}
+
+unsafe fn dark_notify(hwnd: HWND, msg: u32, w: usize, l: isize) -> Option<isize> {
+    unsafe {
+        let notification = &*(l as *const NMHDR);
+        if notification.code != NM_CUSTOMDRAW {
+            return None;
+        }
+        let result = default_subclass(hwnd, msg, w, l);
+        if result & CDRF_SKIPDEFAULT as isize != 0 {
+            return Some(result);
+        }
+        let draw = &*(l as *const NMCUSTOMDRAW);
+        Some(
+            result
+                | match Surface::of(&class_name(notification.hwndFrom)) {
+                    Surface::Button if !native_dark_theme() => checkbox_text(draw),
+                    Surface::Toolbar => paint_toolbar(&mut *(l as *mut NMTBCUSTOMDRAW)),
+                    Surface::SysLink if draw.dwDrawStage == CDDS_PREPAINT => {
+                        CDRF_NOTIFYITEMDRAW as isize
+                    }
+                    Surface::SysLink if draw.dwDrawStage == CDDS_ITEMPREPAINT => {
+                        SetTextColor(
+                            draw.hdc,
+                            color(if draw.uItemState & CDIS_DISABLED != 0 {
+                                COLOR_GRAYTEXT
+                            } else {
+                                COLOR_HOTLIGHT
+                            }),
+                        );
+                        SetBkColor(draw.hdc, color(COLOR_BTNFACE));
+                        CDRF_NEWFONT as isize
+                    }
+                    _ => 0,
+                },
+        )
+    }
+}
+
+unsafe fn control_color(hwnd: HWND, msg: u32, w: usize, l: isize) -> isize {
+    unsafe {
+        let dc = w as HDC;
+        let original = default_subclass(hwnd, msg, w, l);
+        // Preserve owner-provided backgrounds (for example a preview swatch);
+        // only replace the standard system-color path.
+        if original != 0
+            && !(0..COLORS as i32).any(|index| original == GetSysColorBrush(index) as isize)
+        {
+            return original;
+        }
+        let edit = matches!(msg, WM_CTLCOLOREDIT | WM_CTLCOLORLISTBOX)
+            || (msg == WM_CTLCOLORSTATIC && Surface::of(&class_name(l as HWND)) == Surface::Edit);
+        let background = if edit { COLOR_WINDOW } else { COLOR_BTNFACE };
+        let foreground = GetTextColor(dc);
+        if foreground == GetSysColor(COLOR_WINDOWTEXT)
+            || foreground == GetSysColor(COLOR_BTNTEXT)
+            || foreground == GetSysColor(COLOR_GRAYTEXT)
+        {
+            SetTextColor(
+                dc,
+                color(if IsWindowEnabled(l as HWND) == 0 {
+                    COLOR_GRAYTEXT
+                } else {
+                    COLOR_WINDOWTEXT
+                }),
+            );
+        }
+        SetBkColor(dc, color(background));
+        brush(background) as isize
+    }
+}
+
+unsafe fn erase_background(hwnd: HWND, w: usize) -> Option<isize> {
+    unsafe {
+        let surface = Surface::of(&class_name(hwnd));
+        // Native controls have their own paint contracts. Only replace container
+        // erasure, never list/edit/tree scrolling erasure.
+        if matches!(
+            surface,
+            Surface::Dialog | Surface::MdiClient | Surface::Application
+        ) || (surface == Surface::Tabs && can_paint_tabs(hwnd))
+        {
+            FillRect(w as HDC, &client(hwnd), brush(COLOR_BTNFACE));
+            Some(1)
+        } else {
+            None
+        }
+    }
+}
+
+unsafe fn paint_control(hwnd: HWND, msg: u32, w: usize) -> Option<isize> {
+    unsafe {
+        let painter: unsafe fn(HWND, HDC) = match Surface::of(&class_name(hwnd)) {
+            Surface::Tabs if can_paint_tabs(hwnd) => paint_tabs,
+            Surface::Status if !native_dark_theme() && can_paint_status(hwnd) => paint_status,
+            _ => return None,
+        };
+        let mut paint: PAINTSTRUCT = std::mem::zeroed();
+        let dc = if msg == WM_PAINT {
+            BeginPaint(hwnd, &mut paint)
+        } else {
+            w as HDC
+        };
+        if !dc.is_null() {
+            let saved = SaveDC(dc);
+            control_font(hwnd, dc);
+            painter(hwnd, dc);
+            if saved != 0 {
+                RestoreDC(dc, saved);
+            }
+        }
+        if msg == WM_PAINT {
+            EndPaint(hwnd, &paint);
+        }
+        Some(0)
     }
 }
 
@@ -1870,6 +1925,26 @@ mod tests {
                 Some((expected, expected)),
                 "root and page before queued preparation"
             );
+        }
+    }
+
+    #[test]
+    fn surface_policy_preserves_themed_control_classes() {
+        for (class, surface) in [
+            ("button", Surface::Button),
+            ("combobox", Surface::ComboBox),
+            ("#32770", Surface::Dialog),
+            ("edit", Surface::Edit),
+            ("syslistview32", Surface::ListView),
+            ("mdiclient", Surface::MdiClient),
+            ("msctls_statusbar32", Surface::Status),
+            ("syslink", Surface::SysLink),
+            ("systabcontrol32", Surface::Tabs),
+            ("toolbarwindow32", Surface::Toolbar),
+            ("winlex.document", Surface::Application),
+            ("unknown", Surface::Other),
+        ] {
+            assert_eq!(Surface::of(class), surface, "{class}");
         }
     }
 }

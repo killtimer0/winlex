@@ -49,6 +49,12 @@ impl Content {
     pub fn preview(&self) -> bool {
         matches!(self, Self::Declaration(v) if v.preview.get())
     }
+    pub fn is_live(&self) -> bool {
+        forward!(self, v, v.live.get())
+    }
+    pub fn mark_closed(&self) {
+        forward!(self, v, v.live.set(false))
+    }
     pub fn placement(&self) -> Option<Placement> {
         forward!(self, v, v.placement.get())
     }

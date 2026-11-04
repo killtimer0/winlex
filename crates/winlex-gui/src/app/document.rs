@@ -8,14 +8,14 @@ use windows::Win32::UI::Controls::RichEdit::{EN_LINK, ENLINK};
 pub(super) const FOLLOW_REFERENCE: u32 = WM_APP + 42;
 pub(super) fn status_changed(hwnd: HWND) {
     if workspace::content(hwnd).is_some() && workspace::active() == hwnd {
-        super::frame::refresh_status();
+        super::status::refresh_status();
     }
 }
 pub(super) fn update_title(hwnd: HWND, title: &str) {
     set_text(hwnd, title);
     if workspace::content(hwnd).is_some() {
         workspace::refresh_document_tabs();
-        super::frame::update_commands();
+        super::commands::update_commands();
     }
 }
 pub(super) fn update_icons(
@@ -116,16 +116,14 @@ pub(super) unsafe extern "system" fn document_proc(
             match msg {
                 WM_CLOSE => {
                     if workspace::active() == hwnd {
-                        super::frame::begin_status(super::frame::StatusContext::Document(hwnd));
+                        super::status::begin_status(super::status::StatusContext::Document(hwnd));
                     }
                     workspace::close_document(hwnd);
                     return 0;
                 }
                 WM_SIZE => {
                     let result = DefMDIChildProcW(hwnd, msg, w, l);
-                    if w != SIZE_MINIMIZED as usize
-                        && workspace::content_by_id(content.id()).is_some()
-                    {
+                    if w != SIZE_MINIMIZED as usize && content.is_live() {
                         content.layout();
                     }
                     return result;
@@ -138,9 +136,9 @@ pub(super) unsafe extern "system" fn document_proc(
                 }
                 WM_EXITSIZEMOVE => workspace::capture_placements(),
                 WM_SETFOCUS => {
-                    super::frame::status_context(super::frame::StatusContext::Document(hwnd));
+                    super::status::status_context(super::status::StatusContext::Document(hwnd));
                     let result = DefMDIChildProcW(hwnd, msg, w, l);
-                    if workspace::content_by_id(content.id()).is_some() {
+                    if content.is_live() {
                         content.focus();
                     }
                     return result;
@@ -152,10 +150,10 @@ pub(super) unsafe extern "system" fn document_proc(
                     let result = DefMDIChildProcW(hwnd, msg, w, l);
                     workspace::sync_document_selection();
                     if l as HWND == hwnd {
-                        super::frame::begin_status(super::frame::StatusContext::Document(hwnd));
+                        super::status::begin_status(super::status::StatusContext::Document(hwnd));
                         history::content_activation(&content, true);
                     }
-                    super::frame::update_commands();
+                    super::commands::update_commands();
                     return result;
                 }
                 WM_DESTROY => {
@@ -164,11 +162,11 @@ pub(super) unsafe extern "system" fn document_proc(
                 }
                 WM_COMMAND if l == 0 || matches!((w >> 16) as u32, BN_CLICKED | CBN_SELENDOK) => {
                     if workspace::active() == hwnd {
-                        super::frame::begin_status(super::frame::StatusContext::Document(hwnd));
+                        super::status::begin_status(super::status::StatusContext::Document(hwnd));
                     }
                 }
                 WM_COMMAND if (w >> 16) as u32 == EN_SETFOCUS => {
-                    super::frame::status_context(super::frame::StatusContext::Document(hwnd));
+                    super::status::status_context(super::status::StatusContext::Document(hwnd));
                 }
                 _ => {}
             }
