@@ -169,7 +169,7 @@ impl Context {
         self.read(|a| a.worker.cancel(id));
     }
     pub fn try_completion(&self) -> Result<Completion, std::sync::mpsc::TryRecvError> {
-        self.read(|a| a.worker.rx.try_recv())
+        self.read(|a| a.worker.try_completion())
     }
     pub fn resignal_worker(&self) {
         self.read(|a| a.worker.resignal());

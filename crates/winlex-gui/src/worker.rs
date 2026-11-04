@@ -128,6 +128,13 @@ struct Results<J, O> {
     ready: Arc<ReadyEvent>,
     requests: Arc<Requests<J>>,
 }
+struct Running<J, O>(Arc<Results<J, O>>);
+impl<J, O> Drop for Running<J, O> {
+    fn drop(&mut self) {
+        self.0.requests.close();
+        self.0.ready.signal();
+    }
+}
 impl<J, O> Drop for Results<J, O> {
     fn drop(&mut self) {
         self.requests.close();
@@ -153,6 +160,16 @@ impl<J: Send + 'static, O: Send + 'static> Worker<J, O> {
         execute: impl Fn(J, &Ticket, &dyn Fn(O) -> anyhow::Result<()>) + Send + Sync + 'static,
         threads: usize,
     ) -> anyhow::Result<Self> {
+        Self::with_spawner(execute, threads, |builder, run| builder.spawn(run))
+    }
+    fn with_spawner(
+        execute: impl Fn(J, &Ticket, &dyn Fn(O) -> anyhow::Result<()>) + Send + Sync + 'static,
+        threads: usize,
+        mut spawn: impl FnMut(
+            thread::Builder,
+            Box<dyn FnOnce() + Send>,
+        ) -> std::io::Result<thread::JoinHandle<()>>,
+    ) -> anyhow::Result<Self> {
         anyhow::ensure!(threads > 0, "Worker requires at least one thread");
         let requests = Arc::new(Requests::default());
         let (tx, rx) = mpsc::sync_channel(8);
@@ -166,6 +183,11 @@ impl<J: Send + 'static, O: Send + 'static> Worker<J, O> {
             ready: ready.clone(),
             requests: requests.clone(),
         });
+        let worker = Self {
+            requests: requests.clone(),
+            rx,
+            ready,
+        };
         let execute = Arc::new(execute);
         for index in 0..threads {
             let queue = requests.clone();
@@ -176,23 +198,21 @@ impl<J: Send + 'static, O: Send + 'static> Worker<J, O> {
             } else {
                 format!("winlex-worker-{index}")
             };
-            thread::Builder::new()
-                .name(name)
-                .spawn(move || {
+            spawn(
+                thread::Builder::new().name(name),
+                Box::new(move || {
+                    let running = Running(results);
                     let mut previous = None;
                     while let Some((ticket, job)) = queue.next(previous) {
-                        let publish = |value| publish(&results, &ticket, value);
+                        let publish = |value| publish(&running.0, &ticket, value);
                         execute(job, &ticket, &publish);
                         previous = Some(ticket.id);
                     }
-                })
-                .context("Start background worker")?;
+                }),
+            )
+            .context("Start background worker")?;
         }
-        Ok(Self {
-            requests,
-            rx,
-            ready,
-        })
+        Ok(worker)
     }
     pub fn replace(&self, old: Option<u64>, ticket: Ticket, job: J) -> anyhow::Result<()> {
         self.requests.replace(old, ticket, job)
@@ -202,6 +222,14 @@ impl<J: Send + 'static, O: Send + 'static> Worker<J, O> {
     }
     pub fn resignal(&self) {
         self.ready.signal();
+    }
+    pub fn try_completion(&self) -> Result<O, mpsc::TryRecvError> {
+        match self.rx.try_recv() {
+            Err(mpsc::TryRecvError::Empty) if self.requests.stop.load(Ordering::Relaxed) => {
+                Err(mpsc::TryRecvError::Disconnected)
+            }
+            result => result,
+        }
     }
     pub fn event(&self) -> HANDLE {
         self.ready.0.as_raw_handle() as HANDLE
@@ -286,17 +314,93 @@ mod tests {
             unsafe { WaitForSingleObject(worker.event(), 5000) },
             WAIT_OBJECT_0
         );
-        assert_eq!(worker.rx.try_recv().unwrap(), 7);
+        assert_eq!(worker.try_completion().unwrap(), 7);
         worker.requests.close();
         assert_eq!(
             unsafe { WaitForSingleObject(worker.event(), 5000) },
             WAIT_OBJECT_0
         );
         assert!(matches!(
-            worker.rx.try_recv(),
+            worker.try_completion(),
             Err(mpsc::TryRecvError::Disconnected)
         ));
         assert!(worker.replace(None, Ticket::new(8), ()).is_err());
+    }
+    #[test]
+    fn partial_startup_failure_stops_started_threads() {
+        let (stopped, finished) = mpsc::channel();
+        let mut first = true;
+        let result = Worker::with_spawner(
+            |(), _, _: &dyn Fn(()) -> anyhow::Result<()>| {},
+            2,
+            |builder, run| {
+                if !first {
+                    return Err(std::io::Error::other("thread startup failed"));
+                }
+                first = false;
+                let stopped = stopped.clone();
+                builder.spawn(move || {
+                    run();
+                    let _ = stopped.send(());
+                })
+            },
+        );
+        assert!(result.is_err());
+        finished
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+    }
+    #[test]
+    fn panicking_job_stops_pool_and_disconnects_output() {
+        let worker = Worker::new(|(), _, _: &dyn Fn(()) -> anyhow::Result<()>| {
+            panic!("job failed");
+        })
+        .unwrap();
+        let ticket = Ticket::new(1);
+        worker.replace(None, ticket.clone(), ()).unwrap();
+        assert!(matches!(
+            worker.rx.recv_timeout(std::time::Duration::from_secs(5)),
+            Err(mpsc::RecvTimeoutError::Disconnected)
+        ));
+        assert!(ticket.cancelled());
+        assert!(worker.replace(None, Ticket::new(2), ()).is_err());
+        assert_eq!(
+            unsafe { WaitForSingleObject(worker.event(), 5000) },
+            WAIT_OBJECT_0
+        );
+    }
+    #[test]
+    fn worker_failure_is_visible_while_another_job_is_blocked() {
+        let (started, active) = mpsc::channel();
+        let (release, blocked) = mpsc::channel();
+        let blocked = Mutex::new(blocked);
+        let worker = Worker::with_threads(
+            move |fail, _, _: &dyn Fn(()) -> anyhow::Result<()>| {
+                if fail {
+                    panic!("job failed");
+                }
+                started.send(()).unwrap();
+                blocked.lock().unwrap().recv().unwrap();
+            },
+            2,
+        )
+        .unwrap();
+        let ticket = Ticket::new(1);
+        worker.replace(None, ticket.clone(), false).unwrap();
+        active
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        worker.replace(None, Ticket::new(2), true).unwrap();
+        assert_eq!(
+            unsafe { WaitForSingleObject(worker.event(), 5000) },
+            WAIT_OBJECT_0
+        );
+        assert!(matches!(
+            worker.try_completion(),
+            Err(mpsc::TryRecvError::Disconnected)
+        ));
+        assert!(ticket.cancelled());
+        release.send(()).unwrap();
     }
     #[test]
     fn two_threads_run_jobs_concurrently() {

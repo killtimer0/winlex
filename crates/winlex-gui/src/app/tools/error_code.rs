@@ -55,6 +55,8 @@ pub(in crate::app) struct View {
     labels: Vec<HWND>,
     setting: Cell<bool>,
     revision: Cell<u64>,
+    query_ticket: Cell<Option<u64>>,
+    languages_ticket: Cell<Option<u64>>,
     languages: RefCell<Vec<u16>>,
     body: RefCell<crate::rich_text::Content>,
 }
@@ -86,6 +88,8 @@ impl View {
             labels: vec![],
             setting: Cell::new(true),
             revision: Cell::new(0),
+            query_ticket: Cell::new(None),
+            languages_ticket: Cell::new(None),
             languages: RefCell::new(vec![]),
             body: RefCell::new(crate::rich_text::Content::new(String::new())),
         }
@@ -128,11 +132,13 @@ impl View {
             ERROR_CODE_INPUT | ERROR_CODE_MODULE if code == EN_CHANGE => {
                 self.changed();
                 if id == ERROR_CODE_MODULE && self.custom() {
+                    self.cancel_languages();
                     self.set_languages(vec![0], true);
                 }
             }
             ERROR_CODE_MODULE if code == EN_KILLFOCUS => self.refresh_module_languages(),
             ERROR_CODE_SCOPE if code == CBN_SELENDOK => {
+                self.cancel_languages();
                 self.changed();
                 let errno = self.scope() == Scope::Errno;
                 unsafe { EnableWindow(self.language, i32::from(!errno)) };
@@ -241,10 +247,19 @@ impl View {
         ids.push(resources::interface_langid());
         self.set_languages(ids, preserve);
     }
-    fn submit(&self, job: Job) -> anyhow::Result<()> {
+    fn submit(&self, pending: &Cell<Option<u64>>, job: Job) -> anyhow::Result<()> {
         let ctx = self.ctx();
         let ticket = crate::app::catalog::next_ticket(ctx);
-        ctx.replace_job(None, ticket, job)
+        let id = ticket.id;
+        let previous = pending.take();
+        ctx.replace_job(previous, ticket, job)?;
+        pending.set(Some(id));
+        Ok(())
+    }
+    fn cancel_languages(&self) {
+        if let Some(id) = self.languages_ticket.take() {
+            self.ctx().cancel_job(id);
+        }
     }
     fn refresh_module_languages(&self) {
         if !self.custom() {
@@ -254,10 +269,13 @@ impl View {
         if path.as_os_str().is_empty() {
             return;
         }
-        if let Err(error) = self.submit(Job::ErrorCodeLanguages {
-            document: self.id,
-            path,
-        }) {
+        if let Err(error) = self.submit(
+            &self.languages_ticket,
+            Job::ErrorCodeLanguages {
+                document: self.id,
+                path,
+            },
+        ) {
             self.set_status(&format!("{error:#}"));
         }
     }
@@ -276,11 +294,14 @@ impl View {
             }
         };
         let revision = self.revision.get();
-        match self.submit(Job::ErrorCode {
-            document: self.id,
-            revision,
-            request,
-        }) {
+        match self.submit(
+            &self.query_ticket,
+            Job::ErrorCode {
+                document: self.id,
+                revision,
+                request,
+            },
+        ) {
             Ok(()) => {
                 unsafe { EnableWindow(self.query, 0) };
                 self.set_status(&resources::text(IDS_ERROR_CODE_QUERYING));
@@ -288,7 +309,11 @@ impl View {
             Err(error) => self.set_status(&format!("{error:#}")),
         }
     }
-    pub fn query_complete(&self, revision: u64, result: anyhow::Result<QueryResult>) {
+    pub fn query_complete(&self, id: u64, revision: u64, result: anyhow::Result<QueryResult>) {
+        if self.query_ticket.get() != Some(id) {
+            return;
+        }
+        self.query_ticket.set(None);
         unsafe { EnableWindow(self.query, 1) };
         let body = match result {
             Ok(result) => {
@@ -317,7 +342,16 @@ impl View {
             });
         }
     }
-    pub fn languages_complete(&self, path: PathBuf, result: Result<Vec<u16>, core::Failure>) {
+    pub fn languages_complete(
+        &self,
+        id: u64,
+        path: PathBuf,
+        result: Result<Vec<u16>, core::Failure>,
+    ) {
+        if self.languages_ticket.get() != Some(id) {
+            return;
+        }
+        self.languages_ticket.set(None);
         if self.custom() && self.path() == path {
             match result {
                 Ok(ids) => self.set_languages(ids, true),
@@ -649,8 +683,20 @@ impl View {
         }
     }
     pub fn destroy(&self) {
+        if let Some(id) = self.query_ticket.take() {
+            self.ctx().cancel_job(id);
+        }
+        self.cancel_languages();
         unsafe {
             DestroyWindow(self.tooltip);
+        }
+    }
+    pub fn worker_stopped(&self) {
+        let querying = self.query_ticket.take().is_some();
+        let languages = self.languages_ticket.take().is_some();
+        if querying || languages {
+            unsafe { EnableWindow(self.query, 1) };
+            self.set_status(&resources::text(IDS_WORKER_STOPPED));
         }
     }
 }

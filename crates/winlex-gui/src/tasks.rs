@@ -71,11 +71,13 @@ pub enum Completion {
         result: anyhow::Result<crate::rich_text::Content>,
     },
     ErrorCodeQuery {
+        id: u64,
         document: u64,
         revision: u64,
         result: anyhow::Result<winlex_core::tools::error_code::QueryResult>,
     },
     ErrorCodeLanguages {
+        id: u64,
         document: u64,
         path: PathBuf,
         result: Result<Vec<u16>, winlex_core::tools::error_code::Failure>,
@@ -127,11 +129,13 @@ pub fn run(job: Job, ticket: &Ticket, publish: &dyn Fn(Completion) -> anyhow::Re
             revision,
             request,
         } => Completion::ErrorCodeQuery {
+            id,
             document,
             revision,
             result: winlex_core::tools::error_code::query(&request),
         },
         Job::ErrorCodeLanguages { document, path } => Completion::ErrorCodeLanguages {
+            id,
             document,
             result: winlex_core::tools::error_code::module_languages(&path),
             path,
