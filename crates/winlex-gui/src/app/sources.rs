@@ -36,62 +36,61 @@ pub(super) fn row_text(ctx: &Context, index: usize) -> Vec<u16> {
     })
 }
 fn rows(ctx: &Context) -> Vec<Row> {
-    catalog::source_states(ctx)
-        .into_iter()
-        .map(|source| {
-            let catalog::SourceState {
-                path,
-                len,
-                error,
-                pending,
-            } = source;
-            let failure = error.as_deref();
-            let status = resources::text(if pending {
-                IDS_RELOADING
-            } else if failure.is_some() {
-                IDS_RELOAD_FAILED
-            } else {
-                IDS_LOADED
-            });
-            let mut detail = TextLine::default();
-            detail.push(TextSegment::plain(&format!("{status} · {} · ", size(len))));
-            if let Some(parent) = path.parent() {
-                detail.push(TextSegment::new(
-                    parent.as_os_str().encode_wide(),
-                    FoldKind::Path,
-                ));
-            }
-            let exact = resources::text(IDS_SIZE_BYTES).replace("{size}", &len.to_string());
-            let native_path: Vec<_> = path.as_os_str().encode_wide().collect();
-            let title: Vec<_> = path.file_name().unwrap_or_default().encode_wide().collect();
-            let mut info = native_path.clone();
-            info.extend(format!("\r\n{status} · {exact}").encode_utf16());
-            if let Some(error) = failure {
-                info.extend(format!("\r\n{error}").encode_utf16());
-            }
-            let mut tooltip = title.clone();
-            tooltip.extend("\r\n".encode_utf16());
-            tooltip_field(&mut tooltip, IDS_TIP_STATUS, status.encode_utf16());
-            tooltip_field(&mut tooltip, IDS_TIP_SIZE, exact.encode_utf16());
-            tooltip_field(&mut tooltip, IDS_TIP_PATH, native_path);
-            if let Some(error) = failure {
-                tooltip_field(&mut tooltip, IDS_TIP_ERROR, error.encode_utf16());
+    ctx.with_session(|session| {
+        session
+            .inputs()
+            .iter()
+            .map(|source| {
+                let path = source.path();
+                let len = source.len();
+                let failure = session.source_error(path);
+                let status = resources::text(if session.pending(path) {
+                    IDS_RELOADING
+                } else if failure.is_some() {
+                    IDS_RELOAD_FAILED
+                } else {
+                    IDS_LOADED
+                });
+                let mut detail = TextLine::default();
+                detail.push(TextSegment::plain(&format!("{status} · {} · ", size(len))));
+                if let Some(parent) = path.parent() {
+                    detail.push(TextSegment::new(
+                        parent.as_os_str().encode_wide(),
+                        FoldKind::Path,
+                    ));
+                }
+                let exact = resources::text(IDS_SIZE_BYTES).replace("{size}", &len.to_string());
+                let native_path: Vec<_> = path.as_os_str().encode_wide().collect();
+                let title: Vec<_> = path.file_name().unwrap_or_default().encode_wide().collect();
+                let mut info = native_path.clone();
+                info.extend(format!("\r\n{status} · {exact}").encode_utf16());
+                if let Some(error) = failure {
+                    info.extend(format!("\r\n{error}").encode_utf16());
+                }
+                let mut tooltip = title.clone();
                 tooltip.extend("\r\n".encode_utf16());
-                tooltip.extend(resources::text(IDS_TIP_PREVIOUS_DATA).encode_utf16());
-            }
-            Row {
-                path,
-                display: Display {
-                    title,
-                    detail,
-                    icon: Some(Icon::File),
-                    tooltip,
-                    ..Default::default()
-                },
-                text: info,
-            }
-        })
-        .collect()
+                tooltip_field(&mut tooltip, IDS_TIP_STATUS, status.encode_utf16());
+                tooltip_field(&mut tooltip, IDS_TIP_SIZE, exact.encode_utf16());
+                tooltip_field(&mut tooltip, IDS_TIP_PATH, native_path);
+                if let Some(error) = failure {
+                    tooltip_field(&mut tooltip, IDS_TIP_ERROR, error.encode_utf16());
+                    tooltip.extend("\r\n".encode_utf16());
+                    tooltip.extend(resources::text(IDS_TIP_PREVIOUS_DATA).encode_utf16());
+                }
+                Row {
+                    path: path.to_path_buf(),
+                    display: Display {
+                        title,
+                        detail,
+                        icon: Some(Icon::File),
+                        tooltip,
+                        ..Default::default()
+                    },
+                    text: info,
+                }
+            })
+            .collect()
+    })
 }
 
 fn size(bytes: usize) -> String {

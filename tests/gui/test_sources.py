@@ -1,3 +1,4 @@
+import os
 import shutil
 import pytest
 import winreg
@@ -212,8 +213,14 @@ def test_long_unicode_input(launch, settings):
     assert path.name in n.window_text(n.get_item(doc, 1205))
 
 
-def test_list_text_preserves_native_utf16_path(launch, settings):
+@pytest.mark.parametrize('unc', [False, True], ids=['local', 'unc'])
+def test_list_text_preserves_native_utf16_path(launch, settings, unc):
     path = settings[2] / "source-\ud800.winmd"
+    if unc:
+        from pathlib import Path
+        path = Path('\\\\' + os.environ['COMPUTERNAME'] + '\\' + path.drive[0] + '$' + str(path)[2:])
+        if not os.path.isdir(path.parent):
+            pytest.skip('worker cannot access its local administrative share')
     shutil.copyfile(settings[1], path)
     app = launch([path])
     try:

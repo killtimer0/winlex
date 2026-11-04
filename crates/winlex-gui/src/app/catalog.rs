@@ -223,29 +223,6 @@ pub(super) fn source_status(ctx: &Context) -> String {
 pub(super) fn current_catalog(ctx: &Context) -> Option<Arc<Catalog>> {
     ctx.with_session(|session| session.catalog.clone())
 }
-pub(super) struct SourceState {
-    pub path: PathBuf,
-    pub len: usize,
-    pub error: Option<String>,
-    pub pending: bool,
-}
-pub(super) fn source_states(ctx: &Context) -> Vec<SourceState> {
-    ctx.with_session(|session| {
-        session
-            .inputs()
-            .iter()
-            .map(|source| {
-                let path = source.path();
-                SourceState {
-                    path: path.to_path_buf(),
-                    len: source.len(),
-                    error: session.source_error(path).map(str::to_owned),
-                    pending: session.pending(path),
-                }
-            })
-            .collect()
-    })
-}
 pub(super) fn reload(ctx: &Context, paths: Vec<PathBuf>, reload: Vec<PathBuf>) {
     let (previous, ticket, job) = ctx.with_session_mut(|session| session.begin_load(paths, reload));
     let result = ctx.replace_job(previous, ticket, job);
