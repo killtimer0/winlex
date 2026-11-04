@@ -8,6 +8,7 @@ import win32gui
 import winreg
 from support import native as n
 from support.diagnostics import capture, screenshot
+from support.languages import LANGUAGES
 
 
 def mask(app, sheet, value):
@@ -23,24 +24,23 @@ def checked(app, sheet):
                for index in range(7))
 
 
-def test_settings_cancel_and_page_state(launch, profile):
+def test_settings_cancel_and_page_state(launch, profile, ui_language):
     original = profile.preferences()
     app = launch()
     sheet = app.settings()
     enabled = n.api(n.user, "IsWindowEnabled", n.w.BOOL, n.w.HWND)
     assert not enabled(app.frame)
-    chinese = app.toolbar_text(1040) == "搜索"
-    assert n.window_text(n.get_item(sheet, 1)) == ("确定" if chinese else "OK")
-    assert n.window_text(n.get_item(sheet, 2)) == ("取消" if chinese else "Cancel")
+    assert n.window_text(n.get_item(sheet, 1)) == ui_language.ok_label
+    assert n.window_text(n.get_item(sheet, 2)) == ui_language.cancel_label
     assert not n.is_visible(n.get_item(sheet, 0x3021))
     assert checked(app, sheet) == 7
     page = app.settings_page(sheet, 1)
-    labels = (["类型(&T)", "函数/方法(&M)", "常量(&C)", "字段(&F)", "属性(&P)", "事件(&E)", "类型引用(&R)"]
-              if chinese else ["&Types", "Functions/&Methods", "&Constants", "&Fields", "&Properties", "&Events", "Type &references"])
-    assert [n.window_text(n.get_item(page, 1310+i)) for i in range(7)] == labels
+    assert tuple(n.window_text(n.get_item(page, 1310+i)) for i in range(7)) == ui_language.category_labels
     mask(app, sheet, 127)
     general = app.settings_page(sheet, 0)
-    n.send(n.get_item(general, 1300), win32con.CB_SETCURSEL, 2)
+    control = n.get_item(general, 1300)
+    alternative = next(option for option in LANGUAGES if option != ui_language)
+    n.send(control, win32con.CB_SETCURSEL, app.choices(control).index(alternative.label))
     assert checked(app, sheet) == 127
     app.close_settings(sheet, accept=False)
     assert enabled(app.frame)

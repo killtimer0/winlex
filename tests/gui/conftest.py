@@ -11,6 +11,7 @@ import win32api
 import win32con
 import win32service
 from support.config import ConfigProfile
+from support.languages import LANGUAGES, language
 from support.session import Session
 from support.pe import is_64_bit
 from support import native as n
@@ -22,7 +23,7 @@ def pytest_addoption(parser):
     parser.addoption("--exe", required=True)
     parser.addoption("--winmd", default="inputs/Windows.Win32.winmd")
     parser.addoption("--artifacts", default="tmp/gui-tests")
-    parser.addoption("--language", default="en-US", choices=("en-US", "zh-CN"))
+    parser.addoption("--language", default="en-US", choices=[option.name for option in LANGUAGES])
     parser.addoption("--dpi", default="auto")
     parser.addoption("--real-input", action="store_true",
                      help="Run only interactive input/screen tests on the current desktop")
@@ -74,6 +75,11 @@ def settings(request):
     root = extended(output)
     hashes = {str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest() for p in root.rglob("*.winmd")}
     (output / "fixture-hashes.json").write_text(json.dumps(hashes, indent=2), encoding="utf-8")
+
+
+@pytest.fixture
+def ui_language(request):
+    return language(request.config.getoption("--language"))
 
 
 @pytest.fixture

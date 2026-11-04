@@ -8,6 +8,8 @@ import re
 import struct
 import xml.etree.ElementTree as ET
 
+from support.languages import LANGUAGES
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -51,10 +53,11 @@ def main():
         ids = {name: int(value) for name, value in re.findall(r"^#define (\w+) (\d+)$", header, re.M)}
         strings = {name: value for name, value in ids.items() if name.startswith("IDS_")}
         assert len(ids) == len(set(ids.values())), "duplicate resource/command IDs"
+        language_ids = sorted(language.langid for language in LANGUAGES)
         decoded = {}
         for block in sorted({value // 16 + 1 for value in strings.values()}):
-            assert languages(6, block) == [0x409, 0x804], "string languages differ"
-            for language in (0x409, 0x804):
+            assert languages(6, block) == language_ids, "string languages differ"
+            for language in language_ids:
                 data = resource(6, block, language)
                 offset = 0
                 for index in range(16):
@@ -64,20 +67,22 @@ def main():
                     offset += count * 2
                     decoded[language, (block - 1) * 16 + index] = value
         for name, value in strings.items():
-            en, zh = decoded[0x409, value], decoded[0x804, value]
-            assert en and zh, f"untranslated resource {name}"
-            assert sorted(re.findall(r"\{\w+\}", en)) == sorted(re.findall(r"\{\w+\}", zh)), name
-        assert languages(4, ids["IDR_MAIN_MENU"]) == [0x409, 0x804]
+            baseline = decoded[LANGUAGES[0].langid, value]
+            for language in language_ids:
+                text = decoded[language, value]
+                assert text, f"untranslated resource {name}/{language:#06x}"
+                assert sorted(re.findall(r"\{\w+\}", baseline)) == sorted(re.findall(r"\{\w+\}", text)), (name, language)
+        assert languages(4, ids["IDR_MAIN_MENU"]) == language_ids
         for name in ("IDD_SETTINGS_GENERAL", "IDD_SETTINGS_SEARCH"):
-            assert languages(5, ids[name]) == [0x409, 0x804]
-            for language in (0x409, 0x804):
+            assert languages(5, ids[name]) == language_ids
+            for language in language_ids:
                 data = resource(5, ids[name], language)
                 assert struct.unpack_from("<HH", data) == (1, 0xffff)
                 style, = struct.unpack_from("<I", data, 12)
                 assert style & 0x40000448 == 0x40000448
-        assert languages(5, ids['IDD_ABOUT']) == [0x409, 0x804]
-        assert languages(5, ids['IDD_SEARCH_HELP']) == [0x409, 0x804]
-        for language in (0x409, 0x804):
+        assert languages(5, ids['IDD_ABOUT']) == language_ids
+        assert languages(5, ids['IDD_SEARCH_HELP']) == language_ids
+        for language in language_ids:
             data = resource(5, ids['IDD_ABOUT'], language)
             assert struct.unpack_from('<HH', data) == (1, 0xffff)
             assert b'h\x00t\x00t\x00p\x00s\x00' in data
@@ -115,10 +120,10 @@ def main():
         (args.artifacts / "resources.json").write_text(json.dumps({
             "exe": str(args.exe),
             "strings_per_language": len(strings),
-            "languages": ["en-US", "zh-CN"],
+            "languages": [language.name for language in LANGUAGES],
             "version": actual,
         }, indent=2), encoding="utf-8")
-        print(f"PASS resources: {len(strings)} strings per language, bilingual menu, manifest, version {actual}")
+        print(f"PASS resources: {len(strings)} strings per language, {len(LANGUAGES)} menu languages, manifest, version {actual}")
     finally:
         free(module)
 

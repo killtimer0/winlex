@@ -4,6 +4,7 @@ import winreg
 import win32con
 import win32gui
 from support import native as n
+from support.languages import LANGUAGES, language
 
 
 def test_normal_placement_round_trips_registry_coordinates(launch, profile):
@@ -55,27 +56,28 @@ def test_placement_and_sidebar_restart(launch, profile):
     assert n.is_visible(collapsed.sources)
 
 
-@pytest.mark.parametrize("index,name,label", [
-    (0, "auto", None), (1, "en-US", "Search"), (2, "zh-CN", "搜索"),
-], ids=["auto", "english", "chinese"])
-def test_language_option_round_trip(launch, profile, index, name, label):
+@pytest.mark.parametrize("name", ["auto", *[option.name for option in LANGUAGES]])
+def test_language_option_round_trip(launch, profile, ui_language, name):
     app = launch()
     sheet = app.settings()
     general = app.settings_page(sheet, 0)
     control = n.get_item(general, 1300)
-    assert app.choices(control) == (["跟随系统", "English", "简体中文"] if app.toolbar_text(1040) == "搜索"
-                                   else ["System default", "English", "简体中文"])
+    choices = app.choices(control)
+    assert sorted(choices) == sorted([ui_language.auto_label, *[option.label for option in LANGUAGES]])
+    label = ui_language.auto_label if name == "auto" else language(name).label
+    index = choices.index(label)
     n.send(control, win32con.CB_SETCURSEL, index)
     app.close_settings(sheet)
     assert profile.preferences() == (name, 7, "system")
     sheet = app.settings()
     general = app.settings_page(sheet, 0)
-    assert n.send(n.get_item(general, 1300), win32con.CB_GETCURSEL) == index
+    control = n.get_item(general, 1300)
+    assert n.send(control, win32con.CB_GETCURSEL) == app.choices(control).index(label)
     app.close_settings(sheet, accept=False)
     app.close()
     restored = launch()
-    if label is not None:
-        assert restored.toolbar_text(1040) == label
+    if name != "auto":
+        assert restored.toolbar_text(1040) == language(name).search_label
 
 
 @pytest.mark.parametrize("theme,index,categories", [
@@ -88,7 +90,8 @@ def test_preferences_survive_restart(launch, profile, theme, index, categories):
     app = launch()
     sheet = app.settings()
     general = app.settings_page(sheet, 0)
-    n.send(n.get_item(general, 1300), win32con.CB_SETCURSEL, 1)
+    control = n.get_item(general, 1300)
+    n.send(control, win32con.CB_SETCURSEL, app.choices(control).index(language("en-US").label))
     app.close_settings(sheet)
     expected = ("en-US", categories, theme)
     with winreg.OpenKey(winreg.HKEY_CURRENT_USER, profile.root) as key:
@@ -100,7 +103,8 @@ def test_preferences_survive_restart(launch, profile, theme, index, categories):
     restored = launch()
     sheet = restored.settings()
     general = restored.settings_page(sheet, 0)
-    assert n.send(n.get_item(general, 1300), win32con.CB_GETCURSEL) == 1
+    control = n.get_item(general, 1300)
+    assert n.send(control, win32con.CB_GETCURSEL) == restored.choices(control).index(language("en-US").label)
     control = n.get_item(general, 1301)
     assert n.send(control, win32con.CB_GETCURSEL) == (index if win32gui.IsWindowEnabled(control) else 0)
     search = restored.settings_page(sheet, 1)
@@ -111,15 +115,15 @@ def test_preferences_survive_restart(launch, profile, theme, index, categories):
 
 
 @pytest.mark.parametrize("name,kind,value,expected", [
-    ("Language", None, None, (0, 15, 2)),
-    ("Language", winreg.REG_SZ, "other", (0, 15, 2)),
-    ("Language", winreg.REG_DWORD, 1, (0, 15, 2)),
-    ("SearchCategories", None, None, (2, 7, 2)),
-    ("SearchCategories", winreg.REG_DWORD, 128, (2, 7, 2)),
-    ("SearchCategories", winreg.REG_SZ, "15", (2, 7, 2)),
-    ("Theme", None, None, (2, 15, 0)),
-    ("Theme", winreg.REG_SZ, "other", (2, 15, 0)),
-    ("Theme", winreg.REG_DWORD, 2, (2, 15, 0)),
+    ("Language", None, None, ("auto", 15, 2)),
+    ("Language", winreg.REG_SZ, "other", ("auto", 15, 2)),
+    ("Language", winreg.REG_DWORD, 1, ("auto", 15, 2)),
+    ("SearchCategories", None, None, ("zh-CN", 7, 2)),
+    ("SearchCategories", winreg.REG_DWORD, 128, ("zh-CN", 7, 2)),
+    ("SearchCategories", winreg.REG_SZ, "15", ("zh-CN", 7, 2)),
+    ("Theme", None, None, ("zh-CN", 15, 0)),
+    ("Theme", winreg.REG_SZ, "other", ("zh-CN", 15, 0)),
+    ("Theme", winreg.REG_DWORD, 2, ("zh-CN", 15, 0)),
 ])
 def test_invalid_preferences_fall_back_independently(launch, profile, name, kind, value, expected):
     profile.set("Language", winreg.REG_SZ, "zh-CN")
@@ -134,7 +138,10 @@ def test_invalid_preferences_fall_back_independently(launch, profile, name, kind
     app = launch()
     sheet = app.settings()
     general = app.settings_page(sheet, 0)
-    assert n.send(n.get_item(general, 1300), win32con.CB_GETCURSEL) == expected[0]
+    control = n.get_item(general, 1300)
+    label = (next(option for option in LANGUAGES if option.search_label == app.toolbar_text(1040)).auto_label
+             if expected[0] == "auto" else language(expected[0]).label)
+    assert n.send(control, win32con.CB_GETCURSEL) == app.choices(control).index(label)
     control = n.get_item(general, 1301)
     assert n.send(control, win32con.CB_GETCURSEL) == (expected[2] if win32gui.IsWindowEnabled(control) else 0)
     search = app.settings_page(sheet, 1)
