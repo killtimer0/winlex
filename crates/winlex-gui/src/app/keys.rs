@@ -2,7 +2,7 @@
 //!
 //! Semantic keys are resolved before the dialog manager sees them. Controls
 //! keep their default behavior for every key the table does not claim.
-use super::{catalog, panel, workspace};
+use super::{catalog, panel, sidebar, workspace};
 use crate::app::context::Context;
 use crate::native::*;
 
@@ -52,13 +52,9 @@ pub(super) fn translate(ctx: &Context, msg: &MSG) -> bool {
 }
 
 fn region(ctx: &Context, hwnd: HWND) -> Region {
-    let (search, results, tabs) = ctx.read(|a| {
-        (
-            a.sidebar.search.clone(),
-            a.sidebar.panel(panel::SEARCH_PANEL).list.hwnd,
-            a.workspace.tabs,
-        )
-    });
+    let search = sidebar::search(ctx);
+    let results = sidebar::panel(ctx, panel::SEARCH_PANEL).list.hwnd;
+    let tabs = workspace::tabs(ctx);
     if let Some(search) = search
         && hwnd == search.input
     {

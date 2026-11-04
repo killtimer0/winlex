@@ -204,7 +204,8 @@ unsafe fn run_windows(ctx: &Context, paths: Vec<std::path::PathBuf>) -> anyhow::
             if msg.message == WM_QUIT {
                 break;
             }
-            let (mdi, document_tabs) = ctx.read(|a| (a.workspace.mdi, a.workspace.tabs));
+            let mdi = workspace::mdi(ctx);
+            let document_tabs = workspace::tabs(ctx);
             if matches!(
                 msg.message,
                 WM_KEYDOWN | WM_SYSKEYDOWN | WM_LBUTTONDOWN | WM_RBUTTONDOWN

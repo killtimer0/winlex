@@ -92,6 +92,9 @@ pub(super) struct History {
 }
 
 impl History {
+    pub(super) fn depth(&self) -> usize {
+        self.depth
+    }
     fn remove(&mut self, index: usize) {
         self.entries.remove(index);
         if let Some(cursor) = self.cursor
@@ -181,15 +184,15 @@ pub(super) fn content_activation(ctx: &Context, content: &super::content::Conten
     if active {
         content.activated();
     }
-    if ctx.read(|a| a.workspace.history.depth != 0) {
+    if workspace::history_depth(ctx) != 0 {
         return;
     }
     let entry = capture_content(content);
-    ctx.write(|a| {
+    workspace::with_history(ctx, |history| {
         if active {
-            a.workspace.history.visit(entry)
+            history.visit(entry)
         } else {
-            a.workspace.history.save(entry)
+            history.save(entry)
         }
     });
 }
@@ -200,20 +203,19 @@ struct Scope<'a> {
 }
 impl<'a> Scope<'a> {
     fn begin(ctx: &'a Context) -> Self {
-        let outer = ctx.write(|a| {
-            let history = &mut a.workspace.history;
+        let outer = workspace::with_history(ctx, |history| {
             history.depth += 1;
             history.depth == 1
         });
         if outer && let Some(entry) = active_entry(ctx) {
-            ctx.write(|a| a.workspace.history.visit(entry));
+            workspace::with_history(ctx, |history| history.visit(entry));
         }
         Self { ctx, outer }
     }
 }
 impl Drop for Scope<'_> {
     fn drop(&mut self) {
-        self.ctx.write(|a| a.workspace.history.depth -= 1);
+        workspace::with_history(self.ctx, |history| history.depth -= 1);
     }
 }
 
@@ -223,7 +225,7 @@ pub(super) fn visit<T>(ctx: &Context, action: impl FnOnce() -> T) -> T {
     if scope.outer
         && let Some(entry) = active_entry(ctx)
     {
-        ctx.write(|a| a.workspace.history.visit(entry));
+        workspace::with_history(ctx, |history| history.visit(entry));
     }
     drop(scope);
     refresh(ctx);
@@ -235,20 +237,19 @@ pub(super) fn closing(ctx: &Context, action: impl FnOnce()) {
     action();
     if scope.outer {
         let entry = active_entry(ctx);
-        ctx.write(|a| a.workspace.history.after_close(entry));
+        workspace::with_history(ctx, |history| history.after_close(entry));
     }
     drop(scope);
     refresh(ctx);
 }
 
 pub(super) fn navigate(ctx: &Context, direction: Direction) {
-    if ctx.read(|a| a.workspace.history.depth != 0) {
+    if workspace::history_depth(ctx) != 0 {
         return;
     }
     let scope = Scope::begin(ctx);
     loop {
-        let target = ctx.write(|a| {
-            let history = &mut a.workspace.history;
+        let target = workspace::with_history(ctx, |history| {
             history.prune();
             let index = history.next(direction)?;
             Some((index, history.entries[index].clone()))
@@ -258,17 +259,17 @@ pub(super) fn navigate(ctx: &Context, direction: Direction) {
             if let Some(content) = workspace::content_by_id(ctx, entry.document) {
                 workspace::show_document(ctx, content.hwnd());
                 content.focus();
-                ctx.write(|a| a.workspace.history.arrived(index, content.id()));
+                workspace::with_history(ctx, |history| history.arrived(index, content.id()));
                 break;
             }
-            ctx.write(|a| a.workspace.history.remove(index));
+            workspace::with_history(ctx, |history| history.remove(index));
             continue;
         }
         let Target::Declaration(target) = entry.target else {
             unreachable!()
         };
         let Some(snapshot) = target.catalog.upgrade() else {
-            ctx.write(|a| a.workspace.history.remove(index));
+            workspace::with_history(ctx, |history| history.remove(index));
             continue;
         };
         let Some(binding) = super::status::report(
@@ -279,7 +280,7 @@ pub(super) fn navigate(ctx: &Context, direction: Direction) {
                 ArchitectureChoice::Exact(target.architecture),
             ),
         ) else {
-            ctx.write(|a| a.workspace.history.remove(index));
+            workspace::with_history(ctx, |history| history.remove(index));
             continue;
         };
         let hwnd =
@@ -287,7 +288,7 @@ pub(super) fn navigate(ctx: &Context, direction: Direction) {
         if let Some(doc) = hwnd.and_then(|hwnd| workspace::view(ctx, hwnd)) {
             doc.focus();
             doc.restore_position(target.position);
-            ctx.write(|a| a.workspace.history.arrived(index, doc.id));
+            workspace::with_history(ctx, |history| history.arrived(index, doc.id));
         }
         break;
     }
@@ -296,9 +297,12 @@ pub(super) fn navigate(ctx: &Context, direction: Direction) {
 }
 
 pub(super) fn refresh(ctx: &Context) {
-    let update = ctx.write(|a| {
-        let history = &mut a.workspace.history;
-        if history.depth != 0 || a.frame.is_null() {
+    let frame = ctx.read(|a| a.frame);
+    if frame.is_null() {
+        return;
+    }
+    let update = workspace::with_history(ctx, |history| {
+        if history.depth != 0 {
             return None;
         }
         history.prune();
@@ -307,9 +311,9 @@ pub(super) fn refresh(ctx: &Context) {
             return None;
         }
         history.enabled = Some(enabled);
-        Some((a.frame, enabled))
+        Some(enabled)
     });
-    if let Some((frame, enabled)) = update {
+    if let Some(enabled) = update {
         for (direction, enabled) in Direction::ALL.into_iter().zip(enabled) {
             unsafe {
                 EnableMenuItem(

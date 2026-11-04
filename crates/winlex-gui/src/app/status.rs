@@ -1,5 +1,5 @@
 //! Catalog/document status ownership and command feedback.
-use super::workspace;
+use super::{sidebar, workspace};
 use crate::app::context::Context;
 use crate::native::{HWND, IsChild, set_status_text};
 
@@ -50,7 +50,7 @@ pub(super) fn status_input(ctx: &Context, hwnd: HWND) {
     let doc = workspace::active(ctx);
     if !doc.is_null() && (hwnd == doc || unsafe { IsChild(doc, hwnd) } != 0) {
         begin_status(ctx, StatusContext::Document(doc));
-    } else if ctx.read(|a| a.sidebar.owner(hwnd).is_some()) {
+    } else if sidebar::owner(ctx, hwnd).is_some() {
         begin_status(ctx, StatusContext::Catalog);
     }
 }

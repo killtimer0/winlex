@@ -65,7 +65,7 @@ pub(super) struct Search {
     deadline: Cell<Option<std::time::Instant>>,
 }
 pub(super) fn search(ctx: &Context) -> Rc<Search> {
-    ctx.read(|a| a.sidebar.search.as_ref().unwrap().clone())
+    sidebar::search(ctx).expect("search panel")
 }
 const SEARCH_TIMER: usize = 1;
 fn search_tool(input: HWND, label: u16) -> TTTOOLINFOW {
@@ -295,7 +295,7 @@ pub(super) fn command(ctx: &Context, w: usize, control: HWND) -> bool {
         return true;
     }
     // Ignore notifications from controls that have not finished initialization.
-    if !control.is_null() && ctx.read(|a| a.sidebar.owner(control)).is_none() {
+    if !control.is_null() && sidebar::owner(ctx, control).is_none() {
         return false;
     }
     search(ctx).command(ctx, id, (w >> 16) as u32) || sources::command(ctx, id)

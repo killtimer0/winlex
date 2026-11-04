@@ -26,7 +26,7 @@ pub(super) fn update_icons(
     current: &RefCell<Option<Rc<crate::icons::WindowIcons>>>,
 ) -> anyhow::Result<()> {
     let value = ctx.dpi().window(hwnd);
-    let icons = ctx.write(|a| a.workspace.icons.get(icon, value))?;
+    let icons = workspace::document_icons(ctx, icon, value)?;
     if current
         .borrow()
         .as_ref()
@@ -79,9 +79,7 @@ pub(super) unsafe extern "system" fn document_proc(
                 // These messages also arrive before WM_CREATE registers the document.
                 // Native MDI uses system DPI; match the PMv2 child's nonclient metrics.
                 if ctx.dpi().mode == crate::dpi::Mode::Pmv2 && IsZoomed(hwnd) != 0 {
-                    let r = ctx
-                        .dpi()
-                        .child_outer(hwnd, client(ctx.read(|a| a.workspace.mdi)));
+                    let r = ctx.dpi().child_outer(hwnd, client(workspace::mdi(ctx)));
                     let p = &mut *(l as *mut WINDOWPOS);
                     if p.flags & SWP_NOMOVE == 0 {
                         p.x = r.left;

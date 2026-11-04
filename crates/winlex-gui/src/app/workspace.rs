@@ -12,11 +12,11 @@ use crate::{
 use std::rc::Rc;
 
 pub(super) struct Workspace {
-    pub mdi: HWND,
-    pub tabs: HWND,
-    pub documents: Vec<Content>,
-    pub icons: crate::icons::DocumentIcons,
-    pub history: history::History,
+    mdi: HWND,
+    tabs: HWND,
+    documents: Vec<Content>,
+    icons: crate::icons::DocumentIcons,
+    history: history::History,
     maximized: bool,
     serial: u64,
 }
@@ -34,8 +34,33 @@ impl Default for Workspace {
     }
 }
 
+pub(super) fn mdi(ctx: &Context) -> HWND {
+    ctx.read(|a| a.workspace.mdi)
+}
+pub(super) fn tabs(ctx: &Context) -> HWND {
+    ctx.read(|a| a.workspace.tabs)
+}
+pub(super) fn attach(ctx: &Context, tabs: HWND, mdi: HWND) {
+    ctx.write(|a| {
+        a.workspace.tabs = tabs;
+        a.workspace.mdi = mdi;
+    });
+}
+pub(super) fn document_icons(
+    ctx: &Context,
+    icon: crate::icons::Icon,
+    dpi: u32,
+) -> anyhow::Result<Rc<crate::icons::WindowIcons>> {
+    ctx.write(|a| a.workspace.icons.get(icon, dpi))
+}
+pub(super) fn history_depth(ctx: &Context) -> usize {
+    ctx.read(|a| a.workspace.history.depth())
+}
+pub(super) fn with_history<T>(ctx: &Context, f: impl FnOnce(&mut history::History) -> T) -> T {
+    ctx.write(|a| f(&mut a.workspace.history))
+}
 pub(super) fn active(ctx: &Context) -> HWND {
-    let mdi = ctx.read(|a| a.workspace.mdi);
+    let mdi = mdi(ctx);
     send(mdi, WM_MDIGETACTIVE, 0, 0) as HWND
 }
 pub(super) fn show_document(ctx: &Context, hwnd: HWND) {

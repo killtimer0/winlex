@@ -5,7 +5,9 @@ use crate::{layout, native::*, resources::*};
 use std::ptr;
 
 fn prepare(ctx: &Context) {
-    let (frame, tabs, status) = ctx.read(|a| (a.frame, a.workspace.tabs, a.status));
+    let frame = ctx.read(|a| a.frame);
+    let tabs = workspace::tabs(ctx);
+    let status = ctx.read(|a| a.status);
     let docs = workspace::contents(ctx);
     let value = ctx.dpi().window(frame);
     if let Some(icons) = ctx.checked(crate::icons::WindowIcons::load(value)) {
@@ -24,7 +26,7 @@ fn prepare(ctx: &Context) {
 }
 fn recolor(ctx: &Context) {
     unsafe {
-        InvalidateRect(ctx.read(|a| a.workspace.tabs), ptr::null(), 0);
+        InvalidateRect(workspace::tabs(ctx), ptr::null(), 0);
     }
     sidebar::recolor(ctx);
     for content in workspace::contents(ctx) {
@@ -33,8 +35,10 @@ fn recolor(ctx: &Context) {
     workspace::refresh_document_tabs(ctx);
 }
 pub(super) fn layout_frame(ctx: &Context) {
-    let (frame, mdi, tabs, status) =
-        ctx.read(|a| (a.frame, a.workspace.mdi, a.workspace.tabs, a.status));
+    let frame = ctx.read(|a| a.frame);
+    let mdi = workspace::mdi(ctx);
+    let tabs = workspace::tabs(ctx);
+    let status = ctx.read(|a| a.status);
     if mdi.is_null() {
         return;
     }
@@ -48,10 +52,7 @@ pub(super) fn layout_frame(ctx: &Context) {
     positions.push((tabs, layout::take_top(&mut area, m.height + m.px(8))));
     positions.push((mdi, area));
     if ctx.checked(place_all(&positions)).is_some() {
-        let panel = ctx.read(|a| {
-            let s = &a.sidebar;
-            (!s.collapsed).then(|| s.panel(s.active))
-        });
+        let panel = sidebar::current(ctx);
         if let Some(panel) = panel {
             crate::list::fit(panel.list.hwnd);
         }
@@ -107,11 +108,8 @@ pub(super) unsafe extern "system" fn frame_proc(hwnd: HWND, msg: u32, w: usize, 
                     if mdi.is_null() {
                         return Err(error("Create MDI client"));
                     }
-                    ctx.write(|a| {
-                        a.workspace.tabs = tabs;
-                        a.status = status;
-                        a.workspace.mdi = mdi;
-                    });
+                    ctx.write(|a| a.status = status);
+                    workspace::attach(ctx, tabs, mdi);
                     sidebar::create(ctx, hwnd)?;
                     windows_sys::Win32::UI::Shell::DragAcceptFiles(hwnd, 1);
                     prepare(ctx);
@@ -161,11 +159,11 @@ pub(super) unsafe extern "system" fn frame_proc(hwnd: HWND, msg: u32, w: usize, 
             }
             WM_NOTIFY => {
                 let hdr = &*(l as *const NMHDR);
-                if hdr.hwndFrom == ctx.read(|a| a.workspace.tabs) {
+                if hdr.hwndFrom == workspace::tabs(ctx) {
                     workspace::tab_notification(ctx, &*(l as *const crate::tabs::Notification));
                     return 0;
                 }
-                if let Some(panel) = ctx.read(|a| a.sidebar.owner(hdr.hwndFrom)) {
+                if let Some(panel) = sidebar::owner(ctx, hdr.hwndFrom) {
                     if hdr.code == NM_SETFOCUS {
                         status::status_context(ctx, status::StatusContext::Catalog);
                     }
@@ -218,6 +216,6 @@ pub(super) unsafe extern "system" fn frame_proc(hwnd: HWND, msg: u32, w: usize, 
             }
             _ => {}
         }
-        DefFrameProcW(hwnd, ctx.read(|a| a.workspace.mdi), msg, w, l)
+        DefFrameProcW(hwnd, workspace::mdi(ctx), msg, w, l)
     }
 }

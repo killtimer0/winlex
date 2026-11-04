@@ -78,23 +78,19 @@ pub(super) fn command(ctx: &Context, id: u16) -> bool {
             let d = workspace::active(ctx);
             if !d.is_null() && (h == d || unsafe { IsChild(d, h) } != 0) {
                 sidebar::focus(ctx);
-            } else if h == ctx.read(|a| a.workspace.tabs) {
+            } else if h == workspace::tabs(ctx) {
                 if d.is_null() {
                     sidebar::focus(ctx);
                 } else if let Some(document) = workspace::content(ctx, d) {
                     document.focus();
                 }
             } else {
-                focus(ctx.read(|a| a.workspace.tabs));
+                focus(workspace::tabs(ctx));
             }
         }
         CLOSE => workspace::close_document(ctx, workspace::active(ctx)),
-        OPEN_RESULT if ctx.read(|a| a.sidebar.active == panel::PanelId::Tools) => {
-            tools::selected(ctx, false)
-        }
-        OPEN_NEW if ctx.read(|a| a.sidebar.active == panel::PanelId::Tools) => {
-            tools::selected(ctx, true)
-        }
+        OPEN_RESULT if sidebar::active(ctx) == panel::PanelId::Tools => tools::selected(ctx, false),
+        OPEN_NEW if sidebar::active(ctx) == panel::PanelId::Tools => tools::selected(ctx, true),
         OPEN_RESULT => catalog::open_selected(ctx, catalog::Open::Pin),
         OPEN_NEW => catalog::open_selected(ctx, catalog::Open::New),
         EXIT => {
@@ -107,7 +103,7 @@ pub(super) fn command(ctx: &Context, id: u16) -> bool {
             let h = workspace::active(ctx);
             if !h.is_null() {
                 workspace::set_maximized(ctx, true);
-                send(ctx.read(|a| a.workspace.mdi), WM_MDIMAXIMIZE, h as usize, 0);
+                send(workspace::mdi(ctx), WM_MDIMAXIMIZE, h as usize, 0);
             }
         }
         _ => return false,

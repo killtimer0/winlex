@@ -342,7 +342,7 @@ pub(super) fn flush_results(ctx: &Context) {
         merge_results(&mut s.results, &mut s.pending_results, &mut state.indices);
     });
     state.apply(hwnd, ctx.read(|a| a.session.results.len()));
-    ctx.read(|a| a.sidebar.panel(super::panel::SEARCH_PANEL))
+    super::sidebar::panel(ctx, super::panel::SEARCH_PANEL)
         .list
         .refresh_tooltip();
     super::status::refresh_status(ctx);

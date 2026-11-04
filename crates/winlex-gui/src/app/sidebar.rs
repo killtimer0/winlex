@@ -21,10 +21,10 @@ pub(super) struct Sidebar {
     images: Option<Images>,
     splitter: HWND,
     panels: Vec<Rc<Panel>>,
-    pub search: Option<Rc<Search>>,
-    pub active: PanelId,
-    pub collapsed: bool,
-    pub width: i32,
+    search: Option<Rc<Search>>,
+    active: PanelId,
+    collapsed: bool,
+    width: i32,
 }
 impl Sidebar {
     pub fn new(config: &Config) -> Self {
@@ -57,6 +57,24 @@ impl Sidebar {
             .find(|p| p.controls.contains(&hwnd))
             .cloned()
     }
+}
+pub(super) fn active(ctx: &Context) -> PanelId {
+    ctx.read(|a| a.sidebar.active)
+}
+pub(super) fn panel(ctx: &Context, id: PanelId) -> Rc<Panel> {
+    ctx.read(|a| a.sidebar.panel(id))
+}
+pub(super) fn owner(ctx: &Context, hwnd: HWND) -> Option<Rc<Panel>> {
+    ctx.read(|a| a.sidebar.owner(hwnd))
+}
+pub(super) fn search(ctx: &Context) -> Option<Rc<Search>> {
+    ctx.read(|a| a.sidebar.search.clone())
+}
+pub(super) fn current(ctx: &Context) -> Option<Rc<Panel>> {
+    ctx.read(|a| {
+        let s = &a.sidebar;
+        (!s.collapsed).then(|| s.panel(s.active))
+    })
 }
 pub(super) fn focus(ctx: &Context) {
     let (toolbar, panel) = ctx.read(|a| {

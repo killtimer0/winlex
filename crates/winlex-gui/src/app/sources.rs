@@ -244,7 +244,7 @@ pub(super) fn refresh(ctx: &Context) {
     let count = rows.len();
     ctx.write(|a| a.sources.rows = rows);
     state.apply(list, count);
-    ctx.read(|a| a.sidebar.panel(super::panel::SOURCES_PANEL))
+    super::sidebar::panel(ctx, super::panel::SOURCES_PANEL)
         .list
         .refresh_tooltip();
     update_actions(ctx);
