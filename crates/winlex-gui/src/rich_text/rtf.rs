@@ -35,10 +35,10 @@ pub(super) fn render(text: &str) -> Vec<u8> {
     for (start, next, color) in super::spans(&units) {
         append(&mut rtf, &units[end..start]);
         let index = match color {
-            0x800000 => 1,
-            0x008000 => 2,
-            0x000080 => 3,
-            0x800080 => 4,
+            super::KEYWORD_COLOR => 1,
+            super::COMMENT_COLOR => 2,
+            super::STRING_COLOR => 3,
+            super::NUMBER_COLOR => 4,
             _ => unreachable!(),
         };
         write!(rtf, "\\cf{index} ").unwrap();

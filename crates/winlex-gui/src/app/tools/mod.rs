@@ -52,10 +52,12 @@ pub(super) fn open(index: isize, new: bool) {
 pub(super) fn activate(index: isize, _double: bool) {
     open(index, false)
 }
+pub(super) fn list() -> HWND {
+    unsafe { GetDlgItem(read(|a| a.frame), TOOL_LIST as i32) }
+}
 pub(super) fn selected(new: bool) {
-    let list = unsafe { GetDlgItem(read(|a| a.frame), TOOL_LIST as i32) };
     open(
-        crate::list::selected(list).map_or(-1, |index| index as isize),
+        crate::list::selected(list()).map_or(-1, |index| index as isize),
         new,
     );
 }

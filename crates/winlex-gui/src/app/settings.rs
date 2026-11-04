@@ -38,6 +38,15 @@ pub(super) struct Preferences {
     pub categories: u32,
     pub theme: Theme,
 }
+impl Default for Preferences {
+    fn default() -> Self {
+        Self {
+            language: Language::Auto,
+            categories: EntityCategory::DEFAULT,
+            theme: Theme::System,
+        }
+    }
+}
 impl Preferences {
     fn parse(value: &str) -> Option<Self> {
         let (language, categories) = value.split_once(':')?;
@@ -168,11 +177,7 @@ impl Settings {
         let preferences = key
             .and_then(|k| k.text("Preferences"))
             .and_then(|value| Preferences::parse(&value))
-            .unwrap_or(Preferences {
-                language: Language::Auto,
-                categories: EntityCategory::DEFAULT,
-                theme: Theme::System,
-            });
+            .unwrap_or_default();
         let preferred_architecture = key
             .and_then(|k| k.text("PreferredArchitecture"))
             .and_then(|value| value.parse::<Architecture>().ok());

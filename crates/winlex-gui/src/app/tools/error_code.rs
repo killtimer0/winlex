@@ -22,6 +22,7 @@ use winlex_core::{
 };
 
 const TIMER: usize = 1810;
+const TEXT_SUBCLASS: usize = 1810;
 const SCOPES: &[(u16, Scope)] = &[
     (IDS_ERROR_CODE_AUTO, Scope::Auto),
     (IDS_ERROR_CODE_WIN32, Scope::Win32),
@@ -494,7 +495,7 @@ impl View {
         send(self.input, EM_SETLIMITTEXT, 4096, 0);
         send(self.module, EM_SETLIMITTEXT, 32767, 0);
         for control in [self.input, self.module] {
-            if unsafe { set_subclass(control, Some(text_proc), 1810, 0) } == 0 {
+            if unsafe { set_subclass(control, Some(text_proc), TEXT_SUBCLASS, 0) } == 0 {
                 return Err(error("Subclass tool text control"));
             }
         }
@@ -715,7 +716,7 @@ unsafe extern "system" fn text_proc(
             }
             WM_NCDESTROY => {
                 RemovePropW(hwnd, w!("Winlex.Tool.Composing"));
-                remove_subclass(hwnd, Some(text_proc), 1810);
+                remove_subclass(hwnd, Some(text_proc), TEXT_SUBCLASS);
             }
             _ => {}
         }

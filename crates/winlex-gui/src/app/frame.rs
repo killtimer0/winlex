@@ -133,6 +133,10 @@ pub(super) fn layout_frame() {
         }
     }
 }
+fn is_topmost(hwnd: HWND) -> bool {
+    unsafe { GetWindowLongW(hwnd, GWL_EXSTYLE) as u32 & WS_EX_TOPMOST != 0 }
+}
+
 pub(super) fn command(id: u16) -> bool {
     if let Some(direction) = history::Direction::from_command(id) {
         begin_operation();
@@ -170,7 +174,7 @@ pub(super) fn command(id: u16) -> bool {
         ALWAYS_ON_TOP => {
             let frame = read(|a| a.frame);
             unsafe {
-                let after = if GetWindowLongW(frame, GWL_EXSTYLE) as u32 & WS_EX_TOPMOST != 0 {
+                let after = if is_topmost(frame) {
                     HWND_NOTOPMOST
                 } else {
                     HWND_TOPMOST
@@ -248,7 +252,7 @@ pub(super) fn update_commands() {
             GetMenu(frame),
             ALWAYS_ON_TOP as u32,
             MF_BYCOMMAND
-                | if GetWindowLongW(frame, GWL_EXSTYLE) as u32 & WS_EX_TOPMOST != 0 {
+                | if is_topmost(frame) {
                     MF_CHECKED
                 } else {
                     MF_UNCHECKED

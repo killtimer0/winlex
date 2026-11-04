@@ -298,13 +298,12 @@ fn submit_search() {
     }
     super::frame::refresh_status();
 }
+fn results_list() -> HWND {
+    unsafe { GetDlgItem(read(|a| a.frame), RESULTS as i32) }
+}
 fn update_results() {
-    let (hwnd, count) = read(|a| {
-        (
-            unsafe { GetDlgItem(a.frame, RESULTS as i32) },
-            a.session.results.len(),
-        )
-    });
+    let hwnd = results_list();
+    let count = read(|a| a.session.results.len());
     send(hwnd, LVM_SETITEMCOUNT, count, 0);
     crate::list::fit(hwnd);
     unsafe {
@@ -335,7 +334,7 @@ pub(super) fn flush_results() {
         super::frame::refresh_status();
         return;
     }
-    let hwnd = read(|a| unsafe { GetDlgItem(a.frame, RESULTS as i32) });
+    let hwnd = results_list();
     let mut state = crate::list::State::capture(hwnd);
     write(|a| {
         let s = &mut a.session;
@@ -385,9 +384,7 @@ pub(super) fn activate(row: isize, double: bool) {
     open(row, if double { Open::Pin } else { Open::Preview });
 }
 pub(super) fn open_selected(mode: Open) {
-    let frame = read(|a| a.frame);
-    let list = unsafe { GetDlgItem(frame, RESULTS as i32) };
-    let row = crate::list::selected(list).map_or(-1, |index| index as isize);
+    let row = crate::list::selected(results_list()).map_or(-1, |index| index as isize);
     open(row, mode);
 }
 pub(super) fn open(row: isize, mode: Open) {

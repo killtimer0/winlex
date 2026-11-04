@@ -19,6 +19,11 @@ mod rtf;
 mod scroll;
 mod word_break;
 
+const KEYWORD_COLOR: u32 = 0x800000;
+const COMMENT_COLOR: u32 = 0x008000;
+const STRING_COLOR: u32 = 0x000080;
+const NUMBER_COLOR: u32 = 0x800080;
+
 pub struct Content {
     text: String,
     rtf: Vec<u8>,
@@ -589,14 +594,14 @@ fn spans(text: &[u16]) -> Vec<(usize, usize, u32)> {
             while i < text.len() && text[i] != 13 {
                 i += 1;
             }
-            Some(0x008000)
+            Some(COMMENT_COLOR)
         } else if ch == b'/' as u16 && text.get(i) == Some(&(b'*' as u16)) {
             i += 1;
             i = text[i..]
                 .windows(2)
                 .position(|pair| pair == [b'*' as u16, b'/' as u16])
                 .map_or(text.len(), |end| i + end + 2);
-            Some(0x008000)
+            Some(COMMENT_COLOR)
         } else if ch == b'"' as u16 || ch == b'\'' as u16 {
             while i < text.len() {
                 let next = text[i];
@@ -607,7 +612,7 @@ fn spans(text: &[u16]) -> Vec<(usize, usize, u32)> {
                     break;
                 }
             }
-            Some(0x000080)
+            Some(STRING_COLOR)
         } else if ch <= 127 && ((ch as u8).is_ascii_alphanumeric() || ch == b'_' as u16) {
             let number = (ch as u8).is_ascii_digit();
             let extra = if number { b'.' } else { b'_' } as u16;
@@ -618,7 +623,7 @@ fn spans(text: &[u16]) -> Vec<(usize, usize, u32)> {
                 i += 1;
             }
             if number {
-                Some(0x800080)
+                Some(NUMBER_COLOR)
             } else {
                 let word = String::from_utf16_lossy(&text[start..i]);
                 matches!(
@@ -656,7 +661,7 @@ fn spans(text: &[u16]) -> Vec<(usize, usize, u32)> {
                         | "string"
                         | "object"
                 )
-                .then_some(0x800000)
+                .then_some(KEYWORD_COLOR)
             }
         } else {
             None

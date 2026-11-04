@@ -39,9 +39,7 @@ pub(super) fn translate(msg: &MSG) -> bool {
     if msg.message != WM_KEYDOWN {
         return false;
     }
-    if msg.hwnd == unsafe { GetDlgItem(read(|a| a.frame), crate::resources::TOOL_LIST as i32) }
-        && msg.wParam == VK_RETURN as usize
-    {
+    if msg.hwnd == super::tools::list() && msg.wParam == VK_RETURN as usize {
         super::tools::selected(unsafe { GetKeyState(VK_CONTROL as i32) } < 0);
         return true;
     }

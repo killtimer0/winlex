@@ -9,6 +9,15 @@ pub(super) enum Content {
     Tool(Rc<ToolView>),
 }
 
+macro_rules! forward {
+    ($this:ident, $view:ident, $value:expr) => {
+        match $this {
+            Self::Declaration($view) => $value,
+            Self::Tool($view) => $value,
+        }
+    };
+}
+
 impl Content {
     pub fn declaration(&self) -> Option<Rc<MetadataView>> {
         match self {
@@ -29,61 +38,34 @@ impl Content {
         }
     }
     pub fn id(&self) -> u64 {
-        match self {
-            Self::Declaration(v) => v.id,
-            Self::Tool(v) => v.id,
-        }
+        forward!(self, v, v.id)
     }
     pub fn hwnd(&self) -> HWND {
-        match self {
-            Self::Declaration(v) => v.hwnd,
-            Self::Tool(v) => v.hwnd,
-        }
+        forward!(self, v, v.hwnd)
     }
     pub fn title(&self) -> String {
-        match self {
-            Self::Declaration(v) => v.title(),
-            Self::Tool(v) => v.title(),
-        }
+        forward!(self, v, v.title())
     }
     pub fn preview(&self) -> bool {
         matches!(self, Self::Declaration(v) if v.preview.get())
     }
     pub fn placement(&self) -> Option<Placement> {
-        match self {
-            Self::Declaration(v) => v.placement.get(),
-            Self::Tool(v) => v.placement.get(),
-        }
+        forward!(self, v, v.placement.get())
     }
     pub fn set_placement(&self, p: Placement) {
-        match self {
-            Self::Declaration(v) => v.placement.set(Some(p)),
-            Self::Tool(v) => v.placement.set(Some(p)),
-        }
+        forward!(self, v, v.placement.set(Some(p)))
     }
     pub fn focus(&self) {
-        match self {
-            Self::Declaration(v) => v.focus(),
-            Self::Tool(v) => v.focus(),
-        }
+        forward!(self, v, v.focus())
     }
     pub fn layout(&self) {
-        match self {
-            Self::Declaration(v) => v.layout(),
-            Self::Tool(v) => v.layout(),
-        }
+        forward!(self, v, v.layout())
     }
     pub fn prepare(&self) {
-        match self {
-            Self::Declaration(v) => v.prepare(),
-            Self::Tool(v) => v.prepare(),
-        }
+        forward!(self, v, v.prepare())
     }
     pub fn recolor(&self) {
-        match self {
-            Self::Declaration(v) => v.recolor(),
-            Self::Tool(v) => v.recolor(),
-        }
+        forward!(self, v, v.recolor())
     }
     pub fn command(&self, id: u16, code: u32) -> bool {
         match self {

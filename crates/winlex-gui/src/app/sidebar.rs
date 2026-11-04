@@ -13,6 +13,9 @@ use crate::{
 };
 use std::{ptr, rc::Rc};
 
+const MIN_WIDTH: i32 = 120;
+const MAX_WIDTH: i32 = 2000;
+
 pub(super) struct Sidebar {
     toolbar: HWND,
     images: Option<Images>,
@@ -36,7 +39,7 @@ impl Sidebar {
             collapsed: key.and_then(|k| k.number("PanelCollapsed")) == Some(1),
             width: key
                 .and_then(|k| k.number("SidebarWidth"))
-                .filter(|v| (120..=2000).contains(v))
+                .filter(|v| (MIN_WIDTH as u32..=MAX_WIDTH as u32).contains(v))
                 .unwrap_or(240) as i32,
         }
     }
@@ -251,7 +254,7 @@ pub(super) unsafe extern "system" fn splitter_proc(
                     USER_DEFAULT_SCREEN_DPI as i32,
                     dpi().window(frame) as i32,
                 )
-                .clamp(120, 2000);
+                .clamp(MIN_WIDTH, MAX_WIDTH);
                 write(|a| a.sidebar.width = width);
                 super::frame::layout_frame();
                 return 0;
