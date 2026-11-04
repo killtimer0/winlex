@@ -45,26 +45,8 @@ pub(super) fn update_icons(
 }
 
 pub(super) struct Init {
-    pub content: Option<Seed>,
+    pub create: Option<Box<dyn FnOnce(HWND) -> anyhow::Result<Content>>>,
     pub error: Option<anyhow::Error>,
-}
-pub(super) enum Seed {
-    Declaration(Box<MetadataView>),
-    Tool(Box<super::tools::ToolView>),
-}
-impl Seed {
-    fn create(self, hwnd: HWND) -> anyhow::Result<Content> {
-        match self {
-            Self::Declaration(mut v) => {
-                v.create(hwnd)?;
-                Ok(Content::Declaration(Rc::from(v)))
-            }
-            Self::Tool(mut v) => {
-                v.create(hwnd)?;
-                Ok(Content::Tool(Rc::from(v)))
-            }
-        }
-    }
 }
 pub(super) fn track_editor(owner: HWND, editor: HWND) -> anyhow::Result<()> {
     if unsafe { set_subclass(editor, Some(editor_proc), 1, owner as usize) } == 0 {
@@ -113,7 +95,8 @@ pub(super) unsafe extern "system" fn document_proc(
                 let create = &*(l as *const CREATESTRUCTW);
                 let mdi_create = &*(create.lpCreateParams as *const MDICREATESTRUCTW);
                 let init = &mut *(mdi_create.lParam as *mut Init);
-                match init.content.take().unwrap().create(hwnd) {
+                let create = init.create.take().expect("content factory");
+                match create(hwnd) {
                     Ok(content) => workspace::register_document(content),
                     Err(error) => {
                         init.error = Some(error);

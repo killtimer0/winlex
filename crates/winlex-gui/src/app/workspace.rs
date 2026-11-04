@@ -262,10 +262,14 @@ pub(super) fn next_id() -> u64 {
         a.workspace.serial
     })
 }
-fn create_window(title: &str, seed: host::Seed, context: &str) -> anyhow::Result<HWND> {
+fn create_window(
+    title: &str,
+    create: Box<dyn FnOnce(HWND) -> anyhow::Result<Content>>,
+    context: &str,
+) -> anyhow::Result<HWND> {
     let (mdi, maximized) = read(|a| (a.workspace.mdi, a.workspace.maximized));
     let mut init = host::Init {
-        content: Some(seed),
+        create: Some(create),
         error: None,
     };
     // CreateMDIWindowW consumes this pointer synchronously in WM_CREATE.
@@ -300,11 +304,14 @@ fn create_window(title: &str, seed: host::Seed, context: &str) -> anyhow::Result
 }
 pub(super) fn create_document(
     title: &str,
-    content: super::metadata::MetadataView,
+    mut content: super::metadata::MetadataView,
 ) -> anyhow::Result<Rc<MetadataView>> {
     let hwnd = create_window(
         title,
-        host::Seed::Declaration(Box::new(content)),
+        Box::new(move |hwnd| {
+            content.create(hwnd)?;
+            Ok(Content::Declaration(Rc::from(content)))
+        }),
         "Create MDI document",
     )?;
     let doc = view(hwnd).expect("created document");
@@ -312,25 +319,16 @@ pub(super) fn create_document(
     Ok(doc)
 }
 pub(super) fn view(hwnd: HWND) -> Option<Rc<MetadataView>> {
-    match content(hwnd)? {
-        Content::Declaration(v) => Some(v),
-        _ => None,
-    }
+    content(hwnd)?.declaration()
 }
 pub(super) fn views() -> Vec<Rc<MetadataView>> {
     contents()
         .into_iter()
-        .filter_map(|c| match c {
-            Content::Declaration(v) => Some(v),
-            _ => None,
-        })
+        .filter_map(|c| c.declaration())
         .collect()
 }
 pub(super) fn by_id(id: u64) -> Option<Rc<MetadataView>> {
-    match content_by_id(id)? {
-        Content::Declaration(v) => Some(v),
-        _ => None,
-    }
+    content_by_id(id)?.declaration()
 }
 pub(super) fn contents() -> Vec<Content> {
     read(|a| a.workspace.documents.clone())
@@ -342,9 +340,13 @@ pub(super) fn content_by_id(id: u64) -> Option<Content> {
     contents().into_iter().find(|d| d.id() == id)
 }
 pub(super) fn create_tool(descriptor: &'static super::tools::Descriptor) -> anyhow::Result<HWND> {
+    let mut view = super::tools::ToolView::new(descriptor);
     let hwnd = create_window(
         &resources::text(descriptor.title),
-        host::Seed::Tool(Box::new(super::tools::ToolView::new(descriptor))),
+        Box::new(move |hwnd| {
+            view.create(hwnd)?;
+            Ok(Content::Tool(Rc::from(view)))
+        }),
         "Create tool window",
     )?;
     refresh_document_tabs();

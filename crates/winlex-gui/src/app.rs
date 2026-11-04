@@ -11,7 +11,6 @@ use crate::{
 };
 use std::{cell::RefCell, ptr};
 
-mod architecture;
 mod catalog;
 mod content;
 mod document;

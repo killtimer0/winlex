@@ -42,7 +42,7 @@ impl Binding {
             ArchitectureChoice::Exact(arch) => arch.supports(mask).then_some(arch),
             ArchitectureChoice::Preferred { current, preferred } => current
                 .filter(|arch| arch.supports(mask))
-                .or_else(|| super::architecture::preferred(mask, preferred)),
+                .or_else(|| preferred_for(mask, preferred)),
         }
         .ok_or_else(|| anyhow::anyhow!(resources::text(IDS_UNSUPPORTED_ARCH)))?;
         Ok(Self {
@@ -172,7 +172,7 @@ impl MetadataView {
     fn fill_architectures(&self) {
         let binding = self.state.borrow().binding.clone();
         send(self.info.architecture, CB_RESETCONTENT, 0, 0);
-        for arch in super::architecture::supported(binding.entity.architecture_mask) {
+        for arch in Architecture::supported(binding.entity.architecture_mask) {
             let index = send(
                 self.info.architecture,
                 CB_ADDSTRING,
@@ -226,8 +226,7 @@ impl MetadataView {
     }
     fn select_architecture(&self, code: u32) {
         let mut binding = self.binding();
-        let supported: Vec<_> =
-            super::architecture::supported(binding.entity.architecture_mask).collect();
+        let supported: Vec<_> = Architecture::supported(binding.entity.architecture_mask).collect();
         if code == CBN_SELENDCANCEL {
             if let Some(index) = supported
                 .iter()
@@ -571,6 +570,11 @@ fn click_distance(origin: POINT, point: POINT) -> bool {
     (point.x - origin.x).abs() < unsafe { GetSystemMetrics(SM_CXDRAG) }.max(1)
         && (point.y - origin.y).abs() < unsafe { GetSystemMetrics(SM_CYDRAG) }.max(1)
 }
+fn preferred_for(mask: i32, preferred: Option<Architecture>) -> Option<Architecture> {
+    preferred
+        .filter(|arch| arch.supports(mask))
+        .or_else(|| Architecture::supported(mask).next())
+}
 fn old_version(binding: &Binding) -> bool {
     let path = &binding.catalog.sources()[binding.entity.id.source_id].path;
     read(|a| {
@@ -593,6 +597,30 @@ mod tests {
             )
             .unwrap(),
         )
+    }
+
+    #[test]
+    fn preference_falls_back_to_canonical_order() {
+        assert_eq!(preferred_for(7, None), Some(Architecture::X86));
+        assert_eq!(
+            preferred_for(7, Some(Architecture::X64)),
+            Some(Architecture::X64)
+        );
+        assert_eq!(
+            preferred_for(7, Some(Architecture::Arm64)),
+            Some(Architecture::Arm64)
+        );
+        assert_eq!(
+            preferred_for(3, Some(Architecture::Arm64)),
+            Some(Architecture::X86)
+        );
+        assert_eq!(
+            preferred_for(4, Some(Architecture::X64)),
+            Some(Architecture::Arm64)
+        );
+        assert_eq!(preferred_for(1, None), Some(Architecture::X86));
+        assert_eq!(preferred_for(2, None), Some(Architecture::X64));
+        assert_eq!(preferred_for(0, None), None);
     }
 
     #[test]

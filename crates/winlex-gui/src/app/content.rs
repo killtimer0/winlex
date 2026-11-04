@@ -10,6 +10,18 @@ pub(super) enum Content {
 }
 
 impl Content {
+    pub fn declaration(&self) -> Option<Rc<MetadataView>> {
+        match self {
+            Self::Declaration(v) => Some(v.clone()),
+            Self::Tool(_) => None,
+        }
+    }
+    pub fn tool(&self) -> Option<Rc<ToolView>> {
+        match self {
+            Self::Declaration(_) => None,
+            Self::Tool(v) => Some(v.clone()),
+        }
+    }
     pub fn status(&self) -> Option<String> {
         match self {
             Self::Declaration(_) => None,

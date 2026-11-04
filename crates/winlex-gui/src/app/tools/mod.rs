@@ -1,5 +1,5 @@
 //! Internal registration and content contract. No dynamic plugins or persisted sessions.
-use super::{content::Content, history, read, workspace};
+use super::{history, read, workspace};
 use crate::{
     icons::Icon,
     list::{Display, TextSegment},
@@ -32,11 +32,9 @@ pub(super) fn open(index: isize, new: bool) {
             .then(|| {
                 workspace::contents()
                     .into_iter()
-                    .filter_map(|c| match c {
-                        Content::Tool(v) if v.descriptor.id == descriptor.id => Some(v),
-                        _ => None,
-                    })
-                    .max_by_key(|v| v.recent.get())
+                    .filter_map(|content| content.tool())
+                    .filter(|view| view.descriptor.id == descriptor.id)
+                    .max_by_key(|view| view.recent.get())
             })
             .flatten();
         let hwnd = if let Some(view) = existing {

@@ -141,9 +141,7 @@ fn architectures(mask: i32) -> String {
     if mask == Architecture::ALL_MASK {
         String::new()
     } else {
-        Architecture::ALL
-            .into_iter()
-            .filter(|arch| arch.supports(mask))
+        Architecture::supported(mask)
             .map(Architecture::name)
             .collect::<Vec<_>>()
             .join(" ")

@@ -34,6 +34,12 @@ impl Architecture {
     pub fn supports(self, mask: i32) -> bool {
         mask & self.bit() != 0
     }
+    /// Canonical order of the architectures selected by a mask.
+    pub fn supported(mask: i32) -> impl Iterator<Item = Self> {
+        Self::ALL
+            .into_iter()
+            .filter(move |arch| arch.supports(mask))
+    }
     pub const fn pointer_bytes(self) -> usize {
         match self {
             Self::X86 => 4,
@@ -841,6 +847,21 @@ mod tests {
         ];
         assert_eq!(Architecture::ALL, expected.map(|(arch, _, _, _)| arch));
         assert_eq!(Architecture::ALL_MASK, 7);
+        for (mask, names) in [
+            (0, vec![]),
+            (1, vec!["x86"]),
+            (2, vec!["x64"]),
+            (4, vec!["arm64"]),
+            (5, vec!["x86", "arm64"]),
+            (7, vec!["x86", "x64", "arm64"]),
+        ] {
+            assert_eq!(
+                Architecture::supported(mask)
+                    .map(Architecture::name)
+                    .collect::<Vec<_>>(),
+                names
+            );
+        }
         for (arch, name, bit, width) in expected {
             assert_eq!(arch.name(), name);
             assert_eq!(name.parse::<Architecture>().unwrap(), arch);
