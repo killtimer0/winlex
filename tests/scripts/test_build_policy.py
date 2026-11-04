@@ -13,11 +13,16 @@ ROOT = Path(__file__).resolve().parents[2]
 class BuildPolicyContracts(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.temp = tempfile.TemporaryDirectory()
+        cls.temp = tempfile.TemporaryDirectory(dir=ROOT / "tmp")
         cls.root = Path(cls.temp.name)
-        cls.build = cls.root / "build-script.exe"
+        cls.build = cls.root / "target/debug/build-policy-probe.exe"
         cls.rc = cls.root / "rc.exe"
-        subprocess.run(["rustc", "--edition=2024", str(ROOT / "build.rs"), "-o", str(cls.build)], check=True)
+        (cls.root / "Cargo.toml").write_text(
+            '[package]\nname="build-policy-probe"\nversion="0.0.0"\nedition="2024"\n'
+            '[workspace]\n[dependencies]\nserde_json="1"\n[[bin]]\nname="build-policy-probe"\n'
+            f'path="{(ROOT / "build.rs").as_posix()}"\n', encoding="utf-8")
+        subprocess.run(["cargo", "build", "--offline", "--manifest-path", str(cls.root / "Cargo.toml"),
+                        "--target-dir", str(cls.root / "target")], check=True)
         source = cls.root / "rc.rs"
         source.write_text("fn main() {}", encoding="utf-8")
         subprocess.run(["rustc", str(source), "-o", str(cls.rc)], check=True)
@@ -61,7 +66,11 @@ class BuildPolicyContracts(unittest.TestCase):
             with self.subTest(target=target):
                 result, metadata = self.run_build(target, machine=machine, platform=platform)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(metadata, {"target": target, "minimum_windows": minimum, "vc_ltl_platform": platform})
+                self.assertEqual(metadata["target"], target)
+                self.assertEqual(metadata["minimum_windows"], minimum)
+                self.assertEqual(metadata["vc_ltl_platform"], platform)
+                policies = json.loads((ROOT / "inputs/targets.json").read_text())
+                self.assertIn(metadata, policies.values())
                 for binary, kind in (("winlex", "CONSOLE"), ("winlex-gui", "WINDOWS")):
                     self.assertIn(f"cargo:rustc-link-arg-bin={binary}=/SUBSYSTEM:{kind},{subsystem}", result.stdout)
                     self.assertEqual(any(line.startswith(f"cargo:rustc-link-arg-bin={binary}=") and

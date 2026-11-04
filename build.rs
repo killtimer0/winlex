@@ -5,28 +5,27 @@ fn main() {
     println!("cargo:rerun-if-env-changed=WINLEX_YY_THUNKS_OBJ");
     println!("cargo:rerun-if-env-changed=WINLEX_VC_LTL_ROOT");
     let target = env::var("TARGET").expect("TARGET");
-    let (subsystem, minimum, legacy) = match target.as_str() {
-        "i686-pc-windows-msvc" => ("5.01", "5.1.2600.0", Some((0x014cu16, "Win32"))),
-        "x86_64-pc-windows-msvc" => ("5.02", "5.2.3790.0", Some((0x8664u16, "x64"))),
-        "aarch64-pc-windows-msvc" => ("10.00", "10.0.17763.0", None),
-        _ => panic!(
-            "Winlex requires an i686, x86_64 or aarch64 Windows MSVC target and MSVC link.exe. Use scripts/build.ps1."
-        ),
-    };
+    println!("cargo:rerun-if-changed=inputs/targets.json");
+    let targets: serde_json::Value =
+        serde_json::from_str(include_str!("inputs/targets.json")).expect("target policies");
+    let policy = targets
+        .as_object()
+        .unwrap()
+        .values()
+        .find(|policy| policy["target"].as_str() == Some(&target))
+        .expect("Unsupported Rust target; use scripts/build.ps1");
+    let subsystem = policy["subsystem"].as_str().expect("subsystem version");
+    let platform = policy["vc_ltl_platform"].as_str().expect("VC-LTL platform");
     let features = env::var("CARGO_CFG_TARGET_FEATURE").unwrap_or_default();
     assert!(
         features.split(',').any(|f| f == "crt-static"),
         "Winlex requires +crt-static; use scripts/build.ps1"
     );
-    let platform = legacy.map_or_else(
-        || "10.0.10240.0/lib/ARM64".to_owned(),
-        |(_, arch)| format!("{minimum}/lib/{arch}"),
-    );
     let ltl_root = PathBuf::from(
         env::var_os("WINLEX_VC_LTL_ROOT")
             .expect("Set WINLEX_VC_LTL_ROOT to the official VC-LTL5 SDK directory"),
     );
-    let libdir = fs::canonicalize(ltl_root.join("TargetPlatform").join(&platform))
+    let libdir = fs::canonicalize(ltl_root.join("TargetPlatform").join(platform))
         .expect("VC-LTL library directory for the minimum Windows version is missing");
     for name in ["libucrt.lib", "libvcruntime.lib"] {
         let path = libdir.join(name);
@@ -36,7 +35,7 @@ fn main() {
     // Like upstream's Rust integration, place the replacement CRT libraries
     // on the native search path; +crt-static still selects the /MT library names.
     println!("cargo:rustc-link-search=native={}", libdir.display());
-    if let Some((machine, _)) = legacy {
+    if policy["thunks_arch"].is_string() {
         let object =
             PathBuf::from(env::var_os("WINLEX_YY_THUNKS_OBJ").expect(
                 "Set WINLEX_YY_THUNKS_OBJ to the matching official YY_Thunks_for_WinXP.obj",
@@ -46,7 +45,7 @@ fn main() {
         assert!(bytes.len() >= 20, "Truncated COFF object");
         assert_eq!(
             u16::from_le_bytes([bytes[0], bytes[1]]),
-            machine,
+            policy["machine"].as_u64().expect("PE machine") as u16,
             "YY-Thunks COFF architecture does not match the Rust target"
         );
         println!("cargo:rerun-if-changed={}", object.display());
@@ -60,9 +59,7 @@ fn main() {
     let out = PathBuf::from(env::var_os("OUT_DIR").unwrap());
     fs::write(
         out.join("compatibility.json"),
-        format!(
-            "{{\"target\":\"{target}\",\"minimum_windows\":\"{minimum}\",\"vc_ltl_platform\":\"{platform}\"}}\n"
-        ),
+        serde_json::to_vec(policy).expect("serialize target policy"),
     )
     .expect("Write build compatibility metadata");
 }

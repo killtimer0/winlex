@@ -1,0 +1,35 @@
+{
+  "x86": {
+    "target": "i686-pc-windows-msvc",
+    "machine": 332,
+    "subsystem": "5.01",
+    "minimum_windows": "5.1.2600.0",
+    "vc_ltl_platform": "5.1.2600.0/lib/Win32",
+    "crt": "msvcrt.dll",
+    "crt_mode": "msvcrt",
+    "thunks_arch": "x86",
+    "vs_component": "Microsoft.VisualStudio.Component.VC.Tools.x86.x64"
+  },
+  "x64": {
+    "target": "x86_64-pc-windows-msvc",
+    "machine": 34404,
+    "subsystem": "5.02",
+    "minimum_windows": "5.2.3790.0",
+    "vc_ltl_platform": "5.2.3790.0/lib/x64",
+    "crt": "msvcrt.dll",
+    "crt_mode": "msvcrt",
+    "thunks_arch": "x64",
+    "vs_component": "Microsoft.VisualStudio.Component.VC.Tools.x86.x64"
+  },
+  "arm64": {
+    "target": "aarch64-pc-windows-msvc",
+    "machine": 43620,
+    "subsystem": "10.00",
+    "minimum_windows": "10.0.17763.0",
+    "vc_ltl_platform": "10.0.10240.0/lib/ARM64",
+    "crt": "ucrtbase.dll",
+    "crt_mode": "ucrt",
+    "thunks_arch": null,
+    "vs_component": "Microsoft.VisualStudio.Component.VC.Tools.ARM64"
+  }
+}

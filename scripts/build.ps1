@@ -11,10 +11,11 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
+$policy = (Get-Content -LiteralPath "$root/inputs/targets.json" -Raw | ConvertFrom-Json).$Architecture
 $linker = (Resolve-Path $LinkExe).Path
 $object = $null
 $ltlRoot = (Resolve-Path $VcLtlRoot).Path
-if ($Architecture -ne 'arm64') {
+if ($policy.thunks_arch) {
     if (-not $YyThunksObject) {
         throw 'Specify -YyThunksObject for x86 and x64 builds.'
     }
@@ -55,11 +56,7 @@ if ((Split-Path $linkerDirectory -Leaf) -ine $Architecture -or
     (Split-Path (Split-Path $linkerDirectory -Parent) -Leaf) -ine 'Hostx64') {
     throw "Use the Hostx64/$Architecture Microsoft linker for this target."
 }
-$target = switch ($Architecture) {
-    'x86' { 'i686-pc-windows-msvc' }
-    'x64' { 'x86_64-pc-windows-msvc' }
-    'arm64' { 'aarch64-pc-windows-msvc' }
-}
+$target = $policy.target
 $libdir = & rustc --print target-libdir --target $target
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path $libdir)) {
     throw "Rust standard library for $target is missing. Install a Rust MSVC toolchain and this target first."
@@ -118,9 +115,9 @@ try {
     }
     $compatibility = Get-Content (Join-Path $buildOutputs[$packageId] 'compatibility.json') -Raw | ConvertFrom-Json
     if ($compatibility.target -ne $target) { throw 'Build compatibility metadata target mismatch.' }
-    if ($Architecture -eq 'arm64') {
-        if ($compatibility.vc_ltl_platform -ne '10.0.10240.0/lib/ARM64' -or $compatibility.minimum_windows -ne '10.0.17763.0') {
-            throw 'Build compatibility metadata does not match the ARM64 policy.'
+    foreach ($property in $policy.PSObject.Properties) {
+        if ($compatibility.($property.Name) -cne $property.Value) {
+            throw "Build compatibility metadata policy mismatch: $($property.Name)"
         }
     }
     if (-not $compatibility.vc_ltl_platform) { throw 'Build compatibility metadata is missing the VC-LTL platform.' }
@@ -140,12 +137,10 @@ try {
             executable = $exe
             executable_sha256 = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLowerInvariant()
         }
-        if ($Architecture -eq 'arm64') {
-            $report.crt = 'VC-LTL5 system ucrt'
-        } else {
+        $report.crt = "VC-LTL5 system $($policy.crt_mode)"
+        if ($policy.thunks_arch) {
             $report.thunks_object = $object
             $report.thunks_sha256 = (Get-FileHash $object -Algorithm SHA256).Hash.ToLowerInvariant()
-            $report.crt = 'VC-LTL5 system msvcrt'
         }
         $report.vc_ltl_root = $ltlRoot
         $report.vc_ltl_libraries = @(Get-ChildItem "$ltlLib/*.lib" | ForEach-Object {

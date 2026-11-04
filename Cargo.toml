@@ -27,6 +27,9 @@ resolver = "3"
 winlex-cli = { path = "crates/winlex-cli" }
 winlex-gui = { path = "crates/winlex-gui" }
 
+[build-dependencies]
+serde_json.workspace = true
+
 [workspace.package]
 license = "GPL-3.0-only"
 

@@ -9,11 +9,8 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
-$target = switch ($Architecture) {
-    'x86' { 'i686-pc-windows-msvc' }
-    'x64' { 'x86_64-pc-windows-msvc' }
-    'arm64' { 'aarch64-pc-windows-msvc' }
-}
+$policy = (Get-Content -LiteralPath "$root/inputs/targets.json" -Raw | ConvertFrom-Json).$Architecture
+$target = $policy.target
 $records = @($CliBuildRecord, $GuiBuildRecord)
 $names = @('winlex.exe', 'winlex-gui.exe')
 $binaries = @()

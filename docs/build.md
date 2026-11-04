@@ -63,6 +63,8 @@ Codicon SVG 与生成的 EMF+ 位于 `crates/winlex-gui/res/codicons/`。
 
 ## 系统兼容性
 
+`inputs/targets.json` 集中定义各架构的构建与兼容策略，供原生链接、构建记录和打包校验共用。
+
 | 程序架构 | 最低系统 | Rust target |
 |---|---|---|
 | x86 | XP RTM 5.1.2600.0 | i686-pc-windows-msvc |
