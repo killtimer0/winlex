@@ -92,6 +92,19 @@ impl Lower<'_> {
                     annotations.push(l::Annotation::PragmaPack(c.packing_size() as u64 * 8));
                 }
             }
+            if let Some(attribute) = t.attributes().find(|attribute| {
+                attribute.namespace() == "Windows.Win32.Metadata"
+                    && attribute.name() == "AlignmentAttribute"
+            }) {
+                let values = attribute.value();
+                let alignment = match values.as_slice() {
+                    [(_, Value::I32(value))] => u32::try_from(*value)?,
+                    [(_, Value::U32(value))] => *value,
+                    _ => bail!("invalid alignment attribute"),
+                };
+                ensure!(alignment.is_power_of_two(), "invalid alignment attribute");
+                annotations.push(l::Annotation::Align(Some(u64::from(alignment) * 8)));
+            }
             let mut fields = vec![];
             for f in instance_fields(t, self.arch) {
                 if explicit {
@@ -208,4 +221,131 @@ pub(crate) fn derive_key(db: &Db, key: EntityId, arch: Architecture) -> Result<L
         fields,
         dependencies_loaded: lower.cache.len(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::{FixtureFile, catalog, type_id};
+
+    #[test]
+    fn explicit_alignment_propagates_through_unions_and_containing_records() {
+        let mut file = writer::File::new("AlignedRecords");
+        let base = file.TypeRef("System", "ValueType");
+        let attribute = file.TypeRef("Windows.Win32.Metadata", "AlignmentAttribute");
+        let constructor = file.constructor(attribute, vec![Type::I32]);
+        for (name, union, fields) in [
+            (
+                "Aligned",
+                false,
+                vec![("data", Type::ArrayFixed(Box::new(Type::U64), 2))],
+            ),
+            (
+                "Overlay",
+                true,
+                vec![
+                    ("value", Type::value_named("Probe", "Aligned")),
+                    ("pointer", Type::PtrMut(Box::new(Type::Void), 1)),
+                ],
+            ),
+            (
+                "Value",
+                false,
+                vec![
+                    ("value", Type::value_named("Probe", "Overlay")),
+                    ("flags", Type::U32),
+                ],
+            ),
+            (
+                "Record",
+                false,
+                vec![
+                    ("header", Type::ArrayFixed(Box::new(Type::U32), 4)),
+                    ("first", Type::value_named("Probe", "Value")),
+                    ("second", Type::value_named("Probe", "Value")),
+                    ("third", Type::value_named("Probe", "Value")),
+                ],
+            ),
+        ] {
+            let record = file.TypeDef(
+                "Probe",
+                name,
+                writer::TypeDefOrRef::TypeRef(base),
+                TypeAttributes::Public
+                    | TypeAttributes::Sealed
+                    | if union {
+                        TypeAttributes::ExplicitLayout
+                    } else {
+                        TypeAttributes::SequentialLayout
+                    },
+            );
+            if name == "Aligned" {
+                file.Attribute(
+                    writer::HasAttribute::TypeDef(record),
+                    writer::AttributeType::MemberRef(constructor),
+                    &[(String::new(), Value::I32(16))],
+                );
+            }
+            for (name, ty) in fields {
+                let field = file.Field(name, &ty, FieldAttributes::Public);
+                if union {
+                    file.FieldLayout(field, 0);
+                }
+            }
+        }
+        let db = catalog("AlignedRecords", file);
+        for arch in Architecture::ALL {
+            for (name, size) in [
+                ("Aligned", 16),
+                ("Overlay", 16),
+                ("Value", 32),
+                ("Record", 112),
+            ] {
+                let layout = db.layout(type_id(&db, name), arch).unwrap();
+                assert_eq!(layout.size_bits, size * 8, "{arch:?}/{name}");
+                assert_eq!(layout.alignment_bits, 128, "{arch:?}/{name}");
+                if name == "Record" {
+                    assert_eq!(
+                        layout
+                            .fields
+                            .iter()
+                            .map(|field| field.offset_bits)
+                            .collect::<Vec<_>>(),
+                        [0, 128, 384, 640]
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn invalid_explicit_alignment_is_rejected() {
+        for alignment in [
+            Value::I32(-1),
+            Value::I32(0),
+            Value::I32(3),
+            Value::Utf8("16".into()),
+        ] {
+            let mut file = writer::File::new("InvalidAlignment");
+            let base = file.TypeRef("System", "ValueType");
+            let attribute = file.TypeRef("Windows.Win32.Metadata", "AlignmentAttribute");
+            let constructor = file.constructor(attribute, vec![alignment.ty()]);
+            let record = file.TypeDef(
+                "Probe",
+                "Record",
+                writer::TypeDefOrRef::TypeRef(base),
+                TypeAttributes::Public | TypeAttributes::SequentialLayout,
+            );
+            file.Field("value", &Type::U32, FieldAttributes::Public);
+            file.Attribute(
+                writer::HasAttribute::TypeDef(record),
+                writer::AttributeType::MemberRef(constructor),
+                &[(String::new(), alignment)],
+            );
+            let db = catalog("InvalidAlignment", file);
+            for arch in Architecture::ALL {
+                assert!(db.layout(type_id(&db, "Record"), arch).is_err());
+            }
+        }
+    }
 }
