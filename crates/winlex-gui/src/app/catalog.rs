@@ -485,13 +485,9 @@ pub(super) fn loaded(id: u64, result: anyhow::Result<Option<Arc<Catalog>>>) {
         submit_search();
         super::frame::report(read(|a| {
             if a.session.remember_sources {
-                let paths: Vec<_> = a
-                    .session
-                    .inputs()
-                    .iter()
-                    .map(|s| s.path().to_path_buf())
-                    .collect();
-                a.config.write_key()?.set_paths("AutoLoad", &paths)?;
+                a.config
+                    .write_key()?
+                    .set_paths("AutoLoad", &a.session.paths())?;
             }
             Ok::<_, anyhow::Error>(())
         }));
