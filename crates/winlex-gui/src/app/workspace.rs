@@ -19,6 +19,7 @@ pub(super) struct Workspace {
     history: history::History,
     maximized: bool,
     serial: u64,
+    tool_clock: u64,
 }
 impl Default for Workspace {
     fn default() -> Self {
@@ -30,6 +31,7 @@ impl Default for Workspace {
             history: history::History::default(),
             maximized: true,
             serial: 0,
+            tool_clock: 0,
         }
     }
 }
@@ -52,6 +54,12 @@ pub(super) fn document_icons(
     dpi: u32,
 ) -> anyhow::Result<Rc<crate::icons::WindowIcons>> {
     ctx.with_workspace(|workspace| workspace.icons.get(icon, dpi))
+}
+pub(super) fn next_tool_clock(ctx: &Context) -> u64 {
+    ctx.with_workspace(|workspace| {
+        workspace.tool_clock += 1;
+        workspace.tool_clock
+    })
 }
 pub(super) fn history_depth(ctx: &Context) -> usize {
     ctx.with_workspace(|workspace| workspace.history.depth())

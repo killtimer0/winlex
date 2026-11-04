@@ -117,11 +117,8 @@ impl View {
         );
     }
     pub fn activated(&self) {
-        self.recent.set(super::CLOCK.with(|clock| {
-            let next = clock.get() + 1;
-            clock.set(next);
-            next
-        }));
+        self.recent
+            .set(super::super::workspace::next_tool_clock(self.ctx()));
     }
     fn command(&self, id: u16, code: u32) -> bool {
         if self.setting.get() {

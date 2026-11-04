@@ -7,7 +7,6 @@ use crate::{
     native::*,
     resources::{self, *},
 };
-use std::cell::Cell;
 
 mod error_code;
 pub(super) use error_code::View as ToolView;
@@ -23,7 +22,6 @@ pub(super) static REGISTRY: &[Descriptor] = &[Descriptor {
     description: IDS_ERROR_CODE_DESCRIPTION,
     icon: Icon::Constant,
 }];
-thread_local! {static CLOCK:Cell<u64>=const{Cell::new(0)};}
 pub(super) fn open(ctx: &Context, index: isize, new: bool) {
     let Some(descriptor) = REGISTRY.get(index as usize) else {
         return;
