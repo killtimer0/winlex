@@ -1,5 +1,12 @@
 # Third-party notices
 
+## UCRT metadata generator
+
+The independently built tool in `tools/ucrt-winmd/` vendors patched bnd-clang,
+windows-rdl and windows-metadata. Their baselines, licenses and local changes are
+documented in [the tool's notices](tools/ucrt-winmd/THIRD-PARTY-NOTICES.md).
+Microsoft headers and generated metadata are not bundled with the tool's source.
+
 ## Codicons
 
 Winlex uses selected [Microsoft Codicons](https://github.com/microsoft/vscode-codicons)

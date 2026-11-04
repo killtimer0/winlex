@@ -1,0 +1,19 @@
+[package]
+name = "ucrt-winmd"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+publish = false
+license = "GPL-3.0-only"
+
+[workspace]
+
+[dependencies]
+windows-clang = { package = "bnd-clang", path = "vendor/bnd-clang", features = ["runtime"] }
+windows-rdl = { version = "0.100", default-features = false }
+windows-metadata = { version = "0.100", default-features = false }
+serde_json = "1"
+
+[patch.crates-io]
+windows-rdl = { path = "vendor/windows-rdl" }
+windows-metadata = { path = "vendor/windows-metadata" }

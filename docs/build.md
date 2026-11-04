@@ -36,6 +36,19 @@ x64 构建将架构、链接器和 OBJ 路径改为 x64。
 `winlex.exe` 为命令行程序，`winlex-gui.exe` 为图形界面程序。
 各自的 `.build.json` 可供消息资源 fixture 构建使用。元数据查询另需 WinMD 文件。
 
+## 可选 UCRT 元数据生成
+
+生成器是独立工具，不参与 Winlex 默认构建，也不要求 Winlex、VC-LTL 或 YY-Thunks：
+
+```powershell
+./tools/ucrt-winmd/build.ps1
+./tools/ucrt-winmd/build.ps1 -Check
+```
+
+生成需要现代 64 位 Windows 开发机、PowerShell 7.2+、Rust 1.95+、MSVC/SDK 和 Clang/libclang；检查另需 Python 3.10+。Winlex 的 XP 兼容要求不适用于生成器。
+产物位于 `tools/ucrt-winmd/out/UCRT.winmd`，不自动写入 `inputs/`，也不随源码提交。
+独立部署、工具链选择、可选 Winlex 集成验证及限制见[生成器说明](../tools/ucrt-winmd/README.md)。
+
 ## 更新图标资源
 
 在项目根目录使用 Node.js 和 Windows PowerShell 运行：

@@ -60,6 +60,8 @@ cargo test -p winlex-core -p winlex-format -p winlex-cli --locked
 
 构建步骤见 [构建与验证](docs/build.md)。
 
+可选的 [UCRT 元数据生成工具](tools/ucrt-winmd/README.md)可从本机 Microsoft 头文件生成 x86/x64/ARM64 合并 WinMD。它独立构建，不是 Winlex 的构建依赖。
+
 ## 目录
 
 - `src/`：程序入口。
@@ -70,4 +72,5 @@ cargo test -p winlex-core -p winlex-format -p winlex-cli --locked
 - `vendor/`：元数据读取器及本地补丁说明。
 - `inputs/`：外部输入的版本、下载来源和校验值。
 - `scripts/`：依赖准备与构建。
+- `tools/ucrt-winmd/`：独立的 UCRT 查询元数据生成器。
 - `tests/`：按 GUI、元数据、ABI 组织的独立验证套件。

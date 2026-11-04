@@ -1,0 +1,48 @@
+[package]
+name = "bnd-clang"
+version = "0.0.8"
+edition = "2024"
+rust-version = "1.95"
+authors = ["bnd contributors"]
+license = "MIT OR Apache-2.0"
+description = "Generates RDL metadata from C and C++ headers using libclang"
+repository = "https://github.com/youyuanwu/bnd"
+documentation = "https://docs.rs/bnd-clang"
+readme = "README.md"
+keywords = ["clang", "ffi", "bindings", "winmd", "rdl"]
+categories = ["development-tools::ffi", "external-ffi-bindings"]
+include = [
+    "README.md",
+    "VENDORED.md",
+    "vendored/windows-clang/Cargo.toml.upstream",
+    "vendored/windows-clang/license-apache-2.0",
+    "vendored/windows-clang/license-mit",
+    "vendored/windows-clang/readme.md",
+    "vendored/windows-clang/src/**",
+    "tests/fixtures/**",
+    "tests/*.rs",
+]
+
+[lib]
+name = "windows_clang"
+path = "vendored/windows-clang/src/lib.rs"
+
+[features]
+default = []
+runtime = ["clang-sys/runtime"]
+
+[package.metadata.docs.rs]
+features = ["runtime"]
+
+[dependencies]
+windows-default = { version = "0.100", default-features = false }
+windows-rdl = { version = "0.100", default-features = false }
+windows-metadata = { version = "0.100", default-features = false }
+windows-threading = { version = "0.100", default-features = false }
+syn = { version = "3", default-features = false, features = ["full", "parsing", "clone-impls", "printing", "extra-traits"] }
+quote = { version = "1", default-features = false }
+proc-macro2 = { version = "1", default-features = false }
+clang-sys = { version = "1.8.1", features = ["clang_18_0"] }
+
+[dev-dependencies]
+tempfile = "3"
