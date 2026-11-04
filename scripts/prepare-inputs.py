@@ -1,4 +1,4 @@
-"""Download pinned WinMD and, with --build-deps, the linker dependencies."""
+"""Prepare the pinned YY-Thunks and VC-LTL5 build dependencies."""
 import argparse
 import hashlib
 import json
@@ -50,22 +50,8 @@ def install(path, data, sha256):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--build-deps", action="store_true", help="also prepare YY-Thunks and VC-LTL5 (requires 7z)")
-    args = parser.parse_args()
-    source = manifest("source.json")
-    winmd = ROOT / "inputs" / source["file"]
-    if not winmd.exists():
-        package = download(source["url"], DEPS / f"win32metadata-{source['version']}.nupkg")
-        with zipfile.ZipFile(package) as archive:
-            names = [name for name in archive.namelist() if name.rsplit("/", 1)[-1] == source["file"]]
-            if len(names) != 1:
-                raise ValueError(f"Expected one WinMD in {package}, found {names}")
-            install(winmd, archive.read(names[0]), source["sha256"])
-    else:
-        check(winmd, source["sha256"])
-    print(f"Verified {winmd}")
-    if not args.build_deps:
-        return
+    parser.add_argument("--build-deps", action="store_true", help="compatibility alias (dependencies are prepared by default)")
+    parser.parse_args()
     thunks = manifest("yy-thunks-source.json")
     directory = DEPS / f"yy-thunks-{thunks['version']}"
     archive = download(thunks["url"], directory / "objects.zip", thunks["archive_sha256"])

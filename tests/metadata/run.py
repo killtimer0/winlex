@@ -30,7 +30,7 @@ def main():
     parser.add_argument("--artifacts", type=Path, default=manifest_path(), help="persist executable paths for standalone gates")
     args = parser.parse_args()
     OUT.mkdir(parents=True, exist_ok=True)
-    source = json.loads((ROOT / "inputs/source.json").read_text())
+    source = json.loads((Path(__file__).parent / "source.json").read_text())
     winmd = ROOT / "inputs" / source["file"]
     assert hashlib.sha256(winmd.read_bytes()).hexdigest() == source["sha256"]
     options = ["--profile", args.profile]

@@ -7,14 +7,15 @@
 - Python 3；下载构建依赖另需 PATH 中的 `7z` 或 `7zz`。
 - 独立读取器验证需 .NET SDK 10；ABI 验证另需 Clang。
 
-依赖版本和 SHA256 记录在 `inputs/*.json`。下载脚本使用标准 `HTTPS_PROXY` 环境变量：
+链接依赖版本和 SHA256 记录在 `inputs/*.json`。下载脚本使用标准 `HTTPS_PROXY` 环境变量：
 
 ```powershell
-python scripts/prepare-inputs.py --build-deps
+python scripts/prepare-inputs.py
 rustup target add i686-pc-windows-msvc x86_64-pc-windows-msvc
 ```
 
-WinMD 写入 `inputs/Windows.Win32.winmd`，链接依赖写入 `tmp/deps/`。
+链接依赖写入 `tmp/deps/`，此脚本不获取 WinMD。
+元数据由独立的 `winmd-collection` 项目准备；测试所需 Win32 输入的版本与哈希见 `tests/metadata/source.json`，将对应文件放入 `inputs/Windows.Win32.winmd`。主程序构建不要求该文件。
 
 ## 构建程序
 
@@ -32,16 +33,10 @@ x64 构建将架构、链接器和 OBJ 路径改为 x64。
 脚本自动查找 Microsoft `rc.exe`，也可用 `-RcExe PATH` 指定；输出目录可用 `-TargetDir PATH` 指定，否则遵循 Cargo 配置。
 构建结束后显示 `winlex.exe`、`winlex-gui.exe` 的实际路径；对应的 `.build.json` 可用于生成消息资源 fixture。
 
-## 可选 UCRT 元数据生成
+## 独立元数据工具
 
-生成器不参与 Winlex 默认构建：
-
-```powershell
-./tools/ucrt-winmd/build.ps1
-./tools/ucrt-winmd/build.ps1 -Check
-```
-
-依赖、产物和使用方法见[生成器说明](../tools/ucrt-winmd/README.md)。Winlex 的 XP 兼容要求不适用于生成器。
+WinMD 获取与 UCRT 生成器位于独立的 `winmd-collection` 项目（公开仓库地址待配置），不参与 Winlex 默认构建。
+在该项目中运行 `tools/ucrt-winmd/build.ps1 -Check`，可用 `-WinlexPath <CLI绝对路径>` 额外验证集成。两个项目不要求同级目录布局。Winlex 的 XP 兼容要求不适用于生成器。
 
 ## 更新图标资源
 

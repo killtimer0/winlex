@@ -52,13 +52,6 @@ for incorporated components. The matching Rust installation provides these in
 under its [Windows SDK terms](https://www.nuget.org/packages/Microsoft.Windows.SDK.Win32Metadata/71.0.37-preview/License).
 These are distinct from the Rust `windows-metadata` library's licenses.
 
-## UCRT metadata generator
-
-The independently built tool in `tools/ucrt-winmd/` vendors patched bnd-clang,
-windows-rdl and windows-metadata. Their baselines, licenses and local changes are
-documented in [the tool's notices](tools/ucrt-winmd/THIRD-PARTY-NOTICES.md).
-Microsoft headers and generated metadata are not bundled with the tool's source.
-
 ## Codicons
 
 Winlex uses selected [Microsoft Codicons](https://github.com/microsoft/vscode-codicons)

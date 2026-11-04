@@ -47,7 +47,7 @@ Winlex 采用 [GNU GPL v3.0](LICENSE)（`GPL-3.0-only`）许可证。第三方�
 
 ## 开发
 
-使用 Rust MSVC 工具链。准备固定版本输入并运行核心测试：
+使用 Rust MSVC 工具链。准备链接依赖，并按[构建指南](docs/build.md)放置测试元数据后运行核心测试：
 
 ```powershell
 python scripts/prepare-inputs.py
@@ -56,4 +56,4 @@ cargo test -p winlex-core -p winlex-format -p winlex-cli --locked
 
 构建步骤和测试指南见 [构建与验证](docs/build.md)。
 
-可选的 [UCRT 元数据生成工具](tools/ucrt-winmd/README.md)可从本机 Microsoft 头文件生成 x86/x64/ARM64 合并 WinMD。它独立构建，不是 Winlex 的构建依赖。
+元数据获取和 UCRT 生成工具已独立到 `winmd-collection` 项目，不是 Winlex 的构建依赖；公开仓库地址尚待配置。

@@ -1,8 +1,0 @@
-#[win32]
-mod Winlex {
-    mod Metadata {
-        attribute NativeCallingConventionAttribute {
-            fn(value: String);
-        }
-    }
-}

@@ -6,3 +6,5 @@
 **/__pycache__/
 **/bin/
 **/obj/
+/tools/ucrt-winmd/out/
+/tools/ucrt-winmd/verification/

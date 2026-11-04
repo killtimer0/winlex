@@ -1,9 +1,0 @@
-#[win32]
-mod Ucrt {
-    mod CRuntime {
-        type PCSTR = *const i8;
-        type PSTR = *mut i8;
-        type PCWSTR = *const u16;
-        type PWSTR = *mut u16;
-    }
-}
