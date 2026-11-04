@@ -114,12 +114,15 @@ def test_settings_refresh_preserves_document(launch, profile, settings):
     sheet = app.settings()
     mask(app, sheet, 1)
     app.close_settings(sheet)
+    app.focus(app.search)
     n.wait(lambda: app.status_text().startswith(("Results ", "共 ")), "refiltered search", 45)
     assert app.count() > 0
     assert all(app.cell(row).splitlines()[1].split(" · ")[0] in
                {"class", "struct", "interface", "enum", "delegate", "attribute", "module"}
                for row in range(app.count()))
+    assert app.active_document() == doc
     assert app.content(doc) == body
+    assert profile.get("Preferences").split(":")[1] == "1"
     assert profile.get("AutoLoad") is None
 
 

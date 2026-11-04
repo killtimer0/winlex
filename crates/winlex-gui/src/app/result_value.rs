@@ -5,7 +5,7 @@ use winlex_core::{Architecture, Catalog, Declaration, EntityId, guid};
 pub(super) struct ResultValue {
     pub text: String,
     pub hexadecimal: Option<String>,
-    pub integer: Option<(i128, u32)>,
+    pub integer: Option<i128>,
 }
 
 pub(super) fn read(
@@ -49,7 +49,7 @@ pub(super) fn read(
         Ok(Some(ResultValue {
             text: number.to_string(),
             hexadecimal: Some(format!("0x{raw:0width$X}", width = (bits / 4) as usize)),
-            integer: Some((number, bits)),
+            integer: Some(number),
         }))
     } else {
         Ok(Some(ResultValue {
@@ -90,6 +90,7 @@ mod tests {
                 .unwrap_or_else(|| panic!("missing value for {name}: {:?}", entity.id));
             assert_eq!(value.text, decimal, "{name}");
             assert_eq!(value.hexadecimal.as_deref(), hexadecimal, "{name}");
+            assert_eq!(value.integer, decimal.parse().ok(), "{name}");
         }
         let entity = catalog
             .search("CreateFileW", Default::default())

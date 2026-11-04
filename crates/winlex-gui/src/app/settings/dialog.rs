@@ -71,7 +71,7 @@ fn show(ctx: &Context) -> anyhow::Result<()> {
     header.Anonymous3.ppsp = pages.as_mut_ptr();
     let baseline = vec![template_size(general)?, template_size(search)?];
     let data = &state as *const Dialog<'_> as usize;
-    let result = property_sheet::show(&mut header, ctx.dpi(), baseline, data, Some(sheet_callback));
+    let result = property_sheet::show(&mut header, ctx.dpi(), baseline, data, sheet_callback);
     result?;
     if let Some(error) = state.failure.into_inner() {
         return Err(error);

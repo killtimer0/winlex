@@ -1911,7 +1911,7 @@ mod tests {
                 Dpi { mode: Mode::System },
                 baseline,
                 0,
-                Some(callback),
+                callback,
             );
             OBSERVATIONS.with(|current| current.set(ptr::null()));
             SelectObject(dc, original);

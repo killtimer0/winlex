@@ -17,7 +17,7 @@ struct Sheet {
     pages: RefCell<Vec<HWND>>,
     layouts: RefCell<Vec<Layout>>,
     prepared: Cell<bool>,
-    callback: Option<Callback>,
+    callback: Callback,
     data: usize,
     failure: RefCell<Option<anyhow::Error>>,
 }
@@ -138,7 +138,7 @@ pub fn show(
     dpi: Dpi,
     baseline: Vec<SIZE>,
     data: usize,
-    callback: Option<Callback>,
+    callback: Callback,
 ) -> anyhow::Result<isize> {
     anyhow::ensure!(
         header.dwFlags & PSH_MODELESS == 0 && header.nPages as usize == baseline.len(),
@@ -178,9 +178,7 @@ unsafe extern "system" fn sheet_callback(hwnd: HWND, message: u32, l: isize) -> 
             let Some(state) = current.get().as_ref() else {
                 return 0;
             };
-            let result = state
-                .callback
-                .map_or(0, |callback| callback(hwnd, message, l, state.data));
+            let result = (state.callback)(hwnd, message, l, state.data);
             if message == PSCB_INITIALIZED {
                 crate::theme::apply(hwnd);
                 if set_subclass(hwnd, Some(sheet_proc), 1, current.get() as usize) == 0 {

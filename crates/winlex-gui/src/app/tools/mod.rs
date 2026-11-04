@@ -1,5 +1,5 @@
 //! Internal registration and content contract. No dynamic plugins or persisted sessions.
-use super::{history, metadata::Binding, result_value::ResultValue, workspace};
+use super::{history, result_value::ResultValue, workspace};
 use crate::app::context::Context;
 use crate::{
     icons::Icon,
@@ -39,11 +39,10 @@ pub(super) fn worker_stopped(ctx: &Context) {
     }
 }
 pub(super) struct Descriptor {
-    pub id: &'static str,
     pub title: u16,
     pub description: u16,
     pub icon: Icon,
-    item_actions: fn(&'static Descriptor, &Binding, Option<&ResultValue>) -> Vec<ItemAction>,
+    item_actions: fn(&'static Descriptor, Option<&ResultValue>) -> Vec<ItemAction>,
 }
 pub(super) struct ItemAction {
     pub label: u16,
@@ -54,14 +53,13 @@ impl ItemAction {
         (self.run)(ctx);
     }
 }
-pub(super) fn item_actions(binding: &Binding, value: Option<&ResultValue>) -> Vec<ItemAction> {
+pub(super) fn item_actions(value: Option<&ResultValue>) -> Vec<ItemAction> {
     REGISTRY
         .iter()
-        .flat_map(|descriptor| (descriptor.item_actions)(descriptor, binding, value))
+        .flat_map(|descriptor| (descriptor.item_actions)(descriptor, value))
         .collect()
 }
 pub(super) static REGISTRY: &[Descriptor] = &[Descriptor {
-    id: "error_code",
     title: IDS_ERROR_CODE_TOOL,
     description: IDS_ERROR_CODE_DESCRIPTION,
     icon: Icon::Constant,
@@ -84,7 +82,7 @@ fn open_descriptor(
                 workspace::contents(ctx)
                     .into_iter()
                     .filter_map(|content| content.tool())
-                    .filter(|view| view.descriptor.id == descriptor.id)
+                    .filter(|view| std::ptr::eq(view.descriptor, descriptor))
                     .max_by_key(|view| view.recent.get())
             })
             .flatten();

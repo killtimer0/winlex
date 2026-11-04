@@ -24,7 +24,7 @@ use winlex_core::{
 
 const TEXT_SUBCLASS: usize = 1810;
 fn item_code(value: Option<&crate::app::result_value::ResultValue>) -> Option<u32> {
-    let (number, _) = value?.integer?;
+    let number = value?.integer?;
     if number < 0 {
         i32::try_from(number).ok().map(|number| number as u32)
     } else {
@@ -33,7 +33,6 @@ fn item_code(value: Option<&crate::app::result_value::ResultValue>) -> Option<u3
 }
 pub(super) fn item_actions(
     descriptor: &'static Descriptor,
-    _binding: &crate::app::metadata::Binding,
     value: Option<&crate::app::result_value::ResultValue>,
 ) -> Vec<super::ItemAction> {
     let Some(code) = item_code(value) else {
@@ -964,18 +963,18 @@ mod tests {
     fn item_actions_accept_only_checked_32_bit_integer_codes() {
         use crate::app::result_value::ResultValue;
         assert_eq!(item_code(None), None);
-        for (number, bits, expected) in [
-            (0, 8, Some(0)),
-            (-1, 8, Some(u32::MAX)),
-            (i32::MIN as i128, 32, Some(0x80000000)),
-            (u32::MAX as i128, 64, Some(u32::MAX)),
-            (i32::MIN as i128 - 1, 64, None),
-            (u32::MAX as i128 + 1, 64, None),
+        for (number, expected) in [
+            (0, Some(0)),
+            (-1, Some(u32::MAX)),
+            (i32::MIN as i128, Some(0x80000000)),
+            (u32::MAX as i128, Some(u32::MAX)),
+            (i32::MIN as i128 - 1, None),
+            (u32::MAX as i128 + 1, None),
         ] {
             let value = ResultValue {
                 text: number.to_string(),
                 hexadecimal: None,
-                integer: Some((number, bits)),
+                integer: Some(number),
             };
             assert_eq!(item_code(Some(&value)), expected);
         }

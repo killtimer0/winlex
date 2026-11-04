@@ -450,7 +450,7 @@ pub(super) fn context_menu(ctx: &Context, hwnd: HWND, location: isize) -> anyhow
             menu.item(5, resources::wide_text(IDS_RESULT_COPY_HEX), true)?;
         }
     }
-    let actions = super::tools::item_actions(&binding, value.as_ref());
+    let actions = super::tools::item_actions(value.as_ref());
     if !actions.is_empty() {
         menu.separator()?;
         for (index, action) in actions.iter().enumerate() {

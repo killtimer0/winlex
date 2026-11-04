@@ -103,7 +103,6 @@ impl MatchQuality {
 pub(super) struct NameQuery {
     literal: LiteralQuery,
     field: MatchField,
-    scope: bool,
     fuzzy: Option<TextQuery>,
 }
 impl NameQuery {
@@ -120,7 +119,6 @@ impl NameQuery {
                 case_sensitive,
             ),
             field: MatchField::for_query(text),
-            scope,
             fuzzy: (fuzzy && !scope).then(|| TextQuery::new(text, Operator::Fuzzy, case_sensitive)),
         }
     }
@@ -132,7 +130,7 @@ impl NameQuery {
             EvidenceField::FullName
         };
         if let Some(mut hit) = self.literal.matches(text, field) {
-            if self.scope {
+            if self.literal.op == Operator::StartsWith {
                 if self.literal.text.len() <= 1 {
                     return None;
                 }

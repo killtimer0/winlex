@@ -70,7 +70,7 @@ pub(super) enum TextQuery {
 }
 pub(super) struct LiteralQuery {
     pub text: String,
-    op: Operator,
+    pub(super) op: Operator,
     case_sensitive: bool,
 }
 impl TextQuery {
