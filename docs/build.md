@@ -85,7 +85,7 @@ python -m unittest discover -s tests/scripts -v
 ```
 
 `tests/metadata/run.py` 比较 Rust 读取结果与 .NET `System.Reflection.Metadata`，并验证布局、泛型及跨源引用样例。报告写入 `tmp/verify/`。
-打包契约测试默认读取标准输出目录下的 Debug 构建记录；可用 `WINLEX_PACKAGE_X86_BUILD_DIR`／`WINLEX_PACKAGE_X64_BUILD_DIR` 指定其他目录，缺少记录时跳过打包用例。工作流 YAML 验证另需 PyYAML。
+打包契约测试默认读取标准输出目录下的 Debug 构建记录；可用 `WINLEX_PACKAGE_X86_BUILD_DIR`／`WINLEX_PACKAGE_X64_BUILD_DIR`／`WINLEX_PACKAGE_ARM64_BUILD_DIR` 指定其他目录，缺少记录时跳过打包用例。工作流 YAML 验证另需 PyYAML。
 默认使用 Debug 和 Cargo 的 target、输出目录配置；可用 `--target`、`--target-dir`、`--profile` 显式选择。
 各 gate 也可独立运行，默认读取 `tmp/verify/artifacts.json` 中的可执行文件路径；用 `--artifacts PATH` 更改记录位置后，通过 `WINLEX_GATE_ARTIFACTS` 指定该记录。
 

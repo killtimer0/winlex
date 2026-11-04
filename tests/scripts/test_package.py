@@ -11,7 +11,7 @@ from zipfile import ZipFile
 
 
 ROOT = Path(__file__).resolve().parents[2]
-TARGETS = {"x86": "i686-pc-windows-msvc", "x64": "x86_64-pc-windows-msvc"}
+TARGETS = {"x86": "i686-pc-windows-msvc", "x64": "x86_64-pc-windows-msvc", "arm64": "aarch64-pc-windows-msvc"}
 SCRIPT = ROOT / "scripts/package.ps1"
 
 
@@ -117,6 +117,29 @@ class PackageContracts(unittest.TestCase):
 
 
 class WorkflowContracts(unittest.TestCase):
+    def test_build_selects_installation_with_target_tools(self):
+        try:
+            import yaml
+        except ImportError:
+            self.skipTest("PyYAML is required for workflow YAML validation")
+        workflow = yaml.load((ROOT / ".github/workflows/build.yml").read_text(encoding="utf-8"),
+                             Loader=yaml.BaseLoader)
+        build = next(step["run"] for step in workflow["jobs"]["dist"]["steps"]
+                     if step.get("name") == "Build and package")
+        selection = build.split("$devcmd =", 1)[0]
+        mock = "$vswhere = { param([switch]$latest, $products, $requires, $property) " \
+               "switch ($requires) { 'Microsoft.VisualStudio.Component.VC.Tools.ARM64' { 'C:/ArmBuildTools' } " \
+               "'Microsoft.VisualStudio.Component.VC.Tools.x86.x64' { 'C:/Community' } default { throw 'Unexpected component' } } }"
+        selection, count = re.subn(r'^\s*\$vswhere = .*$', lambda _: mock, selection, flags=re.MULTILINE)
+        self.assertEqual(count, 1)
+        for arch in ("x86", "x64", "arm64"):
+            with self.subTest(arch=arch):
+                script = re.sub(r"\$\{\{\s*matrix\.arch\s*\}\}", arch, selection)
+                result = subprocess.run(["pwsh", "-NoProfile", "-Command", script + "\nWrite-Output $vs"],
+                                        text=True, capture_output=True, encoding="utf-8")
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(result.stdout.strip(), "C:/ArmBuildTools" if arch == "arm64" else "C:/Community")
+
     def test_manual_matrix_and_pinned_actions(self):
         try:
             import yaml
@@ -127,9 +150,7 @@ class WorkflowContracts(unittest.TestCase):
         self.assertEqual(set(workflow["on"]), {"workflow_dispatch"})
         job = workflow["jobs"]["dist"]
         matrix = job["strategy"]["matrix"]["include"]
-        self.assertEqual({item["arch"]: item["target"] for item in matrix}, {
-            **TARGETS, "arm64": "aarch64-pc-windows-msvc",
-        })
+        self.assertEqual({item["arch"]: item["target"] for item in matrix}, TARGETS)
         self.assertEqual(len(matrix), 3)
         actions = [step["uses"] for step in job["steps"] if "uses" in step]
         self.assertEqual(set(actions), {

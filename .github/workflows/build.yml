@@ -54,10 +54,11 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          $arch = '${{ matrix.arch }}'
+          $component = if ($arch -eq 'arm64') { 'Microsoft.VisualStudio.Component.VC.Tools.ARM64' } else { 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64' }
+          $vs = & $vswhere -latest -products * -requires $component -property installationPath
           if (-not $vs) { throw 'Visual Studio C++ tools not found.' }
           $devcmd = Join-Path $vs 'Common7/Tools/VsDevCmd.bat'
-          $arch = '${{ matrix.arch }}'
           $devArch = if ($arch -eq 'x86') { 'x86' } else { $arch }
           cmd /s /c "`"`"$devcmd`" -no_logo -host_arch=x64 -arch=$devArch && set`"" | ForEach-Object {
             if ($_ -match '^([^=]+)=(.*)$') { [Environment]::SetEnvironmentVariable($matches[1], $matches[2], 'Process') }
