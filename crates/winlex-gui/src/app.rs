@@ -53,14 +53,7 @@ pub fn run(
     resources::initialize(settings.preferences.language)?;
     let session = catalog::Session::new(paths.is_empty());
     let worker = crate::worker::Worker::new(crate::tasks::run)?;
-    let saved_paths = if config.warning().is_some() {
-        None
-    } else {
-        config
-            .key
-            .as_ref()
-            .map_or_else(|| Some(Vec::new()), |key| key.paths_if_readable("AutoLoad"))
-    };
+    let saved_paths = config.paths();
     let prompt = sources::should_prompt(&paths, saved_paths.as_deref());
     let paths = if paths.is_empty() {
         saved_paths.unwrap_or_default()

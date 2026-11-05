@@ -40,6 +40,41 @@ def query(app, doc, value):
                     and body(doc) else None, "tool explicit query", 30)
 
 
+def test_tool_completion_is_dispatched_inside_modal_dialog(launch):
+    from test_search_help import open_help
+
+    app = launch()
+    doc = tool(app)
+    choose_scope(app, doc, 1)
+    original = query(app, doc, "5")
+    dialog = open_help(app)
+    try:
+        assert not win32gui.IsWindowEnabled(app.frame)
+        result = query(app, doc, "2")
+        assert result != original and "0x00000002" in result
+        assert n.is_window(dialog) and not win32gui.IsWindowEnabled(app.frame)
+    finally:
+        n.post(dialog, win32con.WM_COMMAND, win32con.IDOK, 0)
+        n.wait(lambda: not n.is_window(dialog), "modal help closed")
+
+
+def test_tool_completion_is_dispatched_during_menu_tracking(launch):
+    from test_context import dismiss, find_popup, popup
+
+    app = launch()
+    doc = tool(app)
+    choose_scope(app, doc, 1)
+    original = query(app, doc, "5")
+    panel = n.get_item(app.frame, 1801)
+    menu, _ = popup(app, panel)
+    try:
+        result = query(app, doc, "2")
+        assert result != original and "0x00000002" in result
+        assert find_popup(app)[0] == menu
+    finally:
+        dismiss(panel)
+
+
 def test_tool_list_context_menu_offers_instance_actions_without_opening(launch):
     from test_context import dismiss, popup
 

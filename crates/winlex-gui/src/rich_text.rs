@@ -270,7 +270,9 @@ pub fn create(parent: HWND, id: u16) -> anyhow::Result<HWND> {
             id,
         )
     }?;
-    if unsafe { set_subclass(hwnd, Some(procedure), 1, 0) } == 0 {
+    let state = Box::into_raw(Box::<scroll::WheelState>::default());
+    if unsafe { set_subclass(hwnd, Some(procedure), 1, state as usize) } == 0 {
+        unsafe { drop(Box::from_raw(state)) };
         unsafe { DestroyWindow(hwnd) };
         anyhow::bail!("Subclass RichEdit failed");
     }
@@ -308,7 +310,7 @@ unsafe extern "system" fn procedure(
     w: usize,
     l: isize,
     id: usize,
-    _: usize,
+    data: usize,
 ) -> isize {
     unsafe {
         match msg {
@@ -344,12 +346,15 @@ unsafe extern "system" fn procedure(
                         (&mut lines as *mut u32).cast(),
                         0,
                     );
-                    scroll::wheel(hwnd, delta, lines);
+                    let (direction, count) =
+                        (*(data as *mut scroll::WheelState)).step(delta, lines);
+                    scroll::wheel(hwnd, direction, count);
                 }
                 return 0;
             }
             WM_NCDESTROY => {
                 remove_subclass(hwnd, Some(procedure), id);
+                drop(Box::from_raw(data as *mut scroll::WheelState));
             }
             _ => {}
         }

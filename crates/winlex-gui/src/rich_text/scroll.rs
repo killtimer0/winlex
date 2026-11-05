@@ -38,16 +38,33 @@ pub(super) fn line_height(hwnd: HWND) -> Option<i32> {
     (height > 0).then_some(height)
 }
 
-pub(super) fn wheel(hwnd: HWND, delta: i16, lines: u32) {
-    let pages = lines == u32::MAX;
-    let units = if pages { 1 } else { u64::from(lines) };
-    let count = (u64::from(delta.unsigned_abs()) * units + 60) / 120;
-    let direction = match (pages, delta > 0) {
-        (true, true) => SB_PAGEUP,
-        (true, false) => SB_PAGEDOWN,
-        (false, true) => SB_LINEUP,
-        (false, false) => SB_LINEDOWN,
-    };
+#[derive(Default)]
+pub(super) struct WheelState {
+    remainder: i64,
+    lines: u32,
+}
+
+impl WheelState {
+    pub(super) fn step(&mut self, delta: i16, lines: u32) -> (i32, u64) {
+        if self.lines != lines || self.remainder.signum() != i64::from(delta).signum() {
+            self.remainder = 0;
+        }
+        self.lines = lines;
+        let pages = lines == u32::MAX;
+        let units = if pages { 1 } else { i64::from(lines) };
+        let amount = self.remainder + i64::from(delta) * units;
+        self.remainder = amount % 120;
+        let direction = match (pages, delta > 0) {
+            (true, true) => SB_PAGEUP,
+            (true, false) => SB_PAGEDOWN,
+            (false, true) => SB_LINEUP,
+            (false, false) => SB_LINEDOWN,
+        };
+        (direction, (amount / 120).unsigned_abs())
+    }
+}
+
+pub(super) fn wheel(hwnd: HWND, direction: i32, count: u64) {
     for _ in 0..count {
         send(hwnd, WM_VSCROLL, direction as usize, 0);
     }
@@ -57,6 +74,23 @@ pub(super) fn wheel(hwnd: HWND, delta: i16, lines: u32) {
 mod tests {
     use super::*;
     use crate::rich_text::{Content, Editor, ViewState, set_content};
+
+    fn wheel(hwnd: HWND, delta: i16, lines: u32) {
+        let mut data = 0;
+        assert_ne!(
+            unsafe {
+                windows_sys::Win32::UI::Shell::GetWindowSubclass(
+                    hwnd,
+                    Some(crate::rich_text::procedure),
+                    1,
+                    &mut data,
+                )
+            },
+            0
+        );
+        let (direction, count) = unsafe { (*(data as *mut WheelState)).step(delta, lines) };
+        super::wheel(hwnd, direction, count);
+    }
 
     impl Editor {
         fn long_document() -> Self {
@@ -226,6 +260,11 @@ mod tests {
         editor.wheel(-120);
         let whole = position(hwnd).y;
         assert_eq!(whole, expected);
+        editor.scroll_to(70000);
+        for _ in 0..120 {
+            editor.wheel(-1);
+        }
+        assert_eq!(position(hwnd).y, whole);
         editor.wheel(120);
         assert_eq!(position(hwnd).y, reversed);
         assert_eq!(editor.selection(), (10, 18));
@@ -262,71 +301,60 @@ mod tests {
     }
 
     #[test]
-    fn wheel_rounds_each_message_and_respects_line_and_page_preferences() {
-        unsafe extern "system" fn observe(
-            hwnd: HWND,
-            msg: u32,
-            w: usize,
-            l: isize,
-            _id: usize,
-            data: usize,
-        ) -> isize {
-            unsafe {
-                if msg == WM_VSCROLL {
-                    assert_eq!(l, 0);
-                    (*(data as *mut Vec<usize>)).push(w);
-                    return 0;
-                }
-                default_subclass(hwnd, msg, w, l)
-            }
+    fn fractional_wheel_input_accumulates_per_control_and_respects_preferences() {
+        let first = Editor::long_document();
+        let second = Editor::long_document();
+        first.select(10, 18);
+        for editor in [&first, &second] {
+            editor.scroll_to(70000);
         }
-        let editor = Editor::long_document();
-        let hwnd = editor.1;
-        let mut commands = Vec::<usize>::new();
-        unsafe {
-            assert_ne!(
-                set_subclass(hwnd, Some(observe), 2, &mut commands as *mut _ as usize),
-                0
-            )
-        };
-        for (delta, lines, direction, count) in [
-            (0, 3, SB_LINEDOWN, 0),
-            (-120, 0, SB_LINEDOWN, 0),
-            (-19, 3, SB_LINEDOWN, 0),
-            (-20, 3, SB_LINEDOWN, 1),
-            (19, 3, SB_LINEUP, 0),
-            (20, 3, SB_LINEUP, 1),
-            (-59, 1, SB_LINEDOWN, 0),
-            (-60, 1, SB_LINEDOWN, 1),
-            (-120, 3, SB_LINEDOWN, 3),
-            (120, 3, SB_LINEUP, 3),
-            (-240, 3, SB_LINEDOWN, 6),
-            (240, 3, SB_LINEUP, 6),
-            (-59, u32::MAX, SB_PAGEDOWN, 0),
-            (-60, u32::MAX, SB_PAGEDOWN, 1),
-            (60, u32::MAX, SB_PAGEUP, 1),
-            (-240, u32::MAX, SB_PAGEDOWN, 2),
-            (i16::MIN, 1, SB_LINEDOWN, 273),
-        ] {
-            commands.clear();
-            wheel(hwnd, delta, lines);
-            assert_eq!(
-                commands,
-                vec![direction as usize; count],
-                "delta={delta}, lines={lines}"
-            );
+        let start = position(first.1).y;
+        wheel(first.1, -20, 3);
+        wheel(second.1, -20, 3);
+        assert_eq!(position(first.1).y, start);
+        assert_eq!(position(second.1).y, start);
+        wheel(first.1, -20, 3);
+        send(second.1, WM_VSCROLL, SB_LINEDOWN as usize, 0);
+        assert_eq!(position(first.1).y, position(second.1).y);
+        wheel(first.1, 20, 3);
+        wheel(first.1, -20, 3);
+        let before = position(first.1).y;
+        wheel(first.1, 20, 3);
+        assert_eq!(position(first.1).y, before);
+        wheel(first.1, 20, 3);
+        send(second.1, WM_VSCROLL, SB_LINEUP as usize, 0);
+        let reversed = position(second.1).y;
+        assert!(reversed < before);
+        assert_eq!(position(first.1).y, reversed);
+        wheel(first.1, -60, 1);
+        wheel(first.1, -60, u32::MAX);
+        assert_eq!(position(first.1).y, reversed);
+        wheel(first.1, -60, u32::MAX);
+        send(second.1, WM_VSCROLL, SB_PAGEDOWN as usize, 0);
+        assert_eq!(position(first.1).y, position(second.1).y);
+        wheel(first.1, -120, 0);
+        assert_eq!(position(first.1).y, position(second.1).y);
+        assert_eq!(first.selection(), (10, 18));
+
+        send(first.1, WM_VSCROLL, SB_BOTTOM as usize, 0);
+        let bottom = position(first.1).y;
+        for _ in 0..200 {
+            wheel(first.1, -1, 3);
         }
-        commands.clear();
-        for delta in [-1, 1] {
-            for _ in 0..120 {
-                wheel(hwnd, delta, 3);
-            }
-            assert!(
-                commands.is_empty(),
-                "subthreshold messages must not accumulate"
-            );
-        }
-        unsafe { remove_subclass(hwnd, Some(observe), 2) };
+        assert_eq!(position(first.1).y, bottom);
+        wheel(first.1, 40, 3);
+        assert!(position(first.1).y < bottom);
+    }
+
+    #[test]
+    fn wheel_amount_handles_large_delta_and_preference() {
+        let mut state = WheelState::default();
+        assert_eq!(state.step(i16::MIN, 1), (SB_LINEDOWN, 273));
+        assert_eq!(state.step(-120, 0), (SB_LINEDOWN, 0));
+        assert_eq!(
+            state.step(i16::MIN, u32::MAX - 1),
+            (SB_LINEDOWN, 32768 * u64::from(u32::MAX - 1) / 120)
+        );
     }
 
     #[test]
@@ -350,7 +378,17 @@ mod tests {
         let editor = Editor::long_document();
         let hwnd = editor.1;
         let mut received = (0u32, 0usize, 0isize);
+        let mut data = 0;
         unsafe {
+            assert_ne!(
+                windows_sys::Win32::UI::Shell::GetWindowSubclass(
+                    hwnd,
+                    Some(crate::rich_text::procedure),
+                    1,
+                    &mut data,
+                ),
+                0
+            );
             remove_subclass(hwnd, Some(crate::rich_text::procedure), 1);
             assert_ne!(
                 set_subclass(hwnd, Some(observe), 2, &mut received as *mut _ as usize),
@@ -358,7 +396,7 @@ mod tests {
             );
         }
         assert_ne!(
-            unsafe { set_subclass(hwnd, Some(crate::rich_text::procedure), 1, 0) },
+            unsafe { set_subclass(hwnd, Some(crate::rich_text::procedure), 1, data) },
             0
         );
         for (message, keys) in [

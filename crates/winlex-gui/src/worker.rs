@@ -11,15 +11,30 @@ use std::{
     thread,
 };
 use windows_sys::Win32::{
-    Foundation::HANDLE,
+    Foundation::{HANDLE, HWND},
     System::Threading::{CreateEventW, SetEvent},
+    UI::WindowsAndMessaging::PostMessageW,
 };
 
-struct ReadyEvent(OwnedHandle);
+#[derive(Default)]
+struct WindowNotification {
+    window: usize,
+    message: u32,
+    pending: bool,
+}
+struct ReadyEvent {
+    handle: OwnedHandle,
+    notification: Mutex<WindowNotification>,
+}
 impl ReadyEvent {
     fn signal(&self) {
         unsafe {
-            SetEvent(self.0.as_raw_handle() as HANDLE);
+            SetEvent(self.handle.as_raw_handle() as HANDLE);
+        }
+        let mut target = self.notification.lock().unwrap();
+        if target.window != 0 && !target.pending {
+            target.pending =
+                unsafe { PostMessageW(target.window as HWND, target.message, 0, 0) != 0 };
         }
     }
 }
@@ -177,7 +192,10 @@ impl<J: Send + 'static, O: Send + 'static> Worker<J, O> {
         if handle.is_null() {
             return Err(crate::native::error("Create completion event"));
         }
-        let ready = Arc::new(ReadyEvent(unsafe { OwnedHandle::from_raw_handle(handle) }));
+        let ready = Arc::new(ReadyEvent {
+            handle: unsafe { OwnedHandle::from_raw_handle(handle) },
+            notification: Mutex::new(WindowNotification::default()),
+        });
         let results = Arc::new(Results {
             tx: Some(tx),
             ready: ready.clone(),
@@ -223,6 +241,16 @@ impl<J: Send + 'static, O: Send + 'static> Worker<J, O> {
     pub fn resignal(&self) {
         self.ready.signal();
     }
+    pub fn notify_window(&self, window: HWND, message: u32) {
+        *self.ready.notification.lock().unwrap() = WindowNotification {
+            window: window as usize,
+            message,
+            pending: false,
+        };
+    }
+    pub fn acknowledge_notification(&self) {
+        self.ready.notification.lock().unwrap().pending = false;
+    }
     pub fn try_completion(&self) -> Result<O, mpsc::TryRecvError> {
         match self.rx.try_recv() {
             Err(mpsc::TryRecvError::Empty) if self.requests.stop.load(Ordering::Relaxed) => {
@@ -232,11 +260,12 @@ impl<J: Send + 'static, O: Send + 'static> Worker<J, O> {
         }
     }
     pub fn event(&self) -> HANDLE {
-        self.ready.0.as_raw_handle() as HANDLE
+        self.ready.handle.as_raw_handle() as HANDLE
     }
 }
 impl<J, O> Drop for Worker<J, O> {
     fn drop(&mut self) {
+        self.ready.notification.lock().unwrap().window = 0;
         self.requests.close();
     }
 }
@@ -266,6 +295,56 @@ fn publish<J, O>(results: &Results<J, O>, ticket: &Ticket, mut value: O) -> anyh
 mod tests {
     use super::*;
     use windows_sys::Win32::{Foundation::WAIT_OBJECT_0, System::Threading::WaitForSingleObject};
+    #[test]
+    fn window_notifications_coalesce_rearm_and_detach() {
+        use crate::native::*;
+        unsafe {
+            let window = CreateWindowExW(
+                0,
+                w!("STATIC"),
+                std::ptr::null(),
+                0,
+                0,
+                0,
+                0,
+                0,
+                HWND_MESSAGE,
+                std::ptr::null_mut(),
+                instance(),
+                std::ptr::null(),
+            );
+            assert!(!window.is_null());
+            let worker = Worker::<(), ()>::new(|(), _, _| {}).unwrap();
+            let message = WM_APP + 1;
+            worker.notify_window(window, message);
+            for _ in 0..20 {
+                worker.resignal();
+            }
+            let mut msg: MSG = std::mem::zeroed();
+            assert_ne!(
+                PeekMessageW(&mut msg, window, message, message, PM_REMOVE),
+                0
+            );
+            assert_eq!(
+                PeekMessageW(&mut msg, window, message, message, PM_REMOVE),
+                0
+            );
+            worker.acknowledge_notification();
+            worker.resignal();
+            assert_ne!(
+                PeekMessageW(&mut msg, window, message, message, PM_REMOVE),
+                0
+            );
+            worker.notify_window(std::ptr::null_mut(), 0);
+            worker.resignal();
+            assert_eq!(
+                PeekMessageW(&mut msg, window, message, message, PM_REMOVE),
+                0
+            );
+            DestroyWindow(window);
+        }
+    }
+
     #[test]
     fn replacement_releases_payload_and_preserves_other_order() {
         let requests = Requests::default();

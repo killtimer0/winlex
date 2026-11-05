@@ -166,6 +166,12 @@ impl Context {
     pub fn worker_event(&self) -> HANDLE {
         self.read(|a| a.worker.event())
     }
+    pub fn notify_worker_window(&self, hwnd: HWND, message: u32) {
+        self.read(|a| a.worker.notify_window(hwnd, message));
+    }
+    pub fn acknowledge_worker_notification(&self) {
+        self.read(|a| a.worker.acknowledge_notification());
+    }
     pub fn replace_job(
         &self,
         previous: Option<u64>,

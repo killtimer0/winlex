@@ -14,12 +14,15 @@ pub struct Config {
     root: Vec<u16>,
     version: u32,
     warning: Option<Warning>,
+    paths_warning: Option<Warning>,
+    paths: Option<Vec<PathBuf>>,
     pub key: Option<Key>,
 }
 owned_handle! { pub struct Key(HKEY); RegCloseKey }
 enum Warning {
     UnsupportedVersion,
     Read(u32),
+    ValueRead(&'static str, u32),
 }
 fn registry_error(operation: &str, status: u32) -> anyhow::Error {
     anyhow::Error::new(std::io::Error::from_raw_os_error(status as i32))
@@ -45,6 +48,8 @@ impl Config {
             root,
             version,
             warning: None,
+            paths_warning: None,
+            paths: None,
             key: None,
         };
         let mut handle = ptr::null_mut();
@@ -58,12 +63,38 @@ impl Config {
             )
         };
         match status {
-            ERROR_FILE_NOT_FOUND => {}
+            ERROR_FILE_NOT_FOUND => config.paths = Some(Vec::new()),
             ERROR_SUCCESS => {
                 let key = Key(handle);
-                if key.number("Version").is_some_and(|v| v != version) {
-                    config.warning = Some(Warning::UnsupportedVersion);
-                } else {
+                let stored_version = key.value("Version", REG_DWORD).and_then(|bytes| {
+                    bytes
+                        .map(|bytes| {
+                            bytes
+                                .try_into()
+                                .map(u32::from_le_bytes)
+                                .map_err(|_| ERROR_INVALID_DATA)
+                        })
+                        .transpose()
+                });
+                match stored_version {
+                    Ok(Some(stored)) if stored != version => {
+                        config.warning = Some(Warning::UnsupportedVersion)
+                    }
+                    Ok(_) => {}
+                    Err(status) => config.warning = Some(Warning::ValueRead("Version", status)),
+                }
+                if config.warning.is_none() {
+                    match key.value("AutoLoad", REG_MULTI_SZ).and_then(|bytes| {
+                        bytes.map_or_else(
+                            || Ok(Vec::new()),
+                            |bytes| decode_paths(&bytes).ok_or(ERROR_INVALID_DATA),
+                        )
+                    }) {
+                        Ok(paths) => config.paths = Some(paths),
+                        Err(status) => {
+                            config.paths_warning = Some(Warning::ValueRead("AutoLoad", status))
+                        }
+                    }
                     config.key = Some(key);
                 }
             }
@@ -72,16 +103,34 @@ impl Config {
         Ok(config)
     }
     pub fn warning(&self) -> Option<anyhow::Error> {
-        self.warning.as_ref().map(|warning| match warning {
+        self.warning
+            .as_ref()
+            .or(self.paths_warning.as_ref())
+            .map(Self::warning_error)
+    }
+    fn warning_error(warning: &Warning) -> anyhow::Error {
+        match warning {
             Warning::UnsupportedVersion => anyhow::anyhow!(
                 "Unsupported configuration version; defaults used without overwriting settings"
             ),
             Warning::Read(status) => registry_error("Read configuration", *status),
-        })
+            Warning::ValueRead(name, status) => {
+                registry_error(&format!("Read configuration value {name}"), *status)
+            }
+        }
+    }
+    pub fn paths(&self) -> Option<Vec<PathBuf>> {
+        self.paths.clone()
+    }
+    pub fn write_paths(&self, paths: &[PathBuf]) -> anyhow::Result<()> {
+        if let Some(warning) = &self.paths_warning {
+            return Err(Self::warning_error(warning));
+        }
+        self.write_key()?.set_paths("AutoLoad", paths)
     }
     pub fn write_key(&self) -> anyhow::Result<Key> {
-        if let Some(warning) = self.warning() {
-            return Err(warning);
+        if let Some(warning) = &self.warning {
+            return Err(Self::warning_error(warning));
         }
         let mut handle = ptr::null_mut();
         let status = unsafe {
@@ -106,25 +155,39 @@ impl Config {
     }
 }
 impl Key {
-    fn value(&self, name: &str, kind: u32) -> Option<Vec<u8>> {
+    fn value(&self, name: &str, kind: u32) -> Result<Option<Vec<u8>>, u32> {
         unsafe {
             let name = wide(name);
-            let query = |data, size: &mut u32| {
-                let mut actual = 0;
-                RegQueryValueExW(self.0, name.as_ptr(), ptr::null(), &mut actual, data, size)
-                    == ERROR_SUCCESS
-                    && actual == kind
+            let query = |data, size: &mut u32, actual: &mut u32| {
+                RegQueryValueExW(self.0, name.as_ptr(), ptr::null(), actual, data, size)
             };
-            let mut size = 0;
-            if !query(ptr::null_mut(), &mut size) || size > MAX_VALUE {
-                return None;
+            for _ in 0..8 {
+                let mut size = 0;
+                let mut actual = 0;
+                let status = query(ptr::null_mut(), &mut size, &mut actual);
+                match status {
+                    ERROR_FILE_NOT_FOUND => return Ok(None),
+                    ERROR_SUCCESS => {}
+                    _ => return Err(status),
+                }
+                if actual != kind || size > MAX_VALUE {
+                    return Err(ERROR_INVALID_DATA);
+                }
+                let mut bytes = vec![0; (size as usize).max(1)];
+                let status = query(bytes.as_mut_ptr(), &mut size, &mut actual);
+                match status {
+                    ERROR_MORE_DATA => continue,
+                    ERROR_FILE_NOT_FOUND => return Ok(None),
+                    ERROR_SUCCESS => {}
+                    _ => return Err(status),
+                }
+                if actual != kind || size as usize > bytes.len() {
+                    return Err(ERROR_INVALID_DATA);
+                }
+                bytes.truncate(size as usize);
+                return Ok(Some(bytes));
             }
-            let mut bytes = vec![0; size as usize];
-            if !query(bytes.as_mut_ptr(), &mut size) {
-                return None;
-            }
-            bytes.truncate(size as usize);
-            Some(bytes)
+            Err(ERROR_MORE_DATA)
         }
     }
     fn set(&self, name: &str, kind: u32, bytes: &[u8]) -> anyhow::Result<()> {
@@ -139,20 +202,24 @@ impl Key {
     }
     pub fn number(&self, name: &str) -> Option<u32> {
         Some(u32::from_le_bytes(
-            self.value(name, REG_DWORD)?.try_into().ok()?,
+            self.value(name, REG_DWORD)
+                .ok()
+                .flatten()?
+                .try_into()
+                .ok()?,
         ))
     }
     pub fn set_number(&self, name: &str, value: u32) -> anyhow::Result<()> {
         self.set(name, REG_DWORD, &value.to_le_bytes())
     }
     pub fn bytes(&self, name: &str) -> Option<Vec<u8>> {
-        self.value(name, REG_BINARY)
+        self.value(name, REG_BINARY).ok().flatten()
     }
     pub fn set_bytes(&self, name: &str, value: &[u8]) -> anyhow::Result<()> {
         self.set(name, REG_BINARY, value)
     }
     pub fn text(&self, name: &str) -> Option<String> {
-        let words = words(&self.value(name, REG_SZ)?)?;
+        let words = words(&self.value(name, REG_SZ).ok().flatten()?)?;
         if words.last() != Some(&0) {
             return None;
         }
@@ -161,27 +228,6 @@ impl Key {
     pub fn set_text(&self, name: &str, value: &str) -> anyhow::Result<()> {
         let bytes: Vec<_> = wide(value).into_iter().flat_map(u16::to_le_bytes).collect();
         self.set(name, REG_SZ, &bytes)
-    }
-    pub fn paths_if_readable(&self, name: &str) -> Option<Vec<PathBuf>> {
-        let name_wide = wide(name);
-        let status = unsafe {
-            RegQueryValueExW(
-                self.0,
-                name_wide.as_ptr(),
-                ptr::null(),
-                ptr::null_mut(),
-                ptr::null_mut(),
-                ptr::null_mut(),
-            )
-        };
-        if status == ERROR_FILE_NOT_FOUND {
-            Some(Vec::new())
-        } else if status == ERROR_SUCCESS {
-            self.value(name, REG_MULTI_SZ)
-                .and_then(|bytes| decode_paths(&bytes))
-        } else {
-            None
-        }
     }
     pub fn set_paths(&self, name: &str, paths: &[PathBuf]) -> anyhow::Result<()> {
         let mut words = Vec::new();
@@ -213,16 +259,16 @@ fn words(bytes: &[u8]) -> Option<Vec<u16>> {
 }
 fn decode_paths(bytes: &[u8]) -> Option<Vec<PathBuf>> {
     let words = words(bytes)?;
-    if words == [0] {
+    if words == [0] || words == [0, 0] {
         return Some(Vec::new());
     }
     if !words.ends_with(&[0, 0]) {
         return None;
     }
     let mut paths = Vec::new();
-    for part in words[..words.len() - 1].split(|&c| c == 0) {
+    for part in words[..words.len() - 2].split(|&c| c == 0) {
         if part.is_empty() {
-            break;
+            return None;
         }
         let path = PathBuf::from(OsString::from_wide(part));
         if !paths.contains(&path) {
@@ -241,6 +287,8 @@ mod tests {
             root: vec![],
             version: 1,
             warning: Some(Warning::Read(ERROR_ACCESS_DENIED)),
+            paths_warning: None,
+            paths: None,
             key: None,
         };
         let warning = config.warning().unwrap();
@@ -280,6 +328,23 @@ mod tests {
         fn load(&self) -> Config {
             Config::from_root(&self.0, 1).unwrap()
         }
+        fn read_key(&self) -> Key {
+            let path: Vec<_> = self.0.encode_wide().chain(Some(0)).collect();
+            let mut handle = ptr::null_mut();
+            assert_eq!(
+                unsafe {
+                    RegOpenKeyExW(
+                        HKEY_CURRENT_USER,
+                        path.as_ptr(),
+                        0,
+                        KEY_QUERY_VALUE,
+                        &mut handle,
+                    )
+                },
+                ERROR_SUCCESS
+            );
+            Key(handle)
+        }
     }
     impl Drop for Profile {
         fn drop(&mut self) {
@@ -298,42 +363,106 @@ mod tests {
         let path = PathBuf::from(OsString::from_wide(&[
             67, 58, 92, 0xd800, 46, 119, 105, 110, 109, 100,
         ]));
-        key.set_paths("Paths", std::slice::from_ref(&path)).unwrap();
+        key.set_paths("AutoLoad", std::slice::from_ref(&path))
+            .unwrap();
         key.set_number("Number", 144).unwrap();
         key.set_text("Text", "中文").unwrap();
         let loaded = one.load();
         let key = loaded.key.as_ref().unwrap();
-        assert_eq!(key.paths_if_readable("Paths"), Some(vec![path]));
+        assert_eq!(loaded.paths(), Some(vec![path]));
         assert_eq!(key.number("Number"), Some(144));
         assert_eq!(key.text("Text").as_deref(), Some("中文"));
         assert!(two.load().key.is_none());
     }
     #[test]
-    fn malformed_values_and_future_version_are_preserved() {
+    fn future_version_is_preserved() {
         let profile = Profile::new();
         let config = profile.load();
         let key = config.write_key().unwrap();
-        key.set_number("WrongType", 1).unwrap();
         key.set_bytes("Number", &[0; 4]).unwrap();
-        key.set("Paths", REG_MULTI_SZ, &[1, 0]).unwrap();
         let loaded = profile.load();
-        assert_eq!(
-            loaded.key.as_ref().unwrap().paths_if_readable("Missing"),
-            Some(vec![])
-        );
-        assert_eq!(
-            loaded.key.as_ref().unwrap().paths_if_readable("WrongType"),
-            None
-        );
         assert!(loaded.key.as_ref().unwrap().number("Number").is_none());
-        assert_eq!(
-            loaded.key.as_ref().unwrap().paths_if_readable("Paths"),
-            None
-        );
         key.set_number("Version", 99).unwrap();
         let future = profile.load();
         assert!(future.warning.is_some() && future.key.is_none());
         assert!(future.write_key().is_err());
         assert_eq!(loaded.key.as_ref().unwrap().number("Version"), Some(99));
+    }
+    #[test]
+    fn invalid_version_blocks_all_writes_without_overwriting_it() {
+        let profile = Profile::new();
+        let key = profile.load().write_key().unwrap();
+        key.set_text("Version", "unknown").unwrap();
+        let loaded = profile.load();
+        assert!(loaded.warning().is_some());
+        assert!(loaded.write_key().is_err());
+        assert!(loaded.write_paths(&[]).is_err());
+        assert_eq!(
+            profile.read_key().text("Version").as_deref(),
+            Some("unknown")
+        );
+    }
+    #[test]
+    fn missing_version_and_autoload_use_writable_defaults() {
+        let profile = Profile::new();
+        let key = profile.load().write_key().unwrap();
+        assert_eq!(
+            unsafe { RegDeleteValueW(key.0, wide("Version").as_ptr()) },
+            ERROR_SUCCESS
+        );
+        let loaded = profile.load();
+        assert!(loaded.warning().is_none());
+        assert_eq!(loaded.paths(), Some(vec![]));
+        loaded.write_paths(&[]).unwrap();
+        assert_eq!(profile.read_key().number("Version"), Some(1));
+    }
+    #[test]
+    fn invalid_autoload_is_preserved_without_blocking_preferences() {
+        for (kind, bytes) in [
+            (REG_MULTI_SZ, vec![1, 0]),
+            (REG_DWORD, 42u32.to_le_bytes().to_vec()),
+        ] {
+            let profile = Profile::new();
+            profile
+                .load()
+                .write_key()
+                .unwrap()
+                .set("AutoLoad", kind, &bytes)
+                .unwrap();
+            let original = profile.read_key().value("AutoLoad", kind).unwrap().unwrap();
+            let loaded = profile.load();
+            assert!(loaded.paths().is_none());
+            assert!(loaded.warning().is_some());
+            assert!(loaded.write_paths(&[]).is_err());
+            loaded.write_key().unwrap().set_number("Other", 3).unwrap();
+            let saved = profile.read_key();
+            assert_eq!(saved.value("AutoLoad", kind).unwrap().unwrap(), original);
+            assert_eq!(saved.number("Other"), Some(3));
+        }
+    }
+    #[test]
+    fn query_retains_registry_status() {
+        let profile = Profile::new();
+        let key = profile.load().write_key().unwrap();
+        key.set_number("Value", 1).unwrap();
+        let path: Vec<_> = profile.0.encode_wide().chain(Some(0)).collect();
+        let mut handle = ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                RegOpenKeyExW(
+                    HKEY_CURRENT_USER,
+                    path.as_ptr(),
+                    0,
+                    KEY_SET_VALUE,
+                    &mut handle,
+                )
+            },
+            ERROR_SUCCESS
+        );
+        let restricted = Key(handle);
+        assert_eq!(
+            restricted.value("Value", REG_DWORD),
+            Err(ERROR_ACCESS_DENIED)
+        );
     }
 }

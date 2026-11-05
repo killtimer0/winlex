@@ -608,10 +608,7 @@ pub(super) fn loaded(ctx: &Context, id: u64, result: anyhow::Result<Option<Arc<C
         search(ctx);
         if ctx.with_session(|session| session.remember_sources) {
             let paths = paths(ctx);
-            super::status::report(
-                ctx,
-                ctx.with_config(|config| config.write_key()?.set_paths("AutoLoad", &paths)),
-            );
+            super::status::report(ctx, ctx.with_config(|config| config.write_paths(&paths)));
         }
         for view in workspace::views(ctx) {
             view.layout();

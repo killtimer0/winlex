@@ -4,6 +4,8 @@ use crate::app::context::Context;
 use crate::{layout, native::*, resources::*};
 use std::ptr;
 
+const WM_WORKER_READY: u32 = WM_APP + 1;
+
 fn prepare(ctx: &Context) {
     let frame = ctx.frame();
     let tabs = workspace::tabs(ctx);
@@ -114,11 +116,17 @@ pub(super) unsafe extern "system" fn frame_proc(hwnd: HWND, msg: u32, w: usize, 
                     windows_sys::Win32::UI::Shell::DragAcceptFiles(hwnd, 1);
                     prepare(ctx);
                     crate::theme::apply(hwnd);
+                    ctx.notify_worker_window(hwnd, WM_WORKER_READY);
                     Ok(())
                 })();
                 if ctx.checked(result).is_none() {
                     return -1;
                 }
+                return 0;
+            }
+            WM_WORKER_READY => {
+                ctx.acknowledge_worker_notification();
+                super::poll_completions(ctx);
                 return 0;
             }
             WM_SIZE => {
@@ -211,8 +219,13 @@ pub(super) unsafe extern "system" fn frame_proc(hwnd: HWND, msg: u32, w: usize, 
                 return 0;
             }
             WM_DESTROY => {
+                ctx.notify_worker_window(ptr::null_mut(), 0);
                 PostQuitMessage(0);
                 return 0;
+            }
+            WM_NCDESTROY => {
+                ctx.notify_worker_window(ptr::null_mut(), 0);
+                SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
             }
             WM_DROPFILES => {
                 sources::add(ctx, crate::input::dropped_files(w as _));

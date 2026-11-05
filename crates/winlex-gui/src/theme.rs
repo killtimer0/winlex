@@ -888,7 +888,56 @@ unsafe fn paint_status(hwnd: HWND, dc: HDC) {
                 DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS,
             );
         }
+        if GetWindowLongW(hwnd, GWL_STYLE) as u32 & SBARS_SIZEGRIP != 0
+            && IsZoomed(GetParent(hwnd)) == 0
+        {
+            use windows_sys::Win32::UI::HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi};
+            let bounds = client(hwnd);
+            let dpi = GetDpiForWindow(hwnd);
+            let width = GetSystemMetricsForDpi(SM_CXVSCROLL, dpi).min(bounds.right);
+            let height = GetSystemMetricsForDpi(SM_CYHSCROLL, dpi).min(bounds.bottom);
+            if width > 0 && height > 0 {
+                let layout = GetLayout(dc);
+                if GetWindowLongW(hwnd, GWL_EXSTYLE) as u32 & WS_EX_LAYOUTRTL != 0
+                    && layout != u32::MAX
+                    && layout & LAYOUT_RTL == 0
+                {
+                    SetLayout(dc, layout | LAYOUT_RTL);
+                }
+                DrawStateW(
+                    dc,
+                    brush(COLOR_GRAYTEXT),
+                    Some(draw_status_grip),
+                    0,
+                    0,
+                    bounds.right - width,
+                    bounds.bottom - height,
+                    width,
+                    height,
+                    DST_COMPLEX | DSS_MONO,
+                );
+                if layout != u32::MAX {
+                    SetLayout(dc, layout);
+                }
+            }
+        }
     }
+}
+
+unsafe extern "system" fn draw_status_grip(
+    dc: HDC,
+    _: isize,
+    _: usize,
+    width: i32,
+    height: i32,
+) -> BOOL {
+    let mut area = RECT {
+        left: 0,
+        top: 0,
+        right: width,
+        bottom: height,
+    };
+    unsafe { DrawFrameControl(dc, &mut area, DFC_SCROLL, DFCS_SCROLLSIZEGRIP | DFCS_MONO) }
 }
 
 #[cfg(test)]
@@ -1307,6 +1356,96 @@ mod tests {
                 SelectObject(dc, original);
                 DeleteDC(dc);
             }
+            DestroyWindow(parent);
+            set_mode(0);
+        }
+    }
+
+    #[test]
+    fn older_dark_status_grip_tracks_style_and_maximized_parent() {
+        if !supported() || high_contrast() {
+            return;
+        }
+        let controls = CommonControls::activate();
+        controls.initialize(ICC_BAR_CLASSES);
+        unsafe {
+            let parent = test_window(
+                w!("STATIC"),
+                ptr::null(),
+                WS_POPUP,
+                RECT {
+                    left: 0,
+                    top: 0,
+                    right: 240,
+                    bottom: 100,
+                },
+            );
+            let status = child(parent, w!("msctls_statusbar32"), &[0], 0, 1).unwrap();
+            set_bounds(
+                status,
+                RECT {
+                    left: 0,
+                    top: 0,
+                    right: 240,
+                    bottom: 24,
+                },
+            )
+            .unwrap();
+            set_mode(2);
+            let dc = CreateCompatibleDC(ptr::null_mut());
+            let screen = GetDC(parent);
+            let bitmap = GdiObject(CreateCompatibleBitmap(screen, 240, 24));
+            ReleaseDC(parent, screen);
+            assert!(!dc.is_null() && !bitmap.0.is_null());
+            let previous = SelectObject(dc, bitmap.0);
+            for (grip, maximized, rtl, expected_left, expected_right) in [
+                (false, false, false, false, false),
+                (true, false, false, false, true),
+                (true, true, false, false, false),
+                (true, false, true, true, false),
+            ] {
+                let style = GetWindowLongW(status, GWL_STYLE) as u32;
+                SetWindowLongW(
+                    status,
+                    GWL_STYLE,
+                    (style & !SBARS_SIZEGRIP | if grip { SBARS_SIZEGRIP } else { 0 }) as i32,
+                );
+                let style = GetWindowLongW(parent, GWL_STYLE) as u32;
+                SetWindowLongW(
+                    parent,
+                    GWL_STYLE,
+                    (style & !WS_MAXIMIZE | if maximized { WS_MAXIMIZE } else { 0 }) as i32,
+                );
+                let ex_style = GetWindowLongW(status, GWL_EXSTYLE) as u32;
+                SetWindowLongW(
+                    status,
+                    GWL_EXSTYLE,
+                    (ex_style & !WS_EX_LAYOUTRTL | if rtl { WS_EX_LAYOUTRTL } else { 0 }) as i32,
+                );
+                paint_status(status, dc);
+                let bounds = client(status);
+                let mut left = false;
+                let mut right = false;
+                for y in 0..bounds.bottom.min(24) {
+                    for x in 0..30.min(bounds.right) {
+                        let pixel = GetPixel(dc, x, y);
+                        assert_ne!(pixel, CLR_INVALID);
+                        left |= pixel != color(COLOR_BTNFACE);
+                    }
+                    for x in (bounds.right - 30).max(0)..bounds.right.min(240) {
+                        let pixel = GetPixel(dc, x, y);
+                        assert_ne!(pixel, CLR_INVALID);
+                        right |= pixel != color(COLOR_BTNFACE);
+                    }
+                }
+                assert_eq!(
+                    (left, right),
+                    (expected_left, expected_right),
+                    "grip={grip}, maximized={maximized}, rtl={rtl}"
+                );
+            }
+            SelectObject(dc, previous);
+            DeleteDC(dc);
             DestroyWindow(parent);
             set_mode(0);
         }
