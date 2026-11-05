@@ -1,4 +1,4 @@
-"""Run query tests and independent reader checks; optionally check SDK ABI."""
+"""Run query and fixture checks; optionally check SDK ABI."""
 import argparse
 import hashlib
 import json
@@ -39,7 +39,6 @@ def main():
     if args.target:
         options.extend(["--target", args.target])
     executables = {
-        "reader-facts": build_example("winlex-format", "reader-facts", options),
         "host-cli": build_example("winlex-cli", "host-cli", options),
     }
     if args.winrt_sdk:
@@ -49,7 +48,6 @@ def main():
     run(["cargo", "test", "-p", "winlex-cli", "-p", "winlex-core", "--locked", *options])
     if args.abi:
         run([sys.executable, "tests/abi/run.py"])
-    run([sys.executable, "tests/metadata/reader_gate.py"])
     run([sys.executable, "tests/metadata/fixture_gate.py"])
     run([sys.executable, "tests/metadata/multisource_gate.py"])
     if args.winrt_sdk:

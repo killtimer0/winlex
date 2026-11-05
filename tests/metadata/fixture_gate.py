@@ -1,7 +1,6 @@
 import json
 from pathlib import Path
 import subprocess
-from reader_gate import check_reader
 from artifacts import executable
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -19,8 +18,6 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     subprocess.run(["dotnet", "build", str(ROOT / "tests/metadata/ReaderFixtures"), "-c", "Debug", "-o", str(out)], check=True)
     source = out / "ReaderFixtures.dll"
-    facts, _ = check_reader(source, out / "oracle.json")
-    assert any(r["offset"] == 8 for r in facts["layouts"])
     for name, reason in (
         ("Nonzero", "nonzero/missing explicit offset"),
         ("SizedOverlay", "declared size"),
@@ -65,7 +62,6 @@ def main():
     summary = {
         "passed": True,
         "checks": [
-            "independent raw offsets/scopes/signature tokens/properties/events",
             "nonzero offset retained but layout rejected",
             "declared size rejected",
             "external assembly scope rejected instead of name binding",

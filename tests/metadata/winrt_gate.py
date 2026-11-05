@@ -4,7 +4,6 @@ import json
 from pathlib import Path
 import re
 import subprocess
-from reader_gate import check_reader
 from artifacts import executable
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -73,7 +72,6 @@ def main():
     assert re.search(r"IAsyncInfo\s*:\s*public IInspectable", header)
     block = header.split("typedef struct IAsyncInfoVtbl", 1)[1].split("} IAsyncInfoVtbl", 1)[0]
     assert re.findall(r"STDMETHODCALLTYPE\s*\*(\w+)", block) == [s["method"] for s in slots]
-    check_reader(union, OUT / (union.stem + "-oracle.json"), capture_output=True)
     apps = sorted(set(args.apps.glob("**/metadata/*.winmd"))) if args.apps else []
     subprocess.run([executable("query-audit"), union, *apps], check=True)
     if apps:
@@ -93,15 +91,12 @@ def main():
         assert "0 matching definitions" in missing["resolution"]["unresolved"]
         overlap = query(apps + contracts + [union], "show", ref)
         assert "2 matching definitions" in overlap["resolution"]["unresolved"]
-        for file in apps:
-            check_reader(file, OUT / (file.stem + "-oracle.json"), capture_output=True)
     checks = [
         "generic declarations",
         "properties/events/accessors",
         "default interfaces",
         "interface and delegate ABI slots",
         "reverse generic uses",
-        "independent raw metadata",
     ]
     if apps:
         checks.extend(["WinRT namespace resolution", "missing/overlapping sources"])

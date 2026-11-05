@@ -3,7 +3,8 @@
 从仓库根目录运行；依赖与命令见 [构建与验证](../docs/build.md)。
 
 - `gui/`：GUI pytest 测试；`run.py` 运行测试，`resources.py` 检查资源，`remote.py` 调度本机或 SSH 目标。
-- `metadata/`：`run.py` 运行读取器、fixture、跨源及可选 WinRT 检查；`ReaderFixtures/` 保存 C# fixture，`MetadataOracle/` 提供独立 .NET 读取器。
+- `metadata/`：`run.py` 运行 CLI、fixture、跨源及可选 WinRT 检查；`ReaderFixtures/` 保存 CLI 行为用 C# fixture。
+- `differential/`：WinMD 与 .NET 读取结果的独立对拍及回归测试。
 - `abi/`：`run.py` 使用 SDK 编译器验证布局、位域和 vtable；也可由 `metadata/run.py --abi` 调用。
 - `fixtures/build_message_fixtures.py`：使用双架构构建的 `.build.json` 生成消息资源 DLL，输出到 `tmp/message-fixtures/`；命令见构建指南。
 

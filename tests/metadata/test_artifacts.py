@@ -22,7 +22,7 @@ class ArtifactContracts(unittest.TestCase):
         path = Path.cwd() / "custom output/configured target/debug/examples/host-cli.exe"
         messages = [{"reason": "build-finished", "success": True},
                     artifact("wrong.exe", kind="bin"), artifact("test.exe", test=True),
-                    artifact("reader.exe", name="reader-facts"), artifact(None), artifact(path)]
+                    artifact("other.exe", name="other-example"), artifact(None), artifact(path)]
         self.assertEqual(select_executable(messages, "host-cli"), path)
 
     def test_missing_and_ambiguous_outputs_fail(self):

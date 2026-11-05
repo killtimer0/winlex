@@ -88,17 +88,26 @@ cargo fmt --all --check
 cargo clippy -p winlex-core -p winlex-format -p winlex-cli --all-targets --locked -- -D warnings
 python tests/metadata/run.py
 python -m unittest discover -s tests/metadata -p test_artifacts.py
+python -m unittest discover -s tests/differential -v
 python -m unittest discover -s tests/scripts -v
 ```
 
-`tests/metadata/run.py` 比较 Rust 读取结果与 .NET `System.Reflection.Metadata`，并验证布局、泛型及跨源引用样例。报告写入 `tmp/verify/`。
+`tests/metadata/run.py` 验证 CLI、布局、泛型及跨源引用样例。报告写入 `tmp/verify/`。
+
+对拍本地目录中的 WinMD：
+
+```powershell
+python tests/differential/run.py inputs
+```
+
+递归比较目录内的 `.winmd`，结果写入 `tmp/differential/`。查看 `report.json` 中的结果、比较范围及差异文件路径；失败返回非零退出码。选项见 `python tests/differential/run.py --help`。
+
 打包契约测试默认读取标准输出目录下的 Debug 构建记录；可用 `WINLEX_PACKAGE_X86_BUILD_DIR`／`WINLEX_PACKAGE_X64_BUILD_DIR`／`WINLEX_PACKAGE_ARM64_BUILD_DIR` 指定其他目录，缺少记录时跳过打包用例。工作流 YAML 验证另需 PyYAML。
 `WINLEX_PACKAGE_REQUIRE_ARCH` 指定必须验证的架构，缺少该架构的记录将失败；`WINLEX_TEST_ARCH` 为构建入口契约测试选择目标，默认 x64。
 默认使用 Debug 和 Cargo 的 target、输出目录配置；可用 `--target`、`--target-dir`、`--profile` 显式选择。
 各 gate 也可独立运行，默认读取 `tmp/verify/artifacts.json` 中的可执行文件路径；用 `--artifacts PATH` 更改记录位置后，通过 `WINLEX_GATE_ARTIFACTS` 指定该记录。
 
 ```powershell
-python tests/metadata/reader_gate.py
 python tests/metadata/fixture_gate.py
 python tests/metadata/multisource_gate.py
 ```

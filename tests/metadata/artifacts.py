@@ -9,7 +9,6 @@ ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MANIFEST = ROOT / "tmp/verify/artifacts.json"
 OVERRIDES = {
     "host-cli": "WINLEX_GATE_CLI",
-    "reader-facts": "WINLEX_GATE_READER_FACTS",
     "query-audit": "WINLEX_GATE_QUERY_AUDIT",
 }
 
