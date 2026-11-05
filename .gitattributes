@@ -1,2 +1,4 @@
 * text=auto eol=lf
 /licenses/*.rtf -text
+/docs/images/*.png binary
+/docs/images/*.gif binary

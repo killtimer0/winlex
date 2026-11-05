@@ -1,45 +1,39 @@
 # Winlex
 
-离线 Windows API 参考查询工具，直接读取 WinMD 文件。
+离线 Windows API 参考查询工具，直接读取本地 WinMD，提供原生 Windows 界面与命令行。
 
-- 快速搜索名称、常量值和 GUID，或组合名称、字符串、数字范围等条件。
-- 查看 API 参数、类型、回调及反向类型引用。
-- 按 x86、x64、ARM64 ABI 计算结构布局、位域位置和 COM vtable 槽位。
-- 支持文本和 JSON 输出。
-- 通过独立错误码工具查询 Win32、HRESULT、NTSTATUS 和自定义模块消息，无需加载 WinMD。
-- 可同时加载 SDK、WDK、WinRT 和 Windows App SDK 元数据，解析跨文件引用。
-- 支持 WinRT/App SDK 声明、泛型、属性和事件查询，以及非泛型接口/委托槽位。
+![同一 IStream 声明的浅色与深色主题斜切展示](docs/images/themes.png)
+
+- **搜索 API**：按名称、常量值、GUID 快速查找，或组合条件精确筛选。
+- **阅读声明**：查看参数、类型与反向引用，跨 WinMD 解析 Win32、WDK 和 WinRT 等元数据。
+- **比较布局**：按 x86、x64、ARM64 ABI 查看字段偏移、结构大小、位域与 COM vtable 槽位。
+- **查询错误码**：独立查询 Win32、HRESULT、NTSTATUS 和自定义模块消息，无需加载 WinMD。
 
 支持 Windows x86/x64，最低系统版本见[构建与验证](docs/build.md)。
 
-## 使用
+## 开始使用
 
-从 [winmd-collection Releases](https://github.com/killtimer0/winmd-collection/releases) 获取 WinMD。在命令前指定本地输入文件：
+从 [Winlex Releases](https://github.com/killtimer0/winlex/releases) 下载程序，从 [winmd-collection Releases](https://github.com/killtimer0/winmd-collection/releases) 获取 WinMD。
+
+### 图形界面
+
+启动 `winlex-gui.exe`，通过“打开文件”（Ctrl+O）或拖放加载 WinMD。输入查询后自动搜索，单击结果预览声明，双击或 Enter 固定文档。
+
+![浅色界面操作演示：搜索 OVERLAPPED、打开结构体声明，并切换架构查看大小与偏移变化](docs/images/workflow.gif)
+
+Ctrl+Enter 可打开文档副本，便于并排比较。界面支持中英文、浅色／深色主题、DPI 缩放和高对比度，详细操作见 [GUI 使用指南](docs/gui.md)。
+
+### 命令行
+
+在查询命令前指定本地输入文件，支持文本和 JSON 输出：
 
 ```powershell
-winlex Windows.Win32.winmd search OPENFILE
-winlex Windows.Win32.winmd search 0x80000000 --value
 winlex Windows.Win32.winmd search CreateFileW --name
-winlex Windows.Win32.winmd search "FF 0A" --guid
-winlex Windows.Win32.winmd show CreateFileW --arch x64
 winlex Windows.Win32.winmd layout OVERLAPPED --arch x64
 winlex Windows.Win32.winmd vtable IStream --arch x64 --json
 ```
 
 查询架构与程序自身架构无关。命令、输出及限制见 [CLI 文档](docs/cli.md)。
-
-### 图形界面
-
-`winlex-gui.exe` 提供原生 MDI 多文档界面，支持后台加载多个 WinMD、快速与条件搜索、来源管理和不同架构的声明比较。
-
-```powershell
-winlex-gui
-winlex-gui Windows.Win32.winmd Windows.Wdk.winmd
-```
-
-通过“打开文件”（Ctrl+O）或拖放加载 WinMD，输入查询后自动搜索。单击结果预览声明，双击或 Enter 固定文档；Ctrl+Enter 可打开副本，便于并排比较。
-
-界面支持中英文、DPI 缩放和高对比度。文件管理、类型跳转、错误码查询及外观设置见 [GUI 使用指南](docs/gui.md)。
 
 ## 许可证
 

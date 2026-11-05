@@ -77,6 +77,18 @@ Codicon SVG 与生成的 EMF+ 位于 `crates/winlex-gui/res/codicons/`。
 
 所有架构均通过 `+crt-static` 选择 VC-LTL5 替换库。x86／x64 使用系统 `msvcrt.dll` 并链接 YY-Thunks XP 对象；ARM64 使用系统 `ucrtbase.dll`。
 
+## README 图片
+
+使用 `uv` 建立独立环境，在已解锁的当前桌面生成主图和操作 GIF（录制期间会接管键鼠）：
+
+```powershell
+uv venv tmp/readme-media-venv
+uv pip install --python tmp/readme-media-venv/Scripts/python.exe uiautomation Pillow pywin32
+tmp/readme-media-venv/Scripts/python.exe scripts/readme-media.py --exe target/x86_64-pc-windows-msvc/debug/winlex-gui.exe
+```
+
+图片写入 `docs/images/`，原始截图保留在 `tmp/readme-media/`。输入与输出选项见 `--help`。
+
 ## 测试与独立验证
 
 运行库测试和开发用 CLI：
