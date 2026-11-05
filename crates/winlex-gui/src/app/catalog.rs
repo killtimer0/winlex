@@ -201,6 +201,18 @@ impl Session {
         }
         resources::text(IDS_SOURCE_STATUS).replace("{count}", &self.inputs().len().to_string())
     }
+    pub fn empty_status(&self) -> Option<String> {
+        if !self.inputs().is_empty() {
+            return None;
+        }
+        Some(if self.load_error.is_some() || self.load.is_some() {
+            self.source_status()
+        } else if !matches!(self.search, Search::Idle) {
+            self.search_status()
+        } else {
+            resources::text(IDS_METADATA_EMPTY)
+        })
+    }
 }
 pub(super) fn paths(ctx: &Context) -> Vec<PathBuf> {
     ctx.with_session(|session| session.paths())

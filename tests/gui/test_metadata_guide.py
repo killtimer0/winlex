@@ -46,16 +46,25 @@ def test_empty_startup_prompt_dismissal_and_runtime_removal(launch, profile, set
         n.wait(lambda: not n.is_window(prompt), "metadata prompt dismissed")
 
     assert_no_dialog(app)
+    empty = resource_text(settings[0], 2345, ui_language.langid)
+    n.wait(lambda: app.status_text() == empty, "empty metadata guidance")
+    menu = win32gui.GetMenu(app.frame)
+    help_menu = win32gui.GetSubMenu(menu, win32gui.GetMenuItemCount(menu) - 1)
+    assert 1023 in [win32gui.GetMenuItemID(help_menu, index)
+                    for index in range(win32gui.GetMenuItemCount(help_menu))]
     app.pick([settings[1]])
     n.wait(lambda: app.count(app.sources) == 1, "source loaded", 45)
     app.command(1021)
-    assert n.window_text(n.get_item(app.frame, 1023)) == resource_text(settings[0], 2342, ui_language.langid)
+    assert app.status_text() != empty
+    assert not n.get_item(app.frame, 1023)
     app.select(0, app.sources)
     app.command(1022)
     n.wait(lambda: app.count(app.sources) == 0 and profile.get("AutoLoad") == [],
            "source removed", 45)
+    n.wait(lambda: app.status_text() == empty, "guidance after removing last source")
     assert_no_dialog(app)
     app.command(1040)
+    assert app.status_text() == empty
     assert_no_dialog(app)
 
 

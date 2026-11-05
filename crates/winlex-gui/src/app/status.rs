@@ -29,16 +29,15 @@ impl Status {
     fn message(
         &self,
         content: impl FnOnce(HWND) -> Option<String>,
-        panel: impl Fn(PanelId) -> String,
+        panel: impl FnOnce(Option<PanelId>) -> String,
         visible: Option<PanelId>,
     ) -> String {
         self.notice.clone().unwrap_or_else(|| {
             match self.context {
                 StatusContext::Document(hwnd) => content(hwnd),
-                StatusContext::Panel(id) if visible == Some(id) => Some(panel(id)),
                 StatusContext::Panel(_) => None,
             }
-            .unwrap_or_else(|| visible.map(panel).unwrap_or_default())
+            .unwrap_or_else(|| panel(visible))
         })
     }
 }
@@ -75,9 +74,18 @@ pub(super) fn report<T>(ctx: &Context, result: anyhow::Result<T>) -> Option<T> {
 pub(super) fn refresh_status(ctx: &Context) {
     let state = ctx.with_status(|status| status.clone());
     let hwnd = ctx.status_bar();
+    let empty_status = ctx.with_session(|session| session.empty_status());
     let message = state.message(
-        |hwnd| workspace::content(ctx, hwnd).map(|content| content.status()),
-        |id| panel::status(ctx, id),
+        |hwnd| {
+            workspace::content(ctx, hwnd)
+                .map(|content| content.status())
+                .filter(|message| !message.is_empty() || empty_status.is_none())
+        },
+        |id| {
+            empty_status
+                .clone()
+                .unwrap_or_else(|| id.map(|id| panel::status(ctx, id)).unwrap_or_default())
+        },
         sidebar::current(ctx).map(|panel| panel.id),
     );
     set_status_text(hwnd, &message);
@@ -132,10 +140,7 @@ mod tests {
             status.message(|_| None, |_| "sources".into(), Some(PanelId::Sources)),
             "sources"
         );
-        assert_eq!(
-            status.message(|_| None, |_| panic!("no visible panel"), None),
-            ""
-        );
+        assert_eq!(status.message(|_| None, |_| String::new(), None), "");
         assert_eq!(
             status.message(
                 |_| Some(String::new()),
@@ -155,17 +160,14 @@ mod tests {
                 status.message(
                     |_| panic!("panel does not query document"),
                     |owner| {
-                        assert_eq!(owner, id);
-                        format!("{owner:?}")
+                        assert_eq!(owner, Some(id));
+                        format!("{id:?}")
                     },
                     Some(id)
                 ),
                 format!("{id:?}")
             );
-            assert_eq!(
-                status.message(|_| None, |_| panic!("collapsed panel"), None),
-                ""
-            );
+            assert_eq!(status.message(|_| None, |_| String::new(), None), "");
         }
     }
 }

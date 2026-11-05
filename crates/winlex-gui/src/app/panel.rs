@@ -174,7 +174,6 @@ pub(super) fn create(ctx: &Context, frame: HWND) -> anyhow::Result<([Rc<Panel>; 
     let mut controls = vec![list.hwnd];
     for (id, label) in [
         (LOAD_METADATA, IDS_LOAD_METADATA),
-        (GET_METADATA, IDS_GET_METADATA),
         (RELOAD_SOURCE, IDS_RELOAD),
         (REMOVE_SOURCE, IDS_UNLOAD),
     ] {

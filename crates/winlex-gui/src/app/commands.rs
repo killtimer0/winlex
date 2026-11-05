@@ -1,5 +1,5 @@
 //! Frame menu commands and their enabled/checked state.
-use super::{catalog, help, history, panel, settings, sidebar, status, tools, workspace};
+use super::{catalog, help, history, panel, settings, sidebar, sources, status, tools, workspace};
 use crate::app::context::Context;
 use crate::{layout::Arrangement, native::*, resources::*};
 use windows_sys::Win32::System::SystemServices::{
@@ -24,6 +24,7 @@ pub(super) fn command(ctx: &Context, id: u16) -> bool {
             | SETTINGS
             | ABOUT
             | SEARCH_HELP
+            | GET_METADATA
             | FOCUS_NEXT_REGION
             | CLOSE
             | OPEN_RESULT
@@ -73,6 +74,7 @@ pub(super) fn command(ctx: &Context, id: u16) -> bool {
         SEARCH_HELP => {
             status::report(ctx, help::search(ctx));
         }
+        GET_METADATA => sources::open_guide(ctx),
         FOCUS_NEXT_REGION => {
             let h = unsafe { GetFocus() };
             let d = workspace::active(ctx);

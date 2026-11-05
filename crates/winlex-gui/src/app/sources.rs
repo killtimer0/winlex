@@ -30,7 +30,7 @@ pub(super) fn prompt_guide(ctx: &Context) {
     }
 }
 
-fn open_guide(ctx: &Context) {
+pub(super) fn open_guide(ctx: &Context) {
     if open_url(ctx.frame(), METADATA_GUIDE).is_err() {
         let result = resources::dialog(IDD_SEARCH_HELP).and_then(|template| {
             crate::dialog::modal::show(
@@ -241,7 +241,6 @@ pub(super) fn command(ctx: &Context, id: u16) -> bool {
     }
     match id {
         LOAD_METADATA => choose_add(ctx),
-        GET_METADATA => open_guide(ctx),
         RELOAD_SOURCE | REMOVE_SOURCE | COPY_SOURCE_PATH => {
             if let Some(path) = selected(ctx) {
                 action_path(ctx, id, path);

@@ -2,7 +2,8 @@ LANGUAGE 9, 1
 STRINGTABLE
 BEGIN
     IDS_GET_METADATA "Get metadata"
-    IDS_METADATA_PROMPT "No metadata sources are configured. Open the guide to getting metadata?"
+    IDS_METADATA_PROMPT "No metadata files have been added. View how to get them?"
+    IDS_METADATA_EMPTY "No metadata files have been added. Choose Help → Get metadata to learn how to get them."
     IDS_METADATA_BROWSER_FAILED "Could not open the browser. Copy this address into your browser:"
     IDS_RESULT_OPEN "Open"
     IDS_SOURCE_STATUS "Sources: {count}"
@@ -95,6 +96,7 @@ BEGIN
     POPUP "&Help"
     BEGIN
         MENUITEM "Search &syntax...", SEARCH_HELP
+        MENUITEM "Get &metadata…", GET_METADATA
         MENUITEM SEPARATOR
         MENUITEM "&About Winlex...", ABOUT
     END

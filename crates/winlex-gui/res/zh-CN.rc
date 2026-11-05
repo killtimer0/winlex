@@ -2,7 +2,8 @@ LANGUAGE 4, 2
 STRINGTABLE
 BEGIN
     IDS_GET_METADATA "获取元数据"
-    IDS_METADATA_PROMPT "尚未配置元数据源。是否打开获取元数据的指南？"
+    IDS_METADATA_PROMPT "尚未添加元数据文件。是否查看获取方法？"
+    IDS_METADATA_EMPTY "尚未添加元数据文件，可通过“帮助 → 获取元数据”查看获取方法。"
     IDS_METADATA_BROWSER_FAILED "无法打开浏览器。请将此地址复制到浏览器中："
     IDS_RESULT_OPEN "打开"
     IDS_SOURCE_STATUS "来源：{count}"
@@ -95,6 +96,7 @@ BEGIN
     POPUP "帮助(&H)"
     BEGIN
         MENUITEM "搜索语法(&S)...", SEARCH_HELP
+        MENUITEM "获取元数据(&M)…", GET_METADATA
         MENUITEM SEPARATOR
         MENUITEM "关于 Winlex(&A)...", ABOUT
     END
