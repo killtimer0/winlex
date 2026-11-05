@@ -848,9 +848,13 @@ fn render(result: &QueryResult) -> String {
             resources::text(IDS_ERROR_CODE_LABEL),
             result.request.code
         ),
-        resources::text(IDS_ERROR_CODE_DECIMAL)
-            .replace("{unsigned}", &result.request.code.to_string())
-            .replace("{signed}", &(result.request.code as i32).to_string()),
+        resources::format(
+            IDS_ERROR_CODE_DECIMAL,
+            &[
+                &result.request.code.to_string(),
+                &(result.request.code as i32).to_string(),
+            ],
+        ),
         format!(
             "{} {}",
             resources::text(IDS_ERROR_CODE_SCOPE),
@@ -883,14 +887,16 @@ fn render(result: &QueryResult) -> String {
             Scheme::Module => IDS_ERROR_CODE_CUSTOM,
         }));
         if let Some(e) = &candidate.encoding {
-            lines.push(
-                resources::text(IDS_ERROR_CODE_ENCODING)
-                    .replace("{severity}", &e.severity.to_string())
-                    .replace("{customer}", &u8::from(e.customer).to_string())
-                    .replace("{facility}", &e.facility.to_string())
-                    .replace("{code}", &e.code.to_string())
-                    .replace("{nt}", &u8::from(e.nt_mapping).to_string()),
-            );
+            lines.push(resources::format(
+                IDS_ERROR_CODE_ENCODING,
+                &[
+                    &e.severity.to_string(),
+                    &u8::from(e.customer).to_string(),
+                    &e.facility.to_string(),
+                    &e.code.to_string(),
+                    &u8::from(e.nt_mapping).to_string(),
+                ],
+            ));
         }
         render_message(&mut lines, &candidate.message);
         for related in &candidate.related {

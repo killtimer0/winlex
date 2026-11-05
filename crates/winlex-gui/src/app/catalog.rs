@@ -185,10 +185,12 @@ impl Session {
                 IDS_EMPTY_CATALOG
             }),
             Search::Waiting => resources::text(IDS_SEARCHING),
-            Search::Running(_) => resources::text(IDS_SEARCH_PROGRESS)
-                .replace("{count}", &self.results.len().to_string()),
-            Search::Done => resources::text(IDS_SEARCH_STATUS)
-                .replace("{total}", &self.results.len().to_string()),
+            Search::Running(_) => {
+                resources::format(IDS_SEARCH_PROGRESS, &[&self.results.len().to_string()])
+            }
+            Search::Done => {
+                resources::format(IDS_SEARCH_STATUS, &[&self.results.len().to_string()])
+            }
             Search::Failed(e) => format!("{e:#}"),
         }
     }
@@ -199,7 +201,7 @@ impl Session {
         if self.load.is_some() {
             return resources::text(IDS_LOADING);
         }
-        resources::text(IDS_SOURCE_STATUS).replace("{count}", &self.inputs().len().to_string())
+        resources::format(IDS_SOURCE_STATUS, &[&self.inputs().len().to_string()])
     }
     pub fn empty_status(&self) -> Option<String> {
         if !self.inputs().is_empty() {
@@ -596,9 +598,8 @@ pub(super) fn worker_stopped(ctx: &Context) {
     super::sources::refresh(ctx);
 }
 pub(super) fn loaded(ctx: &Context, id: u64, result: anyhow::Result<Option<Arc<Catalog>>>) {
-    let result = result.map_err(|error| {
-        resources::text(IDS_LOAD_FAILED).replace("{error}", &format!("{error:#}"))
-    });
+    let result =
+        result.map_err(|error| resources::format(IDS_LOAD_FAILED, &[&format!("{error:#}")]));
     let committed = result.is_ok();
     if !ctx.with_session_mut(|session| session.accept_load(id, result)) {
         return;

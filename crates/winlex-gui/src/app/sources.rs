@@ -113,7 +113,7 @@ fn rows(ctx: &Context) -> Vec<Row> {
                         FoldKind::Path,
                     ));
                 }
-                let exact = resources::text(IDS_SIZE_BYTES).replace("{size}", &len.to_string());
+                let exact = resources::format(IDS_SIZE_BYTES, &[&len.to_string()]);
                 let native_path: Vec<_> = path.as_os_str().encode_wide().collect();
                 let title: Vec<_> = path.file_name().unwrap_or_default().encode_wide().collect();
                 let mut info = native_path.clone();
@@ -166,7 +166,7 @@ fn size(bytes: usize) -> String {
     } else {
         format!("{value:.1}")
     };
-    resources::text(units[unit]).replace("{size}", &value)
+    resources::format(units[unit], &[&value])
 }
 
 fn list(ctx: &Context) -> HWND {

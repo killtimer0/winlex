@@ -38,10 +38,7 @@ pub(super) fn about(ctx: &Context) -> anyhow::Result<()> {
         &|hwnd, message, w, l| {
             if message == WM_INITDIALOG {
                 let info = unsafe { GetDlgItem(hwnd, ABOUT_INFO as i32) };
-                set_text(
-                    info,
-                    &resources::text(IDS_ABOUT_INFO).replace("{version}", &text(info)),
-                );
+                set_text(info, &resources::format(IDS_ABOUT_INFO, &[&text(info)]));
             }
             if message == WM_INITDIALOG || message == WM_DPICHANGED {
                 let value = if message == WM_DPICHANGED {

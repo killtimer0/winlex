@@ -1,6 +1,10 @@
 //! Native RC resources with explicit language lookup, including on XP.
 use crate::native::*;
 use std::sync::OnceLock;
+use windows_sys::Win32::System::Diagnostics::Debug::{
+    FORMAT_MESSAGE_ALLOCATE_BUFFER, FORMAT_MESSAGE_ARGUMENT_ARRAY, FORMAT_MESSAGE_FROM_STRING,
+    FormatMessageW,
+};
 
 include!(concat!(env!("OUT_DIR"), "/resource_ids.rs"));
 
@@ -148,6 +152,37 @@ pub fn text(id: u16) -> String {
     let value = wide_text(id);
     String::from_utf16(&value[..value.len() - 1]).expect("validated resource")
 }
+pub fn format(id: u16, arguments: &[&str]) -> String {
+    format_message(wide_text(id), arguments).unwrap_or_else(|error| format!("{error:#}"))
+}
+fn format_message(template: &[u16], arguments: &[&str]) -> anyhow::Result<String> {
+    owned_handle! { struct MessageBuffer(HLOCAL); LocalFree, null = std::ptr::null_mut() }
+    let arguments: Vec<_> = arguments.iter().map(|value| wide(value)).collect();
+    let pointers: Vec<_> = arguments
+        .iter()
+        .map(|value| value.as_ptr().cast::<i8>())
+        .collect();
+    let mut buffer = MessageBuffer(std::ptr::null_mut());
+    let count = unsafe {
+        FormatMessageW(
+            FORMAT_MESSAGE_ALLOCATE_BUFFER
+                | FORMAT_MESSAGE_FROM_STRING
+                | FORMAT_MESSAGE_ARGUMENT_ARRAY,
+            template.as_ptr().cast(),
+            0,
+            0,
+            (&mut buffer.0 as *mut HLOCAL).cast(),
+            0,
+            pointers.as_ptr(),
+        )
+    };
+    if count == 0 {
+        return Err(error("Format GUI resource"));
+    }
+    Ok(String::from_utf16_lossy(unsafe {
+        std::slice::from_raw_parts(buffer.0.cast(), count as usize)
+    }))
+}
 pub fn interface_langid() -> u16 {
     *LANGUAGE.get().expect("initialized resource language")
 }
@@ -170,6 +205,18 @@ pub fn dialog(id: u16) -> anyhow::Result<&'static [u8]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn message_inserts_preserve_order_unicode_and_literal_argument_text() {
+        assert_eq!(
+            format_message(
+                &wide("%2!s! / %1!s! / %2!s!%n100%%"),
+                &["中文 🦀", "%1!s!\n{value}"]
+            )
+            .unwrap(),
+            "%1!s!\n{value} / 中文 🦀 / %1!s!\n{value}\r\n100%"
+        );
+    }
 
     #[test]
     fn language_names_round_trip() {
