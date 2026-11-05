@@ -10,7 +10,7 @@ use crate::{
 };
 use std::{os::windows::ffi::OsStrExt, path::PathBuf};
 
-const METADATA_GUIDE: &str = "https://github.com/killtimer0/winlex/blob/main/docs/metadata.md";
+const METADATA_RELEASES: &str = "https://github.com/killtimer0/winmd-collection/releases";
 
 pub(super) fn should_prompt(command_line: &[PathBuf], saved: Option<&[PathBuf]>) -> bool {
     command_line.is_empty() && saved.is_some_and(|paths| paths.is_empty())
@@ -31,7 +31,7 @@ pub(super) fn prompt_guide(ctx: &Context) {
 }
 
 pub(super) fn open_guide(ctx: &Context) {
-    if open_url(ctx.frame(), METADATA_GUIDE).is_err() {
+    if open_url(ctx.frame(), METADATA_RELEASES).is_err() {
         let result = resources::dialog(IDD_SEARCH_HELP).and_then(|template| {
             crate::dialog::modal::show(
                 ctx.frame(),
@@ -52,7 +52,7 @@ pub(super) fn open_guide(ctx: &Context) {
                             &format!(
                                 "{}\r\n\r\n{}",
                                 resources::text(IDS_METADATA_BROWSER_FAILED),
-                                METADATA_GUIDE
+                                METADATA_RELEASES
                             ),
                         );
                     }

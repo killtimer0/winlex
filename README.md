@@ -14,7 +14,7 @@
 
 ## 使用
 
-在命令前指定输入文件，来源与准备方法见[获取元数据](docs/metadata.md)：
+从 [winmd-collection Releases](https://github.com/killtimer0/winmd-collection/releases) 获取 WinMD。在命令前指定本地输入文件：
 
 ```powershell
 winlex Windows.Win32.winmd search OPENFILE

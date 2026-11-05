@@ -3,8 +3,8 @@ STRINGTABLE
 BEGIN
     IDS_ABOUT_INFO "Winlex %1!s!%n%nOffline Windows API reference and metadata browser.%n%nAuthor: killtimer0%nAI-assisted development: GPT (OpenAI)%n%n<a href=""https://github.com/killtimer0/winlex"">Project homepage</a>%n<a href=""https://github.com/killtimer0/winlex/blob/main/LICENSE"">License (GPL-3.0)</a>"
     IDS_GET_METADATA "Get metadata"
-    IDS_METADATA_PROMPT "No metadata files have been added. View how to get them?"
-    IDS_METADATA_EMPTY "No metadata files have been added. Choose Help → Get metadata to learn how to get them."
+    IDS_METADATA_PROMPT "No metadata files have been added. Open the metadata releases page?"
+    IDS_METADATA_EMPTY "No metadata files have been added. Choose Help → Get metadata to open the releases page."
     IDS_METADATA_BROWSER_FAILED "Could not open the browser. Copy this address into your browser:"
     IDS_RESULT_OPEN "Open"
     IDS_SOURCE_STATUS "Sources: %1!s!"

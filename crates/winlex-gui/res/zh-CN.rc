@@ -3,8 +3,8 @@ STRINGTABLE
 BEGIN
     IDS_ABOUT_INFO "Winlex %1!s!%n%n离线 Windows API 参考与元数据查询工具。%n%n作者：killtimer0%nAI 辅助开发：GPT（OpenAI）%n%n<a href=""https://github.com/killtimer0/winlex"">项目主页</a>%n<a href=""https://github.com/killtimer0/winlex/blob/main/LICENSE"">许可证 (GPL-3.0)</a>"
     IDS_GET_METADATA "获取元数据"
-    IDS_METADATA_PROMPT "尚未添加元数据文件。是否查看获取方法？"
-    IDS_METADATA_EMPTY "尚未添加元数据文件，可通过“帮助 → 获取元数据”查看获取方法。"
+    IDS_METADATA_PROMPT "尚未添加元数据文件。是否打开元数据发布页面？"
+    IDS_METADATA_EMPTY "尚未添加元数据文件，可通过“帮助 → 获取元数据”打开发布页面。"
     IDS_METADATA_BROWSER_FAILED "无法打开浏览器。请将此地址复制到浏览器中："
     IDS_RESULT_OPEN "打开"
     IDS_SOURCE_STATUS "来源：%1!s!"
