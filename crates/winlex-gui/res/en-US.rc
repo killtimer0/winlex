@@ -1,6 +1,7 @@
 LANGUAGE 9, 1
 STRINGTABLE
 BEGIN
+    IDS_ABOUT_INFO "Winlex {version}\n\nOffline Windows API reference and metadata browser.\n\nAuthor: killtimer0\nAI-assisted development: GPT (OpenAI)\n\n<a href=""https://github.com/killtimer0/winlex"">Project homepage</a>\n<a href=""https://github.com/killtimer0/winlex/blob/main/LICENSE"">License (GPL-3.0)</a>"
     IDS_GET_METADATA "Get metadata"
     IDS_METADATA_PROMPT "No metadata files have been added. View how to get them?"
     IDS_METADATA_EMPTY "No metadata files have been added. Choose Help → Get metadata to learn how to get them."
@@ -107,11 +108,7 @@ CAPTION "About Winlex"
 FONT 8, "MS Shell Dlg"
 BEGIN
     ICON IDI_APP, ABOUT_ICON, 12, 12, 20, 20
-    LTEXT "Winlex", -1, 48, 12, 190, 10
-    LTEXT VERSION_TEXT, -1, 48, 27, 190, 10
-    LTEXT "Offline Windows API reference and metadata browser.", -1, 48, 45, 190, 26
-    CONTROL "<a href=""https://github.com/killtimer0/winlex"">Project homepage</a>", ABOUT_HOMEPAGE, "SysLink", 0x50010000, 48, 77, 190, 14
-    CONTROL "<a href=""https://github.com/killtimer0/winlex/blob/main/LICENSE"">License (GPL-3.0)</a>", ABOUT_LICENSE, "SysLink", 0x50010000, 48, 95, 190, 14
+    CONTROL VERSION_TEXT, ABOUT_INFO, "SysLink", 0x50010000, 48, 12, 190, 96
     DEFPUSHBUTTON "OK", 1, 188, 116, 50, 14
 END
 IDD_SEARCH_HELP DIALOGEX 0, 0, 350, 250

@@ -2,7 +2,7 @@ use crate::app::context::Context;
 use crate::{
     dialog::{MOVE_X, MOVE_Y, SIZE_X, SIZE_Y, modal},
     icons::WindowIcons,
-    native::*,
+    native::{text, *},
     resources::{self, *},
 };
 use std::cell::RefCell;
@@ -36,6 +36,13 @@ pub(super) fn about(ctx: &Context) -> anyhow::Result<()> {
         resources::dialog(IDD_ABOUT)?,
         &[],
         &|hwnd, message, w, l| {
+            if message == WM_INITDIALOG {
+                let info = unsafe { GetDlgItem(hwnd, ABOUT_INFO as i32) };
+                set_text(
+                    info,
+                    &resources::text(IDS_ABOUT_INFO).replace("{version}", &text(info)),
+                );
+            }
             if message == WM_INITDIALOG || message == WM_DPICHANGED {
                 let value = if message == WM_DPICHANGED {
                     (w & 0xffff) as u32
@@ -54,7 +61,7 @@ pub(super) fn about(ctx: &Context) -> anyhow::Result<()> {
             }
             if message == WM_NOTIFY {
                 let header = unsafe { &*(l as *const NMHDR) };
-                if matches!(header.idFrom as u16, ABOUT_HOMEPAGE | ABOUT_LICENSE)
+                if header.idFrom == ABOUT_INFO as usize
                     && matches!(header.code, NM_CLICK | NM_RETURN)
                 {
                     let link = unsafe { &*(l as *const NMLINK) };

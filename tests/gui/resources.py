@@ -85,7 +85,7 @@ def main():
         for language in language_ids:
             data = resource(5, ids['IDD_ABOUT'], language)
             assert struct.unpack_from('<HH', data) == (1, 0xffff)
-            assert b'h\x00t\x00t\x00p\x00s\x00' in data
+            assert 'https://' in decoded[language, ids['IDS_ABOUT_INFO']]
         assert languages(9, ids["IDR_ACCELERATORS"]) == [0]
         accelerators = list(struct.iter_unpack("<4H", resource(9, ids["IDR_ACCELERATORS"], 0)))
         assert {(flags & 0x7f, key, command) for flags, key, command, _ in accelerators} == {

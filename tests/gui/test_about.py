@@ -19,10 +19,10 @@ def open_about(app):
         and n.is_visible(h) and n.get_item(h, 1400)), None), 'about dialog')
 
 
-def link_item(app, control):
+def link_item(app, control, index=0):
     # commctrl.h: LITEM contains four 32-bit fields, a 48-WCHAR ID and a 2084-WCHAR URL.
     item = c.create_string_buffer(16 + (48 + 2084) * 2)
-    struct.pack_into('<4I', item, 0, 1 | 2 | 8, 0, 0, 2)  # LIF_ITEMINDEX | LIF_STATE | LIF_URL
+    struct.pack_into('<4I', item, 0, 1 | 2 | 8, index, 0, 2)  # LIF_ITEMINDEX | LIF_STATE | LIF_URL
     assert n.write_memory(app.handle, app.memory, item, len(item), None)
     assert n.send(control, messages.LM_GETITEM, 0, app.memory)
     assert n.read_memory(app.handle, app.memory, item, len(item), None)
@@ -37,15 +37,16 @@ def test_about_content_modality_and_dpi(launch, profile, settings, language, tit
     dialog = open_about(app)
     assert not win32gui.IsWindowEnabled(app.frame)
     assert n.window_text(dialog) == title
-    labels = [n.window_text(h) for h in n.windows(dialog) if n.class_name(h) == 'Static']
-    assert 'Winlex' in labels
+    info = n.get_item(dialog, 1403)
+    text = n.window_text(info)
+    assert 'Winlex' in text
     version = win32api.GetFileVersionInfo(str(settings[0]), '\\')
     ms, ls = version['FileVersionMS'], version['FileVersionLS']
-    assert '.'.join(map(str, [ms >> 16, ms & 65535, ls >> 16, ls & 65535])) in labels
+    assert '.'.join(map(str, [ms >> 16, ms & 65535, ls >> 16, ls & 65535])) in text
     assert n.window_text(n.get_item(dialog, 1)) == ok
     assert n.send(n.get_item(dialog, 1400), win32con.STM_GETICON)
-    assert link_item(app, n.get_item(dialog, 1403)) == ('https://github.com/killtimer0/winlex', True)
-    assert link_item(app, n.get_item(dialog, 1404)) == ('https://github.com/killtimer0/winlex/blob/main/LICENSE', True)
+    assert link_item(app, info) == ('https://github.com/killtimer0/winlex', True)
+    assert link_item(app, info, 1) == ('https://github.com/killtimer0/winlex/blob/main/LICENSE', True)
     evidence = []
     for cycle in range(3):
         for monitor in n.monitors():
@@ -86,7 +87,7 @@ def test_about_real_keyboard(launch):
         inputs.key(win32con.VK_TAB)
         n.wait(lambda: app.focused() == n.get_item(dialog, 1403), 'homepage keyboard focus')
         inputs.key(win32con.VK_TAB)
-        n.wait(lambda: app.focused() == n.get_item(dialog, 1404), 'license keyboard focus')
+        n.wait(lambda: app.focused() == n.get_item(dialog, 1403), 'license keyboard focus')
         inputs.key(win32con.VK_TAB)
         n.wait(lambda: app.focused() == n.get_item(dialog, 1), 'return to OK')
         inputs.key(win32con.VK_ESCAPE)
