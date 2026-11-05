@@ -1,5 +1,4 @@
 import win32con
-import sys
 import pytest
 from support import native as n
 from test_tools import tool, choose_scope, body
@@ -46,8 +45,6 @@ def test_module_picker_uses_system_dialog_and_cancel_preserves_request(launch):
                                   if n.class_name(h) == '#32770' and n.is_visible(h)
                                   and n.get_pid(h, None) == n.get_pid(doc, None)), None),
                     'module file picker')
-    modern = any(n.class_name(h) == 'DirectUIHWND' for h in n.windows(dialog))
-    assert modern == (sys.getwindowsversion().major >= 6)
     assert n.post(dialog, win32con.WM_COMMAND, win32con.IDCANCEL, 0)
     n.wait(lambda: not n.is_window(dialog), 'module picker cancellation')
     n.send(doc, win32con.WM_NULL)

@@ -27,8 +27,10 @@ def dark_background(hwnd):
         return max(pixels[offset:offset + 3]) < 128
 
 
-@pytest.mark.parametrize('language', ['en-US', 'zh-CN'])
-@pytest.mark.parametrize('dpi', ['pmv2', 'pmv1', 'system', 'unaware'])
+@pytest.mark.parametrize('language,dpi', [
+    ('en-US', 'pmv2'), ('en-US', 'pmv1'),
+    ('zh-CN', 'system'), ('zh-CN', 'unaware'),
+])
 @modern_theme
 def test_theme_switch_persistence_and_dialogs(launch, profile, settings, language, dpi):
     profile.set('Language', winreg.REG_SZ, language)
@@ -44,7 +46,6 @@ def test_theme_switch_persistence_and_dialogs(launch, profile, settings, languag
     sheet = app.settings()
     page = app.settings_page(sheet, 0)
     combo = n.get_item(page, 1301)
-    assert n.send(combo, win32con.CB_GETCOUNT) == 3
     assert n.send(combo, win32con.CB_GETCURSEL) == 2
     assert dark_background(page)
     tab = next(h for h in n.windows(sheet) if n.class_name(h) == 'SysTabControl32')

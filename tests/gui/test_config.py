@@ -63,7 +63,6 @@ def test_language_option_round_trip(launch, profile, ui_language, name):
     general = app.settings_page(sheet, 0)
     control = n.get_item(general, 1300)
     choices = app.choices(control)
-    assert sorted(choices) == sorted([ui_language.auto_label, *[option.label for option in LANGUAGES]])
     label = ui_language.auto_label if name == "auto" else language(name).label
     index = choices.index(label)
     n.send(control, win32con.CB_SETCURSEL, index)

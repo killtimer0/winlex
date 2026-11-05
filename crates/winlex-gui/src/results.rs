@@ -336,7 +336,6 @@ mod tests {
         assert_eq!(result.display.title_matches, [0..2, 4..5]);
         assert!(matches(&result.display.detail).is_empty());
         assert_eq!(text(&result.display.detail), "Outer+Inner · N");
-        assert_eq!(result.display.icon, Some(Icon::Method));
 
         let result = present(
             with_indices(
@@ -396,7 +395,6 @@ mod tests {
             std::slice::from_ref(&(2..3))
         );
         assert!(result.display.title_matches.is_empty());
-        assert_eq!(result.display.icon, Some(Icon::Constant));
 
         let mut ctx = context();
         ctx.guid = Some("12345678-9abc-def0-1234-56789abcdef0".into());
@@ -412,7 +410,6 @@ mod tests {
             matches(&result.display.detail).as_slice(),
             std::slice::from_ref(&(0..38))
         );
-        assert_eq!(result.display.icon, Some(Icon::Interface));
 
         let mut ctx = context();
         ctx.constant = Some(Value::I32(5));

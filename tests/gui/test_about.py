@@ -22,31 +22,31 @@ def open_about(app):
 def link_item(app, control, index=0):
     # commctrl.h: LITEM contains four 32-bit fields, a 48-WCHAR ID and a 2084-WCHAR URL.
     item = c.create_string_buffer(16 + (48 + 2084) * 2)
-    struct.pack_into('<4I', item, 0, 1 | 2 | 8, index, 0, 2)  # LIF_ITEMINDEX | LIF_STATE | LIF_URL
+    struct.pack_into('<4I', item, 0, 1 | 2 | 8, index, 0, 3)  # LIF_ITEMINDEX | LIF_STATE | LIF_URL
     assert n.write_memory(app.handle, app.memory, item, len(item), None)
     assert n.send(control, messages.LM_GETITEM, 0, app.memory)
     assert n.read_memory(app.handle, app.memory, item, len(item), None)
-    return app.remote_text(app.memory + 16 + 48 * 2, 2084 * 2), bool(struct.unpack_from('<I', item, 8)[0] & 2)
+    return app.remote_text(app.memory + 16 + 48 * 2, 2084 * 2), struct.unpack_from('<I', item, 8)[0]
 
 
-@pytest.mark.parametrize('language,title,ok', [('en-US', 'About Winlex', 'OK'), ('zh-CN', '关于 Winlex', '确定')], ids=['english', 'chinese'])
-@pytest.mark.parametrize('mode', ['pmv2', 'pmv1', 'system', 'unaware'])
-def test_about_content_modality_and_dpi(launch, profile, settings, language, title, ok, mode):
+@pytest.mark.parametrize('language,mode', [
+    ('en-US', 'pmv2'), ('zh-CN', 'pmv1'), ('en-US', 'system'), ('zh-CN', 'unaware')])
+def test_about_content_modality_and_dpi(launch, profile, settings, language, mode):
     profile.set('Language', winreg.REG_SZ, language)
     app = launch(dpi=mode)
     dialog = open_about(app)
     assert not win32gui.IsWindowEnabled(app.frame)
-    assert n.window_text(dialog) == title
     info = n.get_item(dialog, 1403)
     text = n.window_text(info)
     assert 'Winlex' in text
     version = win32api.GetFileVersionInfo(str(settings[0]), '\\')
     ms, ls = version['FileVersionMS'], version['FileVersionLS']
     assert '.'.join(map(str, [ms >> 16, ms & 65535, ls >> 16, ls & 65535])) in text
-    assert n.window_text(n.get_item(dialog, 1)) == ok
     assert n.send(n.get_item(dialog, 1400), win32con.STM_GETICON)
-    assert link_item(app, info) == ('https://github.com/killtimer0/winlex', True)
-    assert link_item(app, info, 1) == ('https://github.com/killtimer0/winlex/blob/main/LICENSE', True)
+    for index, url in enumerate(('https://github.com/killtimer0/winlex',
+                                 'https://github.com/killtimer0/winlex/blob/main/LICENSE')):
+        actual, state = link_item(app, info, index)
+        assert actual == url and state & 2
     evidence = []
     for cycle in range(3):
         for monitor in n.monitors():
@@ -85,9 +85,12 @@ def test_about_real_keyboard(launch):
         n.wait(lambda: win32gui.GetForegroundWindow() == dialog, 'about foreground')
         assert app.focused() == n.get_item(dialog, 1)
         inputs.key(win32con.VK_TAB)
-        n.wait(lambda: app.focused() == n.get_item(dialog, 1403), 'homepage keyboard focus')
+        info = n.get_item(dialog, 1403)
+        n.wait(lambda: app.focused() == info and link_item(app, info, 0)[1] & 1,
+               'homepage keyboard focus')
         inputs.key(win32con.VK_TAB)
-        n.wait(lambda: app.focused() == n.get_item(dialog, 1403), 'license keyboard focus')
+        n.wait(lambda: app.focused() == info and link_item(app, info, 1)[1] & 1,
+               'license keyboard focus')
         inputs.key(win32con.VK_TAB)
         n.wait(lambda: app.focused() == n.get_item(dialog, 1), 'return to OK')
         inputs.key(win32con.VK_ESCAPE)

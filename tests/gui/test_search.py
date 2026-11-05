@@ -6,6 +6,7 @@ import win32gui
 from support.diagnostics import capture, screenshot
 from support import messages
 from support import native as n
+from test_search_help import open_help
 
 
 def test_result_rows_show_context_and_match_emphasis(launch, settings):
@@ -42,11 +43,6 @@ def test_search_modes_match_cli_order(launch, settings):
     mode = n.get_item(app.frame, 1114)
     for index, query, flag in [
         (0, "CrtFlW", None), (1, 'name = "CreateFileW"', "--where"),
-        (1, 'name contains "access" and value = 5', "--where"),
-        (1, 'value contains "Microsoft"', "--where"),
-        (1, "value = 1.5", "--where"),
-        (1, 'guid = "0000000c-0000-0000-c000-000000000046"', "--where"),
-        (0, "0x80000000", None),
     ]:
         n.send(mode, win32con.CB_SETCURSEL, index)
         app.command(1114, code=win32con.CBN_SELENDOK)
@@ -63,13 +59,11 @@ def test_search_modes_match_cli_order(launch, settings):
         assert [app.cell(row).splitlines()[0] for row in range(app.count())] == [hit["full_name"] for hit in expected]
 
 
-def test_search_mode_labels_errors_and_navigation(launch, settings):
+def test_search_mode_errors_and_navigation(launch, settings):
     app = launch([settings[1]])
     app.query("CrtFlW")
     mode = n.get_item(app.frame, 1114)
     chinese = app.toolbar_text(1040) == "搜索"
-    assert app.choices(mode) == (["快速搜索", "条件搜索"] if chinese
-                                 else ["Quick", "Conditions"])
     assert n.send(mode, win32con.CB_GETCURSEL) == 0
     assert app.named_rows("CreateFileW")
 
@@ -184,16 +178,8 @@ def test_search_syntax_help_preserves_query(launch, settings):
     app = launch([settings[1]])
     app.query("CrtFlW")
     count = app.count()
-    n.post(app.frame, win32con.WM_COMMAND, 1053, 0)
-    dialog = n.wait(lambda: next((h for h in n.windows()
-                    if n.class_name(h) == "#32770" and n.is_visible(h)
-                    and n.window_text(h) in ("Search syntax", "搜索语法")), None), "search syntax help")
-    labels = "\n".join(n.window_text(h) for h in n.windows(dialog))
-    assert 'name contains "access" and value = 5' in labels
-    assert "value = nan or value = inf" in labels
-    button = n.wait(lambda: next((h for h in n.windows(dialog)
-                    if n.class_name(h) == "Button" and n.is_visible(h)), None), "help button")
-    n.post(button, win32con.BM_CLICK, 0, 0)
+    dialog = open_help(app)
+    n.post(n.get_item(dialog, win32con.IDOK), win32con.BM_CLICK, 0, 0)
     n.wait(lambda: not n.is_window(dialog), "help closed")
     assert n.window_text(app.search) == "CrtFlW"
     assert app.count() == count

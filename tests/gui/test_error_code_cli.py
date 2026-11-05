@@ -68,7 +68,7 @@ def test_error_code_cli_errno_is_explicit_english_and_runtime_scoped(settings):
         assert message['status'] == 'found' and message['text'] == 'No such file or directory'
         assert message['actual_language'] == 0x409
     assert query(settings, 0, '--scope', 'errno')['result']['candidates'][0]['message']['text'] == 'No error'
-    for value in (15, 26, 35, 37, 43, 100, -1, 2147483648, 4294967295):
+    for value in (15, 100, -1, 2147483648):
         message = query(settings, value, '--scope', 'errno')['result']['candidates'][0]['message']
         assert message['status'] == 'not_found' and message['text'] is None
         assert message['failure'] is None

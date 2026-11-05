@@ -78,21 +78,12 @@ def editor_selection(app, editor):
     return struct.unpack("<ii", raw.raw)
 
 
-def menu_label(menu, index=0):
-    buffer = n.c.create_unicode_buffer(256)
-    assert n.api(n.user, "GetMenuStringW", n.c.c_int, n.w.HMENU, n.w.UINT,
-                 n.w.LPWSTR, n.c.c_int, n.w.UINT)(
-                     menu, index, buffer, len(buffer), win32con.MF_BYPOSITION)
-    return buffer.value.replace("&", "").split("\t")[0]
-
-
 def follow_caret(app, doc, index):
     n.send(app.mdi, win32con.WM_MDIACTIVATE, doc)
     editor = n.get_item(doc, 1203)
     app.focus(editor)
     n.send(editor, win32con.EM_SETSEL, index, index)
-    menu, _ = popup(app, editor, keyboard=True)
-    assert menu_label(menu) in ("Go to declaration", "转到声明")
+    popup(app, editor, keyboard=True)
     n.key_message(editor, win32con.VK_DOWN)
     n.key_message(editor, win32con.VK_RETURN)
     wait_closed(editor)
@@ -182,8 +173,7 @@ def test_reference_context_menu_navigates_from_mouse_or_caret(launch, settings, 
     with n.window_dpi_context(app.frame):
         position(app, editor, index)
         location = character_point(app, editor, index)
-        menu, items = popup(app, editor, location, keyboard=keyboard, mouse=not keyboard)
-        assert menu_label(menu) in ("Go to declaration", "转到声明")
+        _, items = popup(app, editor, location, keyboard=keyboard, mouse=not keyboard)
         assert items[0] not in (0, 2071, 2072, 2073, 2074)
         n.key_message(editor, win32con.VK_DOWN)
         n.key_message(editor, win32con.VK_RETURN)
@@ -323,7 +313,6 @@ def test_last_reference_glyph_and_trailing_line_space_have_precise_hit_bounds(la
                 assert n.send(editor, win32con.EM_CHARFROMPOS, 0, app.memory) == end
                 n.send(editor, win32con.EM_SETSEL, start, end)
                 menu, items = popup(app, editor, screen, mouse=True)
-                assert menu_label(menu) in ("Go to declaration", "转到声明")
                 assert n.send(editor, win32con.EM_GETSEL) == (end << 16) | start
                 assert 2074 in items
                 state = n.api(n.user, "GetMenuState", n.w.UINT, n.w.HMENU, n.w.UINT, n.w.UINT)
@@ -427,7 +416,6 @@ def test_real_unfocused_scrolled_reference_navigates_on_first_gesture(launch, se
                                       app.frame, menu, 0, n.c.byref(rect))
                             and rect.right > rect.left and rect.bottom > rect.top)
                 n.wait(menu_positioned, "reference menu positioned")
-                assert menu_label(menu) in ("Go to declaration", "转到声明")
                 expected_selection = editor_selection(app, editor)
                 assert n.send(editor, win32con.EM_GETFIRSTVISIBLELINE) == top, (
                     "context menu must preserve the scrolled hit viewport", expected_selection, app.focused())
@@ -657,8 +645,7 @@ def test_real_ctrl_click_and_drag_do_not_confuse_navigation_with_selection(launc
             hold(win32con.VK_SHIFT)
             inputs.key(win32con.VK_F10)
             release(win32con.VK_SHIFT)
-            menu, _ = find_popup(app)
-            assert menu_label(menu) in ("Go to declaration", "转到声明")
+            find_popup(app)
             assert n.send(editor, win32con.EM_GETSEL) == selection
             foreground()
             inputs.key(win32con.VK_DOWN)

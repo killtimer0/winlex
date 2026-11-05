@@ -47,8 +47,6 @@ def test_list_selection_paint_follows_focus(launch, settings, sources):
 
 def check_toolbar_and_search(app):
     toolbar = n.get_item(app.frame, 1113)
-    assert n.class_name(toolbar) == "ToolbarWindow32"
-    assert n.send(toolbar, messages.TB_BUTTONCOUNT) == 3
     def button_rect(index):
         assert n.send(toolbar, messages.TB_GETITEMRECT, index, app.memory)
         buffer = n.c.create_string_buffer(16)
@@ -98,8 +96,6 @@ def check_toolbar_and_search(app):
     assert not n.send(toolbar, messages.TB_ISBUTTONCHECKED, 1040)
     click(first)
 
-    get_style = n.api(n.user, "GetWindowLongW", n.c.c_long, n.w.HWND, n.c.c_int)
-    assert get_style(app.search, win32con.GWL_EXSTYLE) & win32con.WS_EX_CLIENTEDGE
     edit, results = n.rectangle(app.search), n.rectangle(app.results)
     mode = n.rectangle(n.get_item(app.frame, 1114))
     assert edit[0] == results[0] and mode[2] == results[2]

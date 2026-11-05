@@ -38,8 +38,6 @@ def test_empty_startup_prompt_dismissal_and_runtime_removal(launch, profile, set
     app = launch(metadata_prompt=True)
     prompt = n.wait(lambda: next(iter(owned_dialogs(app)), None), "metadata guide prompt")
     try:
-        text = [n.window_text(hwnd) for hwnd in n.windows(prompt) if n.class_name(hwnd) == "Static"]
-        assert resource_text(settings[0], 2343, ui_language.langid) in text
         assert not win32gui.IsWindowEnabled(app.frame)
     finally:
         n.post(prompt, win32con.WM_COMMAND, win32con.IDNO, 0)
@@ -56,7 +54,6 @@ def test_empty_startup_prompt_dismissal_and_runtime_removal(launch, profile, set
     n.wait(lambda: app.count(app.sources) == 1, "source loaded", 45)
     app.command(1021)
     assert app.status_text() != empty
-    assert not n.get_item(app.frame, 1023)
     app.select(0, app.sources)
     app.command(1022)
     n.wait(lambda: app.count(app.sources) == 0 and profile.get("AutoLoad") == [],

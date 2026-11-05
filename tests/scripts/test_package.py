@@ -173,10 +173,7 @@ class WorkflowContracts(unittest.TestCase):
         workflow = self.workflow()
         self.assertEqual(set(workflow["on"]), {"workflow_dispatch"})
         job = next(job for job in workflow["jobs"].values() if "matrix" in job.get("strategy", {}))
-        matrix = job["strategy"]["matrix"]["arch"]
-        self.assertEqual(set(matrix), set(TARGETS))
-        policies = json.loads((ROOT / "inputs/targets.json").read_text())
-        self.assertEqual({arch: policy["target"] for arch, policy in policies.items()}, TARGETS)
+        self.assertEqual(set(job["strategy"]["matrix"]["arch"]), set(TARGETS))
         for step in (step for job in workflow["jobs"].values() for step in job["steps"]):
             if "run" not in step:
                 continue

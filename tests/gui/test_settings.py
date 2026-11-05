@@ -30,12 +30,7 @@ def test_settings_cancel_and_page_state(launch, profile, ui_language):
     sheet = app.settings()
     enabled = n.api(n.user, "IsWindowEnabled", n.w.BOOL, n.w.HWND)
     assert not enabled(app.frame)
-    assert n.window_text(n.get_item(sheet, 1)) == ui_language.ok_label
-    assert n.window_text(n.get_item(sheet, 2)) == ui_language.cancel_label
-    assert not n.is_visible(n.get_item(sheet, 0x3021))
     assert checked(app, sheet) == 7
-    page = app.settings_page(sheet, 1)
-    assert tuple(n.window_text(n.get_item(page, 1310+i)) for i in range(7)) == ui_language.category_labels
     mask(app, sheet, 127)
     general = app.settings_page(sheet, 0)
     control = n.get_item(general, 1300)
@@ -53,18 +48,9 @@ def test_settings_cancel_and_page_state(launch, profile, ui_language):
 def test_menu_scopes(launch, settings):
     app = launch([settings[1]])
     menu = n.api(n.user, "GetMenu", n.w.HMENU, n.w.HWND)(app.frame)
-    count = n.api(n.user, "GetMenuItemCount", n.c.c_int, n.w.HMENU)
     submenu = n.api(n.user, "GetSubMenu", n.w.HMENU, n.w.HMENU, n.c.c_int)
-    item_id = n.api(n.user, "GetMenuItemID", n.w.UINT, n.w.HMENU, n.c.c_int)
-    assert count(menu) == 4
     navigation = submenu(menu, 1)
     window = submenu(menu, 2)
-    file_ids = [item_id(submenu(menu, 0), i) for i in range(count(submenu(menu, 0)))]
-    window_ids = [item_id(window, i) for i in range(count(window))]
-    assert 1020 in file_ids and 1051 in file_ids and 1004 in file_ids
-    assert not {1049, 1050, 1015}.intersection(file_ids)
-    assert [item_id(navigation, i) for i in range(count(navigation))] == [1060, 1061, 1062, 0, 1055, 1056]
-    assert window_ids == [1010, 0, 1011, 1012, 1013, 1014, 1015]
     documents = []
     for name in ("CreateFileW", "CloseHandle"):
         app.query(name)

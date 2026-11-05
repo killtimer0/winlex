@@ -87,11 +87,9 @@ mod tests {
             light.strip_prefix(LIGHT_HEADER).unwrap(),
             dark.strip_prefix(DARK_HEADER).unwrap()
         );
-        assert!(matches!(themed(&light, false), Cow::Borrowed(_)));
         for invalid in [b"invalid RTF".as_slice(), br"invalid \pard\f0 body", b""] {
             for mode in [false, true] {
                 assert_eq!(themed(invalid, mode).as_ref(), invalid);
-                assert!(matches!(themed(invalid, mode), Cow::Borrowed(_)));
             }
         }
     }

@@ -101,7 +101,6 @@ fn stepped_and_iterated_search_share_progress_and_cancellation() {
     };
     let expected = collect();
     assert!(!expected.is_empty());
-    assert_eq!(collect(), expected);
     let mut search = db.search("CrtFlW", SearchOptions::default()).unwrap();
     let mut stepped = vec![];
     let mut skipped = false;

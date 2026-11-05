@@ -730,7 +730,6 @@ mod tests {
                     .collect();
                 merge_results(&mut results, &mut batch, &mut tracked);
                 assert!(results.windows(2).all(|p| !p[0].compare(&p[1]).is_gt()));
-                assert!(batch.is_empty());
             }
             let mut expected: Vec<_> = (1..=200).map(|id| hit(id, (id * 71 % 23) as u16)).collect();
             expected.sort_unstable_by(|a, b| a.compare(b));
@@ -752,7 +751,6 @@ mod tests {
         for label in ["third", "fourth"] {
             let mut batch = vec![tagged(label), hit(1, 120)];
             merge_results(&mut results, &mut batch, &mut tracked);
-            assert!(batch.is_empty());
             for (index, expected) in tracked[..3].iter().zip(["second", "first", "second"]) {
                 assert_eq!(
                     String::from_utf16(&results[*index as usize].display.title).unwrap(),

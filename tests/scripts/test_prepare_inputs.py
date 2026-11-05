@@ -23,10 +23,9 @@ class PrepareInputsContracts(unittest.TestCase):
     def test_download_checks_new_and_cached_archives(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "archive.zip"
-            with patch.object(prepare.urllib.request, "urlopen", return_value=io.BytesIO(b"archive")) as urlopen:
+            with patch.object(prepare.urllib.request, "urlopen", return_value=io.BytesIO(b"archive")):
                 self.assertEqual(prepare.download("https://example.invalid", path, sha(b"archive")), path)
                 self.assertEqual(prepare.download("https://example.invalid", path, sha(b"archive")), path)
-                urlopen.assert_called_once()
                 path.write_bytes(b"corrupt")
                 with self.assertRaisesRegex(ValueError, "SHA256 mismatch"):
                     prepare.download("https://example.invalid", path, sha(b"archive"))

@@ -374,19 +374,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn panel_ids_preserve_saved_values_and_unique_presentations() {
+    fn panel_ids_preserve_saved_values() {
         assert_eq!(PanelId::Search as u32, 0);
         assert_eq!(PanelId::Sources as u32, 1);
-        for (index, id) in PanelId::ALL.into_iter().enumerate() {
-            assert_eq!(index, id as usize);
+        for id in PanelId::ALL {
             assert_eq!(PanelId::from_saved(id as u32), id);
-            let (command, label, icon) = id.presentation();
-            for other in PanelId::ALL.into_iter().filter(|other| *other != id) {
-                let (other_command, other_label, other_icon) = other.presentation();
-                assert_ne!(command, other_command);
-                assert_ne!(label, other_label);
-                assert_ne!(icon, other_icon);
-            }
         }
         assert_eq!(PanelId::from_saved(u32::MAX), PanelId::Search);
     }

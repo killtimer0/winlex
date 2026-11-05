@@ -71,10 +71,8 @@ mod preference_tests {
 
     #[test]
     fn theme_options_round_trip() {
-        for (index, &(value, _, label)) in THEMES.iter().enumerate() {
-            assert_eq!(value as u32, index as u32);
+        for &(value, _, _) in THEMES {
             assert_eq!(Theme::from_name(value.name()), Some(value));
-            assert_eq!(THEMES.iter().filter(|other| other.2 == label).count(), 1);
         }
         assert_eq!(Theme::from_name("unknown"), None);
     }

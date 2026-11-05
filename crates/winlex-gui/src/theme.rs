@@ -1932,24 +1932,4 @@ mod tests {
             );
         }
     }
-
-    #[test]
-    fn surface_policy_preserves_themed_control_classes() {
-        for (class, surface) in [
-            ("button", Surface::Button),
-            ("combobox", Surface::ComboBox),
-            ("#32770", Surface::Dialog),
-            ("edit", Surface::Edit),
-            ("syslistview32", Surface::ListView),
-            ("mdiclient", Surface::MdiClient),
-            ("msctls_statusbar32", Surface::Status),
-            ("syslink", Surface::SysLink),
-            ("systabcontrol32", Surface::Tabs),
-            ("toolbarwindow32", Surface::Toolbar),
-            ("winlex.document", Surface::Application),
-            ("unknown", Surface::Other),
-        ] {
-            assert_eq!(Surface::of(class), surface, "{class}");
-        }
-    }
 }

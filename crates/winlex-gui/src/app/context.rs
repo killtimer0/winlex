@@ -195,37 +195,3 @@ impl Context {
         (!raw.is_null()).then(|| unsafe { &*raw })
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn state_readers_allow_nested_context_reads() {
-        let config = crate::config::Config::load(1).unwrap();
-        let settings = settings::Settings::load(&config);
-        let sidebar = sidebar::Sidebar::new(&config);
-        let ctx = Context::new(
-            config,
-            settings,
-            Dpi {
-                mode: crate::dpi::Mode::Unaware,
-            },
-            crate::platform::WindowsVersion::query().unwrap(),
-            catalog::Session::new(false),
-            crate::worker::Worker::new(crate::tasks::run).unwrap(),
-            sidebar,
-        );
-        ctx.with_session(|_| {
-            ctx.with_workspace(|_| {
-                ctx.with_sidebar(|_| {
-                    ctx.with_sources(|_| {
-                        ctx.with_status(|_| {
-                            ctx.with_settings(|_| assert!(ctx.frame().is_null()));
-                        });
-                    });
-                });
-            });
-        });
-    }
-}

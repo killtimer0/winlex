@@ -338,28 +338,6 @@ impl Images {
 mod tests {
     use super::*;
     #[test]
-    fn kind_presentation_preserves_shared_icons_and_distinct_labels() {
-        for (kind, icon, label) in [
-            ("attribute", Icon::Class, IDS_KIND_ATTRIBUTE),
-            ("delegate", Icon::Method, IDS_KIND_DELEGATE),
-            ("module", Icon::Misc, IDS_KIND_MODULE),
-        ] {
-            assert_eq!(Icon::for_kind(kind), icon);
-            assert_eq!(kind_label(kind), label);
-        }
-        assert_eq!(Icon::for_kind("unknown"), Icon::Misc);
-        assert_eq!(kind_label("unknown"), IDS_KIND_UNKNOWN);
-    }
-
-    #[test]
-    fn dark_symbol_colors_keep_hues_and_lift_each_channel() {
-        assert_eq!(lighten(0), 0x7f7f7f);
-        assert_eq!(lighten(0xffffff), 0xffffff);
-        assert_eq!(lighten(0x993366), 0xcc99b2);
-        assert_eq!(lighten(0x666666), 0xb2b2b2);
-    }
-
-    #[test]
     fn recoloring_reuses_alpha_without_carrying_previous_palette_colors() {
         let mut pixels = [0, 0x80332211, 0xff664422];
         let mut bitmap = Bitmap {

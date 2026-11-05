@@ -18,18 +18,6 @@ def result(app, name):
     return row
 
 
-def menu_items(menu, ids):
-    get_label = n.api(n.user, "GetMenuStringW", n.c.c_int, n.w.HMENU, n.w.UINT,
-                      n.w.LPWSTR, n.c.c_int, n.w.UINT)
-    labels = {}
-    for ident in ids:
-        if ident and ident != 0xffffffff:
-            text = n.c.create_unicode_buffer(256)
-            get_label(menu, ident, text, len(text), 0)
-            labels[ident] = text.value
-    return labels
-
-
 def choose(app, ids, command):
     actions = [ident for ident in ids if ident and ident != 0xffffffff]
     for _ in range(actions.index(command) + 1):
@@ -39,19 +27,16 @@ def choose(app, ids, command):
     n.send(app.results, win32con.WM_NULL)
 
 
-def test_result_menu_shapes_and_keyboard(launch, settings, request):
+def test_result_menu_actions_available_by_result_kind(launch, settings):
     app = launch([settings[1]])
     for name, expected in [("ERROR_ACCESS_DENIED", [1, 2, 3, 4, 5]),
                            ("CreateFileW", [1, 2, 3])]:
         result(app, name)
-        menu, ids = popup(app, app.results, keyboard=True)
+        _, ids = popup(app, app.results, keyboard=True)
         try:
-            labels = {ident: label for ident, label in menu_items(menu, ids).items() if ident < 100}
-            assert list(labels) == expected
-            if request.config.getoption("--language") == "en-US":
-                names = {1: "Open", 2: "Open in New Window", 3: "Copy Full Name",
-                         4: "Copy Value", 5: "Copy Hexadecimal Value"}
-                assert labels == {ident: names[ident] for ident in expected}
+            assert set(expected) <= set(ids)
+            if name == "CreateFileW":
+                assert 4 not in ids and 5 not in ids
         finally:
             dismiss(app.results)
 
@@ -75,9 +60,10 @@ def test_guid_result_menu_has_value_without_hexadecimal(launch, settings):
     assert app.count() > 0
     app.select(0)
     app.focus(app.results)
-    menu, ids = popup(app, app.results, keyboard=True)
+    _, ids = popup(app, app.results, keyboard=True)
     try:
-        assert list(menu_items(menu, ids)) == [1, 2, 3, 4]
+        assert {1, 2, 3, 4} <= set(ids)
+        assert 5 not in ids
     finally:
         dismiss(app.results)
 

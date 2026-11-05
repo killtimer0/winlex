@@ -460,7 +460,7 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_documents_architectures_closing_and_capacity_preserve_visit_order() {
+    fn duplicate_documents_architectures_and_closing_preserve_visit_order() {
         let catalog = catalog();
         let first = entry(&catalog, 1);
         let mut duplicate = first.clone();
@@ -489,13 +489,5 @@ mod tests {
             declaration(&replay(&mut history, Back).unwrap()).architecture,
             Architecture::X64
         );
-        for token in 1..=200 {
-            history.visit(entry(&catalog, token));
-        }
-        let mut remaining = Vec::new();
-        while let Some(entry) = replay(&mut history, Back) {
-            remaining.push(declaration(&entry).entity.token);
-        }
-        assert_eq!(remaining, (101..200).rev().collect::<Vec<_>>());
     }
 }

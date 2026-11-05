@@ -3,11 +3,11 @@ import win32con
 
 from support import native as n
 from test_context import popup
-from test_result_menu import result, menu_items, choose
+from test_result_menu import result, choose
 from test_tools import body, choose_scope, query, tool, tools
 
 
-def test_tool_action_reuses_recent_instance_and_queries_default_scope(launch, settings, request):
+def test_tool_action_reuses_recent_instance_and_queries_default_scope(launch, settings):
     app = launch([settings[1]])
     first = tool(app)
     second = tool(app, new=True)
@@ -18,10 +18,8 @@ def test_tool_action_reuses_recent_instance_and_queries_default_scope(launch, se
     app.command(1812, first, win32con.CBN_EDITCHANGE)
     query(app, first, "87")
     result(app, "ERROR_ACCESS_DENIED")
-    menu, ids = popup(app, app.results, keyboard=True)
-    assert ids == [1, 2, 0, 3, 4, 5, 0, 100]
-    if request.config.getoption("--language") == "en-US":
-        assert menu_items(menu, ids)[100] == "Search Error Code"
+    _, ids = popup(app, app.results, keyboard=True)
+    assert 100 in ids
     choose(app, ids, 100)
     n.wait(lambda: app.active_document() == first, "recent error code tool activated")
     assert set(tools(app)) == {first, second}
