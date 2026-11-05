@@ -456,9 +456,10 @@ unsafe fn erase_background(hwnd: HWND, w: usize) -> Option<isize> {
         if matches!(
             surface,
             Surface::Dialog | Surface::MdiClient | Surface::Application
-        ) || (surface == Surface::Tabs && can_paint_tabs(hwnd))
-        {
+        ) {
             FillRect(w as HDC, &client(hwnd), brush(COLOR_BTNFACE));
+            Some(1)
+        } else if surface == Surface::Tabs && can_paint_tabs(hwnd) {
             Some(1)
         } else {
             None
@@ -554,40 +555,17 @@ unsafe fn checkbox_text(draw: &NMCUSTOMDRAW) -> isize {
 }
 
 unsafe fn paint_toolbar(draw: &mut NMTBCUSTOMDRAW) -> isize {
-    unsafe {
-        match draw.nmcd.dwDrawStage {
-            CDDS_PREPAINT => {
-                FillRect(draw.nmcd.hdc, &draw.nmcd.rc, brush(COLOR_BTNFACE));
-                CDRF_NOTIFYITEMDRAW as isize
-            }
-            CDDS_ITEMPREPAINT => {
-                let state = draw.nmcd.uItemState;
-                let background = if state & CDIS_DISABLED != 0 {
-                    COLOR_BTNFACE
-                } else if state & CDIS_SELECTED != 0 {
-                    COLOR_3DDKSHADOW
-                } else if state & CDIS_HOT != 0 {
-                    COLOR_3DLIGHT
-                } else if state & CDIS_CHECKED != 0 {
-                    COLOR_3DSHADOW
-                } else {
-                    COLOR_BTNFACE
-                };
-                FillRect(draw.nmcd.hdc, &draw.nmcd.rc, brush(background));
-                draw.clrText = color(if state & CDIS_DISABLED != 0 {
-                    COLOR_GRAYTEXT
-                } else {
-                    COLOR_BTNTEXT
-                });
-                draw.clrTextHighlight = draw.clrText;
-                draw.clrBtnFace = color(background);
-                draw.clrBtnHighlight = color(background);
-                draw.clrHighlightHotTrack = color(background);
-                (TBCDRF_USECDCOLORS | TBCDRF_NOBACKGROUND | TBCDRF_NOEDGES | TBCDRF_NOOFFSET)
-                    as isize
-            }
-            _ => CDRF_DODEFAULT as isize,
+    match draw.nmcd.dwDrawStage {
+        CDDS_PREPAINT => CDRF_NOTIFYITEMDRAW as isize,
+        CDDS_ITEMPREPAINT => {
+            draw.clrText = color(if draw.nmcd.uItemState & CDIS_DISABLED != 0 {
+                COLOR_GRAYTEXT
+            } else {
+                COLOR_BTNTEXT
+            });
+            TBCDRF_USECDCOLORS as isize
         }
+        _ => CDRF_DODEFAULT as isize,
     }
 }
 
@@ -824,15 +802,9 @@ unsafe fn paint_tabs(hwnd: HWND, dc: HDC) {
             if send_mut(hwnd, TCM_GETITEMW, index, &mut item) == 0 {
                 continue;
             }
-            FillRect(
-                dc,
-                &area,
-                brush(if index as isize == selected {
-                    COLOR_WINDOW
-                } else {
-                    COLOR_BTNFACE
-                }),
-            );
+            if index as isize == selected {
+                FillRect(dc, &area, brush(COLOR_WINDOW));
+            }
             FrameRect(dc, &area, brush(COLOR_3DSHADOW));
             InflateRect(&mut area, -4, -3);
             DrawTextW(
@@ -1693,82 +1665,6 @@ mod tests {
             set_mode(1);
             assert_ne!(send_mut(link, LM_GETITEM, 0, &mut item), 0);
             assert_eq!(item.state, initial);
-            DestroyWindow(parent);
-            set_mode(0);
-        }
-    }
-
-    #[test]
-    fn toolbar_states_use_dark_pixels_without_changing_native_button_state() {
-        if !supported() || high_contrast() {
-            return;
-        }
-        let controls = CommonControls::activate();
-        controls.initialize(ICC_BAR_CLASSES);
-        unsafe {
-            let parent = test_window(
-                w!("STATIC"),
-                ptr::null(),
-                WS_POPUP,
-                RECT {
-                    left: 0,
-                    top: 0,
-                    right: 100,
-                    bottom: 40,
-                },
-            );
-            let toolbar = child(parent, w!("ToolbarWindow32"), &[0], TBSTYLE_FLAT, 1).unwrap();
-            send(
-                toolbar,
-                TB_BUTTONSTRUCTSIZE,
-                std::mem::size_of::<TBBUTTON>(),
-                0,
-            );
-            let button = TBBUTTON {
-                iBitmap: I_IMAGENONE,
-                idCommand: 10,
-                fsState: TBSTATE_ENABLED as u8 | TBSTATE_CHECKED as u8,
-                fsStyle: BTNS_CHECK as u8,
-                ..std::mem::zeroed()
-            };
-            assert_ne!(send_ref(toolbar, TB_ADDBUTTONS, 1, &button), 0);
-            set_mode(2);
-            apply(parent);
-            let dc = CreateCompatibleDC(ptr::null_mut());
-            let screen = GetDC(parent);
-            let bitmap = GdiObject(CreateCompatibleBitmap(screen, 40, 30));
-            ReleaseDC(parent, screen);
-            let original = SelectObject(dc, bitmap.0);
-            for (state, background) in [
-                (0, COLOR_BTNFACE),
-                (CDIS_CHECKED, COLOR_3DSHADOW),
-                (CDIS_HOT, COLOR_3DLIGHT),
-                (CDIS_SELECTED, COLOR_3DDKSHADOW),
-                (CDIS_DISABLED | CDIS_HOT, COLOR_BTNFACE),
-            ] {
-                let mut draw: NMTBCUSTOMDRAW = std::mem::zeroed();
-                draw.nmcd.hdr.hwndFrom = toolbar;
-                draw.nmcd.hdr.code = NM_CUSTOMDRAW;
-                draw.nmcd.dwDrawStage = CDDS_ITEMPREPAINT;
-                draw.nmcd.hdc = dc;
-                draw.nmcd.rc = RECT {
-                    left: 0,
-                    top: 0,
-                    right: 40,
-                    bottom: 30,
-                };
-                draw.nmcd.uItemState = state;
-                let result = send_mut(parent, WM_NOTIFY, 1, &mut draw);
-                assert_ne!(result & TBCDRF_NOBACKGROUND as isize, 0);
-                assert_eq!(GetPixel(dc, 20, 15), color(background));
-                assert_eq!(send(toolbar, TB_ISBUTTONCHECKED, 10, 0), 1);
-            }
-            send(toolbar, TB_CHECKBUTTON, 10, 0);
-            assert_eq!(send(toolbar, TB_ISBUTTONCHECKED, 10, 0), 0);
-            set_mode(1);
-            assert_eq!(send(toolbar, TB_ISBUTTONCHECKED, 10, 0), 0);
-            SelectObject(dc, original);
-            DeleteDC(dc);
             DestroyWindow(parent);
             set_mode(0);
         }

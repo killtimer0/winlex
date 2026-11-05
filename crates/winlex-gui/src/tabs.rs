@@ -419,17 +419,17 @@ fn paint(shared: &Rc<RefCell<State>>) {
             let icon = &item.icon;
             let selected = Some(item.id) == s.selected;
             let hot = s.hot == Some(item.id);
-            FillRect(
-                dc,
-                rect,
-                crate::theme::brush(if selected {
-                    COLOR_WINDOW
-                } else if hot {
-                    COLOR_3DLIGHT
-                } else {
-                    COLOR_BTNFACE
-                }),
-            );
+            if selected || hot {
+                FillRect(
+                    dc,
+                    rect,
+                    crate::theme::brush(if selected {
+                        COLOR_WINDOW
+                    } else {
+                        COLOR_3DLIGHT
+                    }),
+                );
+            }
             SetTextColor(dc, crate::theme::color(COLOR_WINDOWTEXT));
             if selected {
                 let mut line = *rect;
