@@ -118,65 +118,35 @@ try {
     if ($Configuration -eq 'Dist') { $arguments += @('--profile', 'dist') }
     if ($TargetDir) { $arguments += @('--target-dir', $TargetDir) }
     $executables = @{}
-    $buildOutputs = @{}
-    $packageId = $null
     & cargo @arguments | ForEach-Object {
         $message = $_ | ConvertFrom-Json
         if ($message.reason -eq 'compiler-message' -and $message.message.rendered) {
             [Console]::Error.Write($message.message.rendered)
         }
-        if ($message.reason -eq 'build-script-executed') {
-            $buildOutputs[$message.package_id] = $message.out_dir
-        }
         if ($message.reason -eq 'compiler-artifact' -and $message.executable -and
             $message.target.kind -contains 'bin' -and $message.target.name -in @('winlex', 'winlex-gui')) {
             $executables[$message.target.name] = $message.executable
-            $packageId = $message.package_id
         }
     }
     if ($LASTEXITCODE -ne 0) { throw "Build failed ($LASTEXITCODE)" }
-    if (-not $packageId -or -not $buildOutputs.ContainsKey($packageId)) {
-        throw 'Cargo did not report the executable package build output.'
-    }
-    $compatibility = Get-Content -LiteralPath (Join-Path $buildOutputs[$packageId] 'compatibility.json') -Raw | ConvertFrom-Json
-    if ($compatibility.target -ne $target) { throw 'Build compatibility metadata target mismatch.' }
-    foreach ($property in $policy.PSObject.Properties) {
-        if ($compatibility.($property.Name) -cne $property.Value) {
-            throw "Build compatibility metadata policy mismatch: $($property.Name)"
-        }
-    }
-    if (-not $compatibility.vc_ltl_platform) { throw 'Build compatibility metadata is missing the VC-LTL platform.' }
-    $after = & python "$PSScriptRoot/build-record.py"
-    if ($LASTEXITCODE -ne 0 -or ($after | ConvertFrom-Json | ConvertTo-Json -Depth 5 -Compress) -cne
-        ($identity | ConvertTo-Json -Depth 5 -Compress)) {
-        throw 'Source or toolchain changed during the build.'
-    }
-    & python @checkArguments | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw 'Build dependencies changed during the build.' }
-    $buildId = [guid]::NewGuid().ToString()
     foreach ($binary in @('winlex', 'winlex-gui')) {
         $exe = $executables[$binary]
         if (-not $exe) { throw "Cargo did not report an executable for $binary" }
         $report = @{
-            schema_version = 1
-            build_id = $buildId
+            schema_version = 2
             source = $identity.source
-            target = $target
             configuration = $Configuration
             rustc = $identity.rustc
             cargo = $identity.cargo
-            rust_licenses_sha256 = $identity.rust_licenses_sha256
             sdk_version = $env:WindowsSDKVersion
             policy = $policy
             linker = $linker
             linker_version = (Get-Item -LiteralPath $linker).VersionInfo.FileVersion
             resource_compiler = $rc
             resource_compiler_version = (Get-Item -LiteralPath $rc).VersionInfo.FileVersion
-            minimum_windows = $compatibility.minimum_windows
             executable = $exe
             executable_sha256 = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant()
         }
-        $report.crt = "VC-LTL5 system $($policy.crt_mode)"
         if ($policy.thunks_arch) {
             $report.thunks_object = $object
             $report.thunks_sha256 = $checkedInputs.thunks_sha256

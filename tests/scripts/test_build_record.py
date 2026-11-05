@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 import unittest
 import zipfile
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -88,7 +89,7 @@ class BuildRecordContracts(unittest.TestCase):
                 with self.subTest(dll=dll, delay=delay), self.assertRaisesRegex(ValueError, "Unexpected CRT"):
                     record.verify_pe(pe_image(policy, [policy["crt"], dll], delay=delay), policy, 3)
 
-    def test_source_identity_tracks_content_but_not_ignored_outputs(self):
+    def test_source_records_commit_and_dirty_state(self):
         with tempfile.TemporaryDirectory(dir=ROOT / "tmp") as folder:
             root = Path(folder)
             subprocess.run(["git", "init", "-q", str(root)], check=True)
@@ -105,9 +106,44 @@ class BuildRecordContracts(unittest.TestCase):
             (root / "source.rs").write_text("changed", encoding="utf-8")
             changed = record.snapshot(root)["source"]
             self.assertTrue(changed["dirty"])
-            self.assertNotEqual(changed["sha256"], before["sha256"])
-            (root / "new.rs").write_text("untracked source", encoding="utf-8")
-            self.assertNotEqual(record.snapshot(root)["source"]["sha256"], changed["sha256"])
+            self.assertEqual(changed["commit"], before["commit"])
+
+    def test_source_archive_without_git_can_record_tool_versions(self):
+        def command(*args, **kwargs):
+            if args[0] == "git":
+                raise FileNotFoundError()
+            return {"rustc": "rust version", "cargo": "cargo version"}[args[0]]
+
+        with tempfile.TemporaryDirectory(dir=ROOT / "tmp") as folder:
+            with patch.object(record, "command", side_effect=command):
+                snapshot = record.snapshot(Path(folder))
+                self.assertIsNone(snapshot["source"])
+                self.assertEqual(snapshot["rustc"], "rust version")
+                self.assertEqual(snapshot["cargo"], "cargo version")
+
+    def test_records_accept_matching_policy_and_reject_conflicts(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / "tmp") as folder:
+            directory = Path(folder)
+            policy = POLICIES["arm64"]
+            paths = []
+            for name, kind in (("winlex.exe", 3), ("winlex-gui.exe", 2)):
+                executable = directory / name
+                data = pe_image(policy, [policy["crt"]], kind)
+                executable.write_bytes(data)
+                path = directory / (name + ".build.json")
+                path.write_text(json.dumps({
+                    "schema_version": 2, "policy": policy, "configuration": "Debug",
+                    "executable": str(executable),
+                    "executable_sha256": hashlib.sha256(data).hexdigest(),
+                }), encoding="utf-8")
+                paths.append(path)
+            validated = record.verify_records(paths, "arm64", "Debug")
+            self.assertEqual([item["executable"] for item in validated],
+                             [str(directory / name) for name in ("winlex.exe", "winlex-gui.exe")])
+            bad = {**validated[1], "policy": {**policy, "minimum_windows": "10.0.19041.0"}}
+            paths[1].write_text(json.dumps(bad), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "policy mismatch"):
+                record.verify_records(paths, "arm64", "Debug")
 
     def test_archive_rejects_tampered_members_and_runtime_dlls(self):
         with tempfile.TemporaryDirectory(dir=ROOT / "tmp") as folder:

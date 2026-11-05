@@ -14,7 +14,7 @@
 
 ## 使用
 
-在命令前指定输入文件：
+在命令前指定输入文件，来源与准备方法见[获取元数据](docs/metadata.md)：
 
 ```powershell
 winlex Windows.Win32.winmd search OPENFILE
@@ -55,5 +55,3 @@ cargo test -p winlex-core -p winlex-format -p winlex-cli --locked
 ```
 
 构建步骤和测试指南见 [构建与验证](docs/build.md)。
-
-元数据获取和 UCRT 生成工具已独立到 `winmd-collection` 项目，不是 Winlex 的构建依赖；公开仓库地址尚待配置。添加来源的方法见[获取元数据](docs/metadata.md)。

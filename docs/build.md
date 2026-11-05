@@ -3,7 +3,7 @@
 ## 环境与依赖
 
 - Windows 开发机，Rust MSVC 工具链。
-- Git 工作副本及 PATH 中的 Git，用于构建来源记录。
+- Git 用于记录提交与工作区状态；源码归档中构建时该信息留空。
 - PowerShell 7.2+（`pwsh`）；构建与打包脚本不使用 Windows PowerShell 5.1。
 - Visual Studio C++ 工具和 Windows SDK。
 - Python 3；下载构建依赖另需 PATH 中的 `7z` 或 `7zz`。
@@ -16,9 +16,9 @@ python scripts/prepare-inputs.py
 rustup target add i686-pc-windows-msvc x86_64-pc-windows-msvc
 ```
 
-链接依赖写入 `tmp/deps/`，此脚本不获取 WinMD。
+链接依赖写入 `tmp/deps/`。
 可用 `--architecture x86|x64|arm64` 只准备目标架构需要的依赖；ARM64 不获取 YY-Thunks。
-元数据由独立的 `winmd-collection` 项目准备；测试所需 Win32 输入的版本与哈希见 `tests/metadata/source.json`，将对应文件放入 `inputs/Windows.Win32.winmd`。主程序构建不要求该文件。
+测试所需 Win32 输入的版本与哈希见 `tests/metadata/source.json`，将对应文件放入 `inputs/Windows.Win32.winmd`。
 
 ## 构建程序
 
@@ -47,14 +47,9 @@ $link = Join-Path $env:VCToolsInstallDir 'bin/Hostx64/arm64/link.exe'
 ```
 开发构建使用 `-Configuration Debug`；优化版本和分发版本分别使用 `Release` 和 `Dist`。
 脚本使用所选 SDK 的 Microsoft `rc.exe`，也可用 `-RcExe PATH` 指定；Dist 不回退搜索其他 SDK。输出目录可用 `-TargetDir PATH` 指定，否则遵循 Cargo 配置。
-构建入口在编译前后校验固定库集合与 SHA-256，并记录源码身份、实际 Rust／Cargo／原生工具版本及依赖。Rust 使用当前工具链，不固定版本；这些记录用于追溯，不承诺字节级可复现。
+构建入口在编译前校验清单中的兼容库与 SHA-256，并记录源码提交、工作区状态、目标策略、实际 Rust／Cargo／原生工具版本及依赖。Rust 使用当前工具链，不固定版本；这些记录用于追溯，不承诺字节级可复现。
 手动工作流、分发打包及上传前检查见[手动构建与交付](release.md)。
-构建结束后显示 `winlex.exe`、`winlex-gui.exe` 的实际路径；对应的 `.build.json` 可用于生成消息资源 fixture 和验证打包来源。源码在编译期间发生变化会使构建失败。输出应放在 Git 忽略的目录中，避免被识别为新增源码。
-
-## 独立元数据工具
-
-WinMD 获取与 UCRT 生成器位于独立的 `winmd-collection` 项目（公开仓库地址待配置），不参与 Winlex 默认构建。
-在该项目中运行 `tools/ucrt-winmd/build.ps1 -Check`，可用 `-WinlexPath <CLI绝对路径>` 额外验证集成。两个项目不要求同级目录布局。Winlex 的 XP 兼容要求不适用于生成器。
+构建结束后显示 `winlex.exe`、`winlex-gui.exe` 的实际路径；对应的 `.build.json` 可用于生成消息资源 fixture 和验证打包产物。默认输出位于标准 `target/` 目录。
 
 ## 更新图标资源
 
@@ -98,7 +93,7 @@ python -m unittest discover -s tests/scripts -v
 
 `tests/metadata/run.py` 比较 Rust 读取结果与 .NET `System.Reflection.Metadata`，并验证布局、泛型及跨源引用样例。报告写入 `tmp/verify/`。
 打包契约测试默认读取标准输出目录下的 Debug 构建记录；可用 `WINLEX_PACKAGE_X86_BUILD_DIR`／`WINLEX_PACKAGE_X64_BUILD_DIR`／`WINLEX_PACKAGE_ARM64_BUILD_DIR` 指定其他目录，缺少记录时跳过打包用例。工作流 YAML 验证另需 PyYAML。
-CI 设置 `WINLEX_PACKAGE_REQUIRE_ARCH` 指定本次必须验证的架构，缺少该架构的记录将失败；`WINLEX_TEST_ARCH` 为构建入口契约测试选择目标，默认 x64。打包测试要求记录与当前源码和工具链一致；修改源码或提交后应重新构建。
+CI 设置 `WINLEX_PACKAGE_REQUIRE_ARCH` 指定本次必须验证的架构，缺少该架构的记录将失败；`WINLEX_TEST_ARCH` 为构建入口契约测试选择目标，默认 x64。打包测试读取对应构建记录和可执行文件，不要求当前源码与构建时一致。
 默认使用 Debug 和 Cargo 的 target、输出目录配置；可用 `--target`、`--target-dir`、`--profile` 显式选择。
 各 gate 也可独立运行，默认读取 `tmp/verify/artifacts.json` 中的可执行文件路径；用 `--artifacts PATH` 更改记录位置后，通过 `WINLEX_GATE_ARTIFACTS` 指定该记录。
 

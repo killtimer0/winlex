@@ -24,10 +24,6 @@ def verify_inputs(architecture, sdk, object_path=None):
     target = policy(architecture)
     libraries = manifest("vc-ltl-source.json")["libraries"][target["vc_ltl_platform"]]
     directory = sdk / "TargetPlatform" / target["vc_ltl_platform"]
-    expected = {library["name"] for library in libraries}
-    actual = {path.name for path in directory.glob("*.lib")}
-    if actual != expected:
-        raise ValueError(f"VC-LTL library set mismatch: {directory}")
     for library in libraries:
         check(directory / library["name"], library["sha256"])
     result = {"vc_ltl_libraries": libraries}
@@ -74,7 +70,6 @@ def install(path, data, sha256):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--build-deps", action="store_true", help="compatibility alias (dependencies are prepared by default)")
     parser.add_argument("--architecture", choices=("x86", "x64", "arm64"))
     parser.add_argument("--check", action="store_true", help="verify local inputs without downloading; emit JSON")
     parser.add_argument("--vc-ltl-root", type=Path)

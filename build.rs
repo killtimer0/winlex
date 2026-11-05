@@ -57,12 +57,6 @@ fn main() {
     println!("cargo:rustc-link-arg-bin=winlex=/SUBSYSTEM:CONSOLE,{subsystem}");
     println!("cargo:rustc-link-arg-bin=winlex-gui=/SUBSYSTEM:WINDOWS,{subsystem}");
     compile_gui_resources();
-    let out = PathBuf::from(env::var_os("OUT_DIR").unwrap());
-    fs::write(
-        out.join("compatibility.json"),
-        serde_json::to_vec(policy).expect("serialize target policy"),
-    )
-    .expect("Write build compatibility metadata");
 }
 
 fn compile_gui_resources() {

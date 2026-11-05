@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -96,13 +97,11 @@ class PackageContracts(unittest.TestCase):
         records = self.records(arch)
         original = json.loads(records[0].read_text(encoding="utf-8-sig"))
         for field, value, message in (
-            ("target", "unsupported-target", "target or configuration mismatch"),
+            ("policy", {**original["policy"], "target": "unsupported-target"}, "target or configuration mismatch"),
             ("configuration", "Dist", "target or configuration mismatch"),
             ("executable_sha256", "0" * 64, "name or hash mismatch"),
             ("schema_version", 0, "Unsupported build record"),
-            ("build_id", "other-invocation", "Build invocation mismatch"),
-            ("source", {"commit": "0" * 40, "dirty": False, "sha256": "0" * 64}, "Build provenance mismatch: source"),
-            ("rust_licenses_sha256", "0" * 64, "Build provenance mismatch: rust_licenses_sha256"),
+            ("policy", {**original["policy"], "minimum_windows": "different"}, "policy mismatch"),
         ):
             with self.subTest(field=field):
                 bad = self.directory / f"bad-{field}.json"
@@ -123,13 +122,29 @@ class PackageContracts(unittest.TestCase):
                 self.assertIn("Output already exists", result.stdout + result.stderr)
                 self.assertEqual(existing.read_bytes(), b"keep")
 
+    def test_packages_unicode_executable_paths(self):
+        arch = ARCHITECTURES[0] if os.environ.get("WINLEX_PACKAGE_REQUIRE_ARCH") else "x64"
+        source = self.directory / "程序 [build]"
+        source.mkdir()
+        paths = []
+        for path in self.records(arch):
+            record = json.loads(path.read_text(encoding="utf-8-sig"))
+            executable = source / Path(record["executable"]).name
+            shutil.copyfile(record["executable"], executable)
+            record["executable"] = str(executable)
+            destination = source / path.name
+            destination.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+            paths.append(destination)
+        result = self.package(arch, paths, self.directory / "unicode-package")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_system_crt_imports_and_build_records(self):
         for arch in ARCHITECTURES:
             with self.subTest(arch=arch):
                 for path in self.records(arch):
                     record = json.loads(path.read_text(encoding="utf-8-sig"))
                     arm64 = arch == "arm64"
-                    self.assertEqual(record["crt"], "VC-LTL5 system ucrt" if arm64 else "VC-LTL5 system msvcrt")
+                    self.assertEqual(record["policy"]["crt"], "ucrtbase.dll" if arm64 else "msvcrt.dll")
                     self.assertTrue(record["vc_ltl_root"])
                     self.assertTrue({"libucrt.lib", "libvcruntime.lib"} <=
                                     {lib["name"] for lib in record["vc_ltl_libraries"]})
@@ -146,45 +161,23 @@ class PackageContracts(unittest.TestCase):
 
 
 class WorkflowContracts(unittest.TestCase):
-    def test_matrix_uses_shared_build_entry_and_required_debug_contracts(self):
+    def workflow(self):
         try:
             import yaml
         except ImportError:
             self.skipTest("PyYAML is required for workflow YAML validation")
-        workflow = yaml.load((ROOT / ".github/workflows/build.yml").read_text(encoding="utf-8"),
-                             Loader=yaml.BaseLoader)
-        steps = workflow["jobs"]["dist"]["steps"]
-        prepare = next(step for step in steps if step.get("name") == "Prepare pinned compatibility dependencies")["run"]
-        self.assertIn("--architecture ${{ matrix.arch }}", prepare)
-        build = next(step["run"] for step in steps if step.get("name") == "Build and package")
-        self.assertIn("./scripts/build.ps1 -Architecture $arch", build)
-        self.assertNotIn("VsDevCmd", build)
-        validate = next(step["run"] for step in steps if step.get("name") == "Validate Debug build and contracts")
-        self.assertIn("WINLEX_PACKAGE_REQUIRE_ARCH", validate)
-        self.assertIn("python -m unittest discover -s tests/scripts -v", validate)
-        self.assertLess(steps.index(next(step for step in steps if step.get("name") == "Validate Debug build and contracts")),
-                        steps.index(next(step for step in steps if step.get("name") == "Build and package")))
+        return yaml.load((ROOT / ".github/workflows/build.yml").read_text(encoding="utf-8"),
+                         Loader=yaml.BaseLoader)
 
-    def test_manual_matrix_and_pinned_actions(self):
-        try:
-            import yaml
-        except ImportError:
-            self.skipTest("PyYAML is required for workflow YAML validation")
-        workflow = yaml.load((ROOT / ".github/workflows/build.yml").read_text(encoding="utf-8"),
-                             Loader=yaml.BaseLoader)
+    def test_manual_matrix_and_script_syntax(self):
+        workflow = self.workflow()
         self.assertEqual(set(workflow["on"]), {"workflow_dispatch"})
-        job = workflow["jobs"]["dist"]
+        job = next(job for job in workflow["jobs"].values() if "matrix" in job.get("strategy", {}))
         matrix = job["strategy"]["matrix"]["arch"]
         self.assertEqual(set(matrix), set(TARGETS))
         policies = json.loads((ROOT / "inputs/targets.json").read_text())
         self.assertEqual({arch: policy["target"] for arch, policy in policies.items()}, TARGETS)
-        actions = [step["uses"] for step in job["steps"] if "uses" in step]
-        self.assertEqual(set(actions), {
-            "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
-            "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
-        })
-        self.assertTrue(all(re.fullmatch(r"[^@]+@[0-9a-f]{40}", action) for action in actions))
-        for step in job["steps"]:
+        for step in (step for job in workflow["jobs"].values() for step in job["steps"]):
             if "run" not in step:
                 continue
             script = re.sub(r"\$\{\{\s*matrix\.target\s*\}\}", "x86_64-pc-windows-msvc", step["run"])

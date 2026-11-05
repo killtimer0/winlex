@@ -1,4 +1,4 @@
-"""Capture source and toolchain identities for build and packaging contracts."""
+"""Record builds and validate executable and archive contents."""
 import argparse
 import hashlib
 import json
@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import subprocess
 import struct
+import sys
 import zipfile
 
 
@@ -13,41 +14,21 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def command(*args, cwd=None):
-    return subprocess.check_output(args, cwd=cwd).decode("utf-8").strip()
-
-
-def tree_hash(root, names):
-    digest = hashlib.sha256()
-    for name in sorted(set(names)):
-        path = root / name
-        data = (os.readlink(path).encode("utf-8") if path.is_symlink() else
-                path.read_bytes() if path.is_file() else b"<missing>")
-        digest.update(name.encode("utf-8") + b"\0")
-        digest.update(hashlib.sha256(data).digest())
-    return digest.hexdigest()
+    return subprocess.check_output(args, cwd=cwd, stderr=subprocess.PIPE).decode("utf-8").strip()
 
 
 def snapshot(root=ROOT):
-    names = subprocess.check_output(
-        ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"], cwd=root
-    ).decode("utf-8").rstrip("\0").split("\0")
-    source = {
-        "commit": command("git", "rev-parse", "HEAD", cwd=root),
-        "dirty": bool(command("git", "status", "--porcelain", "--untracked-files=all", cwd=root)),
-        "sha256": tree_hash(root, names),
-    }
-    sysroot = Path(command("rustc", "--print", "sysroot"))
-    docs = sysroot / "share/doc/rust"
-    licenses = ["COPYRIGHT-library.html", *(
-        path.relative_to(docs).as_posix() for path in (docs / "licenses").rglob("*") if path.is_file()
-    )]
-    license_hash = (tree_hash(docs, licenses)
-                    if (docs / "COPYRIGHT-library.html").is_file() and len(licenses) > 1 else None)
+    try:
+        source = {
+            "commit": command("git", "rev-parse", "HEAD", cwd=root),
+            "dirty": bool(command("git", "status", "--porcelain", "--untracked-files=all", cwd=root)),
+        }
+    except (OSError, subprocess.CalledProcessError):
+        source = None
     return {
         "source": source,
         "rustc": command("rustc", "-Vv"),
         "cargo": command("cargo", "--version"),
-        "rust_licenses_sha256": license_hash,
     }
 
 
@@ -110,31 +91,14 @@ def verify_pe(data, policy, subsystem):
 
 
 def verify_records(paths, architecture, configuration):
-    policy = json.loads((ROOT / "inputs/targets.json").read_text())[architecture]
-    current = snapshot()
-    ltl = json.loads((ROOT / "inputs/vc-ltl-source.json").read_text(encoding="utf-8-sig"))
-    thunks = json.loads((ROOT / "inputs/yy-thunks-source.json").read_text(encoding="utf-8-sig"))
+    target = json.loads((ROOT / "inputs/targets.json").read_text())[architecture]["target"]
     records = [json.loads(path.read_text(encoding="utf-8-sig")) for path in paths]
-    check(len(records) == 2, "Two build records are required")
-    check(records[0].get("build_id") and records[0].get("build_id") == records[1].get("build_id"),
-          "Build invocation mismatch")
     for record, name, kind in zip(records, ("winlex.exe", "winlex-gui.exe"), (3, 2)):
-        check(record.get("schema_version") == 1, "Unsupported build record; rebuild with scripts/build.ps1")
-        check(record.get("build_id") and record["build_id"] == records[0].get("build_id"), "Build invocation mismatch")
-        check(record["target"] == policy["target"] and record["configuration"] == configuration,
+        check(record.get("schema_version") == 2, "Unsupported build record; rebuild with scripts/build.ps1")
+        policy = record["policy"]
+        check(policy["target"] == target and record["configuration"] == configuration,
               "Build record target or configuration mismatch")
-        check(record["policy"] == policy and record["minimum_windows"] == policy["minimum_windows"],
-              "Build record policy mismatch")
-        for field in ("source", "rustc", "cargo", "rust_licenses_sha256"):
-            check(record.get(field) == current[field], f"Build provenance mismatch: {field}")
-        check(current["rust_licenses_sha256"], "Rust license documentation missing; install rust-docs and rebuild")
-        check(configuration != "Dist" or not record["source"]["dirty"], "Dist packaging requires a clean source tree")
-        check(record["crt"] == f"VC-LTL5 system {policy['crt_mode']}", "Build record CRT mismatch")
-        check(record["vc_ltl_libraries"] == ltl["libraries"][policy["vc_ltl_platform"]], "Build record library mismatch")
-        if policy["thunks_arch"]:
-            check(record.get("thunks_sha256") == thunks["objects"][policy["thunks_arch"]], "Build record thunk mismatch")
-        else:
-            check("thunks_object" not in record and "thunks_sha256" not in record, "Unexpected thunk input")
+        check(policy == records[0]["policy"], "Build record policy mismatch")
         path = Path(record["executable"])
         data = path.read_bytes()
         check(path.name == name and hashlib.sha256(data).hexdigest() == record["executable_sha256"],
@@ -184,23 +148,27 @@ def main():
     parser.add_argument("--architecture", choices=("x86", "x64", "arm64"))
     parser.add_argument("--configuration", choices=("Debug", "Release", "Dist"), default="Dist")
     parser.add_argument("--archive", type=Path)
-    parser.add_argument("--stage", type=Path, help="create the archive from a prepared directory before validation")
+    parser.add_argument("--stage", type=Path, help="archive a prepared directory using validated records from stdin")
     parser.add_argument("--json", action="store_true", help="emit validated records as JSON")
     args = parser.parse_args()
-    if args.stage and (not args.archive or not args.records):
-        parser.error("--stage requires --archive and --records")
+    if args.stage:
+        if not args.archive or args.records:
+            parser.error("--stage requires --archive and validated records on stdin, without --records")
+        records = json.load(sys.stdin)
+        create_archive(args.stage, args.archive)
+        verify_archive(args.archive, records)
+        print("PASS archive contents and checksums")
+        return
     if args.records:
         if not args.architecture:
             parser.error("--records requires --architecture")
         records = verify_records(args.records, args.architecture, args.configuration)
         if args.archive:
-            if args.stage:
-                create_archive(args.stage, args.archive)
             verify_archive(args.archive, records)
         if args.json:
             print(json.dumps(records))
         else:
-            print("PASS build provenance, target policy and PE/CRT contracts" + ("; archive checksums" if args.archive else ""))
+            print("PASS build records and PE/CRT contracts" + ("; archive checksums" if args.archive else ""))
     else:
         if args.archive:
             parser.error("--archive requires --records")

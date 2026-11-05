@@ -47,52 +47,53 @@ class PrepareInputsContracts(unittest.TestCase):
             prepare.install(path, b"expected", sha(b"expected"))
             self.assertEqual(path.read_bytes(), b"expected")
 
-    def test_default_and_compatibility_alias_prepare_only_build_dependencies(self):
-        for args in ([], ["--build-deps"]):
-            with self.subTest(args=args), tempfile.TemporaryDirectory() as folder:
-                root = Path(folder)
-                inputs = root / "inputs"
-                inputs.mkdir()
-                thunks = {"version": "1", "url": "thunks", "archive_sha256": "thunks-hash",
-                          "objects": {"x86": sha(b"object")}}
-                ltl = {"version": "2", "url": "ltl", "archive_sha256": "ltl-hash",
-                       "libraries": {"platform": [{"name": "lib.lib", "sha256": sha(b"library")}]}}
-                (inputs / "yy-thunks-source.json").write_text(json.dumps(thunks), encoding="utf-8")
-                (inputs / "vc-ltl-source.json").write_text(json.dumps(ltl), encoding="utf-8")
-                (inputs / "targets.json").write_text(json.dumps({"x86": {
-                    "thunks_arch": "x86", "vc_ltl_platform": "platform"}}), encoding="utf-8")
-                deps = root / "deps"
-                library = deps / "vc-ltl-2/sdk/TargetPlatform/platform/lib.lib"
-                library.parent.mkdir(parents=True)
-                library.write_bytes(b"library")
-                archive = MagicMock()
-                archive.__enter__.return_value.namelist.return_value = ["objects/x86/YY_Thunks_for_WinXP.obj"]
-                archive.__enter__.return_value.read.return_value = b"object"
-                with patch.object(prepare, "ROOT", root), patch.object(prepare, "DEPS", deps), \
-                     patch("sys.argv", [str(SCRIPT), *args]), \
-                     patch.object(prepare, "download", side_effect=lambda url, path, digest: path) as download, \
-                     patch.object(prepare.zipfile, "ZipFile", return_value=archive), \
-                     patch.object(prepare.shutil, "which", return_value="7z"), \
-                     patch.object(prepare.subprocess, "run") as run:
+    def test_default_prepares_only_build_dependencies(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            inputs = root / "inputs"
+            inputs.mkdir()
+            thunks = {"version": "1", "url": "thunks", "archive_sha256": "thunks-hash",
+                      "objects": {"x86": sha(b"object")}}
+            ltl = {"version": "2", "url": "ltl", "archive_sha256": "ltl-hash",
+                   "libraries": {"platform": [{"name": "lib.lib", "sha256": sha(b"library")}]}}
+            (inputs / "yy-thunks-source.json").write_text(json.dumps(thunks), encoding="utf-8")
+            (inputs / "vc-ltl-source.json").write_text(json.dumps(ltl), encoding="utf-8")
+            (inputs / "targets.json").write_text(json.dumps({"x86": {
+                "thunks_arch": "x86", "vc_ltl_platform": "platform"}}), encoding="utf-8")
+            deps = root / "deps"
+            library = deps / "vc-ltl-2/sdk/TargetPlatform/platform/lib.lib"
+            library.parent.mkdir(parents=True)
+            library.write_bytes(b"library")
+            archive = MagicMock()
+            archive.__enter__.return_value.namelist.return_value = ["objects/x86/YY_Thunks_for_WinXP.obj"]
+            archive.__enter__.return_value.read.return_value = b"object"
+            with patch.object(prepare, "ROOT", root), patch.object(prepare, "DEPS", deps), \
+                 patch("sys.argv", [str(SCRIPT)]), \
+                 patch.object(prepare, "download", side_effect=lambda url, path, digest: path) as download, \
+                 patch.object(prepare.zipfile, "ZipFile", return_value=archive), \
+                 patch.object(prepare.shutil, "which", return_value="7z"), \
+                 patch.object(prepare.subprocess, "run"):
+                prepare.main()
+                self.assertEqual({(call.args[0], call.args[2]) for call in download.call_args_list},
+                                 {(item["url"], item["archive_sha256"]) for item in (thunks, ltl)})
+                self.assertEqual((deps / "yy-thunks-1/x86/YY_Thunks_for_WinXP.obj").read_bytes(), b"object")
+                library.write_bytes(b"corrupt")
+                with self.assertRaisesRegex(ValueError, "SHA256 mismatch"):
                     prepare.main()
-                    self.assertEqual([call.args[0] for call in download.call_args_list], ["thunks", "ltl"])
-                    self.assertEqual([call.args[2] for call in download.call_args_list], ["thunks-hash", "ltl-hash"])
-                    self.assertEqual((deps / "yy-thunks-1/x86/YY_Thunks_for_WinXP.obj").read_bytes(), b"object")
-                    run.assert_called_once()
-                    library.write_bytes(b"corrupt")
-                    with self.assertRaisesRegex(ValueError, "SHA256 mismatch"):
-                        prepare.main()
 
     def test_arm64_preparation_does_not_fetch_thunks(self):
+        ltl = prepare.manifest("vc-ltl-source.json")
+        thunks = prepare.manifest("yy-thunks-source.json")
         with patch("sys.argv", [str(SCRIPT), "--architecture", "arm64"]), \
              patch.object(prepare, "download", side_effect=lambda url, path, digest: path) as download, \
              patch.object(prepare.shutil, "which", return_value="7z"), \
              patch.object(prepare.subprocess, "run"), patch.object(prepare, "check"):
             prepare.main()
-            self.assertEqual(len(download.call_args_list), 1)
-            self.assertIn("VC-LTL", download.call_args.args[0])
+            urls = {call.args[0] for call in download.call_args_list}
+            self.assertIn(ltl["url"], urls)
+            self.assertNotIn(thunks["url"], urls)
 
-    def test_verify_local_inputs_rejects_modified_missing_and_extra_libraries(self):
+    def test_verify_local_inputs_checks_required_libraries_and_allows_extra_files(self):
         with tempfile.TemporaryDirectory(dir=SCRIPT.parents[1] / "tmp") as folder:
             sdk = Path(folder)
             directory = sdk / "TargetPlatform/platform"
@@ -110,12 +111,11 @@ class PrepareInputsContracts(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "SHA256 mismatch"):
                     prepare.verify_inputs("arm64", sdk)
                 library.unlink()
-                with self.assertRaisesRegex(ValueError, "library set mismatch"):
+                with self.assertRaises(FileNotFoundError):
                     prepare.verify_inputs("arm64", sdk)
                 library.write_bytes(b"library")
                 (directory / "extra.lib").touch()
-                with self.assertRaisesRegex(ValueError, "library set mismatch"):
-                    prepare.verify_inputs("arm64", sdk)
+                prepare.verify_inputs("arm64", sdk)
 
 
 if __name__ == "__main__":

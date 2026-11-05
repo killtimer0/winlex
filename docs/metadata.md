@@ -13,7 +13,7 @@ Winlex 离线读取本地 `.winmd` 文件，不负责下载、解压或自动更
 | Windows App SDK／WinUI 3 | WinUI 控件及 Windows App SDK 类型 | [WinUI 2.6.5](https://www.nuget.org/packages/Microsoft.WindowsAppSDK.WinUI/2.6.5)，另需配套 Base、Foundation、InteractiveExperiences 元数据与 WinRT |
 | Win2D | Windows Runtime 的二维绘图类型 | [Win2D 1.4.0](https://www.nuget.org/packages/Microsoft.Graphics.Win2D/1.4.0)，需配套 WinUI 与 WinRT |
 
-独立的 `winmd-collection` 项目提供固定来源、版本、SHA-256 及提取和生成脚本；其公开仓库和成品托管地址待确定，当前不提供未经确认的成品下载链接。也可直接从上述官方来源获取。
+`winmd-collection` 提供来源清单、版本、SHA-256 及提取和生成脚本。各来源也可从上述官方入口获取。
 
 ### 校验示例
 

@@ -1,5 +1,4 @@
 """Exercise build-script architecture policies without cross-linking executables."""
-import json
 import os
 from pathlib import Path
 import subprocess
@@ -53,24 +52,18 @@ class BuildPolicyContracts(unittest.TestCase):
                     obj.write_bytes(machine.to_bytes(2, "little") + bytes(18))
                     env["WINLEX_YY_THUNKS_OBJ"] = str(obj)
             result = subprocess.run([str(self.build)], env=env, text=True, capture_output=True)
-            metadata = json.loads((root / "compatibility.json").read_text()) if result.returncode == 0 else None
-            return result, metadata
+            return result
 
     def test_architecture_contract(self):
         cases = [
-            ("i686-pc-windows-msvc", 0x14c, "5.01", "5.1.2600.0", "5.1.2600.0/lib/Win32"),
-            ("x86_64-pc-windows-msvc", 0x8664, "5.02", "5.2.3790.0", "5.2.3790.0/lib/x64"),
-            ("aarch64-pc-windows-msvc", None, "10.00", "10.0.17763.0", "10.0.10240.0/lib/ARM64"),
+            ("i686-pc-windows-msvc", 0x14c, "5.01", "5.1.2600.0/lib/Win32"),
+            ("x86_64-pc-windows-msvc", 0x8664, "5.02", "5.2.3790.0/lib/x64"),
+            ("aarch64-pc-windows-msvc", None, "10.00", "10.0.10240.0/lib/ARM64"),
         ]
-        for target, machine, subsystem, minimum, platform in cases:
+        for target, machine, subsystem, platform in cases:
             with self.subTest(target=target):
-                result, metadata = self.run_build(target, machine=machine, platform=platform)
+                result = self.run_build(target, machine=machine, platform=platform)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(metadata["target"], target)
-                self.assertEqual(metadata["minimum_windows"], minimum)
-                self.assertEqual(metadata["vc_ltl_platform"], platform)
-                policies = json.loads((ROOT / "inputs/targets.json").read_text())
-                self.assertIn(metadata, policies.values())
                 for binary, kind in (("winlex", "CONSOLE"), ("winlex-gui", "WINDOWS")):
                     self.assertIn(f"cargo:rustc-link-arg-bin={binary}=/SUBSYSTEM:{kind},{subsystem}", result.stdout)
                     self.assertEqual(any(line.startswith(f"cargo:rustc-link-arg-bin={binary}=") and
@@ -81,11 +74,11 @@ class BuildPolicyContracts(unittest.TestCase):
     def test_static_crt_and_vc_ltl_are_required(self):
         for target in ("i686-pc-windows-msvc", "x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"):
             with self.subTest(target=target):
-                result, _ = self.run_build(target, static=False)
+                result = self.run_build(target, static=False)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("+crt-static", result.stderr)
         for target in ("i686-pc-windows-msvc", "x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"):
-            result, _ = self.run_build(target)
+            result = self.run_build(target)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("WINLEX_VC_LTL_ROOT", result.stderr)
 
@@ -93,12 +86,12 @@ class BuildPolicyContracts(unittest.TestCase):
         for target, platform in (("i686-pc-windows-msvc", "5.1.2600.0/lib/Win32"),
                                  ("x86_64-pc-windows-msvc", "5.2.3790.0/lib/x64")):
             with self.subTest(target=target):
-                result, _ = self.run_build(target, platform=platform)
+                result = self.run_build(target, platform=platform)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("WINLEX_YY_THUNKS_OBJ", result.stderr)
 
     def test_legacy_object_machine_is_checked(self):
-        result, _ = self.run_build("i686-pc-windows-msvc", machine=0x8664, platform="5.1.2600.0/lib/Win32")
+        result = self.run_build("i686-pc-windows-msvc", machine=0x8664, platform="5.1.2600.0/lib/Win32")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("COFF architecture", result.stderr)
 

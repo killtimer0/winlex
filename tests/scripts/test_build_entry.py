@@ -41,13 +41,15 @@ function cargo {{ {cargo_body} }}
                 '[package]\nname="diagnostic-probe"\nversion="0.0.0"\nedition="2024"\n[workspace]\n',
                 encoding="utf-8")
             (directory / "src").mkdir()
-            (directory / "src/main.rs").write_text("use std::fmt;\nfn main() { missing_contract_function(); }\n", encoding="utf-8")
+            (directory / "src/main.rs").write_text(
+                '#[deprecated(note="contract warning")]\nfn old() {}\n'
+                'fn main() { old(); compile_error!("contract compile failure"); }\n', encoding="utf-8")
             body = (f"& (Get-Command cargo.exe).Source build --manifest-path '{(directory / 'Cargo.toml').as_posix()}' "
                     "--message-format=json; $global:LASTEXITCODE=$LASTEXITCODE")
             result = self.run_entry(body)
             self.assertNotEqual(result.returncode, 0)
-            self.assertIn("warning: unused import", result.stderr)
-            self.assertIn("cannot find function `missing_contract_function`", result.stderr)
+            self.assertIn("contract warning", result.stderr)
+            self.assertIn("contract compile failure", result.stderr)
             self.assertIn("Build failed", result.stderr)
 
     def test_modified_dependency_is_rejected_before_cargo(self):
@@ -70,9 +72,7 @@ function cargo {{ {cargo_body} }}
     def test_utf8_cargo_paths_survive_non_utf8_console(self):
         with tempfile.TemporaryDirectory(prefix="中文 [cargo] ", dir=ROOT / "tmp") as folder:
             directory = Path(folder)
-            policy = json.loads((ROOT / "inputs/targets.json").read_text())[ARCH]
-            (directory / "compatibility.json").write_text(json.dumps(policy), encoding="utf-8")
-            messages = [{"reason": "build-script-executed", "package_id": "fixture", "out_dir": str(directory)}]
+            messages = []
             for name in ("winlex", "winlex-gui"):
                 path = directory / (name + ".exe")
                 path.write_bytes(b"artifact fixture")

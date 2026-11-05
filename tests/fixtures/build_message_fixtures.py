@@ -30,8 +30,8 @@ def main():
     for arch, target, record in [('x86', 'i686-pc-windows-msvc', args.x86_build),
                                  ('x64', 'x86_64-pc-windows-msvc', args.x64_build)]:
         build = json.loads(record.read_text(encoding='utf-8-sig'))
-        if build['target'] != target:
-            parser.error(f'{record}: expected target {target}, got {build["target"]}')
+        if build['policy']['target'] != target:
+            parser.error(f'{record}: expected target {target}, got {build["policy"]["target"]}')
         builds.append((arch, build))
     OUT.mkdir(parents=True, exist_ok=True)
     for lang, text in [('en', 'Fixture %1!s! message.\r\n'),

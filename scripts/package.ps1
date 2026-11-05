@@ -15,7 +15,7 @@ $records = & python @verifyArguments --json
 if ($LASTEXITCODE -ne 0) { throw 'Build record or PE validation failed.' }
 $records = $records | ConvertFrom-Json
 $binaries = @($records | ForEach-Object { $_.executable })
-$target = $records[0].target
+$target = $records[0].policy.target
 $output = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputDir)
 New-Item -ItemType Directory -Force -Path $output | Out-Null
 $zip = Join-Path $output "winlex-$Architecture.zip"
@@ -72,7 +72,7 @@ try {
         "$( (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() )  $relative"
     }
     [IO.File]::WriteAllLines((Join-Path $stage 'SHA256SUMS.txt'), [string[]]$manifest, [Text.UTF8Encoding]::new($false))
-    & python @verifyArguments --archive $zip --stage $stage
+    $records | ConvertTo-Json -Depth 5 | & python "$PSScriptRoot/build-record.py" --archive $zip --stage $stage
     if ($LASTEXITCODE -ne 0) { throw 'Archive validation failed.' }
     $hash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
     [IO.File]::WriteAllText("$zip.sha256", "$hash  $([IO.Path]::GetFileName($zip))`n", [Text.UTF8Encoding]::new($false))
