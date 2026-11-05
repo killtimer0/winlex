@@ -4,7 +4,7 @@
 
 - Windows 开发机，Rust MSVC 工具链。
 - Git 用于记录提交与工作区状态；源码归档中构建时该信息留空。
-- PowerShell 7.2+（`pwsh`）；构建与打包脚本不使用 Windows PowerShell 5.1。
+- PowerShell 7.2+（`pwsh`）。
 - Visual Studio C++ 工具和 Windows SDK。
 - Python 3；下载构建依赖另需 PATH 中的 `7z` 或 `7zz`。
 - 独立读取器验证需 .NET SDK 10；ABI 验证另需 Clang。
@@ -47,7 +47,7 @@ $link = Join-Path $env:VCToolsInstallDir 'bin/Hostx64/arm64/link.exe'
 ```
 开发构建使用 `-Configuration Debug`；优化版本和分发版本分别使用 `Release` 和 `Dist`。
 脚本使用所选 SDK 的 Microsoft `rc.exe`，也可用 `-RcExe PATH` 指定；Dist 不回退搜索其他 SDK。输出目录可用 `-TargetDir PATH` 指定，否则遵循 Cargo 配置。
-构建入口在编译前校验清单中的兼容库与 SHA-256，并记录源码提交、工作区状态、目标策略、实际 Rust／Cargo／原生工具版本及依赖。Rust 使用当前工具链，不固定版本；这些记录用于追溯，不承诺字节级可复现。
+构建入口在编译前校验清单中的兼容库与 SHA-256，并记录源码提交、工作区状态、目标策略、实际 Rust／Cargo／原生工具版本及依赖。Rust 使用当前工具链。
 手动工作流、分发打包及上传前检查见[手动构建与交付](release.md)。
 构建结束后显示 `winlex.exe`、`winlex-gui.exe` 的实际路径；对应的 `.build.json` 可用于生成消息资源 fixture 和验证打包产物。默认输出位于标准 `target/` 目录。
 
@@ -75,7 +75,7 @@ Codicon SVG 与生成的 EMF+ 位于 `crates/winlex-gui/res/codicons/`。
 | x64 | XP x64 / Server 2003，5.2.3790 系列 | x86_64-pc-windows-msvc |
 | ARM64 | Windows 10 1809，10.0.17763.0（构建目标基线） | aarch64-pc-windows-msvc |
 
-所有架构均通过 `+crt-static` 选择 VC-LTL5 替换库。x86／x64 使用系统 `msvcrt.dll` 并链接 YY-Thunks XP 对象；ARM64 使用 VC-LTL 的 `10.0.10240.0/lib/ARM64` UCRT 模式，复用系统 `ucrtbase.dll`，不要求额外安装 VC Runtime，也不链接 YY-Thunks。库目录版本不改变 ARM64 的 Windows 10 1809 目标基线。目标基线、交叉编译成功及目标系统实际运行验证是不同的保证；设置 PE 子系统版本本身不能证明旧系统兼容性。
+所有架构均通过 `+crt-static` 选择 VC-LTL5 替换库。x86／x64 使用系统 `msvcrt.dll` 并链接 YY-Thunks XP 对象；ARM64 使用系统 `ucrtbase.dll`。
 
 ## 测试与独立验证
 
@@ -93,7 +93,7 @@ python -m unittest discover -s tests/scripts -v
 
 `tests/metadata/run.py` 比较 Rust 读取结果与 .NET `System.Reflection.Metadata`，并验证布局、泛型及跨源引用样例。报告写入 `tmp/verify/`。
 打包契约测试默认读取标准输出目录下的 Debug 构建记录；可用 `WINLEX_PACKAGE_X86_BUILD_DIR`／`WINLEX_PACKAGE_X64_BUILD_DIR`／`WINLEX_PACKAGE_ARM64_BUILD_DIR` 指定其他目录，缺少记录时跳过打包用例。工作流 YAML 验证另需 PyYAML。
-CI 设置 `WINLEX_PACKAGE_REQUIRE_ARCH` 指定本次必须验证的架构，缺少该架构的记录将失败；`WINLEX_TEST_ARCH` 为构建入口契约测试选择目标，默认 x64。打包测试读取对应构建记录和可执行文件，不要求当前源码与构建时一致。
+`WINLEX_PACKAGE_REQUIRE_ARCH` 指定必须验证的架构，缺少该架构的记录将失败；`WINLEX_TEST_ARCH` 为构建入口契约测试选择目标，默认 x64。
 默认使用 Debug 和 Cargo 的 target、输出目录配置；可用 `--target`、`--target-dir`、`--profile` 显式选择。
 各 gate 也可独立运行，默认读取 `tmp/verify/artifacts.json` 中的可执行文件路径；用 `--artifacts PATH` 更改记录位置后，通过 `WINLEX_GATE_ARTIFACTS` 指定该记录。
 
@@ -124,7 +124,7 @@ python tests/gui/resources.py --exe "$guiExe"
 
 `$guiExe` 为构建显示的 GUI 完整路径。`--dpi` 可改为 `pmv1`、`system`、`unaware` 或 `auto`。`--desktop current` 使用当前桌面。
 结果写入 `tmp/gui-tests/<run-id>/`，包括 JUnit、失败截图和 `run.json`。
-交互与屏幕呈现测试使用 `--desktop current --real-input`；默认隔离桌面运行其余用例。交互测试要求专用 VM 中解锁的独占活动会话，并允许测试程序取得前台；测试期间不要操作键鼠。详情见 [测试目录说明](../tests/README.md)。
+交互与屏幕呈现测试使用 `--desktop current --real-input`，并满足[测试目录说明](../tests/README.md)中的独占会话要求；默认隔离桌面运行其余用例。
 执行端使用与目标系统兼容的 Python 3.8+，通过 `tests/gui/requirements.txt` 安装依赖。
 x64 EXE 需要 64 位执行端 Python；x86 EXE 可使用 32 位或 64 位执行端 Python。
 消息资源等可选 fixture 的部署要求见 [测试目录说明](../tests/README.md)。

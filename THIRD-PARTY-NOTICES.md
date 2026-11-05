@@ -3,7 +3,7 @@
 Third-party components retain their own licenses. Cargo dependency versions are
 recorded in `Cargo.lock`; source packages and their original copyright and license
 texts are available from the linked crates.io pages. The list below includes
-normal and build dependencies for Windows x86/x64/ARM64, not just runtime libraries.
+normal and build dependencies for Windows x86/x64/ARM64.
 When distributing binaries, retain the applicable copyright notices and license
 texts alongside this document.
 
@@ -50,14 +50,12 @@ the system UCRT. Only x86/x64 link YY-Thunks compatibility objects.
   object-level grants and GPL combination terms remain to be confirmed.
   The upstream [EPL text](licenses/VC-LTL-LICENSE),
   [SDK terms](licenses/VC-LTL-sdk-license.rtf) and
-  [SDK notices](licenses/VC-LTL-sdk-third-party-notices.rtf) are retained unchanged;
-  retaining these texts does not resolve the outstanding distribution questions.
+  [SDK notices](licenses/VC-LTL-sdk-third-party-notices.rtf) are retained unchanged.
 
 ## External metadata
 
 `Microsoft.Windows.SDK.Win32Metadata` 71.0.37-preview is downloaded separately
 under its [Windows SDK terms](https://www.nuget.org/packages/Microsoft.Windows.SDK.Win32Metadata/71.0.37-preview/License).
-These are distinct from the Rust `windows-metadata` library's licenses.
 
 ## Codicons
 
@@ -72,5 +70,4 @@ EMF+ resources for runtime tinting. The license text is included in
 ## Development tools
 
 [resvg-js 2.6.2](https://github.com/yisibl/resvg-js/tree/v2.6.2) is used to render
-the application icon under MPL-2.0. It is a development dependency, not bundled
-with Winlex; its license does not by itself apply to rendered images.
+the application icon under MPL-2.0. It is a development dependency.

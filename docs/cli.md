@@ -58,7 +58,7 @@ winlex error-code 0x20000001 --module .\messages.dll --lang auto
 ```
 
 - `--scope` 可选 `auto`（默认）、`win32`、`hresult`、`ntstatus`、`errno`。自动模式分别查询 Win32、HRESULT 和 NTSTATUS，不查询 CRT errno。
-- `errno` 查询系统 `msvcrt.dll` 的 Microsoft CRT 消息，不是完整的 UCRT 或 POSIX 错误码表。消息固定为英文；`--lang auto`、`0` 或 `0x409` 均可，其他 LANGID 返回语言未找到。
+- `errno` 查询系统 `msvcrt.dll` 的 Microsoft CRT 消息。消息固定为英文；`--lang auto`、`0` 或 `0x409` 均可，其他 LANGID 返回语言未找到。
 - `--module PATH` 指定单个 EXE、DLL 或 MUI 的消息表，与预设 `--scope` 互斥；使用完整消息 ID，不回退到系统消息表。
 - `--lang auto|LANGID`（也可写 `--language`）选择消息语言。除上述 CRT errno 外，`auto` 或 `0` 使用 Windows 的语言选择规则；非零 LANGID 严格请求对应语言。
 - 代码接受 -2147483648 至 4294967295，支持正负号、0x／0o／0b 前缀；前导零为八进制，例如 `010` 为 8。LANGID 为无符号 16 位值。不接受符号名称或浮点数。
@@ -126,32 +126,9 @@ winlex Windows.Win32.winmd search --where 'value = nan or value = inf'
 - 非泛型 WinRT 接口的 vtable 包含 `IUnknown`、`IInspectable` 六个基础槽位；委托包含 `IUnknown` 三槽及 `Invoke`。隐式槽位的实体 ID 为 null。
 - `show` 提供元数据签名；WinRT 方法 ABI 签名展开尚不支持。
 
-## Rust API
-
-`winlex_core::Catalog` 提供同步查询，可通过 `Arc` 跨线程共享。搜索和布局结果拥有独立数据，声明视图借用所属 `Catalog`。
-搜索迭代器按扫描顺序返回结果；展示前使用 `SearchMatch::compare` 排序。`Catalog::search_exact` 用于严格名称选择。
-
-```rust,ignore
-use winlex_core::{Architecture, Catalog, SearchMatch, SearchOptions};
-
-let catalog = Catalog::open("Windows.Win32.winmd")?;
-let mut matches = catalog.search("OPENFILE", SearchOptions::default())?
-    .collect::<winlex_core::Result<Vec<_>>>()?;
-matches.sort_unstable_by(SearchMatch::compare);
-let target = catalog.search_exact("OVERLAPPED", SearchOptions {
-    architecture: Some(Architecture::X64), ..Default::default()
-})?
-    .next().transpose()?.expect("OVERLAPPED").id;
-let layout = catalog.layout(target, Architecture::X64)?;
-```
-
-声明的文本渲染和 JSON 展示适配由 `winlex-format` 提供。
-多源使用 `Catalog::open_many(paths)`；`sources()` 枚举来源，`SearchOptions.source` 过滤搜索或反向引用结果的来源。
-完整接口可通过 `cargo doc -p winlex-core -p winlex-format --no-deps --open` 查看。
-
 ## 查询范围
 
-声明和类型引用来自输入 WinMD 中保留的元数据。反向引用查询覆盖字段、方法、属性、事件签名及接口关系。
+声明和类型引用来自输入 WinMD 中保留的元数据。
 
 - 开放泛型的布局/vtable、泛型实例 ABI 及部分 WinRT 字段类型（例如 HSTRING、System.Guid）尚不支持计算。
 - 暂不支持 ModuleRef、类型转发和 retargetable 程序集引用。
