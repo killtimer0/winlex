@@ -15,6 +15,7 @@ from support import messages
 from support import native as n
 from support.diagnostics import capture, screenshot
 from support.input_state import InputState, foreground as acquire_foreground
+from test_context import popup_window
 from test_tooltips import infotip
 from test_theme import THEME_SUPPORTED
 from test_tools import visual_state
@@ -184,7 +185,7 @@ def test_dark_list_native_selection_hover_and_focus(launch, profile, settings, s
         assert n.send(control, messages.LVM_GETITEMSTATE, 0, 3) == 3
         # Hover an unselected row: selected+unfocused hover is intentionally unchanged
         # by some Windows 10 common-control themes.
-        auto.ControlFromHandle(control).GetChildren()[0].GetSelectionItemPattern().RemoveFromSelection()
+        app.row(0, control).GetSelectionItemPattern().RemoveFromSelection()
         assert app.selected_row(control) == -1
         idle = background(control, sample)
         move(control, (left + 8, (top + bottom) // 2))
@@ -299,11 +300,10 @@ def test_dark_mdi_merged_menu_glyph_pixels_and_native_actions(launch, profile, s
         assert all(item['dark'] and item['visible'] for item in evidence.values()), evidence
         # Open the actual merged icon popup, then dismiss without changing the document.
         inputs.click(*center(menu_rect(app, menu, 0)))
-        n.wait(lambda: any(item.ClassName == '#32768' and not item.IsOffscreen
-                           for item in auto.GetRootControl().GetChildren()), 'merged document system popup')
+        popup = n.wait(lambda: popup_window(app.process.pid), 'merged document system popup')
+        assert n.send(popup, messages.MN_GETHMENU) == win32gui.GetSystemMenu(doc, False)
         inputs.key(win32con.VK_ESCAPE)
-        n.wait(lambda: not any(item.ClassName == '#32768' and not item.IsOffscreen
-                               for item in auto.GetRootControl().GetChildren()), 'merged system menu dismissed')
+        n.wait(lambda: not popup_window(app.process.pid), 'merged system menu dismissed')
         assert app.active_document() == doc
         inputs.click(*center(menu_rect(app, menu, positions[win32con.SC_RESTORE])))
         n.wait(lambda: not n.is_zoomed(doc), 'merged restore button')

@@ -7,7 +7,6 @@ import win32gui
 import uiautomation as auto
 
 from support import native as n
-from support.session import invoke
 from support.input_state import foreground as real_foreground
 from test_context import character_point, dismiss, find_popup, popup, select_text, selection_packed, wait_closed
 
@@ -80,15 +79,20 @@ def editor_selection(app, editor, value=None):
     return selected.Start, selected.End
 
 
+def choose_reference(editor):
+    for key in (win32con.VK_DOWN, win32con.VK_RETURN):
+        win32gui.PostMessage(editor, win32con.WM_KEYDOWN, key, 1)
+        win32gui.PostMessage(editor, win32con.WM_KEYUP, key, -1073741823)
+    wait_closed(editor)
+
+
 def follow_caret(app, doc, index):
     activate(app, doc)
     editor = n.get_item(doc, 1203)
     app.focus(editor)
     editor_selection(app, editor, (index, index))
-    _, items = popup(app, editor, keyboard=True)
-    menu = auto.MenuControl(searchDepth=3, ClassName="#32768", ProcessId=app.process.pid)
-    invoke(menu.MenuItemControl(AutomationId=str(items[0])))
-    wait_closed(editor)
+    popup(app, editor, keyboard=True)
+    choose_reference(editor)
 
 
 def test_ctrl_click_reuses_explicitly_fixed_architecture_links(launch, settings, profile):
@@ -175,9 +179,7 @@ def test_reference_context_menu_navigates_from_mouse_or_caret(launch, settings, 
         location = character_point(app, editor, index)
         _, items = popup(app, editor, location, keyboard=keyboard, protocol_mouse=not keyboard)
         assert items[0] not in (0, 2071, 2072, 2073, 2074)
-        menu = auto.MenuControl(searchDepth=3, ClassName="#32768", ProcessId=app.process.pid)
-        invoke(menu.MenuItemControl(AutomationId=str(items[0])))
-        wait_closed(editor)
+        choose_reference(editor)
     target = destination(app, source, "SECURITY_ATTRIBUTES", "x86")
     assert app.documents() == [source] and target == source
     assert app.tab_descriptions()[0].startswith(("Preview · ", "预览 · "))
@@ -343,15 +345,18 @@ def test_real_unfocused_scrolled_reference_navigates_on_first_gesture(launch, se
     with InputState() as inputs:
         app = launch([settings[1]])
         n.wait(lambda: app.status_text().startswith(("Ready.", "已就绪")), "loaded", 45)
-        with real_foreground(app, inputs) as foreground:
+        with real_foreground(app, inputs):
+            def foreground():
+                window = win32gui.GetForegroundWindow()
+                return window == app.frame or bool(win32gui.IsChild(app.frame, window))
             app.query("Windows.Win32.Graphics.Gdi.Apis")
             app.select(app.named_rows("Apis")[0])
             app.focus(app.results)
             assert foreground(), "real input requires foreground ownership"
             inputs.key(win32con.VK_SPACE)
             source = app.wait_document("Gdi preview", "Apis")
-            n.wait(lambda: "HDC" in app.content(source), "loaded Gdi declaration", 45)
             editor = n.get_item(source, 1203)
+            n.wait(lambda: "HDC" in n.rich_edit_text(editor), "loaded Gdi declaration", 45)
             body = n.rich_edit_text(editor)
             text = body.replace("\r\n", "\r")
             assert len(text.encode("utf-16-le")) // 2 > 70000
@@ -363,18 +368,16 @@ def test_real_unfocused_scrolled_reference_navigates_on_first_gesture(launch, se
             index = len(text[:match.start()].encode("utf-16-le")) // 2 + 1
             line = n.send(editor, win32con.WM_USER + 54, 0, index)  # EM_EXLINEFROMCHAR
             assert line > 10
-            rect = auto.ControlFromHandle(editor).BoundingRectangle
-            auto.MoveTo((rect.left + rect.right) // 2, (rect.top + rect.bottom) // 2)
-            auto.WheelDown(wheelTimes=max(1, (line - 3) // 3), interval=0, waitTime=0)
+            n.send(editor, win32con.EM_LINESCROLL, 0, line - 3)
             def visible_reference():
                 _, y = n.rich_edit_document(editor).Range(index, index + 1).GetPoint(32 | 256 | 512)
                 height = n.rectangle(editor, client=True)[3]
                 if 0 <= y < height:
                     return True
                 if y < 0:
-                    auto.WheelUp(wheelTimes=1, interval=0, waitTime=0)
+                    n.send(editor, win32con.EM_LINESCROLL, 0, -1)
                 else:
-                    auto.WheelDown(wheelTimes=1, interval=0, waitTime=0)
+                    n.send(editor, win32con.EM_LINESCROLL, 0, 1)
                 return False
             n.wait(visible_reference, "scrolled reference visible", 45)
             top = n.send(editor, win32con.EM_GETFIRSTVISIBLELINE)
@@ -386,7 +389,9 @@ def test_real_unfocused_scrolled_reference_navigates_on_first_gesture(launch, se
                 assert left <= point[0] < right and above <= point[1] < bottom
             assert editor_selection(app, editor) == (0, 0)
             assert app.focused() == app.results
-            assert foreground(), "first link gesture requires foreground ownership"
+            assert foreground(), ("first link gesture requires foreground ownership", app.frame,
+                                  win32gui.GetForegroundWindow(),
+                                  win32gui.GetWindowText(win32gui.GetForegroundWindow()))
             if gesture == "ctrl-click":
                 inputs.state["held"].extend((win32con.VK_CONTROL, "mouse"))
                 inputs.save()
@@ -441,7 +446,7 @@ def test_real_unfocused_scrolled_reference_navigates_on_first_gesture(launch, se
             assert app.tab_descriptions()[0].startswith(("Preview · ", "预览 · "))
             assert foreground(), "navigation retains foreground ownership"
             app.command(1055)
-            n.wait(lambda: n.window_text(source).startswith("Apis -") and app.content(source) == body,
+            n.wait(lambda: n.window_text(source).startswith("Apis -") and n.rich_edit_text(editor) == body,
                    "Back restores Gdi declaration", 45)
             n.wait(lambda: editor_selection(app, editor) == expected_selection,
                    "Back restores source selection", 45)
@@ -612,9 +617,16 @@ def test_real_ctrl_click_and_drag_do_not_confuse_navigation_with_selection(launc
 
             def preview(query):
                 held = capture()
-                assert auto.ControlFromHandle(app.search).GetValuePattern().SetValue(query)
-                n.wait(lambda: app.named_rows(query), "replacement search results", 45)
-                app.select(app.named_rows(query)[0])
+                focused = app.focused()
+                value = n.c.create_unicode_buffer(query)
+                assert n.send(app.search, win32con.WM_SETTEXT, 0, n.c.addressof(value))
+                row = n.wait(lambda: (rows[0] + 1 if (rows := app.named_rows(query)) else None),
+                             "replacement search results", 45) - 1
+                for key in [win32con.VK_HOME] + [win32con.VK_DOWN] * row:
+                    n.send(app.results, win32con.WM_KEYDOWN, key)
+                    n.send(app.results, win32con.WM_KEYUP, key)
+                assert app.selected_row() == row
+                assert app.focused() == focused, "preview setup must preserve focus"
                 assert capture() == held, "preview setup must preserve mouse capture"
                 # Inject a preview update while the editor still owns mouse capture.
                 win32gui.PostMessage(app.results, win32con.WM_KEYDOWN, win32con.VK_SPACE, 1)

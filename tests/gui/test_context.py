@@ -31,12 +31,29 @@ def popup(app, editor, location=-1, keyboard=False, mouse=False, protocol_mouse=
     return find_popup(app)
 
 
+def popup_window(pid):
+    windows = []
+
+    def matches(window):
+        owner = n.w.DWORD()
+        n.get_pid(window, n.c.byref(owner))
+        return owner.value == pid and n.is_visible(window) and n.class_name(window) == "#32768"
+
+    def collect(window, _):
+        if matches(window):
+            windows.append(window)
+        return True
+
+    win32gui.EnumWindows(collect, None)
+    return next((window for window in windows if matches(window)), None)
+
+
 def find_popup(app):
-    popup = auto.MenuControl(searchDepth=3, ClassName="#32768", ProcessId=app.process.pid)
-    assert popup.Exists(10), "context menu"
-    window = popup.NativeWindowHandle
+    window = n.wait(lambda: popup_window(app.process.pid), "context menu", 10)
     menu = n.send(window, messages.MN_GETHMENU)
+    assert menu, "context menu handle"
     count = n.api(n.user, "GetMenuItemCount", n.c.c_int, n.w.HMENU)(menu)
+    assert count >= 0, "context menu item count"
     get_id = n.api(n.user, "GetMenuItemID", n.w.UINT, n.w.HMENU, n.c.c_int)
     return menu, [get_id(menu, i) for i in range(count)]
 
@@ -49,8 +66,7 @@ def dismiss(editor):
 def wait_closed(editor):
     pid = n.w.DWORD()
     n.get_pid(editor, n.c.byref(pid))
-    popup = auto.MenuControl(searchDepth=3, ClassName="#32768", ProcessId=pid.value)
-    n.wait(lambda: not popup.Exists(0, 0), "context menu closed")
+    n.wait(lambda: not popup_window(pid.value), "context menu closed")
 
 
 
@@ -388,8 +404,8 @@ def test_copy_wrapped_declaration_keeps_original_line_breaks(launch, settings):
     app.query("Windows.Win32.Storage.FileSystem.CreateFileW")
     doc = app.open_row()
     n.wait(lambda: "CreateFileW(" in app.content(doc), "declaration", 45)
-    body = app.content(doc).replace("\r\n", "\n").replace("\r", "\n")
     editor = n.get_item(doc, 1203)
+    body = n.rich_edit_text(editor).replace("\r\n", "\n").replace("\r", "\n")
     window_state(doc, auto.WindowVisualState.Normal)
     with n.window_dpi_context(app.frame):
         resize(doc, 340, 450)

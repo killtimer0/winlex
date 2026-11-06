@@ -1,13 +1,43 @@
 """Search result menus operate on the selected metadata item."""
+import struct
+from commctrl import LVM_SETITEMSTATE, LVIS_FOCUSED, LVIS_SELECTED
 import pytest
 import win32clipboard as clipboard
+import win32api
 import win32gui
 import win32con
+import win32process
 import uiautomation as auto
 
 from support import native as n
 from support.session import select_combo
-from test_context import clipboard_text, dismiss, popup, wait_clipboard_available, wait_closed
+from test_context import clipboard_text, dismiss, popup, popup_window, wait_clipboard_available, wait_closed
+
+
+def select_result(app, row):
+    process = win32api.OpenProcess(win32con.PROCESS_VM_OPERATION | win32con.PROCESS_VM_WRITE,
+                                  False, app.process.pid)
+    memory = None
+    try:
+        memory = win32process.VirtualAllocEx(process, 0, 128, win32con.MEM_COMMIT | win32con.MEM_RESERVE,
+                                            win32con.PAGE_READWRITE)
+        item = bytearray(128)
+        state = LVIS_FOCUSED | LVIS_SELECTED
+        struct.pack_into('<IIIII', item, 0, 0, 0, 0, 0, state)
+        buffer = n.c.create_string_buffer(bytes(item))
+        assert n.write_process_memory(int(process), memory, buffer, len(item), None)
+        n.send(app.results, LVM_SETITEMSTATE, -1, memory)
+        struct.pack_into('<I', item, 12, state)
+        buffer = n.c.create_string_buffer(bytes(item))
+        assert n.write_process_memory(int(process), memory, buffer, len(item), None)
+        assert n.send(app.results, LVM_SETITEMSTATE, row, memory)
+        assert app.selected_row() == row
+    finally:
+        try:
+            if memory is not None:
+                win32process.VirtualFreeEx(process, memory, 0, win32con.MEM_RELEASE)
+        finally:
+            win32api.CloseHandle(process)
 
 
 def result(app, name):
@@ -15,7 +45,7 @@ def result(app, name):
         app.command(1040)
     app.query(name)
     row = app.named_rows(name)[0]
-    app.select(row)
+    select_result(app, row)
     app.focus(app.results)
     return row
 
@@ -94,10 +124,15 @@ def test_result_menu_copy(launch, settings, name, command, expected):
 def test_result_menu_captures_value_before_search_refresh(launch, settings):
     app = launch([settings[1]])
     result(app, "ERROR_ACCESS_DENIED")
+    wait_clipboard_available()
+    sequence = clipboard.GetClipboardSequenceNumber()
     _, ids = popup(app, app.results, keyboard=True)
-    auto.ControlFromHandle(app.search).GetValuePattern().SetValue('CreateFileW')
+    value = n.c.create_unicode_buffer('CreateFileW')
+    assert n.send(app.search, win32con.WM_SETTEXT, 0, n.c.addressof(value))
     n.wait(lambda: app.count() == 0, "old results cleared during menu")
+    assert popup_window(app.process.pid), "result menu closed during search update"
     choose(app, ids, 4)
+    n.wait(lambda: clipboard.GetClipboardSequenceNumber() != sequence, "captured result copied")
     assert clipboard_text() == "5"
 
 

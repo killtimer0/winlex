@@ -3,6 +3,7 @@ import pytest
 import win32api
 import win32con
 import win32gui
+import win32process
 import winreg
 import uiautomation as auto
 from support import native as n
@@ -20,12 +21,26 @@ def open_about(app):
 
 
 def link_item(app, control, index=0):
-    links = [child for child in auto.ControlFromHandle(control).GetChildren()
-             if child.ControlType == auto.ControlType.HyperlinkControl]
-    link = links[index]
-    legacy = link.GetLegacyIAccessiblePattern()
-    state = (1 if legacy.State & 4 else 0) | (2 if link.IsEnabled else 0)
-    return legacy.Value, state
+    class LinkItem(n.c.Structure):
+        _fields_ = [('mask', n.w.UINT), ('index', n.c.c_int), ('state', n.w.UINT),
+                    ('state_mask', n.w.UINT), ('id', n.w.WCHAR * 48), ('url', n.w.WCHAR * 2084)]
+
+    item = LinkItem(mask=11, index=index, state_mask=3)
+    process = win32api.OpenProcess(win32con.PROCESS_VM_OPERATION | win32con.PROCESS_VM_READ
+                                   | win32con.PROCESS_VM_WRITE, False, app.process.pid)
+    memory = None
+    try:
+        memory = win32process.VirtualAllocEx(process, 0, n.c.sizeof(item),
+                                             win32con.MEM_COMMIT | win32con.MEM_RESERVE,
+                                             win32con.PAGE_READWRITE)
+        assert n.write_process_memory(int(process), memory, n.c.byref(item), n.c.sizeof(item), None)
+        assert n.send(control, 0x0703, 0, memory)  # LM_GETITEM
+        assert n.read_process_memory(int(process), memory, n.c.byref(item), n.c.sizeof(item), None)
+        return item.url, item.state
+    finally:
+        if memory is not None:
+            win32process.VirtualFreeEx(process, memory, 0, win32con.MEM_RELEASE)
+        win32api.CloseHandle(process)
 
 
 @pytest.mark.parametrize('language,mode', [

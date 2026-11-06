@@ -84,7 +84,7 @@ def test_toolbar_names_on_hover(launch, settings):
             n.wait(lambda: not tooltip.Exists(0, 0) or not n.is_visible(tooltip.NativeWindowHandle),
                    'toolbar tooltip hidden')
             time.sleep(.1)
-            button = auto.ControlFromHandle(toolbar).ButtonControl(Name=app.toolbar_text(command))
+            button = auto.ControlFromHandle(toolbar).Control(Name=app.toolbar_text(command))
             bounds = button.BoundingRectangle
             auto.MoveTo(bounds.xcenter(), bounds.ycenter())
             n.wait(lambda: tooltip.Exists(0, 0) and n.is_visible(tooltip.NativeWindowHandle), 'toolbar tooltip')
@@ -96,7 +96,7 @@ def test_toolbar_names_on_hover(launch, settings):
 
 def infotip(app, control, row, image):
     assert control and n.is_visible(control)
-    item = app.rows(control)[row]
+    item = app.row(row, control)
     item.GetScrollItemPattern().ScrollIntoView()
     tooltip = auto.ToolTipControl(searchDepth=3, Compare=lambda item, depth: item.ProcessId == app.process.pid)
     with InputState():
@@ -120,6 +120,7 @@ def infotip(app, control, row, image):
 @pytest.mark.interactive
 def test_structured_infotips_preserve_paths_and_report_reload_errors(launch, settings):
     from support.paths import extended
+    from test_sources import complete_list_text
     directory = settings[2] / ('长路径' * 40) / ('metadata-' * 12)
     extended(directory).mkdir(parents=True, exist_ok=True)
     path = directory / '来源-😀.winmd'
@@ -137,7 +138,9 @@ def test_structured_infotips_preserve_paths_and_report_reload_errors(launch, set
     extended(path).unlink()
     app.select(0, app.sources)
     app.command(1044)
-    n.wait(lambda: app.cell(0, app.sources).splitlines()[1].startswith(('Reload failed', '重载失败')),
+    bits = 64 if is_64_bit(settings[0]) else 32
+    n.wait(lambda: (lambda lines: len(lines) > 1 and lines[1].startswith(('Reload failed', '重载失败')))(
+        complete_list_text(app, app.sources, 0, bits).splitlines()),
            'reload failure', 45)
     tip = infotip(app, app.sources, 0, settings[2] / 'source-error-tooltip.bmp')
     assert 'Error: ' in tip or '错误：' in tip

@@ -12,6 +12,8 @@ from . import native as n
 
 IMC_GETOPENSTATUS = 5
 IMC_SETOPENSTATUS = 6
+GA_ROOT = 2
+get_ancestor = n.api(n.user, "GetAncestor", n.w.HWND, n.w.HWND, n.w.UINT)
 
 
 @contextmanager
@@ -63,26 +65,19 @@ def recover(path):
                    "IME state restored")
     foreground = state["foreground"]
     try:
+        if foreground and win32gui.IsWindow(foreground):
+            foreground = get_ancestor(foreground, GA_ROOT)
+            assert foreground, "Cannot resolve previous foreground root"
         if foreground and win32gui.IsWindow(foreground) and win32gui.GetForegroundWindow() != foreground:
             window = auto.ControlFromHandle(foreground)
-            if window.ClassName in ('Progman', 'Shell_TrayWnd'):
-                alt_pressed = auto.IsKeyPressed(auto.Keys.VK_MENU)
+            alt_pressed = auto.IsKeyPressed(auto.Keys.VK_MENU)
+            if not alt_pressed:
+                auto.PressKey(auto.Keys.VK_MENU, waitTime=0)
+            try:
+                auto.SetForegroundWindow(window.NativeWindowHandle)
+            finally:
                 if not alt_pressed:
-                    auto.PressKey(auto.Keys.VK_MENU, waitTime=0)
-                try:
-                    auto.SetForegroundWindow(foreground)
-                finally:
-                    if not alt_pressed:
-                        auto.ReleaseKey(auto.Keys.VK_MENU, waitTime=0)
-            else:
-                topmost = window.IsTopmost()
-                window.SetTopmost(True)
-                try:
-                    title = window.TitleBarControl()
-                    assert title.Exists(2), "Previous foreground window has no accessible title bar"
-                    title.Click()
-                finally:
-                    window.SetTopmost(topmost)
+                    auto.ReleaseKey(auto.Keys.VK_MENU, waitTime=0)
             n.wait(lambda: win32gui.GetForegroundWindow() == foreground, "foreground restored")
     finally:
         auto.MoveTo(*state["cursor"], waitTime=0)
@@ -97,8 +92,11 @@ class InputState:
         self.path = Path(path) if path is not None else Path(root) / "input.json"
         self.path.parent.mkdir(parents=True, exist_ok=True)
         keys = range(8, 256)
+        raw_foreground = win32gui.GetForegroundWindow()
+        foreground = get_ancestor(raw_foreground, GA_ROOT) if raw_foreground else 0
+        assert not raw_foreground or foreground, "Cannot resolve foreground root"
         self.state = {"held": [], "cursor": auto.GetCursorPos(),
-                      "foreground": win32gui.GetForegroundWindow(),
+                      "foreground": foreground, "raw_foreground": raw_foreground,
                       "released": [key for key in keys if not auto.IsKeyPressed(key)],
                       "released_mouse": [key for key in (win32con.VK_LBUTTON, win32con.VK_RBUTTON,
                                                          win32con.VK_MBUTTON) if not auto.IsKeyPressed(key)],
@@ -129,6 +127,19 @@ class InputState:
         auto.Click(x, y)
         self.state["held"].remove("mouse")
         self.save()
+
+    def double_click(self, x, y):
+        self.state["held"].append("mouse")
+        self.save()
+        try:
+            auto.Click(x, y, waitTime=0)
+            auto.Click(x, y)
+        except BaseException:
+            auto.ReleaseMouse(waitTime=0)
+            raise
+        finally:
+            self.state["held"].remove("mouse")
+            self.save()
 
     def key(self, code):
         self.state["held"].append(code)

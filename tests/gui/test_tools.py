@@ -44,10 +44,10 @@ def visual_state(hwnd, state):
 
 
 def tool(app, new=False):
-    panel = n.get_item(app.frame, 1801)
+    panel = app.tool_list
     if not n.is_visible(panel):
         app.command(1800)
-        panel = n.wait(lambda: n.get_item(app.frame, 1801), "tools panel")
+        panel = n.wait(lambda: app.tool_list, "tools panel")
     app.select(0, panel)
     before = set(tools(app))
     app.command(1049 if new else 1050)
@@ -105,7 +105,7 @@ def test_tool_completion_is_dispatched_during_menu_tracking(launch):
     doc = tool(app)
     choose_scope(app, doc, 1)
     original = query(app, doc, "5")
-    panel = n.get_item(app.frame, 1801)
+    panel = app.tool_list
     edit(doc, 1810, "2")
     win32gui.PostMessage(panel, win32con.WM_CONTEXTMENU, panel, -1)
     menu, _ = find_popup(app)
@@ -126,7 +126,7 @@ def test_tool_list_context_menu_offers_instance_actions_without_opening(launch):
 
     app = launch()
     app.command(1800)
-    panel = n.get_item(app.frame, 1801)
+    panel = app.tool_list
     app.select(0, panel)
     app.focus(panel)
     win32gui.PostMessage(panel, win32con.WM_CONTEXTMENU, panel, -1)
@@ -144,10 +144,10 @@ def test_tool_list_context_menu_offers_instance_actions_without_opening(launch):
 def test_tool_list_rows_align_after_initialization_and_panel_switches(launch, settings, profile, active_panel):
     profile.set("ActivePanel", winreg.REG_DWORD, active_panel)
     app = launch()
-    panel = n.get_item(app.frame, 1801)
+    panel = app.tool_list
     if not n.is_visible(panel):
         app.command(1800)
-        panel = n.wait(lambda: n.get_item(app.frame, 1801), "tools panel")
+        panel = n.wait(lambda: app.tool_list, "tools panel")
     original = app.item_rect(0, panel)
     assert original[1] == 0 and original[3] > original[1], original
     app.select(0, panel)
@@ -340,7 +340,7 @@ def test_tools_without_metadata_are_fixed_independent_and_reused_by_recency(laun
     app.command(1021)
     assert app.count(app.sources) == 0
     app.command(1800)
-    panel = n.wait(lambda: n.get_item(app.frame, 1801), "tools panel")
+    panel = n.wait(lambda: app.tool_list, "tools panel")
     app.select(0, panel)
     assert not tools(app), "selection alone must not create content"
     first = tool(app)
@@ -463,7 +463,7 @@ def test_tool_sidebar_and_environment_do_not_reset_queries(launch):
 def test_tool_keyboard_open_enter_query_and_focus_regions(launch):
     app = launch()
     app.command(1800)
-    panel = n.get_item(app.frame, 1801)
+    panel = app.tool_list
     app.select(0, panel)
     app.focus(panel)
     win32gui.PostMessage(panel, win32con.WM_KEYDOWN, win32con.VK_DOWN, 1)

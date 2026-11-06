@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import subprocess
 
+from commctrl import LVM_GETITEMCOUNT, LVM_GETNEXTITEM, LVM_GETTOPINDEX, LVNI_SELECTED
 import uiautomation as uia
 import win32api
 import win32con
@@ -85,18 +86,23 @@ class Session:
 
     @property
     def search(self):
-        item = find(self.frame, 1102)
-        return item.NativeWindowHandle if item else None
+        item = win32gui.GetDlgItem(self.frame, 1102)
+        return item if n.is_visible(item) else None
 
     @property
     def results(self):
-        item = find(self.frame, 1103)
-        return item.NativeWindowHandle if item else None
+        item = win32gui.GetDlgItem(self.frame, 1103)
+        return item if n.is_visible(item) else None
+
+    @property
+    def tool_list(self):
+        item = win32gui.GetDlgItem(self.frame, 1801)
+        return item if item and n.is_visible(item) else None
 
     @property
     def sources(self):
-        item = find(self.frame, 1112)
-        return item.NativeWindowHandle if item else None
+        item = win32gui.GetDlgItem(self.frame, 1112)
+        return item if n.is_visible(item) else None
 
     def find_frame(self):
         assert self.process.poll() is None, "GUI exited: %s" % self.process.returncode
@@ -106,7 +112,7 @@ class Session:
 
     def command(self, command, target=None, code=0):
         if command in (1049, 1050):
-            self.focus(n.get_item(self.frame, 1801) or self.results)
+            self.focus(self.tool_list or self.results)
         root = target or self.frame
         if command in (1020, 1051, 1053, 1054):
             win32gui.PostMessage(root, win32con.WM_COMMAND, (code << 16) | command, 0)
@@ -125,7 +131,9 @@ class Session:
     def settings_page(self, sheet, index):
         tabs = [x for x, _ in uia.WalkControl(control(sheet)) if x.ControlType == uia.ControlType.TabItemControl]
         assert 0 <= index < len(tabs)
-        pattern(tabs[index], uia.PatternId.SelectionItemPattern).Select(waitTime=0)
+        selection = pattern(tabs[index], uia.PatternId.SelectionItemPattern)
+        if not selection.IsSelected:
+            assert n.send(sheet, win32con.WM_USER + 101, index)  # PSM_SETCURSEL
         identifier = (1300, 1310)[index]
         item = n.wait(lambda: find(sheet, identifier), "settings page")
         page = item.GetParentControl()
@@ -137,6 +145,18 @@ class Session:
 
     def choices(self, value):
         combo = control(value)
+        if not combo.IsEnabled:
+            hwnd = combo.NativeWindowHandle
+            count = n.send(hwnd, win32con.CB_GETCOUNT)
+            assert count >= 0
+            result = []
+            for index in range(count):
+                length = n.send(hwnd, win32con.CB_GETLBTEXTLEN, index)
+                assert length >= 0
+                text = c.create_unicode_buffer(length + 1)
+                assert n.send(hwnd, win32con.CB_GETLBTEXT, index, c.addressof(text)) == length
+                result.append(text.value)
+            return result
         expansion = pattern(combo, uia.PatternId.ExpandCollapsePattern)
         expansion.Expand(waitTime=0)
         try:
@@ -154,8 +174,15 @@ class Session:
     def choose(self, doc, architecture):
         self.focus(doc)
         n.wait(lambda: self.active_document() == doc, "document activated")
-        combo = control(self.architecture(doc))
-        select_combo(combo, architecture)
+        combo = self.architecture(doc)
+        label = c.create_unicode_buffer(architecture)
+        index = n.send(combo, win32con.CB_FINDSTRINGEXACT, -1, c.addressof(label))
+        assert index != win32con.CB_ERR, "Architecture unavailable: %s" % architecture
+        assert n.send(combo, win32con.CB_SETCURSEL, index) == index
+        assert n.send(combo, win32con.CB_GETCURSEL) == index
+        parent = win32gui.GetParent(combo)
+        identifier = win32gui.GetDlgCtrlID(combo)
+        n.send(parent, win32con.WM_COMMAND, (win32con.CBN_SELENDOK << 16) | identifier, combo)
 
     def status_text(self):
         status = control(self.status)
@@ -166,33 +193,59 @@ class Session:
         toolbar = control(self.item(self.frame, 1113))
         return toolbar.GetChildren()[(1040, 1021, 1800).index(command)].Name
 
-    def rows(self, value=...):
+    def _rows(self, value=..., reverse=False):
         value = self.results if value is ... else value
         assert value, "Requested list is not exposed by UI Automation"
-        return [x for x in control(value).GetChildren()
-                if x.ControlType in (uia.ControlType.ListItemControl, uia.ControlType.DataItemControl)]
+        root = control(value)
+        item = root.GetLastChildControl() if reverse else root.GetFirstChildControl()
+        while item:
+            if item.ControlType in (uia.ControlType.ListItemControl, uia.ControlType.DataItemControl):
+                yield item
+            item = item.GetPreviousSiblingControl() if reverse else item.GetNextSiblingControl()
+
+    def rows(self, value=...):
+        return list(self._rows(value))
+
+    def row(self, row, value=...):
+        total = self.count(value)
+        if row < 0:
+            row += total
+        if not 0 <= row < total:
+            raise IndexError("List row unavailable: %s" % row)
+        reverse = row >= total // 2
+        offset = total - 1 - row if reverse else row
+        for index, item in enumerate(self._rows(value, reverse=reverse)):
+            if index == offset:
+                return item
+        raise IndexError("List row unavailable: %s" % row)
 
     def count(self, value=...):
-        return len(self.rows(value))
+        value = self.results if value is ... else value
+        assert value, "Requested list is unavailable"
+        assert n.class_name(value) == "SysListView32", "Requested control is not a list view"
+        return n.send(value, LVM_GETITEMCOUNT)
 
     def cell(self, row, control=...):
-        return self.rows(control)[row].Name
+        return self.row(row, control).Name
 
     def select(self, row, control=...):
-        assert pattern(self.rows(control)[row], uia.PatternId.SelectionItemPattern).Select(waitTime=0)
+        assert pattern(self.row(row, control), uia.PatternId.SelectionItemPattern).Select(waitTime=0)
 
     def named_rows(self, name):
         return [index for index, item in enumerate(self.rows())
                 if item.Name.splitlines()[0].rsplit(".", 1)[-1] == name]
 
     def selected_row(self, control=...):
-        for index, item in enumerate(self.rows(control)):
-            if pattern(item, uia.PatternId.SelectionItemPattern).IsSelected:
-                return index
-        return -1
+        value = self.results if control is ... else control
+        assert value, "Requested list is unavailable"
+        assert n.class_name(value) == "SysListView32", "Requested control is not a list view"
+        return c.c_int32(n.send(value, LVM_GETNEXTITEM, -1, LVNI_SELECTED)).value
+
+    def top_row(self):
+        return n.send(self.results, LVM_GETTOPINDEX)
 
     def item_rect(self, row, control=...):
-        rect = self.rows(control)[row].BoundingRectangle
+        rect = self.row(row, control).BoundingRectangle
         origin = win32gui.ClientToScreen(self.results if control is ... else control, (0, 0))
         return rect.left - origin[0], rect.top - origin[1], rect.right - origin[0], rect.bottom - origin[1]
 
@@ -254,14 +307,14 @@ class Session:
 
     def _clicked_document(self, inputs, row, double, description):
         assert inputs is not None, "Mouse gestures require an interactive input owner"
-        item = self.rows()[row]
+        item = self.row(row)
         name = item.Name.splitlines()[0].rsplit(".", 1)[-1]
         rect = item.BoundingRectangle
         position = ((rect.left + rect.right) // 2, (rect.top + rect.bottom) // 2)
         assert win32gui.GetForegroundWindow() == self.frame, "Application lost foreground"
         assert win32gui.WindowFromPoint(position) == self.results, "Result row is obscured"
         if double:
-            item.DoubleClick()
+            inputs.double_click(*position)
         else:
             item.Click()
         return self.wait_document(description, name)
@@ -306,16 +359,37 @@ class Session:
 
     def pick(self, paths):
         self.command(1020)
-        dialog = uia.WindowControl(searchDepth=3, ClassName="#32770",
-                                   Compare=lambda item, depth: item.ProcessId == self.process.pid)
-        n.wait(lambda: dialog.Exists(0, 0), "native file dialog")
-        field = dialog.EditControl(Compare=lambda item, depth: item.AutomationId in ('1148', '1152'))
-        assert field.Exists(5), "file-name field"
-        pattern(field, uia.PatternId.ValuePattern).SetValue(" ".join('"%s"' % path for path in paths))
-        button = dialog.ButtonControl(AutomationId='1')
-        assert button.Exists(5), "open button"
-        invoke(button)
-        n.wait(lambda: not n.is_window(dialog.NativeWindowHandle), "file dialog closed")
+        def dialogs():
+            found = []
+            def visit(hwnd, _):
+                if (win32process.GetWindowThreadProcessId(hwnd)[1] == self.process.pid
+                        and n.is_visible(hwnd) and n.class_name(hwnd) == "#32770"):
+                    found.append(hwnd)
+                return True
+            win32gui.EnumWindows(visit, None)
+            return found
+        candidates = n.wait(dialogs, "native file dialog")
+        assert len(candidates) == 1, ("ambiguous file dialog", candidates)
+        dialog = candidates[0]
+
+        def controls():
+            fields, buttons = [], []
+            def visit(hwnd, _):
+                if n.is_visible(hwnd):
+                    name, identifier = n.class_name(hwnd), n.get_id(hwnd)
+                    if name == "Edit" and identifier in (1148, 1152):
+                        fields.append(hwnd)
+                    elif name == "Button" and identifier == win32con.IDOK:
+                        buttons.append(hwnd)
+                return True
+            win32gui.EnumChildWindows(dialog, visit, None)
+            return (fields, buttons) if fields and buttons else None
+        fields, buttons = n.wait(controls, "file dialog controls")
+        assert len(fields) == len(buttons) == 1, ("ambiguous file dialog controls", fields, buttons)
+        value = c.create_unicode_buffer(" ".join('"%s"' % path for path in paths))
+        assert n.send(fields[0], win32con.WM_SETTEXT, 0, c.addressof(value))
+        win32gui.PostMessage(dialog, win32con.WM_COMMAND, win32con.IDOK, buttons[0])
+        n.wait(lambda: not n.is_window(dialog), "file dialog closed")
 
     def diagnostics(self, destination):
         rows = []

@@ -53,6 +53,36 @@ def transfer_path(config, path):
     return path
 
 
+def last_record(path):
+    try:
+        with path.open("rb") as stream:
+            stream.seek(0, 2)
+            stream.seek(max(0, stream.tell() - 8192))
+            lines = stream.read().splitlines()
+    except FileNotFoundError:
+        return None
+    for line in reversed(lines):
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(record, dict):
+            return record
+    return None
+
+
+def run_progress(path):
+    if (path / "actual" / "progress.jsonl").exists():
+        path = path / "actual"
+    started = last_record(path / "progress.jsonl")
+    if started is None:
+        return None
+    completed = last_record(path / "timings.jsonl")
+    active = completed is None or any(completed[key] != started[key] for key in ("nodeid", "phase"))
+    return {"nodeid": started["nodeid"], "phase": started["phase"], "active": active,
+            "elapsed": max(0, time.monotonic() - started["monotonic"]) if active else completed["duration"]}
+
+
 def rpc(root, request):
     root.mkdir(parents=True, exist_ok=True)
     action = request["action"]
@@ -86,6 +116,18 @@ def rpc(root, request):
         task.QueryInterface(pythoncom.IID_IPersistFile).Save(None, True)
         task.Run()
         return {"state": "worker_start_requested", "task": name}
+    if action == "watch":
+        deadline = time.monotonic() + request["timeout"]
+        while True:
+            result = rpc(root, {**request, "action": "status"})
+            if result.get("state") not in ("running", "queued"):
+                return {**result, "watch_event": "finished"}
+            progress = result.get("progress")
+            if progress and progress["active"] and progress["elapsed"] >= request["slow_after"]:
+                return {**result, "watch_event": "slow_phase"}
+            if time.monotonic() >= deadline:
+                return {**result, "watch_event": "watch_timeout"}
+            time.sleep(.25)
     path = run_path(root, request["run_id"])
     if action == "submit":
         path.mkdir()
@@ -98,7 +140,11 @@ def rpc(root, request):
         result = path / "run.json"
         if result.exists():
             return json.loads(result.read_text(encoding="utf-8"))
-        return {"state": "running" if (path / "started.json").exists() else "queued"}
+        result = {"state": "running" if (path / "started.json").exists() else "queued"}
+        progress = run_progress(path)
+        if progress is not None:
+            result["progress"] = progress
+        return result
     if action == "collect":
         from support.paths import extended
         root = extended(path)
@@ -180,15 +226,18 @@ def main():
     parser.add_argument("--request")
     parser.add_argument("--once", action="store_true")
     parser.add_argument("action", choices=(
-        "worker", "rpc", "start-worker", "capabilities", "submit", "status", "cancel", "collect", "deploy",
+        "worker", "rpc", "start-worker", "capabilities", "submit", "status", "watch", "cancel", "collect", "deploy",
     ))
     parser.add_argument("--source", type=Path)
     parser.add_argument("--destination")
     parser.add_argument("--run-id")
     parser.add_argument("--timeout", type=int, default=180)
+    parser.add_argument("--slow-after", type=float, default=15)
     parser.add_argument("--desktop", choices=("isolated", "current"), default="isolated")
     parser.add_argument("--output", type=Path, default=Path("tmp/remote-tests"))
     args, tests = parser.parse_known_args()
+    if args.slow_after <= 0:
+        parser.error("--slow-after must be positive")
     if args.action == "submit" and "--real-input" in tests and args.desktop != "current":
         parser.error("--real-input requires --desktop current")
     if args.action == "worker":
@@ -214,7 +263,7 @@ def main():
         print(json.dumps({"deployed": args.destination}))
         return
     request = {"action": args.action, "run_id": args.run_id or uuid.uuid4().hex,
-               "timeout": args.timeout, "desktop": args.desktop, "tests": tests}
+               "timeout": args.timeout, "slow_after": args.slow_after, "desktop": args.desktop, "tests": tests}
     if config["transport"] == "local":
         result = rpc(Path(config["root"]).resolve(), request)
     else:

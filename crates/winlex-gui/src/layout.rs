@@ -95,7 +95,7 @@ impl Metrics {
     }
     pub fn button_size(&self, hwnd: HWND) -> SIZE {
         let mut size = SIZE { cx: 0, cy: 0 };
-        if send_mut(hwnd, BCM_GETIDEALSIZE, 0, &mut size) == 0 {
+        if send_mut(hwnd, BCM_GETIDEALSIZE, 0, &mut size) == 0 || size.cx <= 0 || size.cy <= 0 {
             size.cx = self.label_width(std::iter::once(text_wide(hwnd)), 0);
             size.cy = self.row();
             let style = unsafe { GetWindowLongPtrW(hwnd, GWL_STYLE) as i32 } & BS_TYPEMASK;

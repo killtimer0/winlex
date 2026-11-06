@@ -265,6 +265,7 @@ pub fn create(parent: HWND, id: u16) -> anyhow::Result<HWND> {
             WS_TABSTOP
                 | WS_VSCROLL
                 | ES_MULTILINE as u32
+                | ES_NOHIDESEL as u32
                 | ES_READONLY as u32
                 | ES_AUTOVSCROLL as u32,
             id,

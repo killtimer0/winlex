@@ -142,7 +142,7 @@ python tests/gui/resources.py --exe "$guiExe"
 ```
 
 `$guiExe` 为构建显示的 GUI 完整路径。`--dpi` 可改为 `pmv1`、`system`、`unaware` 或 `auto`。默认使用 `--desktop isolated`；也可使用 `--desktop current` 在当前桌面运行契约测试。
-结果写入 `tmp/gui-tests/<run-id>/`，包括 JUnit、失败截图和 `run.json`。
+结果写入 `tmp/gui-tests/<run-id>/`，包括 JUnit、失败截图和 `run.json`；`progress.jsonl` 即时记录当前用例及阶段，`timings.jsonl` 记录 setup、call、teardown 耗时，整批中断后仍可查看已完成阶段。
 交互与屏幕呈现测试使用 `--desktop current --real-input` 选择；不指定 `--real-input` 时运行其余用例。交互测试需要已解锁的独占活动桌面，运行期间不要操作键鼠。
 XP 目标执行端需有兼容 XP 的 Python 3.8 和 UI Automation 组件；通过 `python -m pip install -r tests/gui/requirements.lock` 安装目标端依赖，不使用开发机的 `.venv` 或 uv 锁文件。
 `tests/gui/requirements.txt` 定义目标端直接依赖，`requirements.lock` 固定其 Python 3.8 Windows 传递依赖。在开发机更新清单后重新生成：
@@ -165,12 +165,15 @@ python tests/gui/remote.py --config tmp/target.json start-worker
 python tests/gui/remote.py --config tmp/target.json capabilities
 python tests/gui/remote.py --config tmp/target.json submit --exe C:/WinlexTests/winlex-gui.exe --winmd C:/WinlexTests/Windows.Win32.winmd -q
 python tests/gui/remote.py --config tmp/target.json status --run-id RUN_ID
+python tests/gui/remote.py --config tmp/target.json watch --run-id RUN_ID --slow-after 15 --timeout 60
 python tests/gui/remote.py --config tmp/target.json cancel --run-id RUN_ID
 python tests/gui/remote.py --config tmp/target.json collect --run-id RUN_ID
 ```
 
 `start-worker` 通过任务计划程序请求在当前用户已登录的交互会话中启动 worker，使用配置指定的 Python；`capabilities` 显示解释器路径、桌面和心跳。需要该用户已登录以及创建计划任务的权限。也可在目标交互桌面手动执行 `python tests/gui/remote.py worker --root C:/WinlexTests/runs`。远程提交默认使用独立桌面；交互测试期间该会话须解锁且由测试独占，同一桌面只运行一个 worker。
 `deploy` 的目标父目录须已存在。SSH 负责调度和传输，GUI 由交互 worker 启动。收集 ZIP 默认回收到 `tmp/remote-tests/`。选择交互测试可在提交时增加 `--desktop current --real-input -k real_search_keyboard`。
+
+`watch` 在当前阶段达到 `--slow-after` 秒、运行结束或观察时间到期时返回，不会终止测试。慢阶段预警包含用例、setup／call／teardown 阶段及耗时，可结合运行日志中的线程栈及时诊断。
 
 可选的 SDK ABI 检查使用真实 SDK 声明验证布局、COM 槽位及位域初始化字节：
 

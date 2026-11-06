@@ -3,6 +3,7 @@ import json
 import platform
 import struct
 import sys
+import time
 import importlib.metadata
 from pathlib import Path
 
@@ -44,7 +45,17 @@ def pytest_collection_modifyitems(config, items):
     config.hook.pytest_deselected(items=deselected)
 
 
+def _phase_started(item, phase):
+    output = Path(item.config.getoption("--artifacts"))
+    output.mkdir(parents=True, exist_ok=True)
+    with (output / "progress.jsonl").open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps({"nodeid": item.nodeid, "phase": phase,
+                                 "start": time.time(), "monotonic": time.monotonic()}) + "\n")
+
+
+@pytest.hookimpl(tryfirst=True)
 def pytest_runtest_setup(item):
+    _phase_started(item, "setup")
     if not item.get_closest_marker("interactive"):
         return
     try:
@@ -63,14 +74,29 @@ def pytest_runtest_setup(item):
         pytest.fail("Cannot access the active input desktop: %s" % error, pytrace=False)
 
 
+@pytest.hookimpl(tryfirst=True)
+def pytest_runtest_call(item):
+    _phase_started(item, "call")
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_runtest_teardown(item):
+    _phase_started(item, "teardown")
+
+
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_makereport(item, call):
     outcome = yield
     report = outcome.get_result()
+    output = Path(item.config.getoption("--artifacts"))
+    output.mkdir(parents=True, exist_ok=True)
+    with (output / "timings.jsonl").open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps({"nodeid": report.nodeid, "phase": report.when,
+                                 "outcome": report.outcome, "duration": report.duration,
+                                 "start": report.start, "stop": report.stop}) + "\n")
     if report.when == "call":
         item.test_failed = report.failed
         if report.failed:
-            output = Path(item.config.getoption("--artifacts"))
             (output / (item.name + "-failure.txt")).write_text(report.longreprtext, encoding="utf-8")
 
 

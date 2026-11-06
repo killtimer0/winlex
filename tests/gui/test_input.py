@@ -52,11 +52,10 @@ def test_real_tool_toolbar_and_list_click(launch):
         assert frame.SetTopmost(True)
         try:
             toolbar = n.get_item(app.frame, 1113)
-            button = auto.ControlFromHandle(toolbar).ButtonControl(Name=app.toolbar_text(1800))
+            button = auto.ControlFromHandle(toolbar).Control(Name=app.toolbar_text(1800))
             button.Click()
-            panel = n.get_item(app.frame, 1801)
-            n.wait(lambda: n.is_visible(panel), "tool panel opened by toolbar click")
-            item = app.rows(panel)[0]
+            panel = n.wait(lambda: app.tool_list, "tool panel opened by toolbar click")
+            item = app.row(0, panel)
             item.Click()
             assert app.active_document() is None
             item.DoubleClick()

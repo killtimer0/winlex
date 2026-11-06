@@ -24,7 +24,7 @@ def test_result_rows_show_context_and_match_emphasis(launch, settings):
         app.query(query)
         assert app.count() > 0
         row = app.named_rows("CreateFileW")[0] if name_match else 0
-        app.rows()[row].GetScrollItemPattern().ScrollIntoView()
+        app.row(row).GetScrollItemPattern().ScrollIntoView()
         lines = app.cell(row).splitlines()
         detail = lines[2]
         assert detail.startswith(prefix), detail
@@ -102,8 +102,8 @@ def test_panel_switch_preserves_result_selection_and_scroll(launch, settings):
     assert app.count() > 100
     first, last = app.cell(0), app.cell(app.count() - 1)
     app.select(3)
-    app.rows()[-1].GetScrollItemPattern().ScrollIntoView()
-    top = next(i for i, item in enumerate(app.rows()) if not item.IsOffscreen)
+    app.row(-1).GetScrollItemPattern().ScrollIntoView()
+    top = app.top_row()
     assert top > 0
     anchor = app.cell(top)
     offset = app.item_rect(top)[1]
@@ -115,7 +115,7 @@ def test_panel_switch_preserves_result_selection_and_scroll(launch, settings):
     assert n.is_visible(app.results)
     assert (app.cell(0), app.cell(app.count() - 1)) == (first, last)
     assert app.selected_row() == 3
-    top = next(i for i, item in enumerate(app.rows()) if not item.IsOffscreen)
+    top = app.top_row()
     assert app.cell(top) == anchor
     assert app.item_rect(top)[1] == offset
 
@@ -126,12 +126,11 @@ def test_panel_refresh_and_programmatic_mode_selection_do_not_submit_search(laun
     app.select(0)
     mode = n.get_item(app.frame, 1114)
     before = (app.count(), app.cell(0), app.status_text(), profile.preferences())
-    # Selecting an item through the pattern is not a completed dropdown gesture.
     combo = auto.ControlFromHandle(mode)
+    original_mode = combo.GetValuePattern().Value
     combo.GetExpandCollapsePattern().Expand()
-    choices = [item for item, _ in auto.WalkControl(combo)
-               if item.ControlType == auto.ControlType.ListItemControl]
-    choices[1].GetSelectionItemPattern().Select()
+    assert n.send(mode, win32con.CB_SETCURSEL, 1) == 1
+    assert combo.GetValuePattern().Value != original_mode
     n.send(app.frame, win32con.WM_SETTINGCHANGE)
     app.command(1021)
     app.command(1040)
@@ -141,6 +140,7 @@ def test_panel_refresh_and_programmatic_mode_selection_do_not_submit_search(laun
     n.send(app.frame, win32con.WM_COMMAND, (win32con.CBN_SELENDCANCEL << 16) | 1114, mode)
     assert auto.ControlFromHandle(mode).GetValuePattern().Value == app.choices(mode)[0]
     assert (app.count(), app.cell(0), app.status_text(), profile.preferences()) == before
+    assert app.selected_row() == 0
 
 
 def test_search_after_scrolling_keeps_new_results_in_view(launch, settings):
@@ -149,11 +149,11 @@ def test_search_after_scrolling_keeps_new_results_in_view(launch, settings):
     app.query("file")
     assert app.count() > 100
     for query in ("CreateFileW", "file"):
-        app.rows()[-1].GetScrollItemPattern().ScrollIntoView()
-        assert app.rows()[0].IsOffscreen
+        app.row(-1).GetScrollItemPattern().ScrollIntoView()
+        assert app.row(0).IsOffscreen
         app.query(query)
         assert app.count() > 0
-        assert not app.rows()[0].IsOffscreen
+        assert not app.row(0).IsOffscreen
         _, top, _, bottom = app.item_rect(0)
         _, client_top, _, client_bottom = n.rectangle(app.results, client=True)
         assert 0 <= top < bottom <= client_bottom - client_top
