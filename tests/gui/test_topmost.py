@@ -1,7 +1,8 @@
 import win32con
 import win32gui
+import uiautomation as auto
 from support import native as n
-from test_tools import tool
+from test_tools import activate, initialize_command_menu, tool, visual_state
 from test_about import open_about
 
 
@@ -15,7 +16,7 @@ def test_topmost_preserves_window_state_and_is_instance_local(launch):
     def check(expected):
         assert topmost(app.frame) == expected
         menu = win32gui.GetMenu(app.frame)
-        n.send(app.frame, win32con.WM_INITMENUPOPUP, win32gui.GetSubMenu(menu, 2), 2)
+        initialize_command_menu(app, 1010)
         state = win32gui.GetMenuState(menu, 1010, win32con.MF_BYCOMMAND)
         assert state != -1
         assert bool(state & win32con.MF_CHECKED) == expected
@@ -32,11 +33,12 @@ def test_topmost_preserves_window_state_and_is_instance_local(launch):
 
     first = tool(app)
     second = tool(app, new=True)
-    n.send(app.mdi, win32con.WM_MDIACTIVATE, first)
+    activate(first)
     check(True)
-    n.send(app.mdi, win32con.WM_MDIACTIVATE, second)
-    for command in (win32con.SC_MINIMIZE, win32con.SC_RESTORE, win32con.SC_MAXIMIZE):
-        n.send(app.frame, win32con.WM_SYSCOMMAND, command)
+    activate(second)
+    for state in (auto.WindowVisualState.Minimized, auto.WindowVisualState.Normal,
+                  auto.WindowVisualState.Maximized):
+        visual_state(app.frame, state)
         check(True)
     maximized = win32gui.GetWindowPlacement(app.frame)
     app.command(1010)
@@ -44,7 +46,7 @@ def test_topmost_preserves_window_state_and_is_instance_local(launch):
     assert win32gui.GetWindowPlacement(app.frame) == maximized
     app.command(1010)
     check(True)
-    n.send(app.frame, win32con.WM_SYSCOMMAND, win32con.SC_RESTORE)
+    visual_state(app.frame, auto.WindowVisualState.Normal)
 
     sheet = app.settings()
     assert topmost(sheet)
@@ -56,7 +58,7 @@ def test_topmost_preserves_window_state_and_is_instance_local(launch):
     dialog = open_about(app)
     assert topmost(dialog)
     assert not win32gui.IsWindowEnabled(app.frame)
-    assert n.post(dialog, win32con.WM_COMMAND, win32con.IDOK, 0)
+    auto.ControlFromHandle(n.get_item(dialog, win32con.IDOK)).GetInvokePattern().Invoke(waitTime=0)
     n.wait(lambda: not n.is_window(dialog), "about closed while topmost")
     assert win32gui.IsWindowEnabled(app.frame)
 

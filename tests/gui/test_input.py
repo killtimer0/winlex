@@ -1,7 +1,6 @@
 """Actual mouse/keyboard delivery, deliberately separate from message checks."""
 import pytest
-import struct
-import win32api
+import uiautomation as auto
 import win32con
 import win32gui
 from support import native as n
@@ -22,6 +21,7 @@ def test_real_sidebar_context_keys(launch, settings, command, control):
             target = n.get_item(app.frame, control)
             if not n.is_visible(target):
                 app.command(command)
+                target = n.wait(lambda: n.get_item(app.frame, control), "sidebar control exposed")
             assert target and n.is_visible(target)
             app.select(0, target)
             app.focus(target)
@@ -31,11 +31,11 @@ def test_real_sidebar_context_keys(launch, settings, command, control):
                 else:
                     inputs.state["held"].append(win32con.VK_SHIFT)
                     inputs.save()
-                    win32api.keybd_event(win32con.VK_SHIFT, 0, 0, 0)
+                    auto.PressKey(win32con.VK_SHIFT)
                     try:
                         inputs.key(win32con.VK_F10)
                     finally:
-                        win32api.keybd_event(win32con.VK_SHIFT, 0, win32con.KEYEVENTF_KEYUP, 0)
+                        auto.ReleaseKey(win32con.VK_SHIFT)
                         inputs.state["held"].remove(win32con.VK_SHIFT)
                         inputs.save()
                 _, ids = find_popup(app)
@@ -48,44 +48,30 @@ def test_real_sidebar_context_keys(launch, settings, command, control):
 def test_real_tool_toolbar_and_list_click(launch):
     with InputState() as input_state:
         app = launch()
-        win32gui.SetWindowPos(app.frame, win32con.HWND_TOPMOST, 0, 0, 0, 0,
-                              win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_NOACTIVATE)
+        frame = auto.ControlFromHandle(app.frame)
+        assert frame.SetTopmost(True)
         try:
             toolbar = n.get_item(app.frame, 1113)
-            assert n.send(toolbar, win32con.WM_USER + 51, 1800, app.memory)
-            buffer = n.c.create_string_buffer(16)
-            assert n.read_memory(app.handle, app.memory, buffer, 16, None)
-            left, top, right, bottom = struct.unpack('<4i', buffer.raw)
-            with n.window_dpi_context(app.frame):
-                point = win32gui.ClientToScreen(toolbar, ((left + right) // 2, (top + bottom) // 2))
-                assert win32gui.WindowFromPoint(point) == toolbar
-                input_state.click(*point)
+            button = auto.ControlFromHandle(toolbar).ButtonControl(Name=app.toolbar_text(1800))
+            button.Click()
             panel = n.get_item(app.frame, 1801)
             n.wait(lambda: n.is_visible(panel), "tool panel opened by toolbar click")
-            with n.window_dpi_context(app.frame):
-                left, top, right, bottom = app.item_rect(0, panel)
-                assert top == 0 and bottom > top
-                point = win32gui.ClientToScreen(panel, ((left + right) // 2, (top + bottom) // 2))
-                assert win32gui.WindowFromPoint(point) == panel
-                input_state.click(*point)
-            assert not n.get_item(app.active_document(), 1816)
-            with n.window_dpi_context(app.frame):
-                input_state.click(*point)
-                input_state.click(*point)
+            item = app.rows(panel)[0]
+            item.Click()
+            assert app.active_document() is None
+            item.DoubleClick()
             n.wait(lambda: n.get_item(app.active_document(), 1816), "tool opened by list double click")
         finally:
-            win32gui.SetWindowPos(app.frame, win32con.HWND_NOTOPMOST, 0, 0, 0, 0,
-                                  win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_NOACTIVATE)
+            assert frame.SetTopmost(False)
 
 
 def test_real_search_keyboard(launch, settings):
     with InputState() as input_state:
         app = launch([settings[1]])
         n.wait(lambda: app.status_text().startswith(("Ready.", "已就绪")), "loaded", 45)
-        # Expose our own window, then let a real mouse click obtain foreground
-        # ownership (SetForegroundWindow may be rejected by the foreground lock).
-        win32gui.SetWindowPos(app.frame, win32con.HWND_TOPMOST, 0, 0, 0, 0,
-                              win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_NOACTIVATE)
+        # Expose the window for a real mouse click on the search input.
+        frame = auto.ControlFromHandle(app.frame)
+        assert frame.SetTopmost(True)
         try:
             with n.window_dpi_context(app.frame):
                 left, top, right, bottom = n.rectangle(app.search)
@@ -93,8 +79,7 @@ def test_real_search_keyboard(launch, settings):
             n.wait(lambda: win32gui.GetForegroundWindow() == app.frame, "foreground ownership")
             n.wait(lambda: app.focused() == app.search, "search input focus")
         finally:
-            win32gui.SetWindowPos(app.frame, win32con.HWND_NOTOPMOST, 0, 0, 0, 0,
-                                  win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_NOACTIVATE)
+            assert frame.SetTopmost(False)
         input_state.disable_ime(app.search)
         for character in "CREATEFILEW":
             input_state.key(ord(character))
@@ -107,7 +92,8 @@ def test_real_search_keyboard(launch, settings):
         input_state.key(win32con.VK_HOME)
         input_state.key(win32con.VK_DOWN)
         input_state.key(win32con.VK_RETURN)
-        n.wait(lambda: n.send(mode, win32con.CB_GETCURSEL) == 1, "real keyboard selects condition mode")
+        n.wait(lambda: auto.ControlFromHandle(mode).GetValuePattern().Value
+               == app.choices(mode)[1], "real keyboard selects condition mode")
         n.wait(lambda: "condition" in app.status_text() or "条件" in app.status_text(), "condition diagnostic", 45)
         assert app.count() == 0
         input_state.key(win32con.VK_HOME)

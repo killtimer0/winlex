@@ -1,6 +1,8 @@
 """Transient documents: single-click previews, explicit opens keep them."""
 import pytest
 import win32con
+import win32gui
+import uiautomation as auto
 from contextlib import ExitStack
 
 from support import native as n
@@ -54,8 +56,7 @@ def test_preview_replacement_preserves_architecture_and_focus(launch, settings, 
     if gesture == "click":
         second = app.single_click_row(pointer)
     else:
-        app.select(0)
-        n.key_message(app.results, win32con.VK_SPACE)
+        app.preview_row(0)
         n.wait(lambda: n.window_text(first) == name + " - x64", "space preview")
         second = app.active_document()
     n.wait(lambda: app.focused() == app.results, "replacement keeps the list focus")
@@ -123,7 +124,8 @@ def test_arrow_keys_only_move_the_selection(launch, settings):
     app.focus(app.results)
     app.select(0)
     first = app.selected_row()
-    n.key_message(app.results, win32con.VK_DOWN)
+    win32gui.PostMessage(app.results, win32con.WM_KEYDOWN, win32con.VK_DOWN, 1)
+    win32gui.PostMessage(app.results, win32con.WM_KEYUP, win32con.VK_DOWN, -1073741823)
     n.wait(lambda: app.selected_row() == first + 1, "selection moved")
 
     assert len(app.documents()) == 1
@@ -144,7 +146,8 @@ def test_pinning_and_open_commands_preserve_documents_and_focus(launch, settings
     pinned_body = app.content(doc)
 
     app.select(0)
-    n.key_message(app.results, win32con.VK_RETURN)  # Pin the preview.
+    win32gui.PostMessage(app.results, win32con.WM_KEYDOWN, win32con.VK_RETURN, 1)
+    win32gui.PostMessage(app.results, win32con.WM_KEYUP, win32con.VK_RETURN, -1073741823)
     n.wait(lambda: not app.tab_descriptions()[0].startswith(("Preview · ", "预览 · ")), "pinned")
     n.wait(lambda: app.focused() == body(app, doc), "enter focuses the body")
     assert app.documents() == [doc]
@@ -156,7 +159,7 @@ def test_pinning_and_open_commands_preserve_documents_and_focus(launch, settings
     assert preview != doc and len(app.documents()) == 2
     n.wait(lambda: name in app.content(preview), "preview beside pinned document", 45)
     assert app.content(doc) == pinned_body
-    n.send(preview, win32con.WM_CLOSE)
+    assert auto.ControlFromHandle(preview).GetWindowPattern().Close(waitTime=0)
     n.wait(lambda: app.documents() == [doc], "close transient preview")
     app.focus(app.results)
     opened = app.double_click_row(pointer) if double_click else app.open_row(0)
@@ -164,8 +167,8 @@ def test_pinning_and_open_commands_preserve_documents_and_focus(launch, settings
     assert app.tab_labels()[1] == name + " - x86"
     n.wait(lambda: app.focused() == body(app, opened), "explicit open focuses the body")
 
-    n.send(app.mdi, win32con.WM_MDIACTIVATE, doc)
-    assert app.active_document() == doc
+    app.focus(doc)
+    n.wait(lambda: app.active_document() == doc, "pinned document activated")
     app.focus(app.results)
     app.command(1050)  # Open selected result activates the existing document.
     n.wait(lambda: app.focused() == body(app, opened), "menu open focuses the body")

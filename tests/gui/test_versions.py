@@ -1,6 +1,7 @@
 import shutil
 import win32con
 from support import native as n
+from test_context import select_text
 
 
 def test_reload_keeps_old_document_snapshot(launch, settings):
@@ -16,7 +17,7 @@ def test_reload_keeps_old_document_snapshot(launch, settings):
     assert app.count(app.sources) == 1
     app.select(0, app.sources)
     editor = n.get_item(entity, 1203)
-    n.send(editor, win32con.EM_SETSEL, 2, 8)
+    select_text(editor, 2, 8)
     app.command(1044)
     n.wait(lambda: n.is_visible(n.get_item(entity, 1204)), "earlier snapshot", 45)
     assert n.send(editor, win32con.EM_GETSEL) == (8 << 16) | 2

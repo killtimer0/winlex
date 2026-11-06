@@ -189,6 +189,8 @@ def main():
     parser.add_argument("--desktop", choices=("isolated", "current"), default="isolated")
     parser.add_argument("--output", type=Path, default=Path("tmp/remote-tests"))
     args, tests = parser.parse_known_args()
+    if args.action == "submit" and "--real-input" in tests and args.desktop != "current":
+        parser.error("--real-input requires --desktop current")
     if args.action == "worker":
         worker(args.root.resolve(), args.once)
         return

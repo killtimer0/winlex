@@ -4,6 +4,7 @@ import json
 import pytest
 import win32con
 import win32gui
+import uiautomation as auto
 
 from support import native as n
 from support.input_state import InputState
@@ -42,7 +43,7 @@ def test_dark_native_default_button_pixels_focus_and_enter(launch, profile, sett
         move(button, center(n.rectangle(button, client=True)))
         n.wait(lambda: n.send(button, win32con.BM_GETSTATE) & 0x200, 'native default button hot')
         evidence['hot'] = button_pixels(button)
-        n.send(dialog, win32con.WM_NEXTDLGCTL, button, 1)
+        app.focus(button)
         n.wait(lambda: app.focused() == button, 'native default button focus')
         assert n.send(button, win32con.BM_GETSTATE) & win32con.BST_FOCUS
         screen_image(dialog, settings[2] / ('dark-native-default-%s.bmp' % opener.__name__))
@@ -62,7 +63,7 @@ def test_dark_native_find_buttons_and_auto_checkboxes(launch, profile, settings)
         app.command(1060)
         query, count = n.get_item(doc, 1220), n.get_item(doc, 1223)
         n.wait(lambda: n.is_visible(query) and app.focused() == query, 'native find controls visible')
-        n.set_text(query, 'HANDLE')
+        auto.ControlFromHandle(query).SendKeys('HANDLE')
         n.wait(lambda: n.window_text(count).startswith('1/'), 'find initial match')
         for command, expected in [(1061, '2/'), (1062, '1/')]:
             button = n.get_item(doc, command)

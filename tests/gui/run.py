@@ -8,10 +8,8 @@ import sys
 import time
 import uuid
 import winreg
-import importlib.metadata
 
 import support
-from packaging.requirements import Requirement
 import win32api
 import win32con
 import win32event
@@ -26,6 +24,9 @@ def main():
     parser.add_argument("--timeout", type=float, default=180)
     parser.add_argument("--output")
     args, tests = parser.parse_known_args()
+    interactive = "--real-input" in tests
+    if interactive and args.desktop != "current":
+        parser.error("--real-input requires --desktop current")
     output = Path(args.output or ("tmp/gui-tests/" + uuid.uuid4().hex)).resolve()
     if (output / "run.json").exists():
         parser.error("Output contains a completed run; select a fresh directory")
@@ -40,32 +41,28 @@ def main():
     input_mutex = None
     result = {"exit_code": None, "timed_out": False, "cancelled": False, "cleanup_complete": False, "cleanup_errors": []}
     try:
-        for line in Path(__file__).with_name("requirements.txt").read_text(encoding="utf-8").splitlines():
-            if line.strip() and not line.startswith("#"):
-                requirement = Requirement(line)
-                if requirement.marker and not requirement.marker.evaluate():
-                    continue
-                actual = importlib.metadata.version(requirement.name)
-                if actual not in requirement.specifier:
-                    raise RuntimeError("Dependency mismatch: %s, found %s" % (requirement, actual))
-        if "--real-input" in tests:
-            if args.desktop != "current":
-                raise RuntimeError("Actual input requires --desktop current")
+        if interactive:
             input_mutex = win32event.CreateMutex(None, False, "Local\\Winlex.Tests.Input")
-            if win32event.WaitForSingleObject(input_mutex, 0) != win32con.WAIT_OBJECT_0:
+            if win32event.WaitForSingleObject(input_mutex, 0) not in (win32con.WAIT_OBJECT_0, win32con.WAIT_ABANDONED):
                 win32api.CloseHandle(input_mutex)
                 input_mutex = None
                 raise RuntimeError("Another test owns input on this logon session")
+            from support.input_state import InputState
+            InputState(output / "profiles" / "run-input.json").__enter__()
         startup = win32process.STARTUPINFO()
         if args.desktop == "isolated":
             name = "Winlex.Test." + uuid.uuid4().hex
-            desktop = win32service.CreateDesktop(name, 0, win32con.GENERIC_ALL, None)
-            startup.lpDesktop = name
+            desktop = win32service.CreateDesktop(name, 0, 0x1ff, None)
+            startup.lpDesktop = "winsta0\\" + name
         command = subprocess.list2cmdline([
             sys.executable, "-X", "utf8", "-m", "pytest", str(Path(__file__).parent),
-            "--artifacts", str(output), "--junitxml", str(output / "tests.xml"), *tests,
+            "--artifacts", str(output), "--junitxml", str(output / "tests.xml"),
+            "-o", "cache_dir=" + str(output / "cache"), *tests,
         ])
         environment = {**os.environ, "WINLEX_TEST_LEDGER": str(output / "profiles")}
+        environment.pop("WINLEX_TEST_REAL_INPUT", None)
+        if interactive:
+            environment["WINLEX_TEST_REAL_INPUT"] = "1"
         # Keep redirected standard handles available to pytest.
         process, thread, _, _ = win32process.CreateProcess(None, command, None, None, True,
             win32process.CREATE_SUSPENDED, environment, str(Path(__file__).resolve().parents[2]), startup)
@@ -98,7 +95,10 @@ def main():
                 if time.monotonic() > deadline:
                     raise RuntimeError("Job still has active processes")
                 time.sleep(.05)
-            for entry in (output / "profiles").glob("*.profile"):
+        except Exception as error:
+            result["cleanup_errors"].append(str(error))
+        for entry in (output / "profiles").glob("*.profile"):
+            try:
                 root = entry.read_text(encoding="utf-8")
                 assert root == "Software\\Winlex\\Tests\\" + entry.stem
                 try:
@@ -106,15 +106,28 @@ def main():
                 except FileNotFoundError:
                     pass
                 entry.unlink()
-            from support.input_state import recover
-            recover(output / "profiles" / "input.json")
-            for report in output.glob("*-cleanup.json"):
+            except Exception as error:
+                result["cleanup_errors"].append(str(error))
+        ledgers = [output / "profiles" / name for name in ("input.json", "run-input.json")]
+        if interactive and any(path.exists() for path in ledgers):
+            try:
+                from support.input_state import recover
+                for path in ledgers:
+                    try:
+                        recover(path)
+                    except Exception as error:
+                        result["cleanup_errors"].append(str(error))
+            except Exception as error:
+                result["cleanup_errors"].append(str(error))
+        elif any(path.exists() for path in ledgers):
+            result["cleanup_errors"].append("Input ledger exists without ownership of the active desktop")
+        for report in output.glob("*-cleanup.json"):
+            try:
                 recorded = json.loads(report.read_text(encoding="utf-8"))
                 if not recorded["cleanup_complete"]:
                     result["cleanup_errors"].extend(recorded["errors"])
-            result["cleanup_complete"] = not result["cleanup_errors"]
-        except Exception as error:
-            result["cleanup_errors"].append(str(error))
+            except Exception as error:
+                result["cleanup_errors"].append(str(error))
         for handle in (thread, process, job):
             if handle:
                 try:
@@ -132,7 +145,7 @@ def main():
                 desktop.CloseDesktop()
             except Exception as error:
                 result["cleanup_errors"].append(str(error))
-        result["cleanup_complete"] = result["cleanup_complete"] and not result["cleanup_errors"]
+        result["cleanup_complete"] = not result["cleanup_errors"]
         (output / "run.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
     return 0 if result["exit_code"] == 0 and result["cleanup_complete"] else 1
 

@@ -1,0 +1,12 @@
+# Generated from requirements.txt for Python 3.8 on Windows.
+colorama==0.4.6
+comtypes==1.4.12
+exceptiongroup==1.3.1
+iniconfig==2.1.0
+packaging==26.2
+pluggy==1.5.0
+pytest==8.3.5
+pywin32==228
+tomli==2.5.0
+typing-extensions==4.13.2
+uiautomation==2.0.29

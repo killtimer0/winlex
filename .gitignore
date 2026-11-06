@@ -3,6 +3,7 @@
 /target/
 /artifacts/
 /node_modules/
+/.venv/
 **/target/
 **/__pycache__/
 **/bin/

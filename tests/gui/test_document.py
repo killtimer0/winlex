@@ -3,9 +3,18 @@ import shutil
 import pytest
 import win32con
 import win32gui
+import uiautomation as auto
 from support import native as n
+from test_context import select_text, selection_packed
 
-RESIZE_NO_MOVE = win32con.SWP_NOMOVE | win32con.SWP_NOZORDER | win32con.SWP_NOACTIVATE
+def window_state(hwnd, state):
+    pattern = auto.ControlFromHandle(hwnd).GetPattern(auto.PatternId.WindowPattern)
+    assert pattern.SetWindowVisualState(state, waitTime=0)
+
+
+def resize(hwnd, width, height):
+    pattern = auto.ControlFromHandle(hwnd).GetPattern(auto.PatternId.TransformPattern)
+    assert pattern.Resize(width, height, waitTime=0)
 
 
 def test_large_api_document_stays_responsive(launch, settings):
@@ -13,28 +22,26 @@ def test_large_api_document_stays_responsive(launch, settings):
     app.query("Windows.Win32.Graphics.Gdi.Apis")
     doc = app.open_row()
     editor = n.get_item(doc, 1203)
-    n.wait(lambda: "EnumDisplayMonitors(" in app.content(doc), "complete Gdi declaration", 45)
+    n.wait(lambda: "EnumDisplayMonitors(" in n.rich_edit_text(editor), "complete Gdi declaration", 45)
     app.focus(editor)
     app.choose(doc, "x64" if app.choice(doc) == "x86" else "x86")
-    n.wait(lambda: "EnumDisplayMonitors(" in app.content(doc), "focused Gdi declaration reload", 45)
-    body = app.content(doc)
+    n.wait(lambda: "EnumDisplayMonitors(" in n.rich_edit_text(editor), "focused Gdi declaration reload", 45)
+    body = n.rich_edit_text(editor)
     assert len(body) > 100_000
     assert body.rstrip().endswith("};")
     app.focus(editor)
-    n.send(editor, win32con.EM_SETSEL, 6000, 6005)
+    select_text(editor, 6000, 6005)
     n.send(editor, win32con.EM_LINESCROLL, 0, 30)
     first = n.send(editor, win32con.EM_GETFIRSTVISIBLELINE)
     assert first > 0
     # All cross-process messages have a bounded timeout, including recoloring.
     n.send(app.frame, win32con.WM_SYSCOLORCHANGE)
-    assert app.content(doc) == body
-    assert n.send(editor, win32con.EM_GETSEL) == (6005 << 16) | 6000
+    assert n.rich_edit_text(editor) == body
+    assert selection_packed(editor) == (6005 << 16) | 6000
     assert n.send(editor, win32con.EM_GETFIRSTVISIBLELINE) == first
 
 
 def test_online_button_tracks_document_metadata(launch, settings):
-    from support.accessibility import client
-
     app = launch([settings[1]])
     for query, labels in [
         ("CreateFileW", ("Official documentation", "官方文档")),
@@ -47,8 +54,8 @@ def test_online_button_tracks_document_metadata(launch, settings):
         n.wait(lambda: n.window_text(button) in labels, "online action label")
         assert n.is_visible(button)
         assert win32gui.IsWindowEnabled(button)
-        with client(button) as accessible:
-            assert accessible.name == n.window_text(button)
+        accessible = auto.ControlFromHandle(button).GetLegacyIAccessiblePattern()
+        assert accessible.Name == n.window_text(button)
 
 
 def test_document_controls_and_close_during_architecture_reload(launch, settings):
@@ -58,13 +65,13 @@ def test_document_controls_and_close_during_architecture_reload(launch, settings
     n.wait(lambda: "CreateFileW(" in app.content(doc), "initial declaration", 45)
     editor = n.get_item(doc, 1203)
     body = app.content(doc)
-    n.send(editor, win32con.WM_CHAR, ord("X"))  # WM_CHAR: declaration stays read-only.
+    n.send(editor, win32con.WM_CHAR, ord("X"))
     assert app.content(doc) == body
     assert "Windows.Win32.Storage.FileSystem" in n.window_text(n.get_item(doc, 1209))
     assert n.window_text(n.get_item(doc, 1207)) == "CreateFileW"
 
     app.choose(doc, "x64")
-    n.send(doc, win32con.WM_CLOSE)  # Close while a replacement may still be running.
+    auto.ControlFromHandle(doc).GetPattern(auto.PatternId.WindowPattern).Close(waitTime=0)
     n.wait(lambda: not app.documents(), "document closed")
     reopened = app.open_row()
     n.wait(lambda: "CreateFileW(" in app.content(reopened), "worker after cancellation", 45)
@@ -104,10 +111,10 @@ def test_architecture_preference_applies_to_new_documents(launch, profile, setti
     # Reselecting an older document's current architecture updates the preference
     # without replacing its text or selection.
     editor = n.get_item(first, 1203)
-    n.send(editor, win32con.EM_SETSEL, 2, 8)
+    select_text(editor, 2, 8)
     app.choose(first, "x64")
     assert profile.get("PreferredArchitecture") == "x64"
-    assert n.send(editor, win32con.EM_GETSEL) == (8 << 16) | 2
+    assert selection_packed(editor) == (8 << 16) | 2
 
 
 def test_architecture_preference_survives_restart(launch, profile, settings):
@@ -132,7 +139,8 @@ def test_architecture_cancel_keeps_current_document(launch, profile, settings):
     combo = app.architecture(doc)
     assert app.choice(doc) == "x86"
     n.send(combo, win32con.CB_SETCURSEL, 1)
-    app.command(1047, doc, win32con.CBN_SELENDCANCEL)
+    n.send(doc, win32con.WM_COMMAND,
+           1047 | ((win32con.CBN_SELENDCANCEL & 0xffff) << 16), combo)
     assert app.choice(doc) == "x86"
     assert "x86" in n.window_text(doc)
     assert profile.get("PreferredArchitecture") is None
@@ -142,21 +150,21 @@ def test_document_minimum_limits_normal_not_maximized_windows(launch, settings):
     app = launch([settings[1]])
     app.query("CreateFileW")
     doc = app.open_row()
-    n.send(doc, win32con.WM_SYSCOMMAND, win32con.SC_RESTORE)  # SC_RESTORE
+    window_state(doc, auto.WindowVisualState.Normal)
     with n.window_dpi_context(app.frame):
         dpi = n.api(n.user, "GetDpiForWindow", n.w.UINT, n.w.HWND)(doc) if hasattr(n.user, "GetDpiForWindow") else 96
         width, height = (320 * dpi + 48) // 96, (400 * dpi + 48) // 96
-        assert n.set_pos(doc, None, 0, 0, 100, 100, RESIZE_NO_MOVE)
+        resize(doc, 100, 100)
         left, top, right, bottom = n.rectangle(doc)
         assert (right - left, bottom - top) == (width, height)
 
         # A maximized document must still fit a container smaller than its normal minimum.
-        assert n.set_pos(app.frame, None, 0, 0, 600 * dpi // 96, 300 * dpi // 96, RESIZE_NO_MOVE)
-        for state in (win32con.SC_MAXIMIZE, win32con.SC_MINIMIZE, win32con.SC_RESTORE,
-                      win32con.SC_MAXIMIZE):
-            if state == win32con.SC_MAXIMIZE and n.is_zoomed(doc):
+        resize(app.frame, 600 * dpi // 96, 300 * dpi // 96)
+        for state in (auto.WindowVisualState.Maximized, auto.WindowVisualState.Minimized,
+                      auto.WindowVisualState.Normal, auto.WindowVisualState.Maximized):
+            if state == auto.WindowVisualState.Maximized and n.is_zoomed(doc):
                 continue
-            n.send(doc, win32con.WM_SYSCOMMAND, state)
+            window_state(doc, state)
             if n.is_zoomed(doc):
                 # MDI layout can finish after the synchronous system command returns.
                 stable_since = None
@@ -174,8 +182,8 @@ def test_document_minimum_limits_normal_not_maximized_windows(launch, settings):
                     return time.monotonic() - stable_since >= 0.2
                 n.wait(aligned, "stable maximized document fills MDI client", 5)
         assert n.rectangle(app.mdi, client=True)[3] < height
-        n.send(doc, win32con.WM_SYSCOMMAND, win32con.SC_RESTORE)
-        assert n.set_pos(doc, None, 0, 0, 100, 100, RESIZE_NO_MOVE)
+        window_state(doc, auto.WindowVisualState.Normal)
+        resize(doc, 100, 100)
         left, top, right, bottom = n.rectangle(doc)
         assert (right - left, bottom - top) == (width, height)
 
@@ -190,11 +198,13 @@ def test_tab_traverses_document_controls(launch, settings):
     app.focus(editor)
     for target in order:
         current = app.focused() or editor
-        n.key_message(current, win32con.VK_TAB)
+        win32gui.PostMessage(current, win32con.WM_KEYDOWN, win32con.VK_TAB, 1)
+        win32gui.PostMessage(current, win32con.WM_KEYUP, win32con.VK_TAB, -1073741823)
         n.wait(lambda: app.focused() == target, "tab to %d" % n.get_id(target))
 
     body = app.content(doc)
-    n.key_message(editor, win32con.VK_RETURN)  # Read-only body keeps Enter.
+    win32gui.PostMessage(editor, win32con.WM_KEYDOWN, win32con.VK_RETURN, 1)
+    win32gui.PostMessage(editor, win32con.WM_KEYUP, win32con.VK_RETURN, -1073741823)
     assert app.content(doc) == body
     assert len(app.documents()) == 1
 
@@ -215,12 +225,11 @@ def test_document_source_and_responsive_reading_layout(launch, settings):
     assert not win32gui.IsWindowVisible(n.get_item(doc, 1204))
 
     with n.window_dpi_context(app.frame):
-        n.send(app.mdi, win32con.WM_MDIRESTORE, doc)
+        window_state(doc, auto.WindowVisualState.Normal)
         dpi = n.api(n.user, "GetDpiForWindow", n.w.UINT, n.w.HWND)(doc) if hasattr(n.user, "GetDpiForWindow") else 96
         counts = []
         for width in [850, 320, 850]:
-            win32gui.SetWindowPos(doc, 0, 0, 0, width * dpi // 96, 450 * dpi // 96,
-                                  win32con.SWP_NOZORDER | win32con.SWP_NOACTIVATE)
+            resize(doc, width * dpi // 96, 450 * dpi // 96)
             assert app.content(doc) == body
             sr = n.rectangle(source)
             ar = n.rectangle(selector)
@@ -239,8 +248,8 @@ def test_document_source_and_responsive_reading_layout(launch, settings):
                 else:
                     assert bounds[0] >= previous[2]
                 previous = bounds
-            n.send(editor, win32con.EM_SETSEL, 0, -1)
-            assert n.send(editor, win32con.EM_GETSEL) != 0
+            select_text(editor, 0, -1)
+            assert selection_packed(editor) != 0
             n.send(editor, win32con.EM_SETSEL, -1, -1)
             n.send(editor, win32con.EM_SCROLLCARET)
             left, top = win32gui.ClientToScreen(doc, (0, 0))
@@ -260,7 +269,6 @@ def test_constant_summary_pseudocode_and_information_copy(launch, settings, copy
     import json
     import subprocess
     from test_context import find_popup, wait_closed, wait_clipboard_available, clipboard_text
-    from support.accessibility import client
     import win32clipboard as clipboard
 
     path = settings[2] / "来源&😀.winmd"
@@ -284,8 +292,8 @@ def test_constant_summary_pseudocode_and_information_copy(launch, settings, copy
                            (1205, ("Source:", "来源：")),
                            (1203, ("Declaration", "声明"))]:
         hwnd = n.get_item(doc, control)
-        with client(hwnd) as accessible:
-            assert accessible.name in names
+        accessible = auto.ControlFromHandle(hwnd).GetLegacyIAccessiblePattern()
+        assert accessible.Name in names
     if not copy:
         return
     button = n.get_item(doc, 1206)
@@ -296,21 +304,20 @@ def test_constant_summary_pseudocode_and_information_copy(launch, settings, copy
         assert app.focused() == button
         wait_clipboard_available()
         sequence = clipboard.GetClipboardSequenceNumber()
-        n.send(button, win32con.WM_KEYDOWN, win32con.VK_SPACE, 1)
-        assert n.post(button, win32con.WM_KEYUP, win32con.VK_SPACE, n.KEY_UP_LPARAM)
+        auto.SendKeys("{Space}")
         find_popup(app)
         for _ in range(index + 1):
-            n.key_message(button, win32con.VK_DOWN)
-        n.key_message(button, win32con.VK_RETURN)
+            auto.SendKeys("{Down}")
+        auto.SendKeys("{Enter}")
         wait_closed(button)
         n.send(doc, win32con.WM_NULL)
         n.wait(lambda: clipboard.GetClipboardSequenceNumber() != sequence, "information copied")
         assert clipboard_text() == value
         assert app.focused() == button
     sequence = clipboard.GetClipboardSequenceNumber()
-    assert n.post(button, win32con.BM_CLICK, 0, 0)
+    auto.ControlFromHandle(button).Click()
     find_popup(app)
-    n.key_message(button, win32con.VK_ESCAPE)
+    auto.SendKeys("{Escape}")
     wait_closed(button)
     n.send(doc, win32con.WM_NULL)
     assert clipboard.GetClipboardSequenceNumber() == sequence
@@ -322,10 +329,11 @@ def test_tiny_maximized_document_clips_summary_without_control_overlap(launch, s
     app.query("CreateFileW")
     doc = app.open_row()
     n.wait(lambda: "CreateFileW(" in app.content(doc), "declaration", 45)
+    editor = n.get_item(doc, 1203)
     with n.window_dpi_context(app.frame):
         dpi = n.api(n.user, "GetDpiForWindow", n.w.UINT, n.w.HWND)(doc) if hasattr(n.user, "GetDpiForWindow") else 96
-        n.send(app.mdi, win32con.WM_MDIMAXIMIZE, doc)
-        assert n.set_pos(app.frame, None, 0, 0, 650 * dpi // 96, 140 * dpi // 96, RESIZE_NO_MOVE)
+        window_state(doc, auto.WindowVisualState.Maximized)
+        resize(app.frame, 650 * dpi // 96, 140 * dpi // 96)
         for control in [1047, 1206, 1211]:
             assert not n.is_visible(n.get_item(doc, control))
-        assert n.rectangle(n.get_item(doc, 1203), client=True)[3] == 0
+        assert n.rectangle(editor, client=True)[3] == 0

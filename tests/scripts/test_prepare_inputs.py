@@ -70,8 +70,7 @@ class PrepareInputsContracts(unittest.TestCase):
                  patch("sys.argv", [str(SCRIPT)]), \
                  patch.object(prepare, "download", side_effect=lambda url, path, digest: path) as download, \
                  patch.object(prepare.zipfile, "ZipFile", return_value=archive), \
-                 patch.object(prepare.shutil, "which", return_value="7z"), \
-                 patch.object(prepare.subprocess, "run"):
+                 patch("py7zr.SevenZipFile"):
                 prepare.main()
                 self.assertEqual({(call.args[0], call.args[2]) for call in download.call_args_list},
                                  {(item["url"], item["archive_sha256"]) for item in (thunks, ltl)})
@@ -85,8 +84,7 @@ class PrepareInputsContracts(unittest.TestCase):
         thunks = prepare.manifest("yy-thunks-source.json")
         with patch("sys.argv", [str(SCRIPT), "--architecture", "arm64"]), \
              patch.object(prepare, "download", side_effect=lambda url, path, digest: path) as download, \
-             patch.object(prepare.shutil, "which", return_value="7z"), \
-             patch.object(prepare.subprocess, "run"), patch.object(prepare, "check"):
+             patch("py7zr.SevenZipFile"), patch.object(prepare, "check"):
             prepare.main()
             urls = {call.args[0] for call in download.call_args_list}
             self.assertIn(ltl["url"], urls)

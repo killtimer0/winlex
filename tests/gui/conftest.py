@@ -7,12 +7,13 @@ import importlib.metadata
 from pathlib import Path
 
 import pytest
+import uiautomation as auto
 import win32api
 import win32con
 import win32service
 from support.config import ConfigProfile
 from support.languages import LANGUAGES, language
-from support.session import Session
+from support.session import Session, invoke
 from support.pe import is_64_bit
 from support import native as n
 from support.diagnostics import screenshot
@@ -43,12 +44,34 @@ def pytest_collection_modifyitems(config, items):
     config.hook.pytest_deselected(items=deselected)
 
 
+def pytest_runtest_setup(item):
+    if not item.get_closest_marker("interactive"):
+        return
+    try:
+        station = win32service.GetProcessWindowStation()
+        station_name = win32service.GetUserObjectInformation(int(station), win32con.UOI_NAME)
+        current = win32service.GetThreadDesktop(win32api.GetCurrentThreadId())
+        active = win32service.OpenInputDesktop(0, False, win32con.DESKTOP_READOBJECTS)
+        try:
+            current_name = win32service.GetUserObjectInformation(int(current), win32con.UOI_NAME)
+            active_name = win32service.GetUserObjectInformation(int(active), win32con.UOI_NAME)
+        finally:
+            active.CloseDesktop()
+        if station_name.lower() != "winsta0" or current_name != active_name:
+            pytest.fail("Interactive tests require the active input desktop", pytrace=False)
+    except Exception as error:
+        pytest.fail("Cannot access the active input desktop: %s" % error, pytrace=False)
+
+
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_makereport(item, call):
     outcome = yield
     report = outcome.get_result()
     if report.when == "call":
         item.test_failed = report.failed
+        if report.failed:
+            output = Path(item.config.getoption("--artifacts"))
+            (output / (item.name + "-failure.txt")).write_text(report.longreprtext, encoding="utf-8")
 
 
 @pytest.fixture(scope="session")
@@ -63,13 +86,14 @@ def settings(request):
     info = {"exe": str(exe), "winmd": str(winmd), "os": platform.platform(),
              "windows_version": {"major": version.major, "minor": version.minor, "build": version.build},
              "python": sys.version, "python_executable": sys.executable, "python_bits": struct.calcsize("P") * 8,
-            "dependencies": {name: importlib.metadata.version(name) for name in ("pytest", "pywin32")},
+             "dependencies": {name: importlib.metadata.version(name)
+                              for name in ("pytest", "pywin32", "uiautomation", "comtypes")},
             "hashes": {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in (exe, winmd)},
             "language": option("--language"), "dpi": option("--dpi"), "capabilities": n.capabilities()}
     info["exe_bits"] = 64 if is_64_bit(exe) else 32
-    info["test_group"] = "interactive" if option("--real-input") else "isolated"
+    info["test_group"] = "interactive" if option("--real-input") else "contracts"
     info["desktop"] = win32service.GetUserObjectInformation(
-        win32service.GetThreadDesktop(win32api.GetCurrentThreadId()), win32con.UOI_NAME)
+        int(win32service.GetThreadDesktop(win32api.GetCurrentThreadId())), win32con.UOI_NAME)
     (output / "environment.json").write_text(json.dumps(info, indent=2), encoding="utf-8")
     yield exe, winmd, output
     root = extended(output)
@@ -95,26 +119,21 @@ def launch(request, settings, profile):
         session = Session(settings[0], profile, arguments, dpi or request.config.getoption("--dpi"))
         sessions.append(session)
         if not metadata_prompt and not arguments and profile.get("Version") == 1 and profile.get("AutoLoad") in (None, []):
-            owner = n.api(n.user, "GetWindow", n.w.HWND, n.w.HWND, n.w.UINT)
-            prompt = n.wait(lambda: next((hwnd for hwnd in n.windows()
-                if n.class_name(hwnd) == "#32770" and n.is_visible(hwnd)
-                and owner(hwnd, win32con.GW_OWNER) == session.frame
-                and n.get_item(hwnd, win32con.IDYES) and n.get_item(hwnd, win32con.IDNO)), None),
-                "empty-startup metadata guide prompt")
-            n.post(prompt, win32con.WM_COMMAND, win32con.IDNO, 0)
-            n.wait(lambda: not n.is_window(prompt), "metadata guide prompt dismissed")
+            prompt = auto.WindowControl(searchDepth=3, ClassName="#32770", ProcessId=session.process.pid)
+            assert prompt.Exists(10), "empty-startup metadata guide prompt"
+            invoke(prompt.ButtonControl(AutomationId=str(win32con.IDNO)))
+            n.wait(lambda: not prompt.Exists(0, 0), "metadata guide prompt dismissed")
         return session
     yield start
     errors = []
     for index, session in enumerate(sessions):
         try:
-            if session.process.poll() is None:
+            if session.process.poll() is None and getattr(request.node, "test_failed", False):
+                try:
+                    screenshot(session.frame, settings[2] / (request.node.name + "-%d.bmp" % index))
+                except Exception as error:
+                    (settings[2] / (request.node.name + "-capture-error.txt")).write_text(str(error), encoding="utf-8")
                 session.diagnostics(settings[2] / (request.node.name + "-%d-windows.json" % index))
-                if getattr(request.node, "test_failed", False):
-                    try:
-                        screenshot(session.frame, settings[2] / (request.node.name + "-%d.bmp" % index))
-                    except Exception as error:
-                        (settings[2] / (request.node.name + "-capture-error.txt")).write_text(str(error), encoding="utf-8")
         except Exception as error:
             errors.append(str(error))
         finally:

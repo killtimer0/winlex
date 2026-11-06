@@ -2,7 +2,9 @@ import ctypes as c
 from ctypes import wintypes as w
 import pytest
 import win32con
+import uiautomation as auto
 from support import native as n
+from test_tools import visual_state
 
 
 @pytest.mark.parametrize("maximized", [True, False])
@@ -15,14 +17,13 @@ def test_cross_monitor_layout(launch, settings, maximized):
     doc = app.open_row()
     n.wait(lambda: 'CreateFileW(' in app.content(doc), "document before DPI change", 45)
     if not maximized:
-        n.send(doc, win32con.WM_SYSCOMMAND, win32con.SC_RESTORE)
+        visual_state(doc, auto.WindowVisualState.Normal)
     assert bool(n.is_zoomed(doc)) == maximized
     displays = n.monitors()
     values = []
     for left, top, right, bottom in displays:
-        assert n.set_pos(app.frame, None, left + 20, top + 20, 0, 0, win32con.SWP_NOSIZE | win32con.SWP_NOZORDER | win32con.SWP_NOACTIVATE)
-        n.send(app.frame, win32con.WM_NULL)
-        value = get_dpi(app.frame)
+        assert auto.ControlFromHandle(app.frame).GetTransformPattern().Move(left + 20, top + 20)
+        value = n.wait(lambda: get_dpi(app.frame), "window DPI")
         values.append(value)
         tabs = n.get_item(app.frame, 1104)
         assert n.rectangle(app.results)[2] <= n.rectangle(tabs)[0]

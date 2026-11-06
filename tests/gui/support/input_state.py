@@ -3,7 +3,7 @@ import json
 import os
 from contextlib import contextmanager
 from pathlib import Path
-import pytest
+import uiautomation as auto
 import win32api
 import win32con
 import win32gui
@@ -16,25 +16,16 @@ IMC_SETOPENSTATUS = 6
 
 @contextmanager
 def foreground(app, inputs):
-    win32gui.SetWindowPos(app.frame, win32con.HWND_TOPMOST, 0, 0, 0, 0,
-                         win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_NOACTIVATE)
+    window = auto.ControlFromHandle(app.frame)
+    topmost = window.IsTopmost()
+    window.SetTopmost(True)
     try:
-        win32gui.ShowWindow(app.frame, win32con.SW_RESTORE)
-        try:
-            win32gui.SetForegroundWindow(app.frame)
-        except Exception:
-            pass
-        with n.window_dpi_context(app.frame):
-            left, top, right, bottom = n.rectangle(app.search)
-            inputs.click((left + right) // 2, (top + bottom) // 2)
-        try:
-            n.wait(lambda: win32gui.GetForegroundWindow() == app.frame, "foreground input")
-        except AssertionError:
-            pytest.skip("physical input unverified: foreground acquisition failed")
+        window.Restore()
+        window.TitleBarControl().Click(simulateMove=False)
+        n.wait(lambda: win32gui.GetForegroundWindow() == app.frame, "foreground input")
         yield lambda: win32gui.GetForegroundWindow() == app.frame
     finally:
-        win32gui.SetWindowPos(app.frame, win32con.HWND_NOTOPMOST, 0, 0, 0, 0,
-                             win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_NOACTIVATE)
+        window.SetTopmost(topmost)
 
 
 def ime_window(hwnd):
@@ -47,9 +38,21 @@ def recover(path):
     state = json.loads(path.read_text(encoding="utf-8"))
     for key in state["held"]:
         if key == "mouse":
-            win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0)
+            auto.ReleaseMouse(waitTime=0)
         else:
-            win32api.keybd_event(key, 0, win32con.KEYEVENTF_KEYUP, 0)
+            auto.ReleaseKey(key, waitTime=0)
+    for key in state.get("released", []):
+        if auto.IsKeyPressed(key):
+            auto.ReleaseKey(key, waitTime=0)
+    releases = {win32con.VK_LBUTTON: auto.ReleaseMouse,
+                win32con.VK_RBUTTON: auto.RightReleaseMouse,
+                win32con.VK_MBUTTON: auto.MiddleReleaseMouse}
+    for key in state.get("released_mouse", []):
+        if auto.IsKeyPressed(key):
+            releases[key](waitTime=0)
+    for button in state.get("released_x", []):
+        if auto.IsKeyPressed(auto.Keys.VK_XBUTTON1 + button - 1):
+            assert auto.SendInput(auto.MouseInput(0, 0, button, auto.MouseEventFlag.XUp)) == 1
     ime = state.get("ime")
     if ime and n.is_window(ime["control"]):
         pid = n.w.DWORD()
@@ -58,21 +61,49 @@ def recover(path):
             n.send(ime["window"], win32con.WM_IME_CONTROL, IMC_SETOPENSTATUS, ime["open"])
             n.wait(lambda: n.send(ime["window"], win32con.WM_IME_CONTROL, IMC_GETOPENSTATUS) == ime["open"],
                    "IME state restored")
-    win32api.SetCursorPos(tuple(state["cursor"]))
     foreground = state["foreground"]
-    if foreground and win32gui.IsWindow(foreground):
-        win32gui.SetForegroundWindow(foreground)
+    try:
+        if foreground and win32gui.IsWindow(foreground) and win32gui.GetForegroundWindow() != foreground:
+            window = auto.ControlFromHandle(foreground)
+            if window.ClassName in ('Progman', 'Shell_TrayWnd'):
+                alt_pressed = auto.IsKeyPressed(auto.Keys.VK_MENU)
+                if not alt_pressed:
+                    auto.PressKey(auto.Keys.VK_MENU, waitTime=0)
+                try:
+                    auto.SetForegroundWindow(foreground)
+                finally:
+                    if not alt_pressed:
+                        auto.ReleaseKey(auto.Keys.VK_MENU, waitTime=0)
+            else:
+                topmost = window.IsTopmost()
+                window.SetTopmost(True)
+                try:
+                    title = window.TitleBarControl()
+                    assert title.Exists(2), "Previous foreground window has no accessible title bar"
+                    title.Click()
+                finally:
+                    window.SetTopmost(topmost)
+            n.wait(lambda: win32gui.GetForegroundWindow() == foreground, "foreground restored")
+    finally:
+        auto.MoveTo(*state["cursor"], waitTime=0)
     path.unlink()
 
 
 class InputState:
-    def __init__(self):
+    def __init__(self, path=None):
         root = os.environ.get("WINLEX_TEST_LEDGER")
-        if not root:
+        if path is None and (not root or os.environ.get("WINLEX_TEST_REAL_INPUT") != "1"):
             raise RuntimeError("Actual-input tests require tests/gui/run.py cleanup ownership")
-        self.path = Path(root) / "input.json"
+        self.path = Path(path) if path is not None else Path(root) / "input.json"
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.state = {"held": [], "cursor": win32api.GetCursorPos(), "foreground": win32gui.GetForegroundWindow()}
+        keys = range(8, 256)
+        self.state = {"held": [], "cursor": auto.GetCursorPos(),
+                      "foreground": win32gui.GetForegroundWindow(),
+                      "released": [key for key in keys if not auto.IsKeyPressed(key)],
+                      "released_mouse": [key for key in (win32con.VK_LBUTTON, win32con.VK_RBUTTON,
+                                                         win32con.VK_MBUTTON) if not auto.IsKeyPressed(key)],
+                      "released_x": [button for button in (1, 2)
+                                     if not auto.IsKeyPressed(auto.Keys.VK_XBUTTON1 + button - 1)]}
 
     def save(self):
         temporary = self.path.with_suffix(".new")
@@ -93,19 +124,17 @@ class InputState:
         return self
 
     def click(self, x, y):
-        win32api.SetCursorPos((x, y))
         self.state["held"].append("mouse")
         self.save()
-        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0)
-        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0)
+        auto.Click(x, y)
         self.state["held"].remove("mouse")
         self.save()
 
     def key(self, code):
         self.state["held"].append(code)
         self.save()
-        win32api.keybd_event(code, 0, 0, 0)
-        win32api.keybd_event(code, 0, win32con.KEYEVENTF_KEYUP, 0)
+        auto.PressKey(code)
+        auto.ReleaseKey(code)
         self.state["held"].remove(code)
         self.save()
 

@@ -2,7 +2,7 @@
 
 从仓库根目录运行；依赖与命令见 [构建与验证](../docs/build.md)。
 
-- `gui/`：GUI pytest 测试；`run.py` 运行测试，`resources.py` 检查资源，`remote.py` 调度本机或 SSH 目标。
+- `gui/`：GUI pytest 测试；`run.py` 在目标端运行测试，`resources.py` 在开发机源码树中检查资源，`remote.py` 调度本机或 SSH 目标。
 - `metadata/`：`run.py` 运行 CLI、fixture、跨源及可选 WinRT 检查；`ReaderFixtures/` 保存 CLI 行为用 C# fixture。
 - `differential/`：WinMD 与 .NET 读取结果的独立对拍及回归测试。
 - `abi/`：`run.py` 使用 SDK 编译器验证布局、位域和 vtable；也可由 `metadata/run.py --abi` 调用。
@@ -12,9 +12,14 @@
 
 ## GUI 测试
 
-默认隔离桌面运行 CLI 和窗口契约测试；`--desktop current --real-input` 只运行标记为 `interactive` 的交互与屏幕呈现测试，两组互斥。使用 `--collect-only -q` 查看所选用例，或用 `-k` 缩小范围。
+开发机使用根目录 uv 项目的 `gui` 依赖组；XP 目标机使用兼容 XP 的 Python 3.8 和 `gui/requirements.lock`，不共用开发机 `.venv`。安装和运行命令见[构建与验证](../docs/build.md)。
 
-交互测试需要专用 VM 中解锁的独占活动会话；测试期间不要操作键鼠。独立桌面不隔离剪贴板等会话共享资源。
+默认在独立的非活动桌面运行 CLI 和窗口契约测试。`--desktop current --real-input` 只运行标记为 `interactive` 的交互与屏幕呈现测试，两组互斥。使用 `--collect-only -q` 查看所选用例，或用 `-k` 缩小范围。
+
+普通契约测试通过 UI Automation 控件模式操作，不需要前台或独占键鼠。交互测试需要已解锁的独占活动桌面，运行期间不要操作键鼠；建议使用专用 VM。远程提交默认使用独立桌面，交互测试有相同要求。
+独立桌面不隔离剪贴板等会话共享资源。
+
+控件操作优先使用 UI Automation 模式；Win32 专项状态准备、观测和命令协议使用原生接口。真实键鼠和截图使用 UI Automation。XP RichEdit 不提供 TextPattern，ValuePattern 会截断大文档；完整渲染、字体、字符坐标和 UTF-16 选区通过系统 Text Object Model 只读测量。长路径用例通过原生 ListView 消息读取完整列表文本，避免 UIA 名称截断影响路径校验。
 
 首帧和残留像素测试应读取当前画面，不能用主动重绘代替；键鼠交互测试应使用真实输入。
 

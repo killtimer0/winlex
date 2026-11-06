@@ -1,16 +1,17 @@
 import struct
 import pytest
 import winreg
-import win32con
 import win32gui
+import uiautomation as auto
 from support import native as n
+from support.session import select_combo
 from support.languages import LANGUAGES, language
 
 
 def test_normal_placement_round_trips_registry_coordinates(launch, profile):
     app = launch()
-    win32gui.SetWindowPos(app.frame, 0, 70, 80, 740, 520,
-                         win32con.SWP_NOZORDER | win32con.SWP_NOACTIVATE)
+    dpi = app.actual_dpi or 96
+    assert auto.ControlFromHandle(app.frame).MoveWindow(70, 80, 740 * dpi // 96, 520 * dpi // 96)
     bounds = n.rectangle(app.frame)
     app.close()
     saved = profile.get("Window")
@@ -35,7 +36,7 @@ def test_placement_and_sidebar_restart(launch, profile):
     assert n.is_visible(app.sources) and not n.is_visible(app.results)
     rect = n.rectangle(app.frame)
     assert any(m[0] <= rect[0] < rect[2] <= m[2] and m[1] <= rect[1] < rect[3] <= m[3] for m in n.monitors())
-    n.send(app.frame, win32con.WM_SYSCOMMAND, win32con.SC_MAXIMIZE)
+    auto.ControlFromHandle(app.frame).GetWindowPattern().SetWindowVisualState(auto.WindowVisualState.Maximized)
     assert n.is_zoomed(app.frame)
     app.close()
     assert (profile.get("ActivePanel"), profile.get("PanelCollapsed")) == (1, 0)
@@ -43,7 +44,7 @@ def test_placement_and_sidebar_restart(launch, profile):
     restored = launch()
     assert n.is_visible(restored.sources) and not n.is_visible(restored.results)
     assert n.is_zoomed(restored.frame)
-    n.send(restored.frame, win32con.WM_SYSCOMMAND, win32con.SC_RESTORE)
+    auto.ControlFromHandle(restored.frame).GetWindowPattern().SetWindowVisualState(auto.WindowVisualState.Normal)
     actual = n.rectangle(restored.frame)
     assert all(abs(a-b) <= 2 for a,b in zip(actual, rect))
     restored.command(1021)
@@ -64,14 +65,14 @@ def test_language_option_round_trip(launch, profile, ui_language, name):
     control = n.get_item(general, 1300)
     choices = app.choices(control)
     label = ui_language.auto_label if name == "auto" else language(name).label
-    index = choices.index(label)
-    n.send(control, win32con.CB_SETCURSEL, index)
+    assert label in choices
+    select_combo(control, label)
     app.close_settings(sheet)
     assert profile.preferences() == (name, 7, "system")
     sheet = app.settings()
     general = app.settings_page(sheet, 0)
     control = n.get_item(general, 1300)
-    assert n.send(control, win32con.CB_GETCURSEL) == app.choices(control).index(label)
+    assert auto.ControlFromHandle(control).GetValuePattern().Value == label
     app.close_settings(sheet, accept=False)
     app.close()
     restored = launch()
@@ -90,7 +91,7 @@ def test_preferences_survive_restart(launch, profile, theme, index, categories):
     sheet = app.settings()
     general = app.settings_page(sheet, 0)
     control = n.get_item(general, 1300)
-    n.send(control, win32con.CB_SETCURSEL, app.choices(control).index(language("en-US").label))
+    select_combo(control, language("en-US").label)
     app.close_settings(sheet)
     expected = ("en-US", categories, theme)
     with winreg.OpenKey(winreg.HKEY_CURRENT_USER, profile.root) as key:
@@ -103,11 +104,11 @@ def test_preferences_survive_restart(launch, profile, theme, index, categories):
     sheet = restored.settings()
     general = restored.settings_page(sheet, 0)
     control = n.get_item(general, 1300)
-    assert n.send(control, win32con.CB_GETCURSEL) == restored.choices(control).index(language("en-US").label)
+    assert auto.ControlFromHandle(control).GetValuePattern().Value == language("en-US").label
     control = n.get_item(general, 1301)
-    assert n.send(control, win32con.CB_GETCURSEL) == (index if win32gui.IsWindowEnabled(control) else 0)
+    assert auto.ControlFromHandle(control).GetValuePattern().Value == restored.choices(control)[index if win32gui.IsWindowEnabled(control) else 0]
     search = restored.settings_page(sheet, 1)
-    assert sum(n.send(n.get_item(search, 1310 + bit), win32con.BM_GETCHECK) << bit
+    assert sum(auto.ControlFromHandle(n.get_item(search, 1310 + bit)).GetTogglePattern().ToggleState << bit
                for bit in range(7)) == categories
     restored.close_settings(sheet)
     assert profile.preferences() == expected
@@ -140,11 +141,11 @@ def test_invalid_preferences_fall_back_independently(launch, profile, name, kind
     control = n.get_item(general, 1300)
     label = (next(option for option in LANGUAGES if option.search_label == app.toolbar_text(1040)).auto_label
              if expected[0] == "auto" else language(expected[0]).label)
-    assert n.send(control, win32con.CB_GETCURSEL) == app.choices(control).index(label)
+    assert auto.ControlFromHandle(control).GetValuePattern().Value == label
     control = n.get_item(general, 1301)
-    assert n.send(control, win32con.CB_GETCURSEL) == (expected[2] if win32gui.IsWindowEnabled(control) else 0)
+    assert auto.ControlFromHandle(control).GetValuePattern().Value == app.choices(control)[expected[2] if win32gui.IsWindowEnabled(control) else 0]
     search = app.settings_page(sheet, 1)
-    assert sum(n.send(n.get_item(search, 1310 + bit), win32con.BM_GETCHECK) << bit
+    assert sum(auto.ControlFromHandle(n.get_item(search, 1310 + bit)).GetTogglePattern().ToggleState << bit
                for bit in range(7)) == expected[1]
     app.close_settings(sheet, accept=False)
     assert profile.preferences() == original

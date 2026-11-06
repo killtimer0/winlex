@@ -1,10 +1,12 @@
 """Search result menus operate on the selected metadata item."""
 import pytest
 import win32clipboard as clipboard
-import win32con
 import win32gui
+import win32con
+import uiautomation as auto
 
 from support import native as n
+from support.session import select_combo
 from test_context import clipboard_text, dismiss, popup, wait_clipboard_available, wait_closed
 
 
@@ -20,9 +22,9 @@ def result(app, name):
 
 def choose(app, ids, command):
     actions = [ident for ident in ids if ident and ident != 0xffffffff]
-    for _ in range(actions.index(command) + 1):
-        n.key_message(app.results, win32con.VK_DOWN)
-    n.key_message(app.results, win32con.VK_RETURN)
+    for code in [win32con.VK_DOWN] * (actions.index(command) + 1) + [win32con.VK_RETURN]:
+        win32gui.PostMessage(app.results, win32con.WM_KEYDOWN, code, 1)
+        win32gui.PostMessage(app.results, win32con.WM_KEYUP, code, -1073741823)
     wait_closed(app.results)
     n.send(app.results, win32con.WM_NULL)
 
@@ -45,7 +47,7 @@ def test_search_entry_enter_does_not_open_selected_result(launch, settings):
     app = launch([settings[1]])
     result(app, "CreateFileW")
     app.focus(app.search)
-    n.key_message(app.search, win32con.VK_RETURN)
+    win32gui.PostMessage(app.search, win32con.WM_KEYDOWN, win32con.VK_RETURN, 0)
     n.wait(lambda: app.status_text().startswith(("Results ", "共 ")), "explicit search completed", 45)
     assert not app.documents()
     assert app.focused() == app.search
@@ -54,8 +56,7 @@ def test_search_entry_enter_does_not_open_selected_result(launch, settings):
 def test_guid_result_menu_has_value_without_hexadecimal(launch, settings):
     app = launch([settings[1]])
     mode = n.get_item(app.frame, 1114)
-    n.send(mode, win32con.CB_SETCURSEL, 1)
-    app.command(1114, code=win32con.CBN_SELENDOK)
+    select_combo(mode, app.choices(mode)[1])
     app.query('guid = "0000000c-0000-0000-c000-000000000046"')
     assert app.count() > 0
     app.select(0)
@@ -94,7 +95,7 @@ def test_result_menu_captures_value_before_search_refresh(launch, settings):
     app = launch([settings[1]])
     result(app, "ERROR_ACCESS_DENIED")
     _, ids = popup(app, app.results, keyboard=True)
-    n.set_text(app.search, "CreateFileW")
+    auto.ControlFromHandle(app.search).GetValuePattern().SetValue('CreateFileW')
     n.wait(lambda: app.count() == 0, "old results cleared during menu")
     choose(app, ids, 4)
     assert clipboard_text() == "5"
@@ -110,7 +111,7 @@ def test_result_right_click_preserves_document_and_new_window_duplicates(launch,
     with n.window_dpi_context(app.frame):
         left, top, right, bottom = app.item_rect(row)
         x, y = win32gui.ClientToScreen(app.results, (left + 8, (top + bottom) // 2))
-        _, ids = popup(app, app.results, location=(x & 0xffff) | ((y & 0xffff) << 16), mouse=True)
+        _, ids = popup(app, app.results, location=(x & 0xffff) | ((y & 0xffff) << 16), protocol_mouse=True)
     assert app.active_document() == original
     assert app.content(original) == content
     choose(app, ids, 1)

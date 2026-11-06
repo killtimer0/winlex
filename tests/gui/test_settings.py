@@ -6,7 +6,9 @@ import pytest
 import win32con
 import win32gui
 import winreg
+import uiautomation as auto
 from support import native as n
+from support.session import invoke, select_combo
 from support.diagnostics import capture, screenshot
 from support.languages import LANGUAGES
 
@@ -14,13 +16,15 @@ from support.languages import LANGUAGES
 def mask(app, sheet, value):
     page = app.settings_page(sheet, 1)
     for index in range(7):
-        n.send(n.get_item(page, 1310 + index), win32con.BM_SETCHECK, (value >> index) & 1)
+        checkbox = auto.ControlFromHandle(n.get_item(page, 1310 + index))
+        if checkbox.GetTogglePattern().ToggleState != (value >> index) & 1:
+            checkbox.GetTogglePattern().Toggle()
     return page
 
 
 def checked(app, sheet):
     page = app.settings_page(sheet, 1)
-    return sum(n.send(n.get_item(page, 1310 + index), win32con.BM_GETCHECK) << index
+    return sum(auto.ControlFromHandle(n.get_item(page, 1310 + index)).GetTogglePattern().ToggleState << index
                for index in range(7))
 
 
@@ -35,7 +39,7 @@ def test_settings_cancel_and_page_state(launch, profile, ui_language):
     general = app.settings_page(sheet, 0)
     control = n.get_item(general, 1300)
     alternative = next(option for option in LANGUAGES if option != ui_language)
-    n.send(control, win32con.CB_SETCURSEL, app.choices(control).index(alternative.label))
+    select_combo(control, alternative.label)
     assert checked(app, sheet) == 127
     app.close_settings(sheet, accept=False)
     assert enabled(app.frame)
@@ -78,14 +82,18 @@ def test_settings_keyboard_and_close(launch, profile, action):
     sheet = app.settings()
     page = mask(app, sheet, 0)
     first, second = n.get_item(page, 1310), n.get_item(page, 1311)
-    n.send(sheet, win32con.WM_NEXTDLGCTL, first, 1)
+    app.focus(first)
     n.wait(lambda: app.focused() == first, "settings initial keyboard focus")
-    n.key_message(first, win32con.VK_TAB)
+    win32gui.PostMessage(first, win32con.WM_KEYDOWN, win32con.VK_TAB, 1)
+    win32gui.PostMessage(first, win32con.WM_KEYUP, win32con.VK_TAB, -1073741823)
     n.wait(lambda: app.focused() == second, "settings Tab order")
     if action == "close":
-        n.post(sheet, win32con.WM_CLOSE, 0, 0)
+        auto.ControlFromHandle(sheet).GetWindowPattern().Close()
     else:
-        n.key_message(second, win32con.VK_RETURN if action == "enter" else win32con.VK_ESCAPE)
+        key = win32con.VK_RETURN if action == 'enter' else win32con.VK_ESCAPE
+        win32gui.PostMessage(second, win32con.WM_KEYDOWN, key, 1)
+        if n.is_window(second):
+            win32gui.PostMessage(second, win32con.WM_KEYUP, key, -1073741823)
     n.wait(lambda: not n.is_window(sheet), "settings keyboard close")
     assert profile.preferences() == ((original[0], 0, original[2]) if action == "enter" else original)
 
@@ -96,16 +104,16 @@ def test_settings_refresh_preserves_document(launch, profile, settings):
     doc = app.open_row()
     n.wait(lambda: "CreateFileW(" in app.content(doc), "original declaration", 45)
     body = app.content(doc)
-    n.set_text(app.search, "file")
+    auto.ControlFromHandle(app.search).GetValuePattern().SetValue('file')
     sheet = app.settings()
     mask(app, sheet, 1)
     app.close_settings(sheet)
     app.focus(app.search)
     n.wait(lambda: app.status_text().startswith(("Results ", "共 ")), "refiltered search", 45)
     assert app.count() > 0
-    assert all(app.cell(row).splitlines()[1].split(" · ")[0] in
+    assert all(row.Name.splitlines()[1].split(" · ")[0] in
                {"class", "struct", "interface", "enum", "delegate", "attribute", "module"}
-               for row in range(app.count()))
+               for row in app.rows())
     assert app.active_document() == doc
     assert app.content(doc) == body
     assert profile.get("SearchCategories") == 1
@@ -124,7 +132,7 @@ def test_search_category_visibility(launch, profile, settings, value):
     mask(app, sheet, value)
     app.close_settings(sheet)
     n.wait(lambda: app.status_text().startswith(("Results ", "共 ")), "filtered search completed")
-    kinds = {app.cell(row).splitlines()[1].split(" · ")[0] for row in range(app.count())}
+    kinds = {row.Name.splitlines()[1].split(" · ")[0] for row in app.rows()}
     expected = set()
     for bit, names in [(1, {"class", "module"}), (2, {"method"}), (4, {"constant"}),
                        (8, {"field"}), (16, {"property"}), (32, {"event"}), (64, {"type_reference"})]:
@@ -135,7 +143,7 @@ def test_search_category_visibility(launch, profile, settings, value):
     if not value:
         assert app.count() == 0
     if value & 2:
-        rows = [app.cell(row) for row in range(app.count())]
+        rows = [row.Name for row in app.rows()]
         assert sum(text.splitlines()[0].rsplit(".", 1)[-1] == "EntryMethod" for text in rows) == 2
     sheet = app.settings()
     assert checked(app, sheet) == value
@@ -154,13 +162,13 @@ def test_settings_save_failure_preserves_state(launch, profile):
     app = launch()
     sheet = app.settings()
     mask(app, sheet, 0)
-    assert n.post(sheet, win32con.WM_COMMAND, 1, 0)
-    owner = n.api(n.user, "GetWindow", n.w.HWND, n.w.HWND, n.w.UINT)
-    error = n.wait(lambda: next((h for h in n.windows() if n.class_name(h) == "#32770"
-                  and owner(h, win32con.GW_OWNER) == sheet and n.is_visible(h)
-                  and (n.get_item(h, 1) or n.get_item(h, 2))), None), "save error")
-    button = n.wait(lambda: n.get_item(error, 1) or n.get_item(error, 2), "error confirmation button")
-    n.post(button, win32con.BM_CLICK, 0, 0)
+    invoke(n.get_item(sheet, 1))
+    error_control = auto.WindowControl(searchDepth=3, ClassName='#32770',
+                                       Compare=lambda control, depth: control.ProcessId == app.process.pid
+                                       and control.NativeWindowHandle != sheet)
+    assert error_control.Exists(5)
+    error = error_control.NativeWindowHandle
+    invoke(error_control.ButtonControl())
     n.wait(lambda: not n.is_window(error), "save error dismissed")
     assert n.is_window(sheet)
     assert profile.get("Version") == 99 and profile.preferences() == original
@@ -178,21 +186,22 @@ def test_settings_dpi_pages(launch, settings, mode):
     get_dpi = n.api(n.user, "GetDpiForWindow", n.w.UINT, n.w.HWND) if hasattr(n.user, "GetDpiForWindow") else lambda _h: None
     for monitor_index, monitor in enumerate(n.monitors()):
         with n.window_dpi_context(app.frame):
-            n.set_pos(app.frame, None, monitor[0] + 30, monitor[1] + 30, 0, 0,
-                      win32con.SWP_NOSIZE | win32con.SWP_NOZORDER | win32con.SWP_NOACTIVATE)
+            auto.ControlFromHandle(app.frame).GetPattern(auto.PatternId.TransformPattern).Move(
+                monitor[0] + 30, monitor[1] + 30)
         sheet = app.settings()
         for index in (0, 1, 0, 1):
             page = app.settings_page(sheet, index)
             with n.window_dpi_context(sheet):
                 outer = n.rectangle(page)
                 controls = []
-                for control in n.windows(page):
-                    rect = n.rectangle(control)
+                for element in auto.ControlFromHandle(page).GetChildren():
+                    control = element.NativeWindowHandle
+                    rect = element.BoundingRectangle
                     controls.append({
                         "id": n.get_id(control),
                         "class": n.class_name(control),
-                        "rect": rect,
-                        "text": n.window_text(control),
+                        "rect": (rect.left, rect.top, rect.right, rect.bottom),
+                        "text": element.Name,
                         "font": n.send(control, win32con.WM_GETFONT),
                     })
                 evidence.append({
@@ -212,8 +221,8 @@ def test_settings_dpi_pages(launch, settings, mode):
             initial = n.rectangle(sheet)
             returns = []
             for destination in (list(n.monitors()) + [monitor]) * 3:
-                n.set_pos(sheet, None, destination[0] + 40, destination[1] + 40, 0, 0,
-                          win32con.SWP_NOSIZE | win32con.SWP_NOZORDER | win32con.SWP_NOACTIVATE)
+                auto.ControlFromHandle(sheet).GetPattern(auto.PatternId.TransformPattern).Move(
+                    destination[0] + 40, destination[1] + 40)
                 app.settings_page(sheet, 1)
                 evidence.append({"move": destination, "dpi": get_dpi(sheet), "rect": n.rectangle(sheet)})
                 if destination == monitor:
@@ -242,24 +251,26 @@ def test_settings_pmv1_initial_paint(launch, settings):
     get_system_dpi = n.api(n.user, "GetDpiForSystem", n.w.UINT)
     with n.window_dpi_context(app.frame):
         system_dpi = get_system_dpi()
+        frame = auto.ControlFromHandle(app.frame)
+        assert frame.SetTopmost(True)
         for monitor in n.monitors():
-            n.set_pos(app.frame, win32con.HWND_TOPMOST, monitor[0] + 30, monitor[1] + 30,
-                      0, 0, win32con.SWP_NOSIZE | win32con.SWP_NOACTIVATE)
+            frame.GetPattern(auto.PatternId.TransformPattern).Move(monitor[0] + 30, monitor[1] + 30)
             if get_dpi(app.frame) != system_dpi:
                 break
         else:
             pytest.skip("no monitor with a different DPI")
     # Do not select pages or render a screenshot before observing the first paint.
-    assert n.post(app.frame, win32con.WM_COMMAND, 1051, 0)
-    sheet = n.wait(lambda: next((h for h in n.windows()
-        if n.class_name(h) == "#32770" and n.is_visible(h)
-        and win32gui.GetWindow(h, win32con.GW_OWNER) == app.frame), None), "settings visible")
+    auto.ControlFromHandle(app.frame).SendKeys('{Alt}fs')
+    sheet_control = auto.WindowControl(searchDepth=3, RegexName='^(Settings|设置)$',
+                                       Compare=lambda item, depth: item.ProcessId == app.process.pid)
+    assert sheet_control.Exists(5)
+    sheet = sheet_control.NativeWindowHandle
     assert get_dpi(sheet) != system_dpi
-    page = n.wait(lambda: n.send(sheet, 0x400 + 118), "initial settings page")
-    label = next(h for h in n.windows(page) if n.class_name(h) == "Static" and n.window_text(h))
+    page = sheet_control.ComboBoxControl(AutomationId='1300').GetParentControl()
+    label = page.TextControl().NativeWindowHandle
 
     def pixels():
-        with n.window_dpi_context(label), capture(label, client=True, repaint=False) as (_, header, raw):
+        with n.window_dpi_context(label), capture(label, client=True) as (_, header, raw):
             return header, raw
 
     previous, since = None, time.monotonic()

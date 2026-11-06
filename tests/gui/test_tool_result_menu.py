@@ -1,30 +1,33 @@
 """Tool actions are contributed to metadata result menus by the tool layer."""
+import uiautomation as auto
 import win32con
+import win32gui
 
 from support import native as n
-from test_context import popup
-from test_result_menu import result, choose
-from test_tools import body, choose_scope, query, tool, tools
+from test_context import find_popup
+from test_result_menu import choose, result
+from test_tools import activate, body, choose_scope, query, tool, tools
 
 
 def test_tool_action_reuses_recent_instance_and_queries_default_scope(launch, settings):
     app = launch([settings[1]])
     first = tool(app)
     second = tool(app, new=True)
-    n.send(app.mdi, win32con.WM_MDIACTIVATE, first)
+    activate(first)
     choose_scope(app, first, 5)
-    n.set_text(n.get_item(first, 1813), str(settings[2] / "missing.dll"))
-    n.set_text(n.get_item(first, 1812), "0x0804")
-    app.command(1812, first, win32con.CBN_EDITCHANGE)
+    auto.ControlFromHandle(n.get_item(first, 1813)).GetValuePattern().SetValue(str(settings[2] / "missing.dll"))
+    auto.ControlFromHandle(n.get_item(first, 1812)).GetValuePattern().SetValue('0x0804')
     query(app, first, "87")
     result(app, "ERROR_ACCESS_DENIED")
-    _, ids = popup(app, app.results, keyboard=True)
+    win32gui.PostMessage(app.results, win32con.WM_CONTEXTMENU, app.results, -1)
+    _, ids = find_popup(app)
     assert 100 in ids
     choose(app, ids, 100)
     n.wait(lambda: app.active_document() == first, "recent error code tool activated")
     assert set(tools(app)) == {first, second}
-    assert n.send(n.get_item(first, 1811), win32con.CB_GETCURSEL) == 0
-    assert n.send(n.get_item(first, 1812), win32con.CB_GETCURSEL) == 0
+    for identifier in (1811, 1812):
+        control = n.get_item(first, identifier)
+        assert auto.ControlFromHandle(control).GetValuePattern().Value == app.choices(control)[0]
     assert n.window_text(n.get_item(first, 1810)) == "0x00000005"
     n.wait(lambda: "0x00000005" in body(first), "error code queried immediately", 30)
 
@@ -34,7 +37,8 @@ def test_tool_action_creates_instance_without_replacing_metadata_document(launch
     result(app, "CreateFileW")
     original = app.open_row(app.selected_row())
     result(app, "E_FAIL")
-    _, ids = popup(app, app.results, keyboard=True)
+    win32gui.PostMessage(app.results, win32con.WM_CONTEXTMENU, app.results, -1)
+    _, ids = find_popup(app)
     assert not tools(app)
     choose(app, ids, 100)
     doc = n.wait(lambda: app.active_document() if app.active_document() in tools(app)

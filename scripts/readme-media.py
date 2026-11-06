@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tests/gui"))
 from support import native as n
 from support.config import ConfigProfile
-from support.session import Session
+from support.session import Session, select_combo
 
 
 def capture(rect, cursor=False):
@@ -98,7 +98,8 @@ def open_symbol(app, text):
 def theme(app, mode):
     sheet = app.settings()
     page = app.settings_page(sheet, 0)
-    n.send(n.get_item(page, 1301), win32con.CB_SETCURSEL, mode)
+    combo = auto.ControlFromHandle(n.get_item(page, 1301))
+    select_combo(combo, app.choices(combo)[mode])
     app.close_settings(sheet)
 
 
@@ -156,7 +157,7 @@ def generate(args, app, scale, evidence):
 
         theme(app, 1)
         for window in app.documents():
-            n.send(window, win32con.WM_CLOSE)
+            assert auto.ControlFromHandle(window).GetWindowPattern().Close(waitTime=0)
         auto.ControlFromHandle(app.search).Click()
         auto.SendKeys("{Ctrl}a{Delete}")
         n.wait(lambda: app.count() == 0, "empty results")

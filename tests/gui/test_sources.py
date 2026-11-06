@@ -1,10 +1,48 @@
 import os
 import shutil
+import struct
 import pytest
 import winreg
 import win32con
+import win32api
 import win32gui
+import win32process
+import uiautomation as auto
 from support import native as n
+from support.messages import LVM_GETITEMTEXTW
+from support.pe import is_64_bit
+from test_context import selection_packed
+
+
+def complete_list_text(app, hwnd, row, bits):
+    process = win32api.OpenProcess(win32con.PROCESS_VM_OPERATION | win32con.PROCESS_VM_READ
+                                  | win32con.PROCESS_VM_WRITE, False, app.process.pid)
+    memory = None
+    capacity = 32768
+    try:
+        memory = win32process.VirtualAllocEx(process, 0, 128 + capacity * 2,
+                                            win32con.MEM_COMMIT | win32con.MEM_RESERVE,
+                                            win32con.PAGE_READWRITE)
+        item = bytearray(128)
+        struct.pack_into('<III', item, 0, 1, row, 0)
+        struct.pack_into('<Q' if bits == 64 else '<I', item, 24 if bits == 64 else 20, memory + 128)
+        struct.pack_into('<I', item, 32 if bits == 64 else 24, capacity)
+        item_buffer = n.c.create_string_buffer(bytes(item))
+        if not n.write_process_memory(int(process), memory, item_buffer, len(item), None):
+            raise n.c.WinError(n.c.get_last_error())
+        count = n.send(hwnd, LVM_GETITEMTEXTW, row, memory)
+        assert 0 <= count < capacity - 1, 'Native list text exceeds measurement buffer'
+        data = n.c.create_string_buffer(count * 2)
+        size_read = n.c.c_size_t()
+        if not n.read_process_memory(int(process), memory + 128, data, len(data), n.c.byref(size_read)):
+            raise n.c.WinError(n.c.get_last_error())
+        return data.raw[:size_read.value].decode('utf-16-le', 'surrogatepass')
+    finally:
+        try:
+            if memory is not None:
+                win32process.VirtualFreeEx(process, memory, 0, win32con.MEM_RELEASE)
+        finally:
+            win32api.CloseHandle(process)
 
 
 @pytest.mark.parametrize("sidebar_width", [140, 480])
@@ -31,8 +69,8 @@ def test_source_actions_preserve_identity_and_recover_failed_reload(launch, prof
         shutil.copyfile(settings[1], path)
     app = launch()
     app.pick(paths)
-    n.wait(lambda: app.count(app.sources) == 3, "sources loaded", 45)
     app.command(1021)
+    n.wait(lambda: app.count(app.sources) == 3, "sources loaded", 45)
     reload_button, remove_button = (n.get_item(app.frame, i) for i in (1044, 1022))
     assert not win32gui.IsWindowEnabled(reload_button)
     assert not win32gui.IsWindowEnabled(remove_button)
@@ -55,6 +93,7 @@ def test_source_actions_preserve_identity_and_recover_failed_reload(launch, prof
     app.query("CreateFileW")
     assert app.count() > 0
     assert profile.get("AutoLoad") == saved
+    app.command(1021)
     assert app.cell(0, app.sources).splitlines()[1].startswith(("Reload failed", "重载失败"))
     shutil.copyfile(settings[1], paths[0])
     app.command(1044)
@@ -68,12 +107,12 @@ def test_source_actions_preserve_identity_and_recover_failed_reload(launch, prof
 @pytest.mark.parametrize('mouse', [False, pytest.param(True, marks=pytest.mark.interactive)],
                          ids=['menu-contract', 'clipboard'])
 def test_source_context_menu_copies_full_native_path(launch, settings, mouse):
-    from test_context import popup, wait_closed, clipboard_text, wait_clipboard_available
+    from test_context import find_popup, popup, wait_closed, clipboard_text, wait_clipboard_available
     second = settings[2] / "右键来源.winmd"
     shutil.copyfile(settings[1], second)
     app = launch([settings[1], second])
-    n.wait(lambda: app.count(app.sources) == 2, "sources loaded", 45)
     app.command(1021)
+    n.wait(lambda: app.count(app.sources) == 2, "sources loaded", 45)
     app.select(0, app.sources)
     app.focus(app.sources)
     if mouse:
@@ -84,14 +123,14 @@ def test_source_context_menu_copies_full_native_path(launch, settings, mouse):
             x, y = win32gui.ClientToScreen(app.sources, (left + 8, (top + bottom) // 2))
             _, ids = popup(app, app.sources, location=(x & 0xffff) | ((y & 0xffff) << 16), mouse=True)
     else:
-        _, ids = popup(app, app.sources, keyboard=True)
+        win32gui.PostMessage(app.sources, win32con.WM_CONTEXTMENU, app.sources, -1)
+        _, ids = find_popup(app)
     assert ids == [1044, 1022, 1052]
     if mouse:
-        for _ in range(3):
-            n.key_message(app.sources, win32con.VK_DOWN)
-        n.key_message(app.sources, win32con.VK_RETURN)
+        auto.SendKeys('{Down 3}{Enter}')
     else:
-        n.key_message(app.sources, win32con.VK_ESCAPE)
+        menu = auto.MenuControl(searchDepth=3, ClassName='#32768', ProcessId=app.process.pid)
+        win32gui.PostMessage(menu.NativeWindowHandle, win32con.WM_KEYDOWN, win32con.VK_ESCAPE, 1)
     wait_closed(app.sources)
     if mouse:
         n.wait(lambda: clipboard_text() == str(second), "source path copied")
@@ -101,6 +140,7 @@ def test_source_context_menu_copies_full_native_path(launch, settings, mouse):
 def test_open_loads_and_close_keeps_document_snapshot(launch, profile, settings):
     app = launch()
     app.pick([settings[1]])
+    app.command(1021)
     n.wait(lambda: app.count(app.sources) == 1, "file loaded", 45)
     n.wait(lambda: profile.get("AutoLoad") == [str(settings[1])], "successful files saved")
     app.query("CreateFileW")
@@ -109,31 +149,38 @@ def test_open_loads_and_close_keeps_document_snapshot(launch, profile, settings)
     old = app.content(entity)
     editor = n.get_item(entity, 1203)
     n.send(editor, win32con.EM_SETSEL, 2, 8)
+    assert selection_packed(editor) == (8 << 16) | 2
     app.command(1021)
     app.select(0, app.sources)
     app.command(1022)
     n.wait(lambda: app.count(app.sources) == 0 and profile.get("AutoLoad") == [], "source closed")
+    app.command(1040)
     assert app.count() == 0
     assert app.content(entity) == old
-    assert n.send(editor, win32con.EM_GETSEL) == (8 << 16) | 2
+    assert selection_packed(editor) == (8 << 16) | 2
+    n.send(editor, win32con.EM_SETSEL, 0, 2)
+    assert selection_packed(editor) == 2 << 16
     app.choose(entity, "arm64")
     n.wait(lambda: 'CreateFileW(' in app.content(entity), "query from closed snapshot", 45)
     assert "arm64" in n.window_text(entity)
     assert app.documents() == [entity]
     app.close()
     restored = launch()
+    restored.command(1021)
     assert restored.count(restored.sources) == 0
 
 
 def test_restore_successful_files(launch, profile, settings):
     profile.set("AutoLoad", winreg.REG_MULTI_SZ, [str(settings[1])])
     app = launch()
+    app.command(1021)
     n.wait(lambda: app.count(app.sources) == 1, "saved source loaded", 45)
     assert str(settings[1]) in app.cell(0, app.sources)
     app.query("CreateFileW")
     assert app.count() > 0
     app.close()
     restored = launch()
+    restored.command(1021)
     n.wait(lambda: restored.count(restored.sources) == 1, "source restored again", 45)
 
 
@@ -147,6 +194,7 @@ def test_temporary_inputs_preserve_saved_files(launch, profile, settings):
     assert profile.get("AutoLoad") == [str(settings[1])]
     app.close()
     temporary = launch([settings[1]])
+    temporary.command(1021)
     n.wait(lambda: temporary.count(temporary.sources) == 1, "temporary input loaded", 45)
     temporary.select(0, temporary.sources)
     temporary.command(1022)
@@ -154,6 +202,7 @@ def test_temporary_inputs_preserve_saved_files(launch, profile, settings):
     assert profile.get("AutoLoad") == [str(settings[1])]
     temporary.close()
     restored = launch()
+    restored.command(1021)
     n.wait(lambda: restored.count(restored.sources) == 1, "saved input restored after temporary session", 45)
     restored.query("CreateFileW")
     assert restored.count() > 0
@@ -177,6 +226,7 @@ def test_multiple_positional_inputs_preserve_order(launch, profile, settings):
         shutil.copyfile(settings[1], path)
     profile.set("AutoLoad", winreg.REG_MULTI_SZ, [str(settings[1])])
     app = launch([first, second])
+    app.command(1021)
     n.wait(lambda: app.count(app.sources) == 2, "both inputs loaded", 45)
     assert str(first) in app.cell(0, app.sources)
     assert str(second) in app.cell(1, app.sources)
@@ -194,9 +244,11 @@ def test_long_unicode_input(launch, settings):
     shutil.copyfile(settings[1], extended(path))
     app = launch([path])
     n.wait(lambda: app.status_text().startswith(("Ready.", "已就绪")), "long path loaded", 45)
+    app.command(1021)
+    bits = 64 if is_64_bit(settings[0]) else 32
+    assert complete_list_text(app, app.sources, 0, bits).splitlines()[0] == str(path)
     app.query("CreateFileW")
-    assert app.cell(0, app.sources).splitlines()[0] == str(path)
-    assert app.cell(0).splitlines()[3] == str(path)
+    assert complete_list_text(app, app.results, 0, bits).splitlines()[3] == str(path)
     doc = app.open_row()
     n.wait(lambda: 'CreateFileW(' in app.content(doc), "declaration", 45)
     assert str(path) not in app.content(doc)
@@ -214,8 +266,10 @@ def test_list_text_preserves_native_utf16_path(launch, settings, unc):
     shutil.copyfile(settings[1], path)
     app = launch([path])
     try:
-        app.query("CreateFileW")
+        app.command(1021)
+        n.wait(lambda: app.count(app.sources) == 1, "source loaded", 45)
         assert app.cell(0, app.sources).splitlines()[0] == str(path)
+        app.query("CreateFileW")
         lines = app.cell(0).splitlines()
         assert lines[1].endswith(path.name)
         assert lines[3] == str(path)

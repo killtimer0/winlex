@@ -4,7 +4,6 @@ import hashlib
 import json
 from pathlib import Path
 import shutil
-import subprocess
 import urllib.request
 import zipfile
 
@@ -80,6 +79,8 @@ def main():
             parser.error("--check requires --architecture and --vc-ltl-root")
         print(json.dumps(verify_inputs(args.architecture, args.vc_ltl_root, args.thunks_object)))
         return
+    import py7zr
+
     targets = manifest("targets.json")
     selected = [targets[args.architecture]] if args.architecture else list(targets.values())
     thunk_arches = {target["thunks_arch"] for target in selected} - {None}
@@ -98,10 +99,8 @@ def main():
     directory = DEPS / f"vc-ltl-{ltl['version']}"
     archive = download(ltl["url"], directory / "sdk.7z", ltl["archive_sha256"])
     sdk = directory / "sdk"
-    sevenzip = shutil.which("7z") or shutil.which("7zz")
-    if not sevenzip:
-        raise SystemExit("Add 7z or 7zz to PATH to extract VC-LTL5")
-    subprocess.run([sevenzip, "x", str(archive), f"-o{sdk}", "-y"], check=True)
+    with py7zr.SevenZipFile(archive, "r") as package:
+        package.extractall(path=sdk)
     for platform in {target["vc_ltl_platform"] for target in selected}:
         libraries = ltl["libraries"][platform]
         for library in libraries:

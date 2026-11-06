@@ -9,6 +9,7 @@ import win32api
 import win32con
 import win32gui
 import winreg
+import uiautomation as auto
 
 from support import messages
 from support import native as n
@@ -16,6 +17,7 @@ from support.diagnostics import capture, screenshot
 from support.input_state import InputState, foreground as acquire_foreground
 from test_tooltips import infotip
 from test_theme import THEME_SUPPORTED
+from test_tools import visual_state
 
 pytestmark = pytest.mark.interactive
 
@@ -50,7 +52,7 @@ def colors(hwnd, rect, client=True):
     win32gui.RedrawWindow(hwnd, None, None,
                          win32con.RDW_INVALIDATE | win32con.RDW_UPDATENOW |
                          win32con.RDW_ALLCHILDREN | win32con.RDW_FRAME)
-    with capture(hwnd, client=client, repaint=False) as (_, header, pixels):
+    with capture(hwnd, client=client) as (_, header, pixels):
         width, height = struct.unpack_from('<ii', header, 4)
         left, top, right, bottom = rect
         assert 0 <= left < right <= width and 0 <= top < bottom <= height, rect
@@ -106,10 +108,9 @@ def scrollbar_track(hwnd, required):
 
 
 def button_rect(app, toolbar, index):
-    assert n.send(toolbar, messages.TB_GETITEMRECT, index, app.memory)
-    value = n.c.create_string_buffer(16)
-    assert n.read_memory(app.handle, app.memory, value, 16, None)
-    return struct.unpack('<4i', value.raw)
+    rect = auto.ControlFromHandle(toolbar).GetChildren()[index].BoundingRectangle
+    left, top, _, _ = n.rectangle(toolbar)
+    return rect.left - left, rect.top - top, rect.right - left, rect.bottom - top
 
 
 def center(rect):
@@ -123,12 +124,12 @@ def inset(rect, amount=3):
 
 
 def screen_image(hwnd, path):
-    with capture(hwnd, repaint=False) as (_, header, pixels):
+    with capture(hwnd) as (_, header, pixels):
         path.write_bytes(struct.pack('<2sIHHI', b'BM', 54 + len(pixels), 0, 0, 54) + header + pixels)
 
 
 def move(hwnd, point):
-    win32api.SetCursorPos(win32gui.ClientToScreen(hwnd, point))
+    auto.MoveTo(*win32gui.ClientToScreen(hwnd, point))
 
 
 def test_dark_toolbar_checked_hot_pixels_and_activation(launch, profile, settings):
@@ -150,7 +151,7 @@ def test_dark_toolbar_checked_hot_pixels_and_activation(launch, profile, setting
         n.wait(lambda: n.is_visible(app.sources), 'checked button opens metadata')
         assert n.send(toolbar, messages.TB_ISBUTTONCHECKED, 1021)
         assert not n.send(toolbar, messages.TB_ISBUTTONCHECKED, 1040)
-        move(app.search, (8, 8))
+        move(app.status, (8, 3))
         n.wait(lambda: n.c.c_int32(n.send(toolbar, messages.TB_GETHOTITEM)).value == -1, 'toolbar hover cleared')
         assert background(toolbar, inset(second)) != background(toolbar, inset(first))
 
@@ -159,10 +160,10 @@ def test_dark_toolbar_checked_hot_pixels_and_activation(launch, profile, setting
 def test_dark_list_native_selection_hover_and_focus(launch, profile, settings, sources):
     app = dark_app(launch, profile, [settings[1]])
     app.query('CreateFile')
-    control = app.sources if sources else app.results
     with InputState() as inputs, foreground(app, inputs), n.window_dpi_context(app.frame):
         if sources:
             app.command(1021)
+        control = app.sources if sources else app.results
         app.select(0, control)
         app.focus(control)
         n.wait(lambda: app.focused() == control, 'native list focus')
@@ -183,9 +184,7 @@ def test_dark_list_native_selection_hover_and_focus(launch, profile, settings, s
         assert n.send(control, messages.LVM_GETITEMSTATE, 0, 3) == 3
         # Hover an unselected row: selected+unfocused hover is intentionally unchanged
         # by some Windows 10 common-control themes.
-        item = struct.pack('<IIIII', 8, 0, 0, 0, 3) + bytes(108)
-        assert n.write_memory(app.handle, app.memory, item, len(item), None)
-        n.send(control, messages.LVM_SETITEMSTATE, 0, app.memory)
+        auto.ControlFromHandle(control).GetChildren()[0].GetSelectionItemPattern().RemoveFromSelection()
         assert app.selected_row(control) == -1
         idle = background(control, sample)
         move(control, (left + 8, (top + bottom) // 2))
@@ -218,9 +217,11 @@ def test_dark_list_native_selection_hover_and_focus(launch, profile, settings, s
 def test_dark_list_native_tooltip_pixels(launch, profile, settings, sources):
     app = dark_app(launch, profile, [settings[1]])
     app.query('CreateFileW')
-    control = app.sources if sources else app.results
     # The existing helper owns cursor restoration; capture the tip while it is visible.
     with InputState() as inputs, foreground(app, inputs), n.window_dpi_context(app.frame):
+        if sources:
+            app.command(1021)
+        control = app.sources if sources else app.results
         text = infotip(app, control, 0, settings[2] / ('dark-infotip-%s.bmp' % sources))
         assert text
         tooltip = n.send(control, messages.LVM_GETTOOLTIPS)
@@ -254,7 +255,7 @@ def test_dark_tool_menu_icon_is_visible_on_creation(launch, profile, settings):
     app.query('CreateFileW')
     doc = app.open_row()
     with InputState() as inputs, foreground(app, inputs), n.window_dpi_context(app.frame):
-        n.send(app.mdi, win32con.WM_MDIMAXIMIZE, doc)
+        visual_state(doc, auto.WindowVisualState.Maximized)
         for new in (False, True):
             doc = tool(app, new=new)
             assert n.is_zoomed(doc)
@@ -274,7 +275,7 @@ def test_dark_mdi_merged_menu_glyph_pixels_and_native_actions(launch, profile, s
     app.query('CreateFileW')
     doc = app.open_row()
     with InputState() as inputs, foreground(app, inputs), n.window_dpi_context(app.frame):
-        n.send(app.mdi, win32con.WM_MDIMAXIMIZE, doc)
+        visual_state(doc, auto.WindowVisualState.Maximized)
         n.wait(lambda: n.is_zoomed(doc), 'maximized MDI document')
         menu, items = menu_items(app)
         commands = (win32con.SC_MINIMIZE, win32con.SC_RESTORE, win32con.SC_CLOSE)
@@ -298,21 +299,21 @@ def test_dark_mdi_merged_menu_glyph_pixels_and_native_actions(launch, profile, s
         assert all(item['dark'] and item['visible'] for item in evidence.values()), evidence
         # Open the actual merged icon popup, then dismiss without changing the document.
         inputs.click(*center(menu_rect(app, menu, 0)))
-        n.wait(lambda: any(n.class_name(h) == '#32768' and n.is_visible(h)
-                           for h in n.windows()), 'merged document system popup')
+        n.wait(lambda: any(item.ClassName == '#32768' and not item.IsOffscreen
+                           for item in auto.GetRootControl().GetChildren()), 'merged document system popup')
         inputs.key(win32con.VK_ESCAPE)
-        n.wait(lambda: not any(n.class_name(h) == '#32768' and n.is_visible(h)
-                               for h in n.windows()), 'merged system menu dismissed')
+        n.wait(lambda: not any(item.ClassName == '#32768' and not item.IsOffscreen
+                               for item in auto.GetRootControl().GetChildren()), 'merged system menu dismissed')
         assert app.active_document() == doc
         inputs.click(*center(menu_rect(app, menu, positions[win32con.SC_RESTORE])))
         n.wait(lambda: not n.is_zoomed(doc), 'merged restore button')
-        n.send(app.mdi, win32con.WM_MDIMAXIMIZE, doc)
+        visual_state(doc, auto.WindowVisualState.Maximized)
         n.wait(lambda: n.is_zoomed(doc), 'MDI maximized after restore')
         menu, items = menu_items(app)
         inputs.click(*center(menu_rect(app, menu, next(i for i, command in items
                                                       if command == win32con.SC_MINIMIZE))))
         n.wait(lambda: win32gui.IsIconic(doc), 'merged minimize button')
-        n.send(app.mdi, win32con.WM_MDIMAXIMIZE, doc)
+        visual_state(doc, auto.WindowVisualState.Maximized)
         n.wait(lambda: n.is_zoomed(doc), 'MDI remaximized')
         menu, items = menu_items(app)
         inputs.click(*center(menu_rect(app, menu, next(i for i, command in items

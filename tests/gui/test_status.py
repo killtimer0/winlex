@@ -1,6 +1,6 @@
 """Status text belongs to the selected panel or document, not the whole sidebar."""
-import win32con
 import pytest
+import uiautomation as auto
 
 from support import native as n
 from test_tools import tool, body
@@ -10,6 +10,7 @@ def show_panel(app, command, control):
     target = n.get_item(app.frame, control)
     if not n.is_visible(target):
         app.command(command)
+        target = n.wait(lambda: n.get_item(app.frame, control), "panel control exposed")
     app.focus(target)
 
 
@@ -29,7 +30,7 @@ def test_panel_statuses_and_document_close_fallback(launch, settings):
     show_panel(app, 1021, 1112)
     app.focus(n.get_item(doc, 1203))
     assert not app.status_text()
-    n.send(doc, win32con.WM_CLOSE)
+    auto.ControlFromHandle(doc).GetWindowPattern().Close()
     n.wait(lambda: app.status_text() in ("Sources: 1", "来源：1"), "closed document uses visible panel")
     app.command(1021)
     assert not app.status_text(), "collapsed panel does not contribute text"
@@ -40,18 +41,20 @@ def test_search_completion_does_not_replace_other_panel_or_tool_status(launch, s
     doc = tool(app)
     ready = app.status_text()
     app.command(1040)
-    n.set_text(app.search, "CreateFileW")
+    results = app.results
+    auto.ControlFromHandle(app.search).GetValuePattern().SetValue('CreateFileW')
     show_panel(app, 1021, 1112)
-    n.wait(lambda: app.count() and app.named_rows("CreateFileW"), "search completed in background", 45)
+    n.wait(lambda: any(row.Name.splitlines()[0].endswith('.CreateFileW') for row in app.rows(results)),
+           "search completed in background", 45)
     assert app.status_text() in ("Sources: 1", "来源：1")
     app.focus(n.get_item(doc, 1810))
     assert app.status_text() == ready
     app.command(1040)
-    n.set_text(app.search, "ERROR_ACCESS_DENIED")
+    auto.ControlFromHandle(app.search).GetValuePattern().SetValue('ERROR_ACCESS_DENIED')
     app.focus(n.get_item(doc, 1810))
     n.wait(lambda: app.count() and app.named_rows("ERROR_ACCESS_DENIED"), "second search completed", 45)
     assert app.status_text() == ready
-    n.set_text(n.get_item(doc, 1810), "5")
+    auto.ControlFromHandle(n.get_item(doc, 1810)).GetValuePattern().SetValue('5')
     app.command(1815, doc)
     show_panel(app, 1800, 1801)
     n.wait(lambda: "0x00000005" in body(doc), "tool completed while sidebar active", 30)

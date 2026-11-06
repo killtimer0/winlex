@@ -1,10 +1,13 @@
-import struct
 import pytest
 import win32con
 import win32gui
+import uiautomation as auto
 from support.diagnostics import capture
+from support.input_state import InputState, foreground
 from support import messages
 from support import native as n
+from test_context import select_text
+from test_tools import close, visual_state
 
 
 def test_toolbar_geometry_activation_and_focus(launch):
@@ -13,6 +16,7 @@ def test_toolbar_geometry_activation_and_focus(launch):
         check_toolbar_and_search(app)
 
 
+@pytest.mark.interactive
 @pytest.mark.parametrize("sources", [False, True])
 def test_list_selection_paint_follows_focus(launch, settings, sources):
     app = launch([settings[1]])
@@ -27,31 +31,32 @@ def test_list_selection_paint_follows_focus(launch, settings, sources):
         with n.window_dpi_context(app.frame):
             _, _, width, height = n.rectangle(control, client=True)
             left, top, right, bottom = app.item_rect(0, control)
-            with capture(control, client=True) as (target, _, _):
-                return win32gui.GetPixel(target, min(right, width) - 4,
-                                        (top + bottom) // 2 - 3)
+            with capture(control, client=True) as (bitmap, _, _):
+                rgb = bitmap.GetPixelColor(min(right, width) - 4, (top + bottom) // 2 - 3)
+                return ((rgb & 255) << 16) | (rgb & 0xff00) | ((rgb >> 16) & 255)
 
-    for theme_name in ("Explorer", ""):
-        theme = n.c.WinDLL("uxtheme")
-        assert n.api(theme, "SetWindowTheme", n.c.c_long, n.w.HWND,
-                     n.w.LPCWSTR, n.w.LPCWSTR)(control, theme_name, None if theme_name else "") == 0
-        app.focus(control)
-        assert app.focused() == control
-        selected = background()
-        app.focus(other)
-        unfocused = background()
-        assert app.selected_row(control) == 0  # Losing focus hides the highlight, not selection.
-        assert selected != unfocused, (theme_name, selected, unfocused)
-        assert unfocused == win32gui.GetSysColor(win32con.COLOR_WINDOW)
+    with InputState() as inputs, foreground(app, inputs):
+        for theme_name in ("Explorer", ""):
+            theme = n.c.WinDLL("uxtheme")
+            assert n.api(theme, "SetWindowTheme", n.c.c_long, n.w.HWND,
+                         n.w.LPCWSTR, n.w.LPCWSTR)(control, theme_name, None if theme_name else "") == 0
+            app.focus(control)
+            assert app.focused() == control
+            selected = background()
+            app.focus(other)
+            unfocused = background()
+            assert app.selected_row(control) == 0  # Losing focus hides the highlight, not selection.
+            assert selected != unfocused, (theme_name, selected, unfocused)
+            assert unfocused == win32gui.GetSysColor(win32con.COLOR_WINDOW)
 
 
 def check_toolbar_and_search(app):
     toolbar = n.get_item(app.frame, 1113)
+    buttons = auto.ControlFromHandle(toolbar).GetChildren()
     def button_rect(index):
-        assert n.send(toolbar, messages.TB_GETITEMRECT, index, app.memory)
-        buffer = n.c.create_string_buffer(16)
-        assert n.read_memory(app.handle, app.memory, buffer, 16, None)
-        return struct.unpack("<4i", buffer.raw)
+        rect = buttons[index].BoundingRectangle
+        left, top, _, _ = n.rectangle(toolbar)
+        return rect.left - left, rect.top - top, rect.right - left, rect.bottom - top
 
     first, second = button_rect(0), button_rect(1)
     area = n.rectangle(toolbar, client=True)
@@ -61,40 +66,49 @@ def check_toolbar_and_search(app):
     assert n.send(toolbar, messages.TB_ISBUTTONCHECKED, 1040)
     assert not n.send(toolbar, messages.TB_ISBUTTONCHECKED, 1021)
 
-    def click(rect):
-        x, y = (rect[0] + rect[2]) // 2, (rect[1] + rect[3]) // 2
-        position = x | (y << 16)
-        n.send(toolbar, win32con.WM_LBUTTONDOWN, win32con.MK_LBUTTON, position)
-        n.send(toolbar, win32con.WM_LBUTTONUP, 0, position)
-
-    click(second)  # Message-driven toolbar activation, not actual mouse input.
+    x, y = (second[0] + second[2]) // 2, (second[1] + second[3]) // 2
+    point = (x & 0xffff) | ((y & 0xffff) << 16)
+    n.send(toolbar, win32con.WM_LBUTTONDOWN, win32con.MK_LBUTTON, point)
+    n.send(toolbar, win32con.WM_LBUTTONUP, 0, point)
     assert n.is_visible(app.sources) and not n.is_visible(app.results)
     assert n.send(toolbar, messages.TB_ISBUTTONCHECKED, 1021)
     assert not n.send(toolbar, messages.TB_ISBUTTONCHECKED, 1040)
     n.wait(lambda: app.focused() == app.sources, "mouse activation focuses sources")
-    n.send(app.frame, win32con.WM_SIZE)
+    frame = auto.ControlFromHandle(app.frame)
+    rect = frame.BoundingRectangle
+    transform = frame.GetTransformPattern()
+    assert transform.Resize(rect.width() + 1, rect.height())
+    assert transform.Resize(rect.width(), rect.height())
     n.send(app.frame, win32con.WM_SETTINGCHANGE)
     assert app.focused() == app.sources, "layout and environment updates must not move focus"
-    click(second)
+    n.send(toolbar, win32con.WM_LBUTTONDOWN, win32con.MK_LBUTTON, point)
+    n.send(toolbar, win32con.WM_LBUTTONUP, 0, point)
     assert not n.is_visible(app.sources)
     assert not n.send(toolbar, messages.TB_ISBUTTONCHECKED, 1021)
     n.wait(lambda: app.focused() == toolbar, "mouse collapse focuses toolbar")
-    click(first)
+    x, y = (first[0] + first[2]) // 2, (first[1] + first[3]) // 2
+    point = (x & 0xffff) | ((y & 0xffff) << 16)
+    n.send(toolbar, win32con.WM_LBUTTONDOWN, win32con.MK_LBUTTON, point)
+    n.send(toolbar, win32con.WM_LBUTTONUP, 0, point)
     assert n.is_visible(app.results) and n.send(toolbar, messages.TB_ISBUTTONCHECKED, 1040)
     n.wait(lambda: app.focused() == app.search, "mouse activation focuses search")
     n.send(toolbar, messages.TB_SETHOTITEM, 0)
-    n.key_message(toolbar, win32con.VK_SPACE)
+    win32gui.PostMessage(toolbar, win32con.WM_KEYDOWN, win32con.VK_SPACE, 1)
+    win32gui.PostMessage(toolbar, win32con.WM_KEYUP, win32con.VK_SPACE, -1073741823)
     n.wait(lambda: not n.is_visible(app.results), "toolbar Space collapses panel")
     n.wait(lambda: app.focused() == toolbar, "keyboard collapse focuses toolbar")
     n.send(toolbar, messages.TB_SETHOTITEM, 0)
-    n.key_message(toolbar, win32con.VK_DOWN)
+    win32gui.PostMessage(toolbar, win32con.WM_KEYDOWN, win32con.VK_DOWN, 1)
+    win32gui.PostMessage(toolbar, win32con.WM_KEYUP, win32con.VK_DOWN, -1073741823)
     n.wait(lambda: n.send(toolbar, messages.TB_GETHOTITEM) == 1, "toolbar Down selects next item")
-    n.key_message(toolbar, win32con.VK_SPACE)
+    win32gui.PostMessage(toolbar, win32con.WM_KEYDOWN, win32con.VK_SPACE, 1)
+    win32gui.PostMessage(toolbar, win32con.WM_KEYUP, win32con.VK_SPACE, -1073741823)
     n.wait(lambda: n.is_visible(app.sources), "toolbar keyboard switches panel")
     n.wait(lambda: app.focused() == app.sources, "keyboard activation focuses sources")
     assert n.send(toolbar, messages.TB_ISBUTTONCHECKED, 1021)
     assert not n.send(toolbar, messages.TB_ISBUTTONCHECKED, 1040)
-    click(first)
+    n.send(toolbar, win32con.WM_LBUTTONDOWN, win32con.MK_LBUTTON, point)
+    n.send(toolbar, win32con.WM_LBUTTONUP, 0, point)
 
     edit, results = n.rectangle(app.search), n.rectangle(app.results)
     mode = n.rectangle(n.get_item(app.frame, 1114))
@@ -114,7 +128,7 @@ def test_environment_refresh_preserves_open_document(launch, settings):
     editor = n.get_item(doc, 1203)
     button = n.get_item(app.frame, 1020)
     content = app.content(doc)
-    n.send(editor, win32con.EM_SETSEL, 2, 8)
+    select_text(editor, 2, 8)
     with n.window_dpi_context(app.frame):
         outer = n.rectangle(doc)
         n.send(app.frame, win32con.WM_SETTINGCHANGE)  # without changing global settings
@@ -139,16 +153,18 @@ def test_mdi_maximize_inheritance_and_one_shot_arrangement(launch, settings):
     app = launch([settings[1]])
     app.query("CreateFileW")
     original = app.open_row()
-    n.send(app.mdi, win32con.WM_MDIMAXIMIZE, original)
+    visual_state(original, auto.WindowVisualState.Maximized)
     assert n.is_zoomed(original)
     other = app.open_new()
     assert n.is_zoomed(other), "new document must inherit MDI maximization"
     with n.window_dpi_context(app.frame):
         dpi = n.api(n.user, "GetDpiForWindow", n.w.UINT, n.w.HWND)(original) if hasattr(n.user, "GetDpiForWindow") else 96
-        for message, flags in ((win32con.WM_MDITILE, win32con.MDITILE_VERTICAL),
-                               (win32con.WM_MDITILE, win32con.MDITILE_HORIZONTAL),
-                               (win32con.WM_MDICASCADE, 0)):
-            n.send(app.mdi, message, flags)
+        for command in (1011, 1012, None):
+            if command is None:
+                # The application exposes no cascade command; exercise the MDI contract directly.
+                n.send(app.mdi, win32con.WM_MDICASCADE)
+            else:
+                app.command(command)
             for doc in app.documents():
                 left, top, right, bottom = n.rectangle(doc)
                 assert not n.is_zoomed(doc)
@@ -162,11 +178,11 @@ def test_mdi_maximize_inheritance_and_one_shot_arrangement(launch, settings):
     third = app.open_row()
     assert third not in before
     assert {h: n.rectangle(h) for h in before} == before, "creation must not retile existing documents"
-    n.send(app.mdi, win32con.WM_MDIDESTROY, third)
+    close(third)
     assert {h: n.rectangle(h) for h in before} == before, "closing must not retile remaining documents"
     frame = n.rectangle(app.frame)
-    n.set_pos(app.frame, None, 0, 0, frame[2] - frame[0] + 80, frame[3] - frame[1] + 60,
-              win32con.SWP_NOMOVE | win32con.SWP_NOZORDER | win32con.SWP_NOACTIVATE)
+    assert auto.ControlFromHandle(app.frame).GetTransformPattern().Resize(
+        frame[2] - frame[0] + 80, frame[3] - frame[1] + 60)
     assert {h: n.rectangle(h) for h in before} == before, "frame resize must not retile documents"
 
 
@@ -176,18 +192,23 @@ def test_accelerator_region_navigation_and_tab_enter(launch, settings):
     doc = app.open_row()
     editor = n.get_item(doc, 1203)
 
-    n.send(doc, win32con.WM_SETFOCUS)  # document restores its editor on the owning thread
+    app.focus(editor)
     n.wait(lambda: app.focused() == editor, "document focus")
-    n.key_message(editor, win32con.VK_F6)  # F6 through TranslateAccelerator
+    win32gui.PostMessage(editor, win32con.WM_KEYDOWN, win32con.VK_F6, 1)
+    win32gui.PostMessage(editor, win32con.WM_KEYUP, win32con.VK_F6, -1073741823)
     n.wait(lambda: app.focused() == app.search, "F6 to sidebar")
-    n.key_message(app.search, win32con.VK_F6)
+    win32gui.PostMessage(app.search, win32con.WM_KEYDOWN, win32con.VK_F6, 1)
+    win32gui.PostMessage(app.search, win32con.WM_KEYUP, win32con.VK_F6, -1073741823)
     tabs = n.get_item(app.frame, 1104)
     n.wait(lambda: app.focused() == tabs, "F6 to tabs")
-    n.key_message(tabs, win32con.VK_F6)
+    win32gui.PostMessage(tabs, win32con.WM_KEYDOWN, win32con.VK_F6, 1)
+    win32gui.PostMessage(tabs, win32con.WM_KEYUP, win32con.VK_F6, -1073741823)
     n.wait(lambda: app.focused() == editor, "F6 to document")
-    n.key_message(editor, win32con.VK_F6)
+    win32gui.PostMessage(editor, win32con.WM_KEYDOWN, win32con.VK_F6, 1)
+    win32gui.PostMessage(editor, win32con.WM_KEYUP, win32con.VK_F6, -1073741823)
     n.wait(lambda: app.focused() == app.search, "sidebar before tab Enter")
-    n.key_message(n.get_item(app.frame, 1104), win32con.VK_RETURN)
+    win32gui.PostMessage(tabs, win32con.WM_KEYDOWN, win32con.VK_RETURN, 1)
+    win32gui.PostMessage(tabs, win32con.WM_KEYUP, win32con.VK_RETURN, -1073741823)
     n.wait(lambda: app.focused() == editor, "tab Enter to document")
 
 
@@ -198,17 +219,17 @@ def test_mdi_remembers_last_user_state_after_all_documents_close(launch, setting
     assert n.is_zoomed(doc), "first document defaults to maximized"
 
     def reopen(previous):
-        n.send(previous, win32con.WM_CLOSE)  # through the document host
+        close(previous)
         n.wait(lambda: not app.documents(), "all documents closed")
         return app.open_row()
 
     doc = reopen(doc)
     assert n.is_zoomed(doc), "closing all must retain maximized preference"
-    n.send(doc, win32con.WM_SYSCOMMAND, win32con.SC_RESTORE)  # as sent by the native system menu
+    win32gui.SendMessage(doc, win32con.WM_SYSCOMMAND, win32con.SC_RESTORE, 0)
     assert not n.is_zoomed(doc)
     doc = reopen(doc)
     assert not n.is_zoomed(doc), "closing all must retain restored preference"
-    n.send(doc, win32con.WM_SYSCOMMAND, win32con.SC_MAXIMIZE)
+    win32gui.SendMessage(doc, win32con.WM_SYSCOMMAND, win32con.SC_MAXIMIZE, 0)
     assert n.is_zoomed(doc)
     doc = reopen(doc)
     assert n.is_zoomed(doc)

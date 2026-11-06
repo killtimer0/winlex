@@ -41,10 +41,13 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           rustup component add rust-docs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: '3.12'
       - name: Prepare pinned compatibility dependencies
         shell: pwsh
         run: |
-          python scripts/prepare-inputs.py --architecture ${{ matrix.arch }}
+          uv run --locked python scripts/prepare-inputs.py --architecture ${{ matrix.arch }}
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Install ARM64 MSVC tools if needed
         if: matrix.arch == 'arm64'
@@ -65,14 +68,12 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $arch = '${{ matrix.arch }}'
-          python -m pip install PyYAML
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           ./scripts/build.ps1 -Architecture $arch -TargetDir "$pwd/target"
           $policy = (Get-Content inputs/targets.json -Raw | ConvertFrom-Json).$arch
           $env:WINLEX_TEST_ARCH = $arch
           $env:WINLEX_PACKAGE_REQUIRE_ARCH = $arch
           [Environment]::SetEnvironmentVariable("WINLEX_PACKAGE_$($arch.ToUpperInvariant())_BUILD_DIR", "$pwd/target/$($policy.target)/debug", 'Process')
-          python -m unittest discover -s tests/scripts -v
+          uv run --locked --group tests python -m unittest discover -s tests/scripts -v
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build and package
         shell: pwsh

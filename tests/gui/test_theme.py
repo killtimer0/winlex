@@ -5,7 +5,9 @@ import pytest
 import win32con
 import win32gui
 import winreg
+import uiautomation as auto
 from support import native as n
+from support.session import invoke, select_combo
 from support.diagnostics import capture, screenshot
 from test_about import open_about
 from test_search_help import open_help
@@ -14,6 +16,23 @@ from test_search_help import open_help
 THEME_SUPPORTED = tuple(sys.getwindowsversion()[:3]) >= (10, 0, 19045)
 modern_theme = pytest.mark.skipif(
     not THEME_SUPPORTED, reason='requires Windows 10 build 19045 or later')
+
+
+def select_theme(page, index):
+    combo = auto.ControlFromHandle(n.get_item(page, 1301))
+    expansion = combo.GetExpandCollapsePattern()
+    expansion.Expand(waitTime=0)
+    try:
+        options = [item.Name for item, _ in auto.WalkControl(combo)
+                   if item.ControlType == auto.ControlType.ListItemControl]
+    finally:
+        expansion.Collapse(waitTime=0)
+    select_combo(combo, options[index])
+
+
+def selected_index(app, hwnd):
+    selected = auto.ControlFromHandle(hwnd).GetValuePattern().Value
+    return app.choices(hwnd).index(selected)
 
 
 def dark_background(hwnd):
@@ -32,6 +51,7 @@ def dark_background(hwnd):
     ('zh-CN', 'system'), ('zh-CN', 'unaware'),
 ])
 @modern_theme
+@pytest.mark.interactive
 def test_theme_switch_persistence_and_dialogs(launch, profile, settings, language, dpi):
     profile.set('Language', winreg.REG_SZ, language)
     profile.set('Theme', winreg.REG_SZ, 'dark')
@@ -41,30 +61,31 @@ def test_theme_switch_persistence_and_dialogs(launch, profile, settings, languag
         dialog = opener(app)
         assert dark_background(dialog)
         screenshot(dialog, settings[2] / ('dark-%s-%s-%s.bmp' % (language, dpi, opener.__name__)))
-        n.post(n.get_item(dialog, 1), win32con.BM_CLICK, 0, 0)
+        invoke(n.get_item(dialog, 1))
         n.wait(lambda: not n.is_window(dialog), 'close themed dialog')
     sheet = app.settings()
     page = app.settings_page(sheet, 0)
     combo = n.get_item(page, 1301)
-    assert n.send(combo, win32con.CB_GETCURSEL) == 2
+    assert selected_index(app, combo) == 2
     assert dark_background(page)
-    tab = next(h for h in n.windows(sheet) if n.class_name(h) == 'SysTabControl32')
+    tab = next(item.NativeWindowHandle for item, _ in auto.WalkControl(auto.ControlFromHandle(sheet))
+               if item.ClassName == 'SysTabControl32')
     assert dark_background(tab)
     screenshot(sheet, settings[2] / ('dark-%s-%s-settings.bmp' % (language, dpi)))
-    n.send(combo, win32con.CB_SETCURSEL, 1)
+    select_theme(page, 1)
     app.close_settings(sheet, accept=False)
     assert profile.preferences() == (language, 7, 'dark')
     assert dark_background(app.search)
     sheet = app.settings()
     page = app.settings_page(sheet, 0)
-    n.send(n.get_item(page, 1301), win32con.CB_SETCURSEL, 1)
+    select_theme(page, 1)
     app.close_settings(sheet)
     assert profile.preferences() == (language, 7, 'light')
     assert not dark_background(app.search)
     sheet = app.settings()
     page = app.settings_page(sheet, 0)
-    assert n.send(n.get_item(page, 1301), win32con.CB_GETCURSEL) == 1
-    n.send(n.get_item(page, 1301), win32con.CB_SETCURSEL, 2)
+    assert selected_index(app, n.get_item(page, 1301)) == 1
+    select_theme(page, 2)
     app.close_settings(sheet)
     assert dark_background(app.search)
     assert profile.preferences() == (language, 7, 'dark')
@@ -76,6 +97,7 @@ def test_theme_switch_persistence_and_dialogs(launch, profile, settings, languag
 
 
 @modern_theme
+@pytest.mark.interactive
 def test_theme_change_preserves_document(launch, profile, settings):
     profile.set('Language', winreg.REG_SZ, 'en-US')
     profile.set('Theme', winreg.REG_SZ, 'light')
@@ -87,7 +109,7 @@ def test_theme_change_preserves_document(launch, profile, settings):
     for mode in (2, 1, 2):
         sheet = app.settings()
         page = app.settings_page(sheet, 0)
-        n.send(n.get_item(page, 1301), win32con.CB_SETCURSEL, mode)
+        select_theme(page, mode)
         app.close_settings(sheet)
         assert app.content(doc) == original
         assert app.active_document() == doc
@@ -96,6 +118,7 @@ def test_theme_change_preserves_document(launch, profile, settings):
 
 
 @modern_theme
+@pytest.mark.interactive
 def test_system_theme_uses_windows_preference(launch, profile):
     profile.set('Language', winreg.REG_SZ, 'en-US')
     profile.set('Theme', winreg.REG_SZ, 'system')
@@ -109,7 +132,7 @@ def test_system_theme_uses_windows_preference(launch, profile):
     assert dark_background(app.search) == expected
     sheet = app.settings()
     page = app.settings_page(sheet, 0)
-    assert n.send(n.get_item(page, 1301), win32con.CB_GETCURSEL) == 0
+    assert selected_index(app, n.get_item(page, 1301)) == 0
     app.close_settings(sheet)
     assert profile.preferences() == ('en-US', 7, 'system')
 
@@ -133,7 +156,7 @@ def test_modern_titlebar_tracks_explicit_theme(launch, profile):
     assert value.value == 1
     sheet = app.settings()
     page = app.settings_page(sheet, 0)
-    n.send(n.get_item(page, 1301), win32con.CB_SETCURSEL, 1)
+    select_theme(page, 1)
     app.close_settings(sheet)
     assert get_attribute(app.frame, attribute, c.byref(value), 4) == 0
     assert value.value == 0
