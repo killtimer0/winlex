@@ -14,6 +14,8 @@
 
 开发机使用根目录 uv 项目的 `gui` 依赖组；XP 目标机使用兼容 XP 的 Python 3.8 和 `gui/requirements.lock`，不共用开发机 `.venv`。安装和运行命令见[构建与验证](../docs/build.md)。
 
+目标配置放在 `gui/config/<target>.json`；新增目标从 `gui/config/target.example.json` 复制，字段说明和调度命令见[本机/SSH 调度](../docs/build.md#本机ssh-调度)。
+
 默认在独立的非活动桌面运行 CLI 和窗口契约测试。`--desktop current --real-input` 只运行标记为 `interactive` 的交互与屏幕呈现测试，两组互斥。使用 `--collect-only -q` 查看所选用例，或用 `-k` 缩小范围。
 
 普通契约测试不需要前台或独占键鼠，但独立桌面不隔离剪贴板等会话共享资源。交互测试需要已解锁的独占活动桌面，运行期间不要操作键鼠；建议使用专用 VM。远程提交默认使用独立桌面，交互测试有相同要求。

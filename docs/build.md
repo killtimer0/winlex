@@ -155,22 +155,40 @@ uv pip compile tests/gui/requirements.txt --python .venv/Scripts/python.exe --py
 
 ### 本机/SSH 调度
 
-目标配置参考 `tests/gui/target.example.json`，实际主机配置放 `tmp/`。
-配置中的 `python` 指向目标机已安装依赖的解释器，`key_file` 指定 SSH 私钥，`port` 默认为 22。Bitvise 的 `/C/...` 路径映射使用 `sftp_drive_root: "/"`；使用原生 Windows 路径的 SFTP 服务可省略该字段。
+目标配置统一放在 `tests/gui/config/<target>.json`，例如 `tests/gui/config/xp.json`、`tests/gui/config/win10.json`；这些本机配置被 Git 忽略，不随克隆提供。新增目标时复制模板，再手动修改：
+
+```powershell
+Copy-Item tests/gui/config/target.example.json tests/gui/config/win10.json
+```
+
+SSH 配置字段如下：
+
+| 字段 | 含义 |
+| --- | --- |
+| `transport` | SSH 目标使用 `ssh`；本机队列使用 `local`，只需另设 `root` |
+| `host` | SSH 地址，可写为 `user@hostname`，或使用调度机 SSH 配置中的别名 |
+| `key_file` | 调度机上的 SSH 私钥路径；支持 `~`，省略时使用 SSH 默认认证配置 |
+| `port` | SSH 端口，省略时为 22 |
+| `python` | 目标机上已安装测试依赖的 Python 解释器完整路径 |
+| `script` | 目标机上部署的 `tests/gui/remote.py` 完整路径 |
+| `root` | 目标机上的任务队列与结果目录；本机模式下为调度机目录 |
+| `sftp_drive_root` | SFTP 盘符映射前缀；Bitvise 的 `/C/...` 映射填 `/`，使用原生 Windows 路径的服务省略此字段 |
+
+JSON 中的反斜杠须写成 `\\`，路径也可使用 `/`。修改配置不会移动目标端文件；`script` 和 `root` 应与部署位置及 worker 启动参数一致。
 目标端部署 `tests/gui/`、被测 EXE 和 WinMD 输入，保留 `tests/gui` 目录结构。配置的目标 Python 应已具备测试依赖。以下操作从调度机执行：
 
 ```powershell
-python tests/gui/remote.py --config tmp/target.json deploy --source tests/gui --destination C:/WinlexTests/tests
-python tests/gui/remote.py --config tmp/target.json start-worker
-python tests/gui/remote.py --config tmp/target.json capabilities
-python tests/gui/remote.py --config tmp/target.json submit --exe C:/WinlexTests/winlex-gui.exe --winmd C:/WinlexTests/Windows.Win32.winmd -q
-python tests/gui/remote.py --config tmp/target.json status --run-id RUN_ID
-python tests/gui/remote.py --config tmp/target.json watch --run-id RUN_ID --slow-after 15 --timeout 60
-python tests/gui/remote.py --config tmp/target.json cancel --run-id RUN_ID
-python tests/gui/remote.py --config tmp/target.json collect --run-id RUN_ID
+python tests/gui/remote.py --config tests/gui/config/win10.json deploy --source tests/gui --destination C:/WinlexTests/tests
+python tests/gui/remote.py --config tests/gui/config/win10.json start-worker
+python tests/gui/remote.py --config tests/gui/config/win10.json capabilities
+python tests/gui/remote.py --config tests/gui/config/win10.json submit --exe C:/WinlexTests/winlex-gui.exe --winmd C:/WinlexTests/Windows.Win32.winmd -q
+python tests/gui/remote.py --config tests/gui/config/win10.json status --run-id RUN_ID
+python tests/gui/remote.py --config tests/gui/config/win10.json watch --run-id RUN_ID --slow-after 15 --timeout 60
+python tests/gui/remote.py --config tests/gui/config/win10.json cancel --run-id RUN_ID
+python tests/gui/remote.py --config tests/gui/config/win10.json collect --run-id RUN_ID
 ```
 
-`start-worker` 通过任务计划程序请求在当前用户已登录的交互会话中启动 worker，使用配置指定的 Python；`capabilities` 显示解释器路径、桌面和心跳。需要该用户已登录以及创建计划任务的权限。也可在目标交互桌面手动执行 `python tests/gui/remote.py worker --root C:/WinlexTests/runs`。远程提交默认使用独立桌面；交互测试期间该会话须解锁且由测试独占，同一桌面只运行一个 worker。
+`start-worker` 通过任务计划程序请求在当前用户已登录的交互会话中启动 worker，使用配置指定的 Python；`capabilities` 显示解释器路径、桌面和心跳。修改配置并完成部署后，用 `capabilities` 确认 `worker_available` 为 `true`，并核对 `executable`、`desktop` 和 `heartbeat_age`。需要该用户已登录以及创建计划任务的权限。也可在目标交互桌面手动执行 `python tests/gui/remote.py worker --root C:/WinlexTests/runs`。远程提交默认使用独立桌面；交互测试期间该会话须解锁且由测试独占，同一桌面只运行一个 worker。
 `deploy` 的目标父目录须已存在。SSH 负责调度和传输，GUI 由交互 worker 启动。收集 ZIP 默认回收到 `tmp/remote-tests/`。选择交互测试可在提交时增加 `--desktop current --real-input -k real_search_keyboard`。
 
 `watch` 在当前阶段达到 `--slow-after` 秒、运行结束或观察时间到期时返回，不会终止测试。慢阶段预警包含用例、setup／call／teardown 阶段及耗时，可结合运行日志中的线程栈及时诊断。
