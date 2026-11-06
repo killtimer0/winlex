@@ -89,7 +89,7 @@ def test_toolbar_names_on_hover(launch, settings):
             auto.MoveTo(bounds.xcenter(), bounds.ycenter())
             n.wait(lambda: tooltip.Exists(0, 0) and n.is_visible(tooltip.NativeWindowHandle), 'toolbar tooltip')
             assert tooltip.Name == app.toolbar_text(command)
-            screenshot(app.frame, settings[2] / ('toolbar-%d.bmp' % index))
+            screenshot(app.frame, settings[2] / ('toolbar-%d.png' % index))
         button.Click()
         n.wait(lambda: n.is_visible(app.sources), 'toolbar opens metadata')
 
@@ -127,12 +127,12 @@ def test_structured_infotips_preserve_paths_and_report_reload_errors(launch, set
     shutil.copyfile(settings[1], extended(path))
     app = launch([path])
     app.query('CreateFileW')
-    tip = infotip(app, app.results, 0, settings[2] / 'search-tooltip.bmp')
+    tip = infotip(app, app.results, 0, settings[2] / 'search-tooltip.png')
     assert tip.startswith(app.cell(0).splitlines()[0] + '\r\n\r\n')
     assert 'Namespace: Windows.Win32.' in tip or '命名空间：Windows.Win32.' in tip
     assert str(path) in tip and path.name in tip
     app.command(1021)
-    source = infotip(app, app.sources, 0, settings[2] / 'source-tooltip.bmp')
+    source = infotip(app, app.sources, 0, settings[2] / 'source-tooltip.png')
     assert source.startswith(path.name + '\r\n\r\n')
     assert str(path) in source and str(extended(path).stat().st_size) in source
     extended(path).unlink()
@@ -142,7 +142,7 @@ def test_structured_infotips_preserve_paths_and_report_reload_errors(launch, set
     n.wait(lambda: (lambda lines: len(lines) > 1 and lines[1].startswith(('Reload failed', '重载失败')))(
         complete_list_text(app, app.sources, 0, bits).splitlines()),
            'reload failure', 45)
-    tip = infotip(app, app.sources, 0, settings[2] / 'source-error-tooltip.bmp')
+    tip = infotip(app, app.sources, 0, settings[2] / 'source-error-tooltip.png')
     assert 'Error: ' in tip or '错误：' in tip
     assert 'Previously loaded metadata is still available.' in tip or '先前加载的元数据仍可使用。' in tip
 
@@ -158,7 +158,7 @@ def test_infotips_include_values_and_full_guids(launch, settings):
         assert auto.ControlFromHandle(mode).Select(app.choices(mode)[index])
         app.query(query)
         assert app.count() > 0
-        tip = infotip(app, app.results, 0, settings[2] / ('value-tooltip-%d.bmp' % index))
+        tip = infotip(app, app.results, 0, settings[2] / ('value-tooltip-%d.png' % index))
         assert any(label in tip for label in labels), tip
         if query.startswith('guid'):
             assert '0000000c-0000-0000-c000-000000000046' in tip.lower()

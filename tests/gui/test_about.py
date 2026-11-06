@@ -77,7 +77,7 @@ def test_about_content_modality_and_dpi(launch, profile, settings, language, mod
                     assert top <= r.top < r.bottom <= top + height, (child.Name, r)
                 evidence.append({'cycle': cycle, 'monitor': monitor, 'bounds': n.rectangle(dialog)})
                 if cycle == 2:
-                    screenshot(dialog, settings[2] / ('about-%s-%s-%d.bmp' % (language, mode, monitor[0])))
+                    screenshot(dialog, settings[2] / ('about-%s-%s-%d.png' % (language, mode, monitor[0])))
     for index in range(len(n.monitors())):
         sizes = [(e['bounds'][2] - e['bounds'][0], e['bounds'][3] - e['bounds'][1])
                  for e in evidence[index::len(n.monitors())]]

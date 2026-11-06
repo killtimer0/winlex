@@ -18,6 +18,7 @@ from support.session import Session, invoke
 from support.pe import is_64_bit
 from support import native as n
 from support.diagnostics import screenshot
+from support.artifacts import finish_fixtures
 from support.paths import extended
 
 
@@ -122,9 +123,7 @@ def settings(request):
         int(win32service.GetThreadDesktop(win32api.GetCurrentThreadId())), win32con.UOI_NAME)
     (output / "environment.json").write_text(json.dumps(info, indent=2), encoding="utf-8")
     yield exe, winmd, output
-    root = extended(output)
-    hashes = {str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest() for p in root.rglob("*.winmd")}
-    (output / "fixture-hashes.json").write_text(json.dumps(hashes, indent=2), encoding="utf-8")
+    finish_fixtures(extended(output), extended(winmd), info["hashes"][str(winmd)])
 
 
 @pytest.fixture
@@ -156,7 +155,7 @@ def launch(request, settings, profile):
         try:
             if session.process.poll() is None and getattr(request.node, "test_failed", False):
                 try:
-                    screenshot(session.frame, settings[2] / (request.node.name + "-%d.bmp" % index))
+                    screenshot(session.frame, settings[2] / (request.node.name + "-%d.png" % index))
                 except Exception as error:
                     (settings[2] / (request.node.name + "-capture-error.txt")).write_text(str(error), encoding="utf-8")
                 session.diagnostics(settings[2] / (request.node.name + "-%d-windows.json" % index))

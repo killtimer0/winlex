@@ -19,7 +19,7 @@ def test_tool_empty_and_populated_result_follow_theme(launch, profile, settings)
     result = n.get_item(doc, 1816)
     assert body(doc) == ''
     assert dark_background(result)
-    screenshot(app.frame, settings[2] / 'tool-empty-dark.bmp')
+    screenshot(app.frame, settings[2] / 'tool-empty-dark.png')
     for populated in (False, True):
         if populated:
             query(app, doc, '5')

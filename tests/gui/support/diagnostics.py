@@ -27,5 +27,16 @@ def capture(hwnd, client=False):
 
 
 def screenshot(hwnd, path):
-    with capture(hwnd) as (_, header, pixels):
-        path.write_bytes(struct.pack("<2sIHHI", b"BM", 54 + len(pixels), 0, 0, 54) + header + pixels)
+    with capture(hwnd) as (bitmap, _, _):
+        data = bitmap.ToBytes("png")
+        assert data, "UIAutomation PNG encoding failed"
+        path.write_bytes(data)
+
+
+def save_pixels(path, header, pixels):
+    data = struct.pack("<2sIHHI", b"BM", 54 + len(pixels), 0, 0, 54) + header + pixels
+    with auto.Bitmap.FromBytes(data) as bitmap:
+        assert bitmap, "UIAutomation bitmap decoding failed"
+        data = bitmap.ToBytes("png")
+        assert data, "UIAutomation PNG encoding failed"
+        path.write_bytes(data)

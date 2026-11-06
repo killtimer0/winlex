@@ -36,8 +36,8 @@ def test_result_rows_show_context_and_match_emphasis(launch, settings):
                 assert any(bitmap.GetPixelColor(x, y) & 0xffffff == rgb
                            for x in range(left, right)
                            for y in range(top, bottom)), (query, "missing match emphasis")
-            screenshot(app.frame, settings[2] / ("result-row-%d.bmp" % index))
-            screenshot(app.results, settings[2] / ("result-list-%d.bmp" % index))
+            screenshot(app.frame, settings[2] / ("result-row-%d.png" % index))
+            screenshot(app.results, settings[2] / ("result-list-%d.png" % index))
 
 
 def test_search_modes_match_cli_order(launch, settings):

@@ -8,9 +8,10 @@ import uiautomation as auto
 
 from support import native as n
 from support.input_state import InputState
+from support.diagnostics import screenshot
 from test_about import open_about
 from test_search_help import open_help
-from test_theme_surfaces import background, center, colors, dark_app, foreground, move, screen_image
+from test_theme_surfaces import background, center, colors, dark_app, foreground, move
 
 pytestmark = pytest.mark.interactive
 
@@ -46,7 +47,7 @@ def test_dark_native_default_button_pixels_focus_and_enter(launch, profile, sett
         app.focus(button)
         n.wait(lambda: app.focused() == button, 'native default button focus')
         assert n.send(button, win32con.BM_GETSTATE) & win32con.BST_FOCUS
-        screen_image(dialog, settings[2] / ('dark-native-default-%s.bmp' % opener.__name__))
+        screenshot(dialog, settings[2] / ('dark-native-default-%s.png' % opener.__name__))
         (settings[2] / ('dark-native-default-%s.json' % opener.__name__)).write_text(
             json.dumps(evidence, indent=2), encoding='utf-8')
         inputs.key(win32con.VK_RETURN)
@@ -71,7 +72,7 @@ def test_dark_native_find_buttons_and_auto_checkboxes(launch, profile, settings)
             inputs.click(*win32gui.ClientToScreen(button, center(n.rectangle(button, client=True))))
             n.wait(lambda: n.window_text(count).startswith(expected), 'native find pushbutton navigates')
             assert app.focused() == button
-        screen_image(app.frame, settings[2] / 'dark-native-find-buttons-enabled.bmp')
+        screenshot(app.frame, settings[2] / 'dark-native-find-buttons-enabled.png')
         for identifier in (1221, 1222):
             checkbox = n.get_item(doc, identifier)
             original = n.send(checkbox, win32con.BM_GETCHECK)
@@ -109,7 +110,7 @@ def test_dark_native_find_buttons_and_auto_checkboxes(launch, profile, settings)
             focused_label = n.wait(visible_focus_cue, 'keyboard focus cue must be visible')
             evidence[str(identifier)]['focus_cue_colors'] = {
                 'unfocused': unfocused_label.most_common(5), 'focused': focused_label.most_common(5)}
-            screen_image(app.frame, settings[2] / ('dark-native-checkbox-%s-focused.bmp' % identifier))
+            screenshot(app.frame, settings[2] / ('dark-native-checkbox-%s-focused.png' % identifier))
             assert focused_label != unfocused_label, 'keyboard focus cue must be visible'
             inputs.key(win32con.VK_SPACE)
             n.wait(lambda: n.send(checkbox, win32con.BM_GETCHECK) == original, 'native checkbox Space toggle')
@@ -131,7 +132,7 @@ def test_dark_native_find_buttons_and_auto_checkboxes(launch, profile, settings)
             try:
                 n.wait(dimmed_label, 'disabled checkbox label visibly dimmer than enabled label')
             finally:
-                screen_image(app.frame, settings[2] / 'dark-native-checkbox-disabled.bmp')
+                screenshot(app.frame, settings[2] / 'dark-native-checkbox-disabled.png')
                 (settings[2] / 'dark-native-find-buttons.json').write_text(
                     json.dumps(evidence, indent=2), encoding='utf-8')
             inputs.click(*win32gui.ClientToScreen(checkbox, center(n.rectangle(checkbox, client=True))))
@@ -141,7 +142,7 @@ def test_dark_native_find_buttons_and_auto_checkboxes(launch, profile, settings)
             inputs.key(win32con.VK_SPACE)
             n.wait(lambda: n.window_text(query) != before_space, 'Space reaches enabled focus, not disabled checkbox')
             assert n.send(checkbox, win32con.BM_GETCHECK) == original
-            screen_image(app.frame, settings[2] / 'dark-native-find-buttons.bmp')
+            screenshot(app.frame, settings[2] / 'dark-native-find-buttons.png')
         finally:
             enable(checkbox, True)
         (settings[2] / 'dark-native-find-buttons.json').write_text(

@@ -60,7 +60,7 @@ def test_theme_switch_persistence_and_dialogs(launch, profile, settings, languag
     for opener in (open_about, open_help):
         dialog = opener(app)
         assert dark_background(dialog)
-        screenshot(dialog, settings[2] / ('dark-%s-%s-%s.bmp' % (language, dpi, opener.__name__)))
+        screenshot(dialog, settings[2] / ('dark-%s-%s-%s.png' % (language, dpi, opener.__name__)))
         invoke(n.get_item(dialog, 1))
         n.wait(lambda: not n.is_window(dialog), 'close themed dialog')
     sheet = app.settings()
@@ -71,7 +71,7 @@ def test_theme_switch_persistence_and_dialogs(launch, profile, settings, languag
     tab = next(item.NativeWindowHandle for item, _ in auto.WalkControl(auto.ControlFromHandle(sheet))
                if item.ClassName == 'SysTabControl32')
     assert dark_background(tab)
-    screenshot(sheet, settings[2] / ('dark-%s-%s-settings.bmp' % (language, dpi)))
+    screenshot(sheet, settings[2] / ('dark-%s-%s-settings.png' % (language, dpi)))
     select_theme(page, 1)
     app.close_settings(sheet, accept=False)
     assert profile.preferences() == (language, 7, 'dark')
@@ -114,7 +114,7 @@ def test_theme_change_preserves_document(launch, profile, settings):
         assert app.content(doc) == original
         assert app.active_document() == doc
         assert dark_background(app.search) == (mode == 2)
-    screenshot(app.frame, settings[2] / 'dark-document.bmp')
+    screenshot(app.frame, settings[2] / 'dark-document.png')
 
 
 @modern_theme

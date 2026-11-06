@@ -124,11 +124,6 @@ def inset(rect, amount=3):
     return left + amount, top + amount, right - amount, bottom - amount
 
 
-def screen_image(hwnd, path):
-    with capture(hwnd) as (_, header, pixels):
-        path.write_bytes(struct.pack('<2sIHHI', b'BM', 54 + len(pixels), 0, 0, 54) + header + pixels)
-
-
 def move(hwnd, point):
     auto.MoveTo(*win32gui.ClientToScreen(hwnd, point))
 
@@ -147,7 +142,7 @@ def test_dark_toolbar_checked_hot_pixels_and_activation(launch, profile, setting
         n.wait(lambda: n.send(toolbar, messages.TB_GETHOTITEM) == 1, 'native toolbar hover')
         n.wait(lambda: background(toolbar, inset(second)) != idle, 'dark toolbar hover pixels')
         assert n.send(toolbar, messages.TB_ISBUTTONCHECKED, 1040)
-        screenshot(app.frame, settings[2] / 'dark-toolbar-hot.bmp')
+        screenshot(app.frame, settings[2] / 'dark-toolbar-hot.png')
         inputs.click(*win32gui.ClientToScreen(toolbar, center(second)))
         n.wait(lambda: n.is_visible(app.sources), 'checked button opens metadata')
         assert n.send(toolbar, messages.TB_ISBUTTONCHECKED, 1021)
@@ -197,10 +192,10 @@ def test_dark_list_native_selection_hover_and_focus(launch, profile, settings, s
             record_path.write_text(json.dumps(evidence), encoding='utf-8')
             return value if value != idle else None
 
-        screen_image(app.frame, settings[2] / ('dark-list-%s-native-screen.bmp' % sources))
+        screenshot(app.frame, settings[2] / ('dark-list-%s-native-screen.png' % sources))
         hot = n.wait(hovered, 'dark list hover pixels')
         assert .0722 * hot[0] + .7152 * hot[1] + .2126 * hot[2] < 128
-        screenshot(app.frame, settings[2] / ('dark-list-%s-hot.bmp' % sources))
+        screenshot(app.frame, settings[2] / ('dark-list-%s-hot.png' % sources))
         move(app.status, (8, 3))
         app.select(0, control)
         app.focus(control)
@@ -209,7 +204,7 @@ def test_dark_list_native_selection_hover_and_focus(launch, profile, settings, s
         track = scrollbar_track(control, required=not sources)
         evidence['scrollbar_track'] = track
         record_path.write_text(json.dumps(evidence), encoding='utf-8')
-        screen_image(control, settings[2] / ('dark-list-%s-scrollbar.bmp' % sources))
+        screenshot(control, settings[2] / ('dark-list-%s-scrollbar.png' % sources))
         if track['present']:
             assert track['luminance'] < 128, ('light native scrollbar track', track)
 
@@ -223,7 +218,7 @@ def test_dark_list_native_tooltip_pixels(launch, profile, settings, sources):
         if sources:
             app.command(1021)
         control = app.sources if sources else app.results
-        text = infotip(app, control, 0, settings[2] / ('dark-infotip-%s.bmp' % sources))
+        text = infotip(app, control, 0, settings[2] / ('dark-infotip-%s.png' % sources))
         assert text
         tooltip = n.send(control, messages.LVM_GETTOOLTIPS)
         # infotip restores the cursor on return, so show it again before sampling.
@@ -295,8 +290,8 @@ def test_dark_mdi_merged_menu_glyph_pixels_and_native_actions(launch, profile, s
                               'dark': max(bg) < 128,
                               'visible': any(max(color) - max(bg) > 60 for color in palette)}
         (settings[2] / 'dark-mdi-menu-colors.json').write_text(json.dumps(evidence, indent=2), encoding='utf-8')
-        screen_image(app.frame, settings[2] / 'dark-mdi-native-screen.bmp')
-        screenshot(app.frame, settings[2] / 'dark-mdi-merged-menu.bmp')
+        screenshot(app.frame, settings[2] / 'dark-mdi-native-screen.png')
+        screenshot(app.frame, settings[2] / 'dark-mdi-merged-menu.png')
         assert all(item['dark'] and item['visible'] for item in evidence.values()), evidence
         # Open the actual merged icon popup, then dismiss without changing the document.
         inputs.click(*center(menu_rect(app, menu, 0)))

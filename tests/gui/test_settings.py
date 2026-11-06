@@ -1,6 +1,5 @@
 from pathlib import Path
 import json
-import struct
 import time
 import pytest
 import win32con
@@ -9,7 +8,7 @@ import winreg
 import uiautomation as auto
 from support import native as n
 from support.session import invoke, select_combo
-from support.diagnostics import capture, screenshot
+from support.diagnostics import capture, screenshot, save_pixels
 from support.languages import LANGUAGES
 
 
@@ -237,7 +236,7 @@ def test_settings_dpi_pages(launch, settings, mode):
         for index, name in ((0, "general"), (1, "search")):
             app.settings_page(sheet, index)
             n.api(n.user, "RedrawWindow", n.w.BOOL, n.w.HWND, n.c.c_void_p, n.c.c_void_p, n.w.UINT)(sheet, None, None, 0x185)
-            screenshot(sheet, settings[2] / ("settings-" + mode + "-" + str(monitor_index) + "-" + name + ".bmp"))
+            screenshot(sheet, settings[2] / ("settings-" + mode + "-" + str(monitor_index) + "-" + name + ".png"))
         app.close_settings(sheet, accept=False)
     output.write_text(json.dumps(evidence, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -289,7 +288,6 @@ def test_settings_pmv1_initial_paint(launch, settings):
                          win32con.RDW_ALLCHILDREN | win32con.RDW_UPDATENOW)
     after = pixels()
     for name, (header, raw) in (("initial", before), ("repainted", after)):
-        (settings[2] / ("settings-pmv1-" + name + ".bmp")).write_bytes(
-            struct.pack("<2sIHHI", b"BM", 54 + len(raw), 0, 0, 54) + header + raw)
+        save_pixels(settings[2] / ("settings-pmv1-" + name + ".png"), header, raw)
     assert before == after, "initial text changes after an otherwise redundant repaint"
     app.close_settings(sheet, accept=False)

@@ -142,7 +142,8 @@ python tests/gui/resources.py --exe "$guiExe"
 ```
 
 `$guiExe` 为构建显示的 GUI 完整路径。`--dpi` 可改为 `pmv1`、`system`、`unaware` 或 `auto`。默认使用 `--desktop isolated`；也可使用 `--desktop current` 在当前桌面运行契约测试。
-结果写入 `tmp/gui-tests/<run-id>/`，包括 JUnit、失败截图和 `run.json`；`progress.jsonl` 即时记录当前用例及阶段，`timings.jsonl` 记录 setup、call、teardown 耗时，整批中断后仍可查看已完成阶段。
+结果写入 `tmp/gui-tests/<run-id>/`，包括 JUnit、无损 PNG 失败截图和 `run.json`；`progress.jsonl` 即时记录当前用例及阶段，`timings.jsonl` 记录 setup、call、teardown 耗时，整批中断后仍可查看已完成阶段。
+测试结束时将生成的 WinMD 路径与 SHA256 写入 `fixture-hashes.json`，再移除与标准输入内容完全相同的副本；变异或损坏的 fixture 保留。标准输入路径与哈希记录在 `environment.json` 中。强制中断导致未执行 fixture 收尾时，输入副本也会保留。
 交互与屏幕呈现测试使用 `--desktop current --real-input` 选择；不指定 `--real-input` 时运行其余用例。交互测试需要已解锁的独占活动桌面，运行期间不要操作键鼠。
 XP 目标执行端需有兼容 XP 的 Python 3.8 和 UI Automation 组件；通过 `python -m pip install -r tests/gui/requirements.lock` 安装目标端依赖，不使用开发机的 `.venv` 或 uv 锁文件。
 `tests/gui/requirements.txt` 定义目标端直接依赖，`requirements.lock` 固定其 Python 3.8 Windows 传递依赖。在开发机更新清单后重新生成：
@@ -191,7 +192,15 @@ python tests/gui/remote.py --config tests/gui/config/win10.json collect --run-id
 `start-worker` 通过任务计划程序请求在当前用户已登录的交互会话中启动 worker，使用配置指定的 Python；`capabilities` 显示解释器路径、桌面和心跳。修改配置并完成部署后，用 `capabilities` 确认 `worker_available` 为 `true`，并核对 `executable`、`desktop` 和 `heartbeat_age`。需要该用户已登录以及创建计划任务的权限。也可在目标交互桌面手动执行 `python tests/gui/remote.py worker --root C:/WinlexTests/runs`。远程提交默认使用独立桌面；交互测试期间该会话须解锁且由测试独占，同一桌面只运行一个 worker。
 `deploy` 的目标父目录须已存在。SSH 负责调度和传输，GUI 由交互 worker 启动。收集 ZIP 默认回收到 `tmp/remote-tests/`。选择交互测试可在提交时增加 `--desktop current --real-input -k real_search_keyboard`。
 
+WinMD 输入部署到目标端固定位置，通过 `--winmd` 复用，不为每轮运行另行复制。收集 ZIP 不会自动解压；需要展开检查时使用临时目录，检查后保留 ZIP 或展开结果之一，避免长期重复存放。
+
 `watch` 在当前阶段达到 `--slow-after` 秒、运行结束或观察时间到期时返回，不会终止测试。慢阶段预警包含用例、setup／call／teardown 阶段及耗时，可结合运行日志中的线程栈及时诊断。
+
+### 临时构建与产物保留
+
+日常构建复用默认 `target/`，不按轮次创建 `tmp/` 下的 Cargo 输出目录。仅在必须隔离源码或构建条件的对照中指定独立 `-TargetDir`；对照结束后保留所需 EXE、`.build.json` 与日志，再清理该轮独立构建目录。项目默认 `target/` 保留供后续增量构建使用。
+
+历史测试优先保留报告、输入哈希和必要的故障证据；大型原始输出可压缩归档。删除唯一故障证据或未提交工作前须确认，不按目录年龄自动清空 `tmp/`。
 
 可选的 SDK ABI 检查使用真实 SDK 声明验证布局、COM 槽位及位域初始化字节：
 
