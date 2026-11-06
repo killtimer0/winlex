@@ -491,9 +491,13 @@ mod tests {
                 architecture_mask: 7,
             };
             let copies = copies(&entity, std::path::Path::new(&OsString::from_wide(&path)));
-            assert_eq!(copies[0].1, path);
-            assert_eq!(String::from_utf16(&copies[1].1).unwrap(), "2::0x04000001");
-            let label = menu_label(&wide("Copy"), &copies[0].1);
+            let value = |id| &copies.iter().find(|(label, _)| *label == id).unwrap().1;
+            assert_eq!(*value(IDS_COPY_SOURCE_PATH), path);
+            assert_eq!(
+                String::from_utf16(value(IDS_COPY_ENTITY_ID)).unwrap(),
+                "2::0x04000001"
+            );
+            let label = menu_label(&wide("Copy"), value(IDS_COPY_SOURCE_PATH));
             assert!(label.windows(2).any(|pair| pair == [38, 38]));
             assert!(label.contains(&0xD800));
         }

@@ -288,16 +288,26 @@ mod tests {
                 let mut positions = Vec::new();
                 m.buttons(&mut area, controls.iter().copied(), &mut positions);
                 assert_eq!(positions.len(), controls.len());
+                for control in &controls {
+                    assert_eq!(
+                        positions.iter().filter(|(hwnd, _)| hwnd == control).count(),
+                        1
+                    );
+                }
                 let mut tops = std::collections::HashSet::new();
-                for (index, (hwnd, bounds)) in positions.iter().enumerate() {
-                    assert_eq!(*hwnd, controls[index]);
+                for (index, (_, bounds)) in positions.iter().enumerate() {
                     assert_eq!(bounds.right - bounds.left, 140);
                     assert_eq!(bounds.bottom - bounds.top, 35);
                     assert!(bounds.left >= 0 && bounds.right <= width);
                     assert!(bounds.bottom <= area.top);
                     tops.insert(bounds.top);
                     for (_, other) in &positions[index + 1..] {
-                        assert!(bounds.right <= other.left || bounds.bottom <= other.top);
+                        assert!(
+                            bounds.right <= other.left
+                                || other.right <= bounds.left
+                                || bounds.bottom <= other.top
+                                || other.bottom <= bounds.top
+                        );
                     }
                 }
                 assert_eq!(tops.len(), rows);

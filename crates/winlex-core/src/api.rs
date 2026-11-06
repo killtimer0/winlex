@@ -925,17 +925,22 @@ mod tests {
         }
         file.public_type("Fixture", "Undocumented", object);
         let index = Index::new(vec![File::new(file.into_stream()).unwrap()]);
-        let types: Vec<_> = index
-            .rows::<TypeDef>(0)
-            .filter(|ty| ty.namespace() == "Fixture")
-            .collect();
+        let find_type = |name| {
+            index
+                .rows::<TypeDef>(0)
+                .find(|ty| ty.namespace() == "Fixture" && ty.name() == name)
+                .unwrap()
+        };
         assert_eq!(
-            super::Declaration::Type(types[0])
+            super::Declaration::Type(find_type("Documented"))
                 .documentation_url()
                 .as_deref(),
             Some("https://example.com/type")
         );
-        assert_eq!(super::Declaration::Type(types[1]).documentation_url(), None);
+        assert_eq!(
+            super::Declaration::Type(find_type("Undocumented")).documentation_url(),
+            None
+        );
         assert_eq!(
             super::Declaration::Field(index.rows::<Field>(0).next().unwrap())
                 .documentation_url()

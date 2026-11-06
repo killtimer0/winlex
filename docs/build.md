@@ -32,22 +32,19 @@ rustup target add i686-pc-windows-msvc x86_64-pc-windows-msvc
 ./scripts/build.ps1 -Architecture x64
 ```
 
-也可在 MSVC 开发终端中显式指定工具及依赖路径；`$link` 须指向匹配架构的 Hostx64 Microsoft `link.exe`：
+也可在 MSVC 开发终端中显式指定工具路径；`$link` 须指向匹配架构的 Hostx64 Microsoft `link.exe`：
 
 ```powershell
 $link = Join-Path $env:VCToolsInstallDir 'bin/Hostx64/x86/link.exe'
-./scripts/build.ps1 -Architecture x86 -Configuration Debug -LinkExe $link `
-  -YyThunksObject tmp/deps/yy-thunks-1.2.3/x86/YY_Thunks_for_WinXP.obj `
-  -VcLtlRoot tmp/deps/vc-ltl-5.3.1/sdk
+./scripts/build.ps1 -Architecture x86 -Configuration Debug -LinkExe $link
 ```
 
-x64 构建将架构、链接器和 OBJ 路径改为 x64。
-ARM64 需要 Rust 的 `aarch64-pc-windows-msvc` target 及 Visual Studio C++ ARM64 生成工具，使用 `Hostx64/arm64/link.exe`；传入 VC-LTL SDK，不传 YY-Thunks 参数：
+x64 构建将架构和链接器路径改为 x64。兼容库默认使用准备脚本的输出，也可用 `-YyThunksObject` 和 `-VcLtlRoot` 指定路径。
+ARM64 需要 Rust 的 `aarch64-pc-windows-msvc` target 及 Visual Studio C++ ARM64 生成工具，使用 `Hostx64/arm64/link.exe`，不需要 YY-Thunks：
 
 ```powershell
 $link = Join-Path $env:VCToolsInstallDir 'bin/Hostx64/arm64/link.exe'
-./scripts/build.ps1 -Architecture arm64 -Configuration Debug -LinkExe $link `
-  -VcLtlRoot tmp/deps/vc-ltl-5.3.1/sdk
+./scripts/build.ps1 -Architecture arm64 -Configuration Debug -LinkExe $link
 ```
 开发构建使用 `-Configuration Debug`；优化版本和分发版本分别使用 `Release` 和 `Dist`。
 脚本使用所选 SDK 的 Microsoft `rc.exe`，也可用 `-RcExe PATH` 指定；Dist 不回退搜索其他 SDK。输出目录可用 `-TargetDir PATH` 指定，否则遵循 Cargo 配置。
@@ -148,7 +145,7 @@ python tests/gui/resources.py --exe "$guiExe"
 结果写入 `tmp/gui-tests/<run-id>/`，包括 JUnit、失败截图和 `run.json`。
 交互与屏幕呈现测试使用 `--desktop current --real-input` 选择；不指定 `--real-input` 时运行其余用例。交互测试需要已解锁的独占活动桌面，运行期间不要操作键鼠。
 XP 目标执行端需有兼容 XP 的 Python 3.8 和 UI Automation 组件；通过 `python -m pip install -r tests/gui/requirements.lock` 安装目标端依赖，不使用开发机的 `.venv` 或 uv 锁文件。
-`tests/gui/requirements.txt` 定义四项直接依赖，`requirements.lock` 固定其 Python 3.8 Windows 传递依赖。在开发机更新清单后重新生成：
+`tests/gui/requirements.txt` 定义目标端直接依赖，`requirements.lock` 固定其 Python 3.8 Windows 传递依赖。在开发机更新清单后重新生成：
 
 ```powershell
 uv pip compile tests/gui/requirements.txt --python .venv/Scripts/python.exe --python-version 3.8 --python-platform windows --no-python-downloads --no-annotate --output-file tests/gui/requirements.lock

@@ -109,6 +109,7 @@ impl GuidQuery {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::search::MatchQuality;
     #[test]
     fn canonical_order_and_contiguous_fragments() {
         let guid = "12345678-9abc-def0-1234-56789abcdef0";
@@ -137,24 +138,43 @@ mod tests {
     }
     #[test]
     fn byte_lists_have_explicit_radix_rules() {
-        for (text, expected) in [
-            ("239,254", "effe"),
-            ("FF 0A", "ff0a"),
-            ("0xBC,0xAB", "bcab"),
-            ("10 20", "0a14"),
-            ("0x10,0x20", "1020"),
-            ("239,0xFE", "effe"),
-            ("FF 10", "ff10"),
-            ("010,020", "0a14"),
-            ("0Xbc,010", "bc0a"),
+        for (text, expected, other) in [
+            ("239,254", "effe", "feef"),
+            ("FF 0A", "ff0a", "0aff"),
+            ("0xBC,0xAB", "bcab", "abbc"),
+            ("10 20", "0a14", "1020"),
+            ("0x10,0x20", "1020", "0a14"),
+            ("239,0xFE", "effe", "feef"),
+            ("FF 10", "ff10", "ff0a"),
+            ("010,020", "0a14", "0810"),
+            ("0Xbc,010", "bc0a", "bc08"),
         ] {
+            let query = GuidQuery::compile(text).unwrap();
+            assert_eq!(query.digit_count(), 4, "{text}");
             assert_eq!(
-                GuidQuery::compile(text).unwrap().fragment,
-                expected,
+                query.matches(&format!("00000000-0000-0000-0000-00000000{expected}")),
+                Some(MatchQuality::GuidFragment),
+                "{text}"
+            );
+            assert!(
+                query
+                    .matches(&format!("00000000-0000-0000-0000-00000000{other}"))
+                    .is_none(),
                 "{text}"
             );
         }
-        assert_eq!(GuidQuery::compile("239254").unwrap().fragment, "239254");
+        let query = GuidQuery::compile("239254").unwrap();
+        assert_eq!(query.digit_count(), 6);
+        assert!(
+            query
+                .matches("00000000-0000-0000-0000-000000239254")
+                .is_some()
+        );
+        assert!(
+            query
+                .matches("00000000-0000-0000-0000-00000000effe")
+                .is_none()
+        );
         for text in [
             "256,1", "-1,0", "+1,0", "0x+1", "FF 239", "0x100", "1,,2", ",1", "1,", "0x", "１２,1",
             "0xé",

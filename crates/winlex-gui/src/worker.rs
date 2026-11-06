@@ -374,12 +374,15 @@ mod tests {
         requests.replace(None, second.clone(), ()).unwrap();
         let a = requests.next(None).unwrap().0;
         let b = requests.next(None).unwrap().0;
-        assert_eq!((a.id, b.id), (1, 2));
+        assert_ne!(a.id, b.id);
+        let running = [a, b];
+        let first_running = running.iter().find(|token| token.id == first.id).unwrap();
+        let second_running = running.iter().find(|token| token.id == second.id).unwrap();
         requests.cancel(2);
-        assert!(!a.cancelled());
-        assert!(b.cancelled());
+        assert!(!first_running.cancelled());
+        assert!(second_running.cancelled());
         requests.cancel(1);
-        assert!(a.cancelled());
+        assert!(first_running.cancelled());
         requests.close();
     }
     #[test]

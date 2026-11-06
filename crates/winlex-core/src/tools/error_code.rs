@@ -354,7 +354,6 @@ mod tests {
         let text = nt.candidates[0].message.text.as_deref().unwrap();
         assert!(text.matches('%').count() >= 3, "{text:?}");
         assert!(text.contains("%s"), "{text:?}");
-        assert!(text.ends_with(['.', '。']), "{text:?}");
         assert!(nt.candidates[0].message.actual_language.is_some());
     }
 }

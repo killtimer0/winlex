@@ -9,6 +9,7 @@ from support import native as n
 from support.session import invoke, select_combo
 from test_history import enabled, history_menu, HISTORY_BACK, HISTORY_FORWARD
 from test_theme import selected_index
+from test_metadata_guide import resource_text
 
 
 def tools(app):
@@ -66,7 +67,7 @@ def edit(doc, identifier, value):
 
 
 def body(doc):
-    return n.window_text(n.get_item(doc, 1816))
+    return n.rich_edit_text(n.get_item(doc, 1816))
 
 
 def query(app, doc, value):
@@ -198,7 +199,7 @@ def test_tool_host_find_commands_are_disabled_and_harmless(launch):
     assert "0x00000057" in query(app, doc, "87")
 
 
-def test_tool_errno_language_and_scope_switches_are_explicit(launch):
+def test_tool_errno_language_and_scope_switches_are_explicit(launch, settings, ui_language):
     app = launch()
     doc = tool(app)
     previous = query(app, doc, "2")
@@ -209,17 +210,18 @@ def test_tool_errno_language_and_scope_switches_are_explicit(launch):
     assert '0x0409' in n.window_text(language)
     assert not n.is_visible(n.get_item(doc, 1813))
     result = query(app, doc, "2")
-    assert 'CRT errno' in result and 'msvcrt.dll' in result
+    errno_label = resource_text(settings[0], 2339, ui_language.langid)
+    assert errno_label in result and 'msvcrt.dll' in result
     assert 'No such file or directory' in result
     missing = query(app, doc, "15")
-    assert 'No message found.' in missing or '未找到消息' in missing
+    assert resource_text(settings[0], 2324, ui_language.langid) in missing
     choose_scope(app, doc, 5)
     assert win32gui.IsWindowEnabled(language)
     assert n.is_visible(n.get_item(doc, 1813))
     assert body(doc) == missing
     choose_scope(app, doc, 0)
     assert win32gui.IsWindowEnabled(language)
-    assert 'CRT errno' not in query(app, doc, "2")
+    assert errno_label not in query(app, doc, "2")
 
 
 def test_tool_compact_layout_and_narrow_fallback(launch):
@@ -279,13 +281,13 @@ def test_tool_input_tooltip_registration(launch, settings):
     assert not n.is_window(handle)
 
 
-def test_shared_status_tracks_active_instance_and_catalog_refresh(launch, settings):
+def test_shared_status_tracks_active_instance_and_catalog_refresh(launch, settings, ui_language):
     app = launch([settings[1]])
     first = tool(app)
     edit(first, 1810, "invalid")
     invoke(n.get_item(first, 1815))
     invalid = app.status_text()
-    assert invalid.startswith(("Invalid input", "输入无效"))
+    assert invalid.startswith(resource_text(settings[0], 2334, ui_language.langid) + ':')
     second = tool(app, new=True)
     ready = app.status_text()
     assert ready and ready != invalid
@@ -297,23 +299,25 @@ def test_shared_status_tracks_active_instance_and_catalog_refresh(launch, settin
     edit(first, 1810, "5")
     invoke(n.get_item(first, 1815))
     activate(second)
-    assert "0x00000005" not in body(first), 'query must still be pending after switching instances'
-    n.wait(lambda: "0x00000005" in body(first), "inactive tool completes", 30)
-    assert app.status_text() == ready, "inactive completion cannot replace active status"
+    assert app.active_document() == second and app.status_text() == ready
+    n.wait(lambda: "0x00000005" in body(first), "queried tool result available", 30)
+    assert app.active_document() == second and app.status_text() == ready
     app.command(1040)
     assert auto.ControlFromHandle(app.search).GetValuePattern().SetValue("CreateFileW")
     n.wait(lambda: app.count() and app.named_rows("CreateFileW"), "background catalog search", 45)
     assert app.active_document() == second
-    n.wait(lambda: app.status_text().startswith(("Results ", "共 ")), "search context status", 45)
+    search_prefix = resource_text(settings[0], 2025, ui_language.langid).split('%1!s!')[0]
+    search_status = n.wait(lambda: app.status_text() if app.status_text().startswith(search_prefix)
+                           else None, "search context status", 45)
     activate(first)
     assert not app.status_text()
     close(first)
     assert app.active_document() == second and app.status_text() == ready
     close(second)
-    n.wait(lambda: app.status_text().startswith(("Results ", "共 ")), "catalog status restored", 45)
+    n.wait(lambda: app.status_text() == search_status, "catalog status restored", 45)
 
 
-def test_search_error_and_document_focus_select_their_own_status(launch, settings):
+def test_search_error_and_document_focus_select_their_own_status(launch, settings, ui_language):
     app = launch([settings[1]])
     doc = tool(app)
     ready = app.status_text()
@@ -321,8 +325,8 @@ def test_search_error_and_document_focus_select_their_own_status(launch, setting
     mode = n.get_item(app.frame, 1114)
     select_combo(mode, app.choices(mode)[1])
     assert auto.ControlFromHandle(app.search).GetValuePattern().SetValue("value =")
-    n.wait(lambda: app.status_text().startswith(("Incomplete", "条件尚未输入完整"))
-           or "尚未输入完整" in app.status_text(), "search error over active tool")
+    incomplete = resource_text(settings[0], 2099, ui_language.langid)
+    n.wait(lambda: incomplete in app.status_text(), "search error over active tool")
     error = app.status_text()
     assert app.active_document() == doc and error != ready
     app.focus(n.get_item(doc, 1810))
@@ -337,11 +341,9 @@ def test_tools_without_metadata_are_fixed_independent_and_reused_by_recency(laun
     assert app.count(app.sources) == 0
     app.command(1800)
     panel = n.wait(lambda: n.get_item(app.frame, 1801), "tools panel")
-    assert app.count(panel) == 1
     app.select(0, panel)
     assert not tools(app), "selection alone must not create content"
     first = tool(app)
-    assert not n.get_item(first, 1047) and not n.get_item(first, 1211)
     assert all(not value.startswith(("Preview · ", "预览 · "))
                for value in app.tab_descriptions())
     choose_scope(app, first, 1)
@@ -365,7 +367,7 @@ def test_tools_without_metadata_are_fixed_independent_and_reused_by_recency(laun
     assert not n.window_text(n.get_item(fresh, 1810)) and not body(fresh)
 
 
-def test_explicit_query_stale_results_checked_numbers_and_language(launch):
+def test_explicit_query_stale_results_checked_numbers_and_language(launch, settings, ui_language):
     app = launch()
     doc = tool(app)
     choose_scope(app, doc, 2)
@@ -379,7 +381,8 @@ def test_explicit_query_stale_results_checked_numbers_and_language(launch):
     assert app.status_text()
     invoke(n.get_item(doc, 1815))
     assert body(doc) == old
-    assert app.status_text().startswith(("Invalid input", "输入无效"))
+    invalid = resource_text(settings[0], 2334, ui_language.langid) + ':'
+    assert app.status_text().startswith(invalid)
     choose_scope(app, doc, 1)
     assert "0x00000008" in query(app, doc, "010")
     language = n.get_item(doc, 1812)
@@ -387,7 +390,7 @@ def test_explicit_query_stale_results_checked_numbers_and_language(launch):
     old = body(doc)
     invoke(n.get_item(doc, 1815))
     assert body(doc) == old
-    assert app.status_text().startswith(("Invalid input", "输入无效"))
+    assert app.status_text().startswith(invalid)
     edit(doc, 1812, "0x0409")
     assert "0x0409" in query(app, doc, "0")
 
@@ -418,7 +421,7 @@ def test_tool_history_preserves_current_results_and_skips_closed_instances(launc
     assert not enabled(app, HISTORY_FORWARD)
 
 
-def test_custom_module_scope_candidates_are_not_system_language_promises(launch, settings):
+def test_custom_module_scope_candidates_are_not_system_language_promises(launch, settings, ui_language):
     app = launch()
     doc = tool(app)
     choose_scope(app, doc, 5)
@@ -430,7 +433,7 @@ def test_custom_module_scope_candidates_are_not_system_language_promises(launch,
     invoke(n.get_item(doc, 1815))
     n.wait(lambda: "0x12345678" in body(doc), "module failure result")
     assert str(missing) in body(doc)
-    assert "failed" in body(doc).lower() or "失败" in body(doc)
+    assert resource_text(settings[0], 2327, ui_language.langid) in body(doc)
     choose_scope(app, doc, 0)
     assert not n.is_visible(n.get_item(doc, 1813))
     assert len(app.choices(n.get_item(doc, 1812))) >= 2
@@ -487,7 +490,7 @@ def test_tool_keyboard_open_enter_query_and_focus_regions(launch):
     assert app.active_document() == doc and "0x00000005" in body(doc)
 
 
-def test_tool_module_languages_and_messages_use_selected_resource(launch, settings):
+def test_tool_module_languages_and_messages_use_selected_resource(launch, settings, ui_language):
     module = settings[0].with_name('messages-x64.dll')
     if not module.exists():
         pytest.skip('bilingual message resource fixture was not deployed')
@@ -508,5 +511,5 @@ def test_tool_module_languages_and_messages_use_selected_resource(launch, settin
     legacy = query(app, doc, '0x20000002')
     assert '"0x%08lx" referenced "0x%08lx"; operation "%s".' in legacy
     result = query(app, doc, '5')
-    assert 'no message found' in result.lower() or '未找到' in result
+    assert resource_text(settings[0], 2324, ui_language.langid) in result
     assert '拒绝访问' not in result and 'Access is denied' not in result

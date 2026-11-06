@@ -9,7 +9,7 @@
 - **比较布局**：按 x86、x64、ARM64 ABI 查看字段偏移、结构大小、位域与 COM vtable 槽位。
 - **查询错误码**：独立查询 Win32、HRESULT、NTSTATUS 和自定义模块消息，无需加载 WinMD。
 
-支持 Windows x86/x64，最低系统版本见[构建与验证](docs/build.md)。
+提供 Windows x86、x64 和 ARM64 构建，各架构的系统基线见[构建与验证](docs/build.md)。
 
 ## 开始使用
 

@@ -42,7 +42,7 @@ class PrepareInputsContracts(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "SHA256 mismatch"):
                 prepare.install(path, b"corrupt", sha(b"expected"))
             self.assertEqual(path.read_bytes(), b"existing")
-            self.assertFalse(path.with_suffix(".obj.partial").exists())
+            self.assertEqual(set(path.parent.iterdir()), {path})
             prepare.install(path, b"expected", sha(b"expected"))
             self.assertEqual(path.read_bytes(), b"expected")
 

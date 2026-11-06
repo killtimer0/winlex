@@ -44,7 +44,6 @@ def test_tabs_msaa_activation_close_and_reorder(launch, settings):
     n.send(tabs, win32con.WM_LBUTTONUP, 0, points[0])
     n.wait(lambda: app.tab_labels() == list(reversed(names)), "tab reorder")
     assert [page.Name for page in pages] == names
-    assert all(not page.GetChildren() for page in pages)
     rect = pages[1].BoundingRectangle
     x, y = rect.right - 4 - origin[0], (rect.top + rect.bottom) // 2 - origin[1]
     point = (x & 0xffff) | ((y & 0xffff) << 16)

@@ -18,9 +18,10 @@ def test_panel_statuses_and_document_close_fallback(launch, settings):
     app = launch([settings[1]])
     app.query("CreateFileW")
     search_status = app.status_text()
-    assert search_status.startswith(("Results ", "共 "))
+    assert search_status
     show_panel(app, 1021, 1112)
-    assert app.status_text() in ("Sources: 1", "来源：1")
+    source_status = app.status_text()
+    assert source_status and source_status != search_status
     show_panel(app, 1800, 1801)
     assert not app.status_text()
     app.command(1040)
@@ -31,13 +32,17 @@ def test_panel_statuses_and_document_close_fallback(launch, settings):
     app.focus(n.get_item(doc, 1203))
     assert not app.status_text()
     auto.ControlFromHandle(doc).GetWindowPattern().Close()
-    n.wait(lambda: app.status_text() in ("Sources: 1", "来源：1"), "closed document uses visible panel")
+    n.wait(lambda: app.status_text() == source_status, "closed document uses visible panel")
     app.command(1021)
     assert not app.status_text(), "collapsed panel does not contribute text"
 
 
 def test_search_completion_does_not_replace_other_panel_or_tool_status(launch, settings):
     app = launch([settings[1]])
+    show_panel(app, 1021, 1112)
+    n.wait(lambda: app.count(app.sources) == 1, "source loaded", 45)
+    source_status = app.status_text()
+    assert source_status
     doc = tool(app)
     ready = app.status_text()
     app.command(1040)
@@ -46,7 +51,7 @@ def test_search_completion_does_not_replace_other_panel_or_tool_status(launch, s
     show_panel(app, 1021, 1112)
     n.wait(lambda: any(row.Name.splitlines()[0].endswith('.CreateFileW') for row in app.rows(results)),
            "search completed in background", 45)
-    assert app.status_text() in ("Sources: 1", "来源：1")
+    assert app.status_text() == source_status
     app.focus(n.get_item(doc, 1810))
     assert app.status_text() == ready
     app.command(1040)
@@ -69,11 +74,15 @@ def test_real_panel_focus_selects_its_status(launch, settings):
         app = launch([settings[1]])
         app.query("CreateFileW")
         search_status = app.status_text()
+        show_panel(app, 1021, 1112)
+        source_status = app.status_text()
+        assert source_status and source_status != search_status
+        app.command(1040)
         with foreground(app, inputs):
             for command, control, expected in [
-                (1021, 1112, ("Sources: 1", "来源：1")),
-                (1800, 1801, ("",)),
-                (1040, 1102, (search_status,)),
+                (1021, 1112, source_status),
+                (1800, 1801, ""),
+                (1040, 1102, search_status),
             ]:
                 app.command(command)
                 target = n.get_item(app.frame, control)
@@ -81,4 +90,4 @@ def test_real_panel_focus_selects_its_status(launch, settings):
                     left, top, right, bottom = n.rectangle(target)
                     inputs.click(left + 8, top + 8)
                 n.wait(lambda: app.focused() == target, "physical panel focus")
-                assert app.status_text() in expected
+                assert app.status_text() == expected

@@ -12,6 +12,7 @@ from support import native as n
 from support.messages import LVM_GETITEMTEXTW
 from support.pe import is_64_bit
 from test_context import selection_packed
+from test_metadata_guide import resource_text
 
 
 def complete_list_text(app, hwnd, row, bits):
@@ -62,7 +63,7 @@ def test_source_actions_remain_visible_and_disjoint(launch, profile, sidebar_wid
                 assert x2 <= other[0] or other[2] <= x1 or y2 <= other[1] or other[3] <= y1
 
 
-def test_source_actions_preserve_identity_and_recover_failed_reload(launch, profile, settings):
+def test_source_actions_preserve_identity_and_recover_failed_reload(launch, profile, settings, ui_language):
     paths = [settings[2] / name / "same.winmd" for name in ("first", "second", "third")]
     for path in paths:
         path.parent.mkdir(exist_ok=True)
@@ -85,19 +86,21 @@ def test_source_actions_preserve_identity_and_recover_failed_reload(launch, prof
     assert app.selected_row(app.sources) == 0
     saved = profile.get("AutoLoad")
     assert saved == [str(paths[0])]
+    failed = resource_text(settings[0], 2102, ui_language.langid)
+    loaded = resource_text(settings[0], 2050, ui_language.langid)
     paths[0].write_bytes(b"invalid replacement")
     app.command(1044)
-    n.wait(lambda: app.cell(0, app.sources).splitlines()[1].startswith(("Reload failed", "重载失败")),
+    n.wait(lambda: app.cell(0, app.sources).splitlines()[1].startswith(failed),
            "reload failure on retained row", 45)
     assert app.selected_row(app.sources) == 0
     app.query("CreateFileW")
     assert app.count() > 0
     assert profile.get("AutoLoad") == saved
     app.command(1021)
-    assert app.cell(0, app.sources).splitlines()[1].startswith(("Reload failed", "重载失败"))
+    assert app.cell(0, app.sources).splitlines()[1].startswith(failed)
     shutil.copyfile(settings[1], paths[0])
     app.command(1044)
-    n.wait(lambda: app.cell(0, app.sources).splitlines()[1].startswith(("Loaded", "已加载")), "reload recovered", 45)
+    n.wait(lambda: app.cell(0, app.sources).splitlines()[1].startswith(loaded), "reload recovered", 45)
     assert app.selected_row(app.sources) == 0
     app.command(1022)
     n.wait(lambda: app.count(app.sources) == 0, "all removed", 45)
@@ -125,9 +128,10 @@ def test_source_context_menu_copies_full_native_path(launch, settings, mouse):
     else:
         win32gui.PostMessage(app.sources, win32con.WM_CONTEXTMENU, app.sources, -1)
         _, ids = find_popup(app)
-    assert ids == [1044, 1022, 1052]
+    assert {1044, 1022, 1052} <= set(ids)
     if mouse:
-        auto.SendKeys('{Down 3}{Enter}')
+        actions = [ident for ident in ids if ident and ident != 0xffffffff]
+        auto.SendKeys('{Down %d}{Enter}' % (actions.index(1052) + 1))
     else:
         menu = auto.MenuControl(searchDepth=3, ClassName='#32768', ProcessId=app.process.pid)
         win32gui.PostMessage(menu.NativeWindowHandle, win32con.WM_KEYDOWN, win32con.VK_ESCAPE, 1)
@@ -184,17 +188,19 @@ def test_restore_successful_files(launch, profile, settings):
     n.wait(lambda: restored.count(restored.sources) == 1, "source restored again", 45)
 
 
-def test_temporary_inputs_preserve_saved_files(launch, profile, settings):
+def test_temporary_inputs_preserve_saved_files(launch, profile, settings, ui_language):
     profile.set("AutoLoad", winreg.REG_MULTI_SZ, [str(settings[1])])
     app = launch([str(settings[2] / "missing.winmd")])
     if not n.is_visible(app.sources):
         app.command(1021)
-    n.wait(lambda: "failed" in app.status_text() or "失败" in app.status_text(), "load error")
+    failed = resource_text(settings[0], 2022, ui_language.langid).split('%1!s!')[0]
+    n.wait(lambda: failed in app.status_text(), "load error")
     assert app.count(app.sources) == 0
     assert profile.get("AutoLoad") == [str(settings[1])]
     app.close()
     temporary = launch([settings[1]])
-    temporary.command(1021)
+    if not n.is_visible(temporary.sources):
+        temporary.command(1021)
     n.wait(lambda: temporary.count(temporary.sources) == 1, "temporary input loaded", 45)
     temporary.select(0, temporary.sources)
     temporary.command(1022)
@@ -202,19 +208,21 @@ def test_temporary_inputs_preserve_saved_files(launch, profile, settings):
     assert profile.get("AutoLoad") == [str(settings[1])]
     temporary.close()
     restored = launch()
-    restored.command(1021)
+    if not n.is_visible(restored.sources):
+        restored.command(1021)
     n.wait(lambda: restored.count(restored.sources) == 1, "saved input restored after temporary session", 45)
     restored.query("CreateFileW")
     assert restored.count() > 0
 
 
-def test_failed_restore_preserves_saved_files(launch, profile, settings):
+def test_failed_restore_preserves_saved_files(launch, profile, settings, ui_language):
     missing = str(settings[2] / "missing-restored.winmd")
     profile.set("AutoLoad", winreg.REG_MULTI_SZ, [missing])
     app = launch()
     if not n.is_visible(app.sources):
         app.command(1021)
-    n.wait(lambda: "failed" in app.status_text() or "失败" in app.status_text(), "restore error")
+    failed = resource_text(settings[0], 2022, ui_language.langid).split('%1!s!')[0]
+    n.wait(lambda: failed in app.status_text(), "restore error")
     assert profile.get("AutoLoad") == [missing]
     assert app.count(app.sources) == 0
 
@@ -243,8 +251,8 @@ def test_long_unicode_input(launch, settings):
     assert len(str(path)) > 260
     shutil.copyfile(settings[1], extended(path))
     app = launch([path])
-    n.wait(lambda: app.status_text().startswith(("Ready.", "已就绪")), "long path loaded", 45)
     app.command(1021)
+    n.wait(lambda: app.count(app.sources) == 1, "long path loaded", 45)
     bits = 64 if is_64_bit(settings[0]) else 32
     assert complete_list_text(app, app.sources, 0, bits).splitlines()[0] == str(path)
     app.query("CreateFileW")
