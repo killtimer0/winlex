@@ -155,6 +155,7 @@ python tests/gui/resources.py --exe "$guiExe"
 ```
 
 `$guiExe` 为构建显示的 GUI 完整路径。`--dpi` 可改为 `pmv1`、`system`、`unaware` 或 `auto`。默认使用 `--desktop isolated`；也可使用 `--desktop current` 在当前桌面运行契约测试。
+已知限制：UIA 自动聚焦在非活动桌面上可能每次等待约 2 秒；可通过 `IUIAutomation2::AutoSetFocus = false` 关闭，测试客户端尚未接入。
 结果写入 `tmp/gui-tests/<run-id>/`，包括 JUnit、无损 PNG 失败截图和 `run.json`；`progress.jsonl` 即时记录当前用例及阶段，`timings.jsonl` 记录 setup、call、teardown 耗时，整批中断后仍可查看已完成阶段。
 测试结束时将生成的 WinMD 路径与 SHA256 写入 `fixture-hashes.json`，再移除与标准输入内容完全相同的副本；变异或损坏的 fixture 保留。标准输入路径与哈希记录在 `environment.json` 中。强制中断导致未执行 fixture 收尾时，输入副本也会保留。
 交互与屏幕呈现测试使用 `--desktop current --real-input` 选择；不指定 `--real-input` 时运行其余用例。交互测试需要已解锁的独占活动桌面，运行期间不要操作键鼠。
