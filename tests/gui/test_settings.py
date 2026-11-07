@@ -27,6 +27,46 @@ def checked(app, sheet):
                for index in range(7))
 
 
+def test_settings_apply_tracks_saved_values(launch, profile, ui_language):
+    app = launch()
+    original = profile.preferences()
+    sheet = app.settings()
+    apply = auto.ControlFromHandle(n.get_item(sheet, 0x3021))
+    assert not apply.IsEnabled
+    mask(app, sheet, 0)
+    n.wait(lambda: apply.IsEnabled, "Apply enabled after edit")
+    mask(app, sheet, original[1])
+    n.wait(lambda: not apply.IsEnabled, "Apply disabled after reverting edit")
+    general = app.settings_page(sheet, 0)
+    alternative = next(option for option in LANGUAGES if option != ui_language)
+    select_combo(n.get_item(general, 1300), alternative.label)
+    n.wait(lambda: apply.IsEnabled, "Apply enabled after language edit")
+    select_combo(n.get_item(general, 1300), ui_language.label)
+    n.wait(lambda: not apply.IsEnabled, "Apply disabled after reverting language")
+    select_combo(n.get_item(general, 1300), alternative.label)
+    mask(app, sheet, 1)
+    invoke(apply)
+    n.wait(lambda: profile.preferences() == (alternative.name, 1, original[2]) and not apply.IsEnabled,
+           "Apply saves without closing")
+    assert n.is_window(sheet)
+    mask(app, sheet, 0)
+    invoke(apply)
+    n.wait(lambda: profile.get("SearchCategories") == 0 and not apply.IsEnabled,
+           "second Apply updates saved baseline")
+    mask(app, sheet, 7)
+    n.wait(lambda: apply.IsEnabled, "new edit after Apply")
+    mask(app, sheet, 0)
+    n.wait(lambda: not apply.IsEnabled, "revert to most recently applied value")
+    mask(app, sheet, 127)
+    app.close_settings(sheet, accept=False)
+    assert profile.preferences() == (alternative.name, 0, original[2])
+    sheet = app.settings()
+    general = app.settings_page(sheet, 0)
+    assert auto.ControlFromHandle(n.get_item(general, 1300)).GetValuePattern().Value == alternative.label
+    assert checked(app, sheet) == 0
+    app.close_settings(sheet, accept=False)
+
+
 def test_settings_cancel_and_page_state(launch, profile, ui_language):
     original = profile.preferences()
     app = launch()
@@ -97,7 +137,8 @@ def test_settings_keyboard_and_close(launch, profile, action):
     assert profile.preferences() == ((original[0], 0, original[2]) if action == "enter" else original)
 
 
-def test_settings_refresh_preserves_document(launch, profile, settings):
+@pytest.mark.parametrize("action", ["ok", "apply"])
+def test_settings_refresh_preserves_document(launch, profile, settings, action):
     app = launch([settings[1]])
     app.query("CreateFileW")
     doc = app.open_row()
@@ -106,8 +147,11 @@ def test_settings_refresh_preserves_document(launch, profile, settings):
     auto.ControlFromHandle(app.search).GetValuePattern().SetValue('file')
     sheet = app.settings()
     mask(app, sheet, 1)
-    app.close_settings(sheet)
-    app.focus(app.search)
+    if action == "apply":
+        invoke(n.get_item(sheet, 0x3021))
+    else:
+        app.close_settings(sheet)
+        app.focus(app.search)
     n.wait(lambda: app.status_text().startswith(("Results ", "共 ")), "refiltered search", 45)
     assert app.count() > 0
     assert all(row.Name.splitlines()[1].split(" · ")[0] in
@@ -117,6 +161,9 @@ def test_settings_refresh_preserves_document(launch, profile, settings):
     assert app.content(doc) == body
     assert profile.get("SearchCategories") == 1
     assert profile.get("AutoLoad") is None
+    if action == "apply":
+        assert n.is_window(sheet)
+        app.close_settings(sheet, accept=False)
 
 
 @pytest.mark.parametrize("value", [0, 1, 2, 4, 8, 16, 32, 64, 127])
@@ -155,13 +202,14 @@ def test_search_category_visibility(launch, profile, settings, value):
         restored.close_settings(sheet, accept=False)
 
 
-def test_settings_save_failure_preserves_state(launch, profile):
+@pytest.mark.parametrize("button", [1, 0x3021], ids=["ok", "apply"])
+def test_settings_save_failure_preserves_state(launch, profile, button):
     original = profile.preferences()
     profile.set("Version", winreg.REG_DWORD, 99)
     app = launch()
     sheet = app.settings()
     mask(app, sheet, 0)
-    invoke(n.get_item(sheet, 1))
+    invoke(n.get_item(sheet, button))
     error_control = auto.WindowControl(searchDepth=3, ClassName='#32770',
                                        Compare=lambda control, depth: control.ProcessId == app.process.pid
                                        and control.NativeWindowHandle != sheet)
@@ -171,6 +219,8 @@ def test_settings_save_failure_preserves_state(launch, profile):
     n.wait(lambda: not n.is_window(error), "save error dismissed")
     assert n.is_window(sheet)
     assert profile.get("Version") == 99 and profile.preferences() == original
+    assert checked(app, sheet) == 0
+    assert auto.ControlFromHandle(n.get_item(sheet, 0x3021)).IsEnabled
     app.close_settings(sheet, accept=False)
     sheet = app.settings()
     assert checked(app, sheet) == 7

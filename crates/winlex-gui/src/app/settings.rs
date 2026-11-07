@@ -174,8 +174,17 @@ pub(super) fn set_preferred_architecture(
         settings.set_preferred_architecture(config, architecture)
     })
 }
-pub(super) fn set_preferences(ctx: &Context, preferences: Preferences) -> anyhow::Result<()> {
-    ctx.with_settings_and_config(|settings, config| settings.set_preferences(config, preferences))
+pub(super) fn apply_preferences(ctx: &Context, preferences: Preferences) -> anyhow::Result<()> {
+    let previous = self::preferences(ctx);
+    ctx.with_settings_and_config(|settings, config| settings.set_preferences(config, preferences))?;
+    if previous.theme != preferences.theme {
+        crate::theme::set_mode(preferences.theme as u32);
+        send(ctx.frame(), WM_THEMECHANGED, 0, 0);
+    }
+    if previous.categories != preferences.categories {
+        catalog::search(ctx);
+    }
+    Ok(())
 }
 pub(super) fn restore_window(ctx: &Context, hwnd: HWND) {
     let value = ctx.dpi().window(hwnd);

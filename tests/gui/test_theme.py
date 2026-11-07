@@ -46,6 +46,29 @@ def dark_background(hwnd):
         return max(pixels[offset:offset + 3]) < 128
 
 
+@modern_theme
+def test_settings_apply_theme_without_closing(launch, profile):
+    profile.set('Theme', winreg.REG_SZ, 'light')
+    app = launch()
+    sheet = app.settings()
+    page = app.settings_page(sheet, 0)
+    apply = auto.ControlFromHandle(n.get_item(sheet, 0x3021))
+    light = n.send(app.results, 0x1000)  # LVM_GETBKCOLOR
+    for index, theme in ((2, 'dark'), (1, 'light'), (2, 'dark')):
+        select_theme(page, index)
+        n.wait(lambda: apply.IsEnabled, 'Apply enabled after theme edit')
+        invoke(apply)
+        n.wait(lambda: profile.get('Theme') == theme and not apply.IsEnabled,
+               'theme applied without closing')
+        assert n.is_window(sheet)
+        background = n.send(app.results, 0x1000)
+        assert (background == light) == (theme == 'light')
+    select_theme(page, 1)
+    app.close_settings(sheet, accept=False)
+    assert profile.get('Theme') == 'dark'
+    assert n.send(app.results, 0x1000) != light
+
+
 @pytest.mark.parametrize('language,dpi', [
     ('en-US', 'pmv2'), ('en-US', 'pmv1'),
     ('zh-CN', 'system'), ('zh-CN', 'unaware'),
