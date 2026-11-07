@@ -31,14 +31,20 @@ fn backend(version: WindowsVersion) -> Backend {
 }
 
 #[derive(Clone, Copy)]
-enum Message {
+enum Icon {
     Error,
-    Confirm,
+    Information,
+}
+
+#[derive(Clone, Copy)]
+enum Buttons {
+    Ok,
+    YesNo,
 }
 
 /// Show an error with a native OK button; Escape and the close button are allowed.
 pub fn error(owner: HWND, title: &str, text: &str) -> anyhow::Result<()> {
-    error_result(show(owner, title, text, Message::Error)?)
+    error_result(show(owner, title, text, Icon::Error, Buttons::Ok)?)
 }
 
 fn error_result(button: i32) -> anyhow::Result<()> {
@@ -51,7 +57,7 @@ fn error_result(button: i32) -> anyhow::Result<()> {
 
 /// Ask a Yes/No question, defaulting to Yes without allowing cancellation.
 pub fn confirm(owner: HWND, title: &str, text: &str) -> anyhow::Result<bool> {
-    confirmation_result(show(owner, title, text, Message::Confirm)?)
+    confirmation_result(show(owner, title, text, Icon::Information, Buttons::YesNo)?)
 }
 
 fn confirmation_result(button: i32) -> anyhow::Result<bool> {
@@ -62,14 +68,17 @@ fn confirmation_result(button: i32) -> anyhow::Result<bool> {
     }
 }
 
-fn show(owner: HWND, title: &str, text: &str, message: Message) -> anyhow::Result<i32> {
+fn show(owner: HWND, title: &str, text: &str, icon: Icon, buttons: Buttons) -> anyhow::Result<i32> {
     let title = wide(title);
     let text = wide(text);
     match backend(WindowsVersion::query()?) {
         Backend::MessageBox => {
-            let flags = match message {
-                Message::Error => MB_OK | MB_ICONERROR,
-                Message::Confirm => MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON1,
+            let flags = match icon {
+                Icon::Error => MB_ICONERROR,
+                Icon::Information => MB_ICONINFORMATION,
+            } | match buttons {
+                Buttons::Ok => MB_OK,
+                Buttons::YesNo => MB_YESNO | MB_DEFBUTTON1,
             };
             let button = unsafe { MessageBoxW(owner, text.as_ptr(), title.as_ptr(), flags) };
             if button == 0 {
@@ -78,7 +87,7 @@ fn show(owner: HWND, title: &str, text: &str, message: Message) -> anyhow::Resul
             Ok(button)
         }
         Backend::TaskDialog => {
-            let config = task_config(owner, &title, &text, message)?;
+            let config = task_config(owner, &title, &text, icon, buttons);
             run_task_dialog(&config)
         }
     }
@@ -88,8 +97,9 @@ fn task_config(
     owner: HWND,
     title: &[u16],
     text: &[u16],
-    message: Message,
-) -> anyhow::Result<TASKDIALOGCONFIG> {
+    icon: Icon,
+    buttons: Buttons,
+) -> TASKDIALOGCONFIG {
     let mut config = TASKDIALOGCONFIG {
         cbSize: std::mem::size_of::<TASKDIALOGCONFIG>() as u32,
         hwndParent: owner,
@@ -100,27 +110,22 @@ fn task_config(
         ..unsafe { std::mem::zeroed() }
     };
     // Keep the caller's DPI awareness and the common control's native layout.
-    match message {
-        Message::Error => {
+    config.Anonymous1.pszMainIcon = match icon {
+        Icon::Error => TD_ERROR_ICON,
+        Icon::Information => TD_INFORMATION_ICON,
+    };
+    match buttons {
+        Buttons::Ok => {
             config.dwFlags |= TDF_ALLOW_DIALOG_CANCELLATION;
             config.dwCommonButtons = TDCBF_OK_BUTTON;
             config.nDefaultButton = IDOK;
-            config.Anonymous1.pszMainIcon = TD_ERROR_ICON;
         }
-        Message::Confirm => {
-            // Task dialogs have no stock question icon. Use the shared system
-            // question icon, not an application-owned icon or localized label.
-            let icon = unsafe { LoadIconW(ptr::null_mut(), IDI_QUESTION) };
-            if icon.is_null() {
-                return Err(crate::native::error("Load question icon"));
-            }
-            config.dwFlags |= TDF_USE_HICON_MAIN;
+        Buttons::YesNo => {
             config.dwCommonButtons = TDCBF_YES_BUTTON | TDCBF_NO_BUTTON;
             config.nDefaultButton = IDYES;
-            config.Anonymous1.hMainIcon = icon;
         }
     }
-    Ok(config)
+    config
 }
 
 unsafe extern "system" fn task_callback(
@@ -241,8 +246,14 @@ mod tests {
     fn native_buttons_preserve_default_and_cancellation_contracts() {
         let title = wide("title");
         let text = wide("text");
-        let error = task_config(ptr::null_mut(), &title, &text, Message::Error).unwrap();
-        let confirm = task_config(ptr::null_mut(), &title, &text, Message::Confirm).unwrap();
+        let error = task_config(ptr::null_mut(), &title, &text, Icon::Error, Buttons::Ok);
+        let confirm = task_config(
+            ptr::null_mut(),
+            &title,
+            &text,
+            Icon::Information,
+            Buttons::YesNo,
+        );
         // TASKDIALOGCONFIG is packed: copy fields instead of borrowing them.
         let buttons = error.dwCommonButtons;
         let default = error.nDefaultButton;
@@ -254,6 +265,11 @@ mod tests {
         assert_eq!(buttons, TDCBF_YES_BUTTON | TDCBF_NO_BUTTON);
         assert_eq!(default, IDYES);
         assert_eq!(confirm.dwFlags & TDF_ALLOW_DIALOG_CANCELLATION, 0);
+        assert_eq!(confirm.dwFlags & TDF_USE_HICON_MAIN, 0);
+        assert_eq!(
+            unsafe { confirm.Anonymous1.pszMainIcon },
+            TD_INFORMATION_ICON
+        );
     }
 
     // Unit-test executables do not embed the application's v6 manifest.
@@ -363,22 +379,22 @@ mod tests {
         let _activation = Activation::new();
         let title = wide("Winlex message test");
         let text = wide("Native dialog result");
-        for (mode, message, button) in [
-            (1, Message::Confirm, IDYES),
-            (1, Message::Confirm, IDNO),
-            (1, Message::Error, IDOK),
-            (1, Message::Error, IDCANCEL),
-            (2, Message::Confirm, IDYES),
-            (2, Message::Confirm, IDNO),
-            (2, Message::Error, IDOK),
-            (2, Message::Error, IDCANCEL),
+        for (mode, icon, buttons, button) in [
+            (1, Icon::Information, Buttons::YesNo, IDYES),
+            (1, Icon::Information, Buttons::YesNo, IDNO),
+            (1, Icon::Error, Buttons::Ok, IDOK),
+            (1, Icon::Error, Buttons::Ok, IDCANCEL),
+            (2, Icon::Information, Buttons::YesNo, IDYES),
+            (2, Icon::Information, Buttons::YesNo, IDNO),
+            (2, Icon::Error, Buttons::Ok, IDOK),
+            (2, Icon::Error, Buttons::Ok, IDCANCEL),
         ] {
             crate::theme::set_mode(mode);
             let mut selection = Selection {
                 button,
                 constructed: false,
             };
-            let mut config = task_config(ptr::null_mut(), &title, &text, message).unwrap();
+            let mut config = task_config(ptr::null_mut(), &title, &text, icon, buttons);
             config.pfCallback = Some(select);
             config.dwFlags |= TDF_CALLBACK_TIMER;
             config.lpCallbackData = &mut selection as *mut Selection as isize;
