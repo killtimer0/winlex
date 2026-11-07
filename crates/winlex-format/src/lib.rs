@@ -350,39 +350,51 @@ pub fn describe(c: &Catalog, id: EntityId, arch: Option<Architecture>) -> Result
     })
 }
 pub fn layout(l: &winlex_core::Layout) -> Json {
-    fn offsets(fields: &[winlex_core::FieldLayout], values: &mut Json) {
-        for (f, v) in fields.iter().zip(values.as_array_mut().unwrap()) {
-            for (b, value) in f
-                .bitfields
-                .iter()
-                .zip(v["bitfields"].as_array_mut().unwrap())
-            {
-                value["offset_bits"] = json!(f.offset_bits + b.relative_offset_bits);
-            }
-            if !f.fields.is_empty() {
-                offsets(&f.fields, &mut v["fields"]);
-            }
+    fn field(f: &winlex_core::FieldLayout) -> Json {
+        let mut result = json!({
+            "id": f.id,
+            "name": f.name,
+            "offset_bits": f.offset_bits,
+            "size_bits": f.size_bits,
+            "bitfields": f.bitfields.iter().map(|b| json!({
+                "name": b.name,
+                "relative_offset_bits": b.relative_offset_bits,
+                "width_bits": b.width_bits,
+                "offset_bits": f.offset_bits + b.relative_offset_bits,
+            })).collect::<Vec<_>>(),
+        });
+        if !f.fields.is_empty() {
+            result["fields"] = f.fields.iter().map(field).collect();
         }
+        result
     }
-    let mut result = json!(l);
-    offsets(&l.fields, &mut result["fields"]);
-    result["backend"] = json!("repc 0.1.1");
-    result["scope"] = json!("sequential and all-zero explicit overlays");
-    result
+    json!({
+        "id": l.id,
+        "name": l.name,
+        "architecture": l.architecture,
+        "size_bits": l.size_bits,
+        "alignment_bits": l.alignment_bits,
+        "fields": l.fields.iter().map(field).collect::<Vec<_>>(),
+        "dependencies_loaded": l.dependencies_loaded,
+        "backend": "repc 0.1.1",
+        "scope": "sequential and all-zero explicit overlays",
+    })
 }
 pub fn vtable(v: &winlex_core::Vtable) -> Json {
-    let mut result = json!(v);
-    result.as_object_mut().unwrap().remove("windows_runtime");
-    for (index, (s, value)) in v
-        .slots
-        .iter()
-        .zip(result["slots"].as_array_mut().unwrap())
-        .enumerate()
-    {
-        value["index"] = json!(index);
-        value["byte_offset"] = json!(index * v.architecture.pointer_bytes());
-        value["implicit"] = json!(s.id.is_none());
-    }
+    let mut result = json!({
+        "id": v.id,
+        "name": v.name,
+        "architecture": v.architecture,
+        "slots": v.slots.iter().enumerate().map(|(index, s)| json!({
+            "method": s.method,
+            "declaring_type": s.declaring_type,
+            "id": s.id,
+            "declaring_type_id": s.declaring_type_id,
+            "index": index,
+            "byte_offset": index * v.architecture.pointer_bytes(),
+            "implicit": s.id.is_none(),
+        })).collect::<Vec<_>>(),
+    });
     if v.windows_runtime {
         result["abi"] = json!("winrt");
         result["scope"] =
