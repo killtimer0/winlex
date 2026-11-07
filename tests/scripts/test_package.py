@@ -58,16 +58,8 @@ class PackageContracts(unittest.TestCase):
                                  f"{digest}  {archive.name}")
                 with ZipFile(archive) as z:
                     files = {entry.filename for entry in z.infolist() if not entry.is_dir()}
-                    self.assertTrue({"winlex.exe", "winlex-gui.exe", "LICENSE", "THIRD-PARTY-NOTICES.md",
-                                     "SHA256SUMS.txt", "licenses/YY-Thunks-LICENSE",
-                                      "licenses/win32-darkmodelib-MPL-2.0.md",
-                                      "licenses/win32-darkmodelib-UAHMenuBar.md",
-                                      "licenses/win32-darkmode-MIT.md",
-                                      "licenses/VC-LTL-LICENSE", "licenses/VC-LTL-sdk-license.rtf",
-                                     "licenses/VC-LTL-sdk-third-party-notices.rtf",
-                                     "vendor/PATCHES.md", "vendor/windows-metadata/license-mit",
-                                     "vendor/windows-metadata/license-apache-2.0",
-                                     "crates/winlex-gui/res/codicons/LICENSE"} <= files)
+                    self.assertEqual({"winlex.exe", "winlex-gui.exe", "LICENSE", "THIRD-PARTY-NOTICES.md",
+                                      "SHA256SUMS.txt", "LICENSES.txt"}, files)
                     self.assertFalse(any(name.lower().endswith((".winmd", ".build.json")) for name in files))
                     lines = z.read("SHA256SUMS.txt").decode("utf-8").splitlines()
                     manifest = {}
@@ -93,7 +85,22 @@ class PackageContracts(unittest.TestCase):
                 for record, name in zip(records, ("winlex.exe", "winlex-gui.exe")):
                     with ZipFile(archive) as z:
                         self.assertEqual(hashlib.sha256(z.read(name)).hexdigest(),
-                                         json.loads(record.read_text(encoding="utf-8-sig"))["executable_sha256"].lower())
+                                          json.loads(record.read_text(encoding="utf-8-sig"))["executable_sha256"].lower())
+                with ZipFile(out / f"winlex-{arch}-licenses.zip") as z:
+                    self.assertTrue({"LICENSE", "THIRD-PARTY-NOTICES.md", "SHA256SUMS.txt",
+                                     "licenses/YY-Thunks-LICENSE", "licenses/VC-LTL-LICENSE",
+                                     "licenses/win32-darkmodelib-MPL-2.0.md", "vendor/PATCHES.md",
+                                     "licenses/rust/COPYRIGHT-library.html", f"builds/{arch}.json"}
+                                    <= set(z.namelist()))
+                    self.assertTrue(any(name.startswith("licenses/crates/") for name in z.namelist()))
+                    self.assertFalse(any(name.endswith((".exe", ".build.json")) for name in z.namelist()))
+                    for name in z.namelist():
+                        data = z.read(name)
+                        for path in (str(ROOT), os.environ.get("USERPROFILE", "")):
+                            if path:
+                                for spelling in {path, path.replace("\\", "/")}:
+                                    for encoding in ("utf-8", "utf-16le"):
+                                        self.assertNotIn(spelling.lower().encode(encoding), data.lower(), name)
 
     def test_rejects_bad_records_and_existing_outputs(self):
         arch = ARCHITECTURES[0] if os.environ.get("WINLEX_PACKAGE_REQUIRE_ARCH") else "x64"
@@ -114,7 +121,7 @@ class PackageContracts(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn(message, result.stdout + result.stderr)
                 self.assertFalse((out / f"winlex-{arch}.zip").exists())
-        for suffix in (".zip", ".zip.sha256"):
+        for suffix in (".zip", ".zip.sha256", "-licenses.zip"):
             with self.subTest(existing=suffix):
                 out = self.directory / ("existing-" + suffix.replace(".", "-"))
                 out.mkdir()
@@ -172,13 +179,16 @@ class WorkflowContracts(unittest.TestCase):
         return yaml.load((ROOT / ".github/workflows/build.yml").read_text(encoding="utf-8"),
                          Loader=yaml.BaseLoader)
 
-    def test_manual_matrix_and_script_syntax(self):
+    def test_distribution_triggers_and_script_syntax(self):
         workflow = self.workflow()
-        self.assertEqual(set(workflow["on"]), {"workflow_dispatch"})
-        job = next(job for job in workflow["jobs"].values() if "matrix" in job.get("strategy", {}))
-        self.assertEqual(set(job["strategy"]["matrix"]["arch"]), set(TARGETS))
+        self.assertEqual(set(workflow["on"]), {"workflow_dispatch", "push"})
+        self.assertEqual(workflow["on"]["push"], {"tags": ["v*"]})
+        self.assertEqual(workflow["permissions"], {"contents": "read"})
+        release = workflow["jobs"]["release"]
+        self.assertEqual(release["permissions"], {"contents": "write"})
+        self.assertEqual(release["if"], "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')")
         for step in (step for job in workflow["jobs"].values() for step in job["steps"]):
-            if "run" not in step:
+            if "run" not in step or step.get("shell", "pwsh") != "pwsh":
                 continue
             script = re.sub(r"\$\{\{\s*matrix\.target\s*\}\}", "x86_64-pc-windows-msvc", step["run"])
             script = re.sub(r"\$\{\{\s*matrix\.arch\s*\}\}", "x64", script)

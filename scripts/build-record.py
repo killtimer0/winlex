@@ -107,10 +107,14 @@ def verify_records(paths, architecture, configuration):
     return records
 
 
-def verify_archive(path, records):
+def verify_contents(path, *, check_binary_paths=False):
     with zipfile.ZipFile(path) as archive:
         names = [info.filename for info in archive.infolist() if not info.is_dir()]
         check(len(names) == len(set(names)), "Duplicate archive member")
+        check(len(names) == len({name.casefold() for name in names}), "Case-conflicting archive member")
+        check(all(name and not name.startswith(("/", "\\")) and "\\" not in name
+                  and ":" not in name and all(part not in ("", ".", "..") for part in name.split("/"))
+                  for name in names), "Unsafe archive member")
         check(not any(name.lower().endswith((".dll", ".winmd", ".build.json")) for name in names),
               "Unexpected runtime, metadata or build record in archive")
         sums = {}
@@ -122,17 +126,22 @@ def verify_archive(path, records):
         for name, digest in sums.items():
             data = archive.read(name)
             check(hashlib.sha256(data).hexdigest() == digest, f"Archive hash mismatch: {name}")
-            if not name.lower().endswith(".exe") or records[0].get("configuration") == "Dist":
+            if not name.lower().endswith(".exe") or check_binary_paths:
                 for prefix in (str(ROOT), os.environ.get("USERPROFILE", "")):
                     if prefix:
                         for spelling in {prefix, prefix.replace("\\", "/")}:
                             for encoding in ("utf-8", "utf-16le"):
                                 check(spelling.lower().encode(encoding) not in data.lower(),
                                       f"Local build path in archive: {name}")
-        for record in records:
-            name = Path(record["executable"]).name
-            check(hashlib.sha256(archive.read(name)).hexdigest() == record["executable_sha256"],
-                  f"Archive executable mismatch: {name}")
+        return {name: archive.read(name) for name in sums}
+
+
+def verify_archive(path, records):
+    files = verify_contents(path, check_binary_paths=records[0].get("configuration") == "Dist")
+    for record in records:
+        name = Path(record["executable"]).name
+        check(hashlib.sha256(files[name]).hexdigest() == record["executable_sha256"],
+              f"Archive executable mismatch: {name}")
 
 
 def create_archive(stage, path):

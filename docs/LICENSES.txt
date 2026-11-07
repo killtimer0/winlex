@@ -1,0 +1,10 @@
+Winlex is licensed under GPL-3.0-only; see LICENSE.
+Third-party notices are retained in THIRD-PARTY-NOTICES.md.
+
+Download licenses.zip from the same release for the detailed license materials
+and build provenance for all three architectures. Extract it alongside the
+program files so the relative links in THIRD-PARTY-NOTICES.md resolve.
+When redistributing Winlex, also provide these matching license materials and
+fulfil the applicable source-code distribution obligations.
+
+Verify the downloaded ZIP files against the release's SHA256SUMS.

@@ -1,101 +1,226 @@
 name: Build distribution artifacts
 
 on:
+  push:
+    tags: ['v*']
   workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: distribution-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  RUSTUP_TOOLCHAIN: 1.99.1-x86_64-pc-windows-msvc
+  PYTHON_VERSION: '3.12.13'
+  WINLEX_SDK_VERSION: 10.0.26100.0
+
+defaults:
+  run:
+    shell: pwsh
+
 jobs:
   checks:
     runs-on: windows-2022
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@v7
         with:
-          python-version: '3.12'
-      - name: Prepare pinned test metadata
-        shell: pwsh
+          python-version: ${{ env.PYTHON_VERSION }}
+      - uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+      - name: Select check tools
         run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          rustup toolchain install $env:RUSTUP_TOOLCHAIN --profile minimal --component rustfmt --component clippy
+          . ./scripts/build-tools.ps1
+          $policy = (Get-Content inputs/targets.json -Raw | ConvertFrom-Json).x64
+          $tools = Initialize-WinlexToolchain x64 $policy
+          "WINLEX_MSVC_ROOT=$($env:VCToolsInstallDir.TrimEnd('\'))" >> $env:GITHUB_ENV
+          "WINLEX_SDK_INCLUDE=$($env:WindowsSdkDir)Include/$env:WINLEX_SDK_VERSION" >> $env:GITHUB_ENV
+          "WINLEX_CLANG=$env:ProgramFiles/LLVM/bin/clang.exe" >> $env:GITHUB_ENV
+          if (-not (Test-Path "$env:ProgramFiles/LLVM/bin/clang.exe")) { throw 'Clang not found.' }
+          & "$env:ProgramFiles/LLVM/bin/clang.exe" --version
+          (Get-Item -LiteralPath $tools.LinkExe).VersionInfo | Format-List FileVersion, ProductVersion
+        # The build tools helper rejects SDK fallback and records actual MSVC tools.
+      - name: Prepare pinned test metadata and reference assembly
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
           uv run --locked python tests/metadata/prepare_source.py
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Check formatting and host libraries
-        shell: pwsh
+          uv run --locked python tests/metadata/prepare_source.py --foundation-reference
+      - name: Check formatting, lint and host libraries
         run: |
-          rustup default stable
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          rustup component add rustfmt
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo fmt --all -- --check
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $PSNativeCommandUseErrorActionPreference = $true
+          cargo fmt --all --check
+          cargo clippy -p winlex-core -p winlex-format -p winlex-cli -p winlex-gui --all-targets --locked -- -D warnings
           cargo test -p winlex-core -p winlex-format -p winlex-cli --locked
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --manifest-path vendor/windows-metadata/Cargo.toml --locked
+      - name: Check metadata and independent SDK ABI
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          uv run --locked python tests/metadata/run.py --abi --winrt-sdk "${env:ProgramFiles(x86)}/Windows Kits/10" --winrt-version $env:WINLEX_SDK_VERSION
+          uv run --locked python tests/metadata/foundation_gate.py --reference tmp/verify/reference/netstandard.dll
+      - name: Upload check evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: check-evidence
+          path: |
+            tmp/verify/compiler/
+            tmp/verify/*.json
+          if-no-files-found: warn
+
   dist:
     needs: checks
     runs-on: windows-2022
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
         arch: [x86, x64, arm64]
     steps:
-      - uses: actions/checkout@v4
-      - name: Install Rust target and license documentation
-        shell: pwsh
-        run: |
-          rustup default stable
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $policy = (Get-Content inputs/targets.json -Raw | ConvertFrom-Json).'${{ matrix.arch }}'
-          rustup target add $policy.target
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          rustup component add rust-docs
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@v7
         with:
-          python-version: '3.12'
-      - name: Prepare pinned compatibility dependencies
-        shell: pwsh
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install Rust target and license documentation
         run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          rustup toolchain install $env:RUSTUP_TOOLCHAIN --profile minimal --component rust-docs
+          $policy = (Get-Content inputs/targets.json -Raw | ConvertFrom-Json).'${{ matrix.arch }}'
+          rustup target add $policy.target
+      - name: Prepare pinned compatibility dependencies
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
           uv run --locked python scripts/prepare-inputs.py --architecture ${{ matrix.arch }}
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Install ARM64 MSVC tools if needed
         if: matrix.arch == 'arm64'
-        shell: pwsh
         run: |
-          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          $policy = (Get-Content inputs/targets.json -Raw | ConvertFrom-Json).'${{ matrix.arch }}'
+          $vswhere = "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe"
+          $policy = (Get-Content inputs/targets.json -Raw | ConvertFrom-Json).arm64
           $vs = & $vswhere -latest -products * -requires $policy.vs_component -property installationPath
+          if ($LASTEXITCODE -ne 0) { throw 'Visual Studio discovery failed.' }
           if (-not $vs) {
             $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-            if (-not $vs) { throw 'Visual Studio C++ tools not found.' }
-            $installer = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\setup.exe"
+            if ($LASTEXITCODE -ne 0 -or -not $vs) { throw 'Visual Studio C++ tools not found.' }
+            $installer = "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/setup.exe"
             $process = Start-Process -FilePath $installer -ArgumentList @('modify', '--installPath', "`"$vs`"", '--add', $policy.vs_component, '--quiet', '--norestart') -Wait -PassThru
             if ($process.ExitCode -notin @(0, 3010)) { throw "MSVC ARM64 installation failed: $($process.ExitCode)" }
           }
       - name: Validate Debug build and contracts
-        shell: pwsh
         run: |
-          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
           $arch = '${{ matrix.arch }}'
-          ./scripts/build.ps1 -Architecture $arch -TargetDir "$pwd/target"
+          uv run --locked pwsh -NoProfile -File ./scripts/build.ps1 -Architecture $arch -TargetDir "$pwd/target"
           $policy = (Get-Content inputs/targets.json -Raw | ConvertFrom-Json).$arch
           $env:WINLEX_TEST_ARCH = $arch
           $env:WINLEX_PACKAGE_REQUIRE_ARCH = $arch
           [Environment]::SetEnvironmentVariable("WINLEX_PACKAGE_$($arch.ToUpperInvariant())_BUILD_DIR", "$pwd/target/$($policy.target)/debug", 'Process')
           uv run --locked --group tests python -m unittest discover -s tests/scripts -v
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build and package
-        shell: pwsh
         run: |
-          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
           $arch = '${{ matrix.arch }}'
-          ./scripts/build.ps1 -Architecture $arch -Configuration Dist -TargetDir "$pwd/target"
+          uv run --locked pwsh -NoProfile -File ./scripts/build.ps1 -Architecture $arch -Configuration Dist -TargetDir "$pwd/target"
           $policy = (Get-Content inputs/targets.json -Raw | ConvertFrom-Json).$arch
           $bin = "$pwd/target/$($policy.target)/dist"
-          ./scripts/package.ps1 -Architecture $arch -CliBuildRecord "$bin/winlex.exe.build.json" -GuiBuildRecord "$bin/winlex-gui.exe.build.json" -OutputDir "$pwd/artifacts"
+          uv run --locked pwsh -NoProfile -File ./scripts/package.ps1 -Architecture $arch -CliBuildRecord "$bin/winlex.exe.build.json" -GuiBuildRecord "$bin/winlex-gui.exe.build.json" -OutputDir "$pwd/artifacts"
       - uses: actions/upload-artifact@v4
         with:
-          name: winlex-${{ matrix.arch }}
+          name: winlex-${{ matrix.arch }}-intermediate
           path: |
             artifacts/winlex-${{ matrix.arch }}.zip
             artifacts/winlex-${{ matrix.arch }}.zip.sha256
+            artifacts/winlex-${{ matrix.arch }}-licenses.zip
           if-no-files-found: error
+
+  delivery:
+    needs: dist
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: winlex-*-intermediate
+          merge-multiple: true
+          path: intermediate
+      - name: Verify and assemble delivery
+        shell: bash
+        env:
+          SOURCE_COMMIT: ${{ github.sha }}
+        run: python scripts/delivery.py assemble --inputs intermediate --output artifacts --commit "$SOURCE_COMMIT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: winlex-delivery
+          path: artifacts/
+          if-no-files-found: error
+
+  release:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: delivery
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: winlex-delivery
+          path: artifacts
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd artifacts && sha256sum --strict --check SHA256SUMS)
+          cat > release-notes.md <<'EOF'
+          Winlex：Windows 元数据离线查询工具，包含 CLI 和原生 Win32 GUI。
+
+          ### 下载
+          - 按系统架构选择 `winlex-x86.zip`、`winlex-x64.zip` 或 `winlex-arm64.zip`，每包均包含 CLI 和 GUI。
+          - 同时下载本版本的 `licenses.zip`，解压到程序目录；再分发须附带匹配的许可材料，并履行对应源码提供义务。
+          - 下载 `SHA256SUMS` 核验 ZIP 文件。
+          - 元数据从 [winmd-collection Releases](https://github.com/killtimer0/winmd-collection/releases) 另行下载；程序包不包含 `.winmd`。
+          - GitHub 自动提供的 Source code 压缩包不是可执行程序包，也不能据此认定完整对应源码义务已满足。
+
+          ### 公开分发前
+          - 最低系统要求见本 tag 的 `inputs/targets.json`，构建和验证限制见 `docs/build.md`、`docs/release.md`。
+          - 交叉构建和 SDK ABI 检查不代表已通过 XP 或 ARM64 实机验证。
+          - VC-LTL 对象级授权及 GPL 组合分发条件仍待确认；本 Release 保持草稿，公开前须完成许可及对应源码审核。
+          EOF
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          from urllib.parse import quote
+          from zipfile import ZipFile
+
+          base = f"https://github.com/{os.environ['GH_REPO']}/blob/{quote(os.environ['TAG'], safe='')}"
+          with Path('release-notes.md').open('a', encoding='utf-8') as notes:
+              notes.write('\n### 目标系统版本\n\n| 架构 | 最低 Windows 版本号 |\n|---|---|\n')
+              with ZipFile('artifacts/licenses.zip') as archive:
+                  for arch in ('x86', 'x64', 'arm64'):
+                      policy = json.loads(archive.read(f'builds/{arch}.json'))['builds'][0]['policy']
+                      notes.write(f"| {arch} | {policy['minimum_windows']} |\n")
+              notes.write(f'\n[构建与兼容说明]({base}/docs/build.md) · [交付与审核说明]({base}/docs/release.md)\n')
+          PY
+          options=(--draft --verify-tag --title "$TAG" --notes-file release-notes.md)
+          if [[ "$TAG" == *-* ]]; then options+=(--prerelease); fi
+          gh release create "$TAG" "${options[@]}" artifacts/winlex-{x86,x64,arm64}.zip artifacts/licenses.zip artifacts/SHA256SUMS

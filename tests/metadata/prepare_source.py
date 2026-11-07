@@ -40,9 +40,12 @@ def prepare(source, destination):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, help="override the default inputs/ destination")
+    parser.add_argument("--foundation-reference", action="store_true", help="prepare the official GUID regression reference DLL")
     args = parser.parse_args()
-    source = json.loads(Path(__file__).with_name("source.json").read_text(encoding="utf-8"))
-    destination = args.output if args.output is not None else ROOT / "inputs" / source["file"]
+    manifest = "foundation-reference.json" if args.foundation_reference else "source.json"
+    source = json.loads(Path(__file__).with_name(manifest).read_text(encoding="utf-8"))
+    directory = ROOT / "tmp/verify/reference" if args.foundation_reference else ROOT / "inputs"
+    destination = args.output if args.output is not None else directory / source["file"]
     prepare(source, destination)
     print(f"Verified {destination}: {source['sha256']}")
 

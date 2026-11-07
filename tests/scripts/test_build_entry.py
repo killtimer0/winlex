@@ -12,6 +12,22 @@ ARCH = os.environ.get("WINLEX_TEST_ARCH", "x64")
 
 
 class BuildEntryContracts(unittest.TestCase):
+    def test_requested_sdk_does_not_fall_back(self):
+        for sdk, message in (("not-a-version", "Invalid WINLEX_SDK_VERSION"),
+                             ("99.0.99999.0", "Requested Windows SDK 99.0.99999.0 is not installed")):
+            with self.subTest(sdk=sdk):
+                script = f"""
+$ErrorActionPreference = 'Stop'
+. '{ROOT.as_posix()}/scripts/build-tools.ps1'
+$env:WINLEX_SDK_VERSION = '{sdk}'
+$policy = (Get-Content '{ROOT.as_posix()}/inputs/targets.json' -Raw | ConvertFrom-Json).{ARCH}
+Initialize-WinlexToolchain {ARCH} $policy
+"""
+                result = subprocess.run(["pwsh", "-NoProfile", "-Command", script], cwd=ROOT,
+                                        capture_output=True, text=True, encoding="utf-8", errors="replace")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(message, result.stdout + result.stderr)
+
     def run_entry(self, cargo_body, extra=""):
         script = f"""
 $ErrorActionPreference = 'Stop'

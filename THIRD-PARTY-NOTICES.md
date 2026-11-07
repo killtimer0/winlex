@@ -6,6 +6,10 @@ texts are available from the linked crates.io pages. The list below includes
 normal and build dependencies for Windows x86/x64/ARM64.
 When distributing binaries, retain the applicable copyright notices and license
 texts alongside this document.
+Binary releases collect the detailed materials in the accompanying `licenses.zip`.
+Extract that archive alongside the program files to retain the relative paths
+used below. Redistribution must include the matching materials; the separate
+archive does not replace applicable source-code distribution obligations.
 
 ## Rust dependencies
 

@@ -7,7 +7,7 @@
 - PowerShell 7.2+（`pwsh`）。
 - Visual Studio C++ 工具和 Windows SDK。
 - Python 3.12+ 和 `uv`。
-- 独立读取器验证需 .NET SDK 10；ABI 验证另需 Clang。
+- 独立读取器验证需 `global.json` 指定的 .NET SDK；ABI 验证另需 Clang。
 
 链接依赖版本和 SHA256 记录在 `inputs/*.json`。下载脚本使用标准 `HTTPS_PROXY` 环境变量：
 
@@ -49,6 +49,8 @@ $link = Join-Path $env:VCToolsInstallDir 'bin/Hostx64/arm64/link.exe'
 开发构建使用 `-Configuration Debug`；优化版本和分发版本分别使用 `Release` 和 `Dist`。
 脚本使用所选 SDK 的 Microsoft `rc.exe`，也可用 `-RcExe PATH` 指定；Dist 不回退搜索其他 SDK。输出目录可用 `-TargetDir PATH` 指定，否则遵循 Cargo 配置。
 构建入口在编译前校验清单中的兼容库与 SHA-256，并记录源码提交、工作区状态、目标策略、实际 Rust／Cargo／原生工具版本及依赖。Rust 使用当前工具链。
+
+CI 的 Rust、Python 和 Windows SDK 选择见 `.github/workflows/build.yml`，.NET SDK 以 `global.json` 为准。本地可设置 `WINLEX_SDK_VERSION` 要求工具链初始化使用指定 SDK，缺失或选择不符时报错，不回退到其他版本；未设置时保持 Visual Studio 默认选择。
 手动工作流、分发打包及上传前检查见[手动构建与交付](release.md)。
 构建结束后显示 `winlex.exe`、`winlex-gui.exe` 的实际路径；对应的 `.build.json` 可用于生成消息资源 fixture 和验证打包产物。默认输出位于标准 `target/` 目录。
 
@@ -119,6 +121,8 @@ python -m unittest discover -s tests/scripts -v
 `tests/metadata/run.py` 验证 CLI、布局、泛型及跨源引用样例。报告写入 `tmp/verify/`。
 
 `python tests/metadata/foundation_gate.py --reference PATH/TO/netstandard.dll` 验证 GUID 及 COM 结构体布局不受官方 NETStandard.Library.Ref 2.1.0 参考程序集影响；`--inputs` 可指定单个 WinMD 或集合目录。先运行 `tests/metadata/run.py` 准备开发用 CLI。`--abi` 的 SDK 编译检查包含 GUID、TYPEATTR 和 TLIBATTR 的原生布局。
+
+可先运行 `python tests/metadata/prepare_source.py --foundation-reference`，按 `tests/metadata/foundation-reference.json` 从官方 NuGet 包提取并校验原始 DLL，输出到 `tmp/verify/reference/`。该 DLL 仅用于回归验证，不作为正式 WinMD 输入分发。
 
 对拍本地目录中的 WinMD：
 
