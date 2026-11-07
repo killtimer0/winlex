@@ -121,6 +121,14 @@ impl Db {
         }))
     }
     pub fn resolve(&self, n: &TypeName, owner: TypeDef<'_>, arch: i32) -> Result<TypeDef<'_>> {
+        if n.identity.is_some_and(|(_, token)| token >> 24 == 1)
+            && let Some(foundation) = self.index.foundation_type(n)
+        {
+            bail!(
+                "foundation type {foundation:?}: {}; not a collection TypeDef dependency",
+                foundation.semantics()
+            );
+        }
         self.resolve_inner(n, owner, arch, 0)
     }
     fn resolve_inner(

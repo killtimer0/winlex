@@ -30,6 +30,9 @@ repository = "https://github.com/microsoft/windows-rs"
 name = "windows_metadata"
 path = "src/lib.rs"
 
+[dependencies]
+sha1 = "0.10"
+
 [lints.clippy]
 assigning_clones = "warn"
 cloned_instead_of_copied = "warn"

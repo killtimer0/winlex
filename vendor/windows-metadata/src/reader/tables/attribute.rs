@@ -72,7 +72,7 @@ fn read_value(blob: &mut Blob, ty: &Type) -> Value {
         Type::F32 => Value::F32(blob.read_f32()),
         Type::F64 => Value::F64(blob.read_f64()),
         Type::String => Value::Utf8(blob.read_utf8()),
-        Type::ClassName(tn) if tn == ("System", "Type") => {
+        Type::ClassName(tn) if blob.foundation_type(tn) == Some(FoundationType::Type) => {
             let s = blob.read_utf8();
             if let Some(dot) = s.rfind('.') {
                 Value::TypeName(TypeName::named(&s[..dot], &s[dot + 1..]))

@@ -221,7 +221,9 @@ fn declaration(
         }
         Declaration::Reference(r) => {
             write!(out, "{pad}  scope: 0x{:08x}", r.scope_token())?;
-            if let Some(a) = arch {
+            if let Some(foundation) = r.foundation_type() {
+                write!(out, "; builtin: {foundation:?}; {}", foundation.semantics())?;
+            } else if let Some(a) = arch {
                 match c.resolve_reference(id, a) {
                     Ok(id) => write!(out, "; resolution: {id}")?,
                     Err(e) => write!(out, "; unresolved: {e}")?,

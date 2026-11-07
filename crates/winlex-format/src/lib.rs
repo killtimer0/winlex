@@ -341,10 +341,13 @@ pub fn describe(c: &Catalog, id: EntityId, arch: Option<Architecture>) -> Result
             json!({
                 "entity": e,
                 "scope_token": format!("0x{:08x}", r.scope_token()),
-                "resolution": arch.map(|a| match c.resolve_reference(id, a) {
+                "resolution": match r.foundation_type() {
+                    Some(foundation) => Some(json!({"builtin": format!("{foundation:?}"), "semantics": foundation.semantics()})),
+                    None => arch.map(|a| match c.resolve_reference(id, a) {
                     Ok(id) => json!({"target_id": id}),
                     Err(e) => json!({"unresolved": e.to_string()}),
-                }),
+                    }),
+                },
             })
         }
     })

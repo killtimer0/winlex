@@ -9,6 +9,20 @@ pub struct Index {
 }
 
 impl Index {
+    pub fn foundation_type(&self, name: &TypeName) -> Option<FoundationType> {
+        if !name.generics.is_empty() { return None; }
+        let (file, token) = name.identity?;
+        if file >= self.files.len() { return None; }
+        let pos = (token & 0xffffff).checked_sub(1)? as usize;
+        let row = Row { index: self, file, pos };
+        let ty = match token >> 24 {
+            1 if pos < self.rows::<TypeRef>(file).len() => TypeDefOrRef::TypeRef(TypeRef::from_row(row)),
+            2 if pos < self.rows::<TypeDef>(file).len() => TypeDefOrRef::TypeDef(TypeDef::from_row(row)),
+            _ => return None,
+        };
+        (ty.namespace() == name.namespace && ty.name() == name.name)
+            .then(|| ty.foundation_type()).flatten()
+    }
     /// Enumerate raw rows, without namespace or architecture filtering.
     pub fn rows<'a, R: AsRow<'a> + 'a>(
         &'a self,

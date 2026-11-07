@@ -1,6 +1,52 @@
 use serde_json::json;
 use winlex_core::{Architecture, Bitfield, EntityId, FieldLayout, Layout, Slot, Vtable};
 
+#[test]
+fn reference_json_distinguishes_builtin_definition_and_missing_dependency() {
+    use winlex_core::{
+        Catalog,
+        windows_metadata::{TypeAttributes, reader, writer},
+    };
+    let mut file = writer::File::new("ReferenceSemantics");
+    file.TypeRef("System", "Guid");
+    file.TypeRef("System", "UnknownFoundationType");
+    file.TypeRef("Fixture", "Present");
+    file.TypeDef(
+        "Fixture",
+        "Present",
+        writer::TypeDefOrRef::default(),
+        TypeAttributes::Public,
+    );
+    let bytes = file.into_stream();
+    let index = reader::Index::new(vec![reader::File::new(bytes.clone()).unwrap()]);
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tmp")
+        .join(format!("reference-semantics-{}.winmd", std::process::id()));
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, bytes).unwrap();
+    let catalog = Catalog::open(&path).unwrap();
+    std::fs::remove_file(path).unwrap();
+    for r in index.rows::<reader::TypeRef>(0) {
+        let id = winlex_core::metadata::key(r, 1);
+        let result = winlex_format::describe(&catalog, id, Some(Architecture::X64)).unwrap();
+        let resolution = &result["resolution"];
+        match r.name() {
+            "Guid" => {
+                assert_eq!(resolution["builtin"], "Guid");
+                assert!(resolution.get("unresolved").is_none());
+                assert!(resolution.get("target_id").is_none());
+                assert!(catalog.resolve_reference(id, Architecture::X64).is_err());
+            }
+            "Present" => assert!(resolution["target_id"].is_object()),
+            "UnknownFoundationType" => {
+                assert!(resolution["unresolved"].is_string());
+                assert!(resolution.get("builtin").is_none());
+            }
+            _ => unreachable!(),
+        }
+    }
+}
+
 const TYPE: EntityId = EntityId {
     source_id: 2,
     token: 0x02000001,

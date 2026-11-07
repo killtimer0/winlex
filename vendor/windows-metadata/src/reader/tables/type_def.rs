@@ -80,16 +80,12 @@ impl<'a> TypeDef<'a> {
 
     pub fn category(&self) -> TypeCategory {
         if let Some(extends) = self.extends() {
-            if extends.namespace() == "System" {
-                match extends.name() {
-                    "Enum" => TypeCategory::Enum,
-                    "MulticastDelegate" => TypeCategory::Delegate,
-                    "ValueType" => TypeCategory::Struct,
-                    "Attribute" => TypeCategory::Attribute,
-                    _ => TypeCategory::Class,
-                }
-            } else {
-                TypeCategory::Class
+            match extends.foundation_type() {
+                Some(FoundationType::Enum) => TypeCategory::Enum,
+                Some(FoundationType::MulticastDelegate) => TypeCategory::Delegate,
+                Some(FoundationType::ValueType) => TypeCategory::Struct,
+                Some(FoundationType::Attribute) => TypeCategory::Attribute,
+                _ => TypeCategory::Class,
             }
         } else {
             TypeCategory::Interface

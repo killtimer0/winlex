@@ -47,6 +47,10 @@ winlex Windows.Win32.winmd Windows.Wdk.winmd show Windows.Wdk.winmd::NtCancelIoF
 `--source SOURCE` 在搜索时过滤来源，在 show/layout/vtable/references 时限定目标来源，不能与 `SOURCE::` 同用；反向引用仍查找所有已加载来源。独立来源中的同名声明不会自动合并。
 跨文件引用所需的依赖须显式加载；非 WinRT 引用要求程序集身份匹配。
 
+受支持核心程序集身份中的基础引用按使用上下文消费，不要求额外加载 CLR 基础程序集。基类标记用于识别结构体、枚举、委托及特性；`System.Type` 用于特性中的类型名序列化，`IsConst` 用于逐层签名限定符，不能据此为它们推测原生值布局。识别同时检查限定类型名和程序集身份，不忽略任意 `System.*` 引用。
+
+`System.Guid` 的原生布局在 x86、x64、ARM64 上均为 16 字节、对齐 4 字节；包含它的结构体不使用 CLR 参考程序集的占位字段。加载参考程序集不会改变该 ABI。WinRT 标记规则见 [WinMD 类型系统编码](https://learn.microsoft.com/en-us/uwp/winrt-cref/winmd-files#type-system-encoding)。
+
 ## 错误码查询
 
 ```powershell
@@ -114,6 +118,7 @@ winlex Windows.Win32.winmd search --where 'value = nan or value = inf'
 - 布局、vtable 和反向引用结果使用 `architecture` 字段，值为 `x86`、`x64` 或 `arm64`。
 - `sources` 提供来源编号、路径、程序集身份和依赖。实体 ID 为 `{"source_id":0,"token":33554433}`，token 使用数值表示。
 - 类型签名保留具名引用的 `reference_id`，解析后的 TypeRef 提供 `target_id`；可转换为 `SOURCE::0xTOKEN` 继续查询。
+- TypeRef 的 `resolution` 区分实际定义 `target_id`、消费器内建语义 `builtin`／`semantics` 和未解决依赖 `unresolved`。内建语义不代表已加载 CLR 定义；名称覆盖也不代表程序集身份闭合或 ABI 正确。
 - 布局单位为 bit，偏移相对直接包含它的聚合；位域另提供相对底层字段的偏移。
 - vtable 同时提供槽位和字节偏移。
 
@@ -130,7 +135,7 @@ winlex Windows.Win32.winmd search --where 'value = nan or value = inf'
 
 声明和类型引用来自输入 WinMD 中保留的元数据。
 
-- 开放泛型的布局/vtable、泛型实例 ABI 及部分 WinRT 字段类型（例如 HSTRING、System.Guid）尚不支持计算。
+- 开放泛型的布局/vtable、泛型实例 ABI 及部分 WinRT 字段类型（例如 HSTRING）尚不支持计算。
 - 暂不支持 ModuleRef、类型转发和 retargetable 程序集引用。
 - 非零显式偏移、显式大小和灵活数组等尚不支持布局计算。
 

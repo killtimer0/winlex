@@ -170,7 +170,9 @@ impl File {
 
             let scope = if let Some(assembly_name) = assembly_name {
                 ResolutionScope::AssemblyRef(self.AssemblyRef(&assembly_name))
-            } else if namespace == "System" {
+            } else if namespace == "System"
+                || (namespace == "System.Runtime.CompilerServices" && name == "IsConst")
+            {
                 ResolutionScope::AssemblyRef(self.AssemblyRef("System"))
             } else {
                 ResolutionScope::Module(Module(0))

@@ -118,6 +118,8 @@ python -m unittest discover -s tests/scripts -v
 
 `tests/metadata/run.py` 验证 CLI、布局、泛型及跨源引用样例。报告写入 `tmp/verify/`。
 
+`python tests/metadata/foundation_gate.py --reference PATH/TO/netstandard.dll` 验证 GUID 及 COM 结构体布局不受官方 NETStandard.Library.Ref 2.1.0 参考程序集影响；`--inputs` 可指定单个 WinMD 或集合目录。先运行 `tests/metadata/run.py` 准备开发用 CLI。`--abi` 的 SDK 编译检查包含 GUID、TYPEATTR 和 TLIBATTR 的原生布局。
+
 对拍本地目录中的 WinMD：
 
 ```powershell

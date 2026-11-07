@@ -7,11 +7,27 @@ use repc::{Target, compute_layout, layout as l};
 use std::collections::{HashMap, HashSet};
 use windows_metadata::{reader::*, *};
 
+#[cfg(test)]
+mod foundation_tests;
+
 fn builtin(b: l::BuiltinType) -> l::Type<()> {
     l::Type {
         layout: (),
         annotations: vec![],
         variant: l::TypeVariant::Builtin(b),
+    }
+}
+
+// GUID's native ABI is four-byte aligned and sixteen bytes on all targets.
+// Use a layout-only array, never CLR/reference-assembly implementation fields.
+fn native_guid() -> l::Type<()> {
+    l::Type {
+        layout: (),
+        annotations: vec![],
+        variant: l::TypeVariant::Array(l::Array {
+            element_type: Box::new(builtin(l::BuiltinType::UnsignedInt)),
+            num_elements: Some(4),
+        }),
     }
 }
 
@@ -55,6 +71,11 @@ impl Layouts<'_> {
                     num_elements: Some(n as u64),
                 }),
             },
+            Type::ValueName(n)
+                if self.db.index.foundation_type(&n) == Some(FoundationType::Guid) =>
+            {
+                native_guid()
+            }
             Type::ValueName(n) | Type::ClassName(n) => {
                 let computed = self.record(self.db.resolve(&n, owner, self.arch)?)?;
                 // repc guarantees opaque substitution preserves containing layouts;
@@ -84,6 +105,9 @@ impl Layouts<'_> {
         ensure!(self.active.insert(key), "by-value cycle");
         let result = (|| {
             let mut fields = vec![];
+            if TypeDefOrRef::TypeDef(t).foundation_type() == Some(FoundationType::Guid) {
+                return self.compute(native_guid(), fields);
+            }
             match t.category() {
                 TypeCategory::Delegate | TypeCategory::Interface => {
                     return self.compute(builtin(l::BuiltinType::Pointer), fields);

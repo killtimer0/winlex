@@ -62,9 +62,12 @@ def main():
             count += 1
 
         layouts = []
+        check("sizeof(GUID) * 8", 128)
+        check("__alignof(GUID) * 8", 32)
         for name in (
             "OPENFILENAMEW", "OPENFILENAMEA", "POINT", "RECT", "FILETIME",
             "SECURITY_ATTRIBUTES", "WIN32_FIND_DATAW", "OVERLAPPED", "DCB",
+            "TYPEATTR", "TLIBATTR",
         ):
             layout = query("layout", name, arch)
             layouts.append(layout)
@@ -86,6 +89,8 @@ def main():
                     promoted(field["fields"], field["offset_bits"])
                     continue
                 check(f"offsetof({name}, {field['name']}) * 8", field["offset_bits"])
+                if name in ("TYPEATTR", "TLIBATTR") and field["name"] == "guid":
+                    check("sizeof(GUID) * 8", field["size_bits"])
         vtables = []
         for name in ("IUnknown", "ISequentialStream", "IStream"):
             vtable = query("vtable", name, arch)

@@ -34,6 +34,10 @@ impl<'a> Blob<'a> {
         Self { index, file, slice }
     }
 
+    pub(crate) fn foundation_type(&self, name: &TypeName) -> Option<FoundationType> {
+        self.index.foundation_type(name)
+    }
+
     fn peek(&self) -> (usize, usize) {
         if self[0] & 0x80 == 0 {
             (self[0] as usize, 1)
@@ -106,7 +110,7 @@ impl<'a> Blob<'a> {
     /// Reads a field or method type signature.
     pub fn read_type_signature(&mut self, generics: &[Type]) -> Type {
         let is_const = self.read_modifiers().iter().any(|def| {
-            def.namespace() == "System.Runtime.CompilerServices" && def.name() == "IsConst"
+            def.foundation_type() == Some(FoundationType::IsConst)
         });
 
         if self.try_read(ELEMENT_TYPE_BYREF as usize) {

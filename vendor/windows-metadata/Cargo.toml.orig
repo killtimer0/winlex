@@ -11,3 +11,6 @@ readme = "readme.md"
 
 [lints]
 workspace = true
+
+[dependencies]
+sha1 = "0.10"
