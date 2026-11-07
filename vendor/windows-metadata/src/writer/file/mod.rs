@@ -482,11 +482,10 @@ impl File {
             }
 
             Type::PtrConst(ty, pointers) => {
-                buffer.write_compressed(ELEMENT_TYPE_CMOD_REQD as usize);
                 let pos = self.TypeRef("System.Runtime.CompilerServices", "IsConst");
-                buffer.write_compressed(TypeDefOrRef::TypeRef(pos).encode() as usize);
-
                 for _ in 0..*pointers {
+                    buffer.write_compressed(ELEMENT_TYPE_CMOD_REQD as usize);
+                    buffer.write_compressed(TypeDefOrRef::TypeRef(pos).encode() as usize);
                     buffer.write_compressed(ELEMENT_TYPE_PTR as usize);
                 }
 

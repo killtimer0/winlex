@@ -41,3 +41,31 @@ fn byref_and_array_nesting_does_not_move_constness() {
         )))))
     );
 }
+
+#[test]
+fn encoded_const_pointer_runs_retain_every_qualified_level() {
+    let mut file = writer::File::new("PointerQualifiers");
+    file.TypeDef(
+        "Fixture",
+        "Pointers",
+        writer::TypeDefOrRef::default(),
+        TypeAttributes::Public,
+    );
+    let expected = [
+        Type::PtrConst(Box::new(Type::I32), 2),
+        Type::PtrMut(Box::new(Type::PtrConst(Box::new(Type::I32), 2)), 1),
+        Type::ArrayFixed(Box::new(Type::PtrConst(Box::new(Type::I32), 2)), 3),
+    ];
+    for (index, ty) in expected.iter().enumerate() {
+        file.Field(&format!("field{index}"), ty, FieldAttributes::Public);
+    }
+    let index = Index::new(vec![File::new(file.into_stream()).unwrap()]);
+    assert_eq!(
+        index
+            .expect("Fixture", "Pointers")
+            .fields()
+            .map(|field| field.ty())
+            .collect::<Vec<_>>(),
+        expected
+    );
+}

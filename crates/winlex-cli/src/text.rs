@@ -6,7 +6,42 @@ use winlex_core::{Architecture, Catalog, Declaration, EntityId, Result, guid, me
 use winlex_format::{attribute_value as value, layout_kind, member_ids};
 
 fn ty(t: &Type) -> String {
-    match t {
+    qualified_ty(t, false)
+}
+
+fn const_annotation<'a>(owner: impl HasAttributes<'a>) -> &'static str {
+    if owner.attributes().any(|a| {
+        a.namespace() == "Windows.Win32.Foundation.Metadata" && a.name() == "ConstAttribute"
+    }) {
+        "[const] "
+    } else {
+        ""
+    }
+}
+
+fn qualified_ty(t: &Type, is_const: bool) -> String {
+    if let Type::PtrMut(inner, depth) | Type::PtrConst(inner, depth) = t {
+        let pointee_const = matches!(t, Type::PtrConst(..));
+        let mut out = qualified_ty(inner, pointee_const);
+        let depth = (*depth).min(256);
+        for level in 0..depth {
+            if pointee_const
+                && (level > 0 || matches!(**inner, Type::PtrMut(..) | Type::PtrConst(..)))
+            {
+                out.push(' ');
+            }
+            out.push('*');
+            if if level + 1 == depth {
+                is_const
+            } else {
+                pointee_const
+            } {
+                out.push_str("const");
+            }
+        }
+        return out;
+    }
+    let rendered = match t {
         Type::ClassName(n) | Type::ValueName(n) => {
             let args = if n.generics.is_empty() {
                 String::new()
@@ -26,13 +61,16 @@ fn ty(t: &Type) -> String {
         }
         Type::Generic(n, i) => format!("{n} (type parameter {i})"),
         Type::MethodGeneric(n, i) => format!("{n} (method parameter {i})"),
-        Type::PtrMut(t, d) => format!("{}{}", ty(t), "*".repeat((*d).min(256))),
-        Type::PtrConst(t, d) => format!("const {}{}", ty(t), "*".repeat((*d).min(256))),
         Type::ArrayFixed(t, n) => format!("{}[{n}]", ty(t)),
         Type::Array(t) => format!("{}[]", ty(t)),
         Type::RefMut(t) => format!("{}&", ty(t)),
         Type::RefConst(t) => format!("const {}", ty(t)),
         t => format!("{t:?}"),
+    };
+    if is_const {
+        format!("const {rendered}")
+    } else {
+        rendered
     }
 }
 fn attributes<'a>(out: &mut String, pad: &str, r: impl HasAttributes<'a>) -> Result<()> {
@@ -126,7 +164,7 @@ fn declaration(
         }
         Declaration::Field(f) => {
             bits(out, &pad, &winlex_core::metadata::bitfields(f)?, 0)?;
-            writeln!(out, "{pad}  type: {}", ty(&f.ty()))?;
+            writeln!(out, "{pad}  type: {}{}", const_annotation(f), ty(&f.ty()))?;
             if let Some(offset) = f.explicit_offset() {
                 writeln!(out, "{pad}  declared offset: {offset} bytes")?;
             }
@@ -141,7 +179,12 @@ fn declaration(
         Declaration::Method(m) => {
             let s = m.signature(&[]);
             let ps = m.params_by_sequence(s.types.len())?;
-            writeln!(out, "{pad}  returns: {}", ty(&s.return_type))?;
+            writeln!(
+                out,
+                "{pad}  returns: {}{}",
+                ps.return_param().map(const_annotation).unwrap_or_default(),
+                ty(&s.return_type)
+            )?;
             if let Some(i) = m.impl_map() {
                 writeln!(
                     out,
@@ -155,9 +198,10 @@ fn declaration(
             for (i, (t, p)) in s.types.iter().zip(ps.params()).enumerate() {
                 writeln!(
                     out,
-                    "{pad}  [{}] {}: {} ({})",
+                    "{pad}  [{}] {}: {}{} ({})",
                     i + 1,
                     p.map(|p| p.name().to_owned()).unwrap_or_default(),
+                    p.map(const_annotation).unwrap_or_default(),
                     ty(t),
                     p.map(|p| format!("{:?}", p.direction()))
                         .unwrap_or_default()
@@ -268,4 +312,35 @@ pub(super) fn render(q: &Query, c: &Catalog, arch: Option<Architecture>) -> Resu
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pointer_qualifiers_follow_the_c_pointee_level() {
+        for (t, expected) in [
+            (Type::PtrMut(Box::new(Type::I32), 1), "I32*"),
+            (Type::PtrConst(Box::new(Type::I32), 1), "const I32*"),
+            // const int **, int *const *, and const int *const * are distinct C types.
+            (
+                Type::PtrMut(Box::new(Type::PtrConst(Box::new(Type::I32), 1)), 1),
+                "const I32**",
+            ),
+            (
+                Type::PtrConst(Box::new(Type::PtrMut(Box::new(Type::I32), 1)), 1),
+                "I32*const *",
+            ),
+            (Type::PtrConst(Box::new(Type::I32), 2), "const I32*const *"),
+            (
+                Type::ArrayFixed(Box::new(Type::PtrConst(Box::new(Type::I32), 1)), 3),
+                "const I32*[3]",
+            ),
+            (Type::RefMut(Box::new(Type::I32)), "I32&"),
+            (Type::RefConst(Box::new(Type::I32)), "const I32"),
+        ] {
+            assert_eq!(ty(&t), expected);
+        }
+    }
 }

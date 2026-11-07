@@ -13,25 +13,45 @@ struct Types<'a> {
 
 impl Types<'_> {
     fn ty(&self, t: &Type, name: Rendered) -> Rendered {
+        self.qualified_ty(t, name, false)
+    }
+
+    fn qualified_ty(&self, t: &Type, name: Rendered, is_const: bool) -> Rendered {
         match t {
-            Type::ArrayFixed(t, n) => self.ty(t, name.suffix(&format!("[{n}]"))),
-            Type::Array(t) => self.ty(t, name.suffix("[]")),
+            Type::ArrayFixed(t, n) => {
+                self.qualified_ty(t, name.suffix(&format!("[{n}]")), is_const)
+            }
+            Type::Array(t) => self.qualified_ty(t, name.suffix("[]"), is_const),
             pointer @ (Type::PtrMut(t, depth) | Type::PtrConst(t, depth)) => {
-                let name = name.prefix(&"*".repeat((*depth).min(256)));
+                let pointee_const = matches!(pointer, Type::PtrConst(..));
+                let mut name = name;
+                for level in 0..(*depth).min(256) {
+                    let pointer_const = if level == 0 { is_const } else { pointee_const };
+                    name = name.prefix(if pointer_const { "*const " } else { "*" });
+                }
                 let name = if matches!(**t, Type::ArrayFixed(..) | Type::Array(..)) {
                     name.prefix("(").suffix(")")
                 } else {
                     name
                 };
-                let rendered = self.ty(t, name);
-                if matches!(pointer, Type::PtrConst(..)) {
+                self.qualified_ty(t, name, pointee_const)
+            }
+            Type::RefMut(t) => {
+                let rendered = self.ty(t, name.prefix("&"));
+                if is_const {
                     rendered.prefix("const ")
                 } else {
                     rendered
                 }
             }
-            Type::RefMut(t) => self.ty(t, name.prefix("&")),
-            Type::RefConst(t) => self.ty(t, name).prefix("const "),
+            Type::RefConst(t) => {
+                let rendered = self.ty(t, name).prefix("const ");
+                if is_const {
+                    rendered.prefix("const ")
+                } else {
+                    rendered
+                }
+            }
             _ => {
                 let mut base = match t {
                     Type::ClassName(n) | Type::ValueName(n) => {
@@ -85,6 +105,9 @@ impl Types<'_> {
                         range: 0..base.position,
                         kind: RegionKind::Type,
                     });
+                }
+                if is_const {
+                    base = base.prefix("const ");
                 }
                 if name.text.is_empty() {
                     base
@@ -397,7 +420,7 @@ fn method(
                     (p.is_optional(), "optional"),
                     (p.is_reserved(), "reserved"),
                     (p.is_retval_attribute(), "retval"),
-                    (p.has_attribute("ConstAttribute"), "const"),
+                    (!const_annotation(p).is_empty(), "const"),
                 ]
                 .into_iter()
                 .filter_map(|(present, label)| present.then_some(label))
@@ -424,12 +447,30 @@ fn method(
             .suffix(&format!("\n{pad}"))
     };
     write!(out, "{pad}")?;
+    write!(
+        out,
+        "{}",
+        params
+            .return_param()
+            .map(const_annotation)
+            .unwrap_or_default()
+    )?;
     out.fragment(types.ty(
         &signature.return_type,
         parameters.prefix(&format!("{name}(")).suffix(")"),
     ));
     writeln!(out, ";")?;
     Ok(())
+}
+
+fn const_annotation<'a>(owner: impl HasAttributes<'a>) -> &'static str {
+    if owner.attributes().any(|a| {
+        a.namespace() == "Windows.Win32.Foundation.Metadata" && a.name() == "ConstAttribute"
+    }) {
+        "[const] "
+    } else {
+        ""
+    }
 }
 
 fn append(
@@ -595,7 +636,7 @@ fn append(
                 out.number("Declared offset: ", offset.into(), Some("bytes"), id)?;
                 writeln!(out)?;
             }
-            write!(out, "{pad}")?;
+            write!(out, "{pad}{}", const_annotation(f))?;
             out.fragment(types.ty(&f.ty(), f.name().into()));
             if let Some(value) = f.constant() {
                 // ELEMENT_TYPE_CLASS represents a null reference constant.
@@ -675,6 +716,81 @@ fn append(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pointer_qualifiers_preserve_c_levels_and_named_type_links() {
+        use winlex_core::{SourceData, windows_metadata::writer};
+        let mut file = writer::File::new("PointerQualifiers");
+        file.TypeDef(
+            "Fixture",
+            "Record😀",
+            writer::TypeDefOrRef::default(),
+            TypeAttributes::Public,
+        );
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tmp")
+            .join(format!("pointer-qualifiers-{}.winmd", std::process::id()));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, file.into_stream()).unwrap();
+        let source = SourceData::read(&path).unwrap();
+        std::fs::remove_file(path).unwrap();
+        let catalog = Catalog::from_inputs([source]).unwrap();
+        let owner = catalog
+            .type_ids()
+            .find(|&id| catalog.entity(id).unwrap().name == "Record😀")
+            .unwrap();
+        let types = Types {
+            catalog: &catalog,
+            owner,
+            arch: Architecture::X64,
+        };
+        let t = Type::value_named("Fixture", "Record😀");
+        for (ty, expected) in [
+            (Type::PtrMut(Box::new(t.clone()), 1), "Record😀 *value"),
+            (
+                Type::PtrConst(Box::new(t.clone()), 1),
+                "const Record😀 *value",
+            ),
+            // C source contracts: const T **, T *const *, const T *const *.
+            (
+                Type::PtrMut(Box::new(Type::PtrConst(Box::new(t.clone()), 1)), 1),
+                "const Record😀 **value",
+            ),
+            (
+                Type::PtrConst(Box::new(Type::PtrMut(Box::new(t.clone()), 1)), 1),
+                "Record😀 *const *value",
+            ),
+            (
+                Type::PtrConst(Box::new(t.clone()), 2),
+                "const Record😀 *const *value",
+            ),
+            (
+                Type::PtrConst(Box::new(Type::ArrayFixed(Box::new(t.clone()), 3)), 1),
+                "const Record😀 (*value)[3]",
+            ),
+            (
+                Type::ArrayFixed(Box::new(Type::PtrConst(Box::new(t.clone()), 1)), 3),
+                "const Record😀 *value[3]",
+            ),
+            (Type::RefMut(Box::new(t.clone())), "Record😀 &value"),
+            (Type::RefConst(Box::new(t)), "const Record😀 value"),
+        ] {
+            let mut rendered = Rendered::from("// 文😀\r\n");
+            rendered.fragment(types.ty(&ty, "value".into()));
+            assert_eq!(rendered.text, format!("// 文😀\n{expected}"));
+            let link = rendered
+                .regions
+                .iter()
+                .find(|r| r.reference().is_some())
+                .unwrap();
+            assert_eq!(link.reference(), Some(owner));
+            let units: Vec<_> = rendered.text.encode_utf16().collect();
+            assert_eq!(
+                String::from_utf16(&units[link.range.clone()]).unwrap(),
+                "Record😀"
+            );
+        }
+    }
 
     #[test]
     fn type_dispatch_preserves_module_attribute_and_explicit_layout_fallbacks() {
