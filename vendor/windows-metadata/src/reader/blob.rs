@@ -1,5 +1,8 @@
 use super::*;
 
+#[cfg(test)]
+mod tests;
+
 pub struct Blob<'a> {
     index: &'a Index,
     file: usize,
@@ -106,48 +109,30 @@ impl<'a> Blob<'a> {
             def.namespace() == "System.Runtime.CompilerServices" && def.name() == "IsConst"
         });
 
-        let is_ref = self.try_read(ELEMENT_TYPE_BYREF as usize);
-
-        if self.try_read(ELEMENT_TYPE_VOID as usize) {
-            return Type::Void;
-        }
-
-        let is_array = self.try_read(ELEMENT_TYPE_SZARRAY as usize);
-
-        let mut pointers = 0;
-
-        while self.try_read(ELEMENT_TYPE_PTR as usize) {
-            pointers += 1;
-        }
-
-        let ty = self.read_type_code(generics);
-
-        if pointers > 0 {
-            let ptr = if is_const {
-                Type::PtrConst(Box::new(ty), pointers)
+        if self.try_read(ELEMENT_TYPE_BYREF as usize) {
+            let ty = Box::new(self.read_type_signature(generics));
+            return if is_const {
+                Type::RefConst(ty)
             } else {
-                Type::PtrMut(Box::new(ty), pointers)
+                Type::RefMut(ty)
             };
-            if is_array {
-                Type::Array(Box::new(ptr))
-            } else {
-                ptr
-            }
-        } else if is_const {
-            Type::RefConst(Box::new(ty))
-        } else if is_array {
-            let ty = Type::Array(Box::new(ty));
-
-            if is_ref {
-                Type::RefMut(Box::new(ty))
-            } else {
-                ty
-            }
-        } else if is_ref {
-            Type::RefMut(Box::new(ty))
-        } else {
-            ty
         }
+
+        if self.try_read(ELEMENT_TYPE_SZARRAY as usize) {
+            return Type::Array(Box::new(self.read_type_signature(generics)));
+        }
+
+        if self.try_read(ELEMENT_TYPE_PTR as usize) {
+            let ty = self.read_type_signature(generics);
+            return match ty {
+                Type::PtrConst(inner, depth) if is_const => Type::PtrConst(inner, depth + 1),
+                Type::PtrMut(inner, depth) if !is_const => Type::PtrMut(inner, depth + 1),
+                ty if is_const => Type::PtrConst(Box::new(ty), 1),
+                ty => Type::PtrMut(Box::new(ty), 1),
+            };
+        }
+
+        self.read_type_code(generics)
     }
 
     pub fn read_type_code(&mut self, generics: &[Type]) -> Type {
