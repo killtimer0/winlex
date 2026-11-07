@@ -11,13 +11,13 @@ pub enum Declaration<'a> {
     Reference(TypeRef<'a>),
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct Bitfield {
     pub name: String,
     pub relative_offset_bits: u64,
     pub width_bits: u64,
 }
-#[derive(Debug, serde::Serialize)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct FieldLayout {
     pub id: EntityId,
     pub name: String,

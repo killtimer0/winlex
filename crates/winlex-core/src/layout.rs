@@ -1,6 +1,7 @@
+//! Compute each named type once and reuse its complete ABI layout in containing records.
 use crate::metadata::{Db, supports};
 use crate::source::EntityId;
-use crate::{Architecture, Layout};
+use crate::{Architecture, FieldLayout, Layout};
 use anyhow::{Result, bail, ensure};
 use repc::{Target, compute_layout, layout as l};
 use std::collections::{HashMap, HashSet};
@@ -14,20 +15,25 @@ fn builtin(b: l::BuiltinType) -> l::Type<()> {
     }
 }
 
-struct Lower<'a> {
+struct Layouts<'a> {
     db: &'a Db,
     arch: i32,
+    target: Target,
     active: HashSet<EntityId>,
-    cache: HashMap<EntityId, l::Type<()>>,
+    cache: HashMap<EntityId, Computed>,
+}
+struct Computed {
+    layout: l::TypeLayout,
+    fields: Vec<FieldLayout>,
 }
 fn instance_fields(t: TypeDef<'_>, arch: i32) -> impl Iterator<Item = Field<'_>> {
     t.fields()
         .filter(move |f| !f.flags().contains(FieldAttributes::Static) && supports(*f, arch))
 }
-impl Lower<'_> {
-    fn sig(&mut self, ty: Type, owner: TypeDef<'_>) -> Result<l::Type<()>> {
+impl Layouts<'_> {
+    fn sig(&mut self, ty: Type, owner: TypeDef<'_>) -> Result<(l::Type<()>, Vec<FieldLayout>)> {
         use l::BuiltinType as B;
-        Ok(match ty {
+        let ty = match ty {
             Type::Bool | Type::U8 => builtin(B::UnsignedChar),
             Type::I8 => builtin(B::SignedChar),
             Type::Char | Type::U16 => builtin(B::UnsignedShort),
@@ -45,37 +51,50 @@ impl Lower<'_> {
                 layout: (),
                 annotations: vec![],
                 variant: l::TypeVariant::Array(l::Array {
-                    element_type: Box::new(self.sig(*e, owner)?),
+                    element_type: Box::new(self.sig(*e, owner)?.0),
                     num_elements: Some(n as u64),
                 }),
             },
             Type::ValueName(n) | Type::ClassName(n) => {
-                self.record(self.db.resolve(&n, owner, self.arch)?)?
+                let computed = self.record(self.db.resolve(&n, owner, self.arch)?)?;
+                // repc guarantees opaque substitution preserves containing layouts;
+                // retain all alignment components, including MSVC required alignment.
+                return Ok((
+                    l::Type {
+                        layout: (),
+                        annotations: vec![],
+                        variant: l::TypeVariant::Opaque(computed.layout),
+                    },
+                    computed.fields.clone(),
+                ));
             }
             other => bail!("unlowered signature {other:?}"),
-        })
+        };
+        Ok((ty, vec![]))
     }
-    fn record(&mut self, t: TypeDef<'_>) -> Result<l::Type<()>> {
+    fn record(&mut self, t: TypeDef<'_>) -> Result<&Computed> {
         ensure!(
             t.generic_params().next().is_none(),
             "open generic layout is not supported"
         );
         let key = crate::metadata::key(t, 2);
-        if let Some(x) = self.cache.get(&key) {
-            return Ok(x.clone());
+        if self.cache.contains_key(&key) {
+            return Ok(&self.cache[&key]);
         }
         ensure!(self.active.insert(key), "by-value cycle");
         let result = (|| {
+            let mut fields = vec![];
             match t.category() {
                 TypeCategory::Delegate | TypeCategory::Interface => {
-                    return Ok(builtin(l::BuiltinType::Pointer));
+                    return self.compute(builtin(l::BuiltinType::Pointer), fields);
                 }
                 TypeCategory::Enum => {
-                    return self.sig(
+                    let (ty, fields) = self.sig(
                         t.underlying_type()
                             .ok_or_else(|| anyhow::anyhow!("missing enum backing type"))?,
                         t,
-                    );
+                    )?;
+                    return self.compute(ty, fields);
                 }
                 TypeCategory::Struct => {}
                 _ => bail!("not a native value type"),
@@ -116,7 +135,7 @@ impl Lower<'_> {
                 );
                 annotations.push(l::Annotation::Align(Some(u64::from(alignment) * 8)));
             }
-            let mut fields = vec![];
+            let mut inputs = vec![];
             for f in instance_fields(t, self.arch) {
                 if explicit {
                     ensure!(
@@ -133,32 +152,67 @@ impl Lower<'_> {
                     !f.has_attribute("FlexibleArrayAttribute"),
                     "flexible array policy not implemented"
                 );
-                fields.push(l::RecordField {
+                let (ty, nested) = self.sig(f.ty(), t)?;
+                fields.push(FieldLayout {
+                    name: f.name().into(),
+                    id: crate::metadata::key(f, 4),
+                    offset_bits: 0,
+                    size_bits: 0,
+                    bitfields: crate::metadata::bitfields(f)?,
+                    fields: nested,
+                });
+                inputs.push(l::RecordField {
                     layout: Some(()),
                     annotations: vec![],
                     named: true,
                     bit_width: None,
-                    ty: self.sig(f.ty(), t)?,
+                    ty,
                 });
             }
-            Ok(l::Type {
-                layout: (),
-                annotations,
-                variant: l::TypeVariant::Record(l::Record {
-                    kind: if explicit {
-                        l::RecordKind::Union
-                    } else {
-                        l::RecordKind::Struct
-                    },
-                    fields,
-                }),
-            })
+            self.compute(
+                l::Type {
+                    layout: (),
+                    annotations,
+                    variant: l::TypeVariant::Record(l::Record {
+                        kind: if explicit {
+                            l::RecordKind::Union
+                        } else {
+                            l::RecordKind::Struct
+                        },
+                        fields: inputs,
+                    }),
+                },
+                fields,
+            )
         })();
         self.active.remove(&key);
-        if let Ok(v) = &result {
-            self.cache.insert(key, v.clone());
+        self.cache.insert(key, result?);
+        Ok(&self.cache[&key])
+    }
+    fn compute(&self, input: l::Type<()>, mut fields: Vec<FieldLayout>) -> Result<Computed> {
+        let output = compute_layout(self.target, &input).map_err(|e| anyhow::anyhow!("{e:?}"))?;
+        if let l::TypeVariant::Record(record) = &output.variant {
+            for (field, computed) in fields.iter_mut().zip(&record.fields) {
+                let position = computed
+                    .layout
+                    .ok_or_else(|| anyhow::anyhow!("missing field layout"))?;
+                for bitfield in &field.bitfields {
+                    ensure!(
+                        bitfield
+                            .relative_offset_bits
+                            .checked_add(bitfield.width_bits)
+                            .is_some_and(|end| end <= position.size_bits),
+                        "bitfield exceeds backing field"
+                    );
+                }
+                field.offset_bits = position.offset_bits;
+                field.size_bits = position.size_bits;
+            }
         }
-        result
+        Ok(Computed {
+            layout: output.layout,
+            fields,
+        })
     }
 }
 
@@ -167,70 +221,28 @@ pub(crate) fn derive_key(db: &Db, key: EntityId, arch: Architecture) -> Result<L
     let t: TypeDef = db.row(key, 2)?;
     ensure!(supports(t, bit), "type unavailable on architecture");
     let name = t.name();
-    let mut lower = Lower {
+    let mut layouts = Layouts {
         db,
         arch: bit,
+        target: match arch {
+            Architecture::X86 => Target::I686PcWindowsMsvc,
+            Architecture::X64 => Target::X86_64PcWindowsMsvc,
+            Architecture::Arm64 => Target::Aarch64PcWindowsMsvc,
+        },
         active: HashSet::new(),
         cache: HashMap::new(),
     };
-    let input = lower.record(t)?;
-    let target = match arch {
-        Architecture::X86 => Target::I686PcWindowsMsvc,
-        Architecture::X64 => Target::X86_64PcWindowsMsvc,
-        Architecture::Arm64 => Target::Aarch64PcWindowsMsvc,
-    };
-    let output = compute_layout(target, &input).map_err(|e| anyhow::anyhow!("{e:?}"))?;
-    fn render(
-        db: &Db,
-        t: TypeDef<'_>,
-        output: &l::Type<l::TypeLayout>,
-        bit: i32,
-    ) -> Result<Vec<crate::FieldLayout>> {
-        let mut fields = vec![];
-        if let l::TypeVariant::Record(record) = &output.variant {
-            for (f, computed) in instance_fields(t, bit).zip(&record.fields) {
-                let position = computed
-                    .layout
-                    .ok_or_else(|| anyhow::anyhow!("missing field layout"))?;
-                let bits = crate::metadata::bitfields(f)?;
-                for b in &bits {
-                    let offset = b.relative_offset_bits;
-                    let width = b.width_bits;
-                    ensure!(
-                        offset
-                            .checked_add(width)
-                            .is_some_and(|end| end <= position.size_bits),
-                        "bitfield exceeds backing field"
-                    );
-                }
-                let nested = if let l::TypeVariant::Record(_) = &computed.ty.variant
-                    && let Type::ValueName(n) | Type::ClassName(n) = f.ty()
-                {
-                    render(db, db.resolve(&n, t, bit)?, &computed.ty, bit)?
-                } else {
-                    vec![]
-                };
-                fields.push(crate::FieldLayout {
-                    name: f.name().into(),
-                    id: crate::metadata::key(f, 4),
-                    offset_bits: position.offset_bits,
-                    size_bits: position.size_bits,
-                    bitfields: bits,
-                    fields: nested,
-                });
-            }
-        }
-        Ok(fields)
-    }
-    let fields = render(db, t, &output, bit)?;
+    layouts.record(t)?;
+    let dependencies_loaded = layouts.cache.len();
+    let output = layouts.cache.remove(&key).expect("computed root layout");
     Ok(Layout {
         name: name.into(),
         architecture: arch,
         id: key,
         size_bits: output.layout.size_bits,
         alignment_bits: output.layout.pointer_alignment_bits,
-        fields,
-        dependencies_loaded: lower.cache.len(),
+        fields: output.fields,
+        dependencies_loaded,
     })
 }
 
@@ -238,6 +250,129 @@ pub(crate) fn derive_key(db: &Db, key: EntityId, arch: Architecture) -> Result<L
 mod tests {
     use super::*;
     use crate::test_support::{FixtureFile, catalog, type_id};
+
+    #[test]
+    fn containing_pack_preserves_repeated_record_layout_and_array_stride() {
+        for aligned in [false, true] {
+            for pack in [1, 2, 8] {
+                let mut file = writer::File::new("NestedPacking");
+                let base = file.TypeRef("System", "ValueType");
+                let leaf = file.TypeDef(
+                    "Probe",
+                    "Leaf",
+                    writer::TypeDefOrRef::TypeRef(base),
+                    TypeAttributes::Public | TypeAttributes::SequentialLayout,
+                );
+                file.Field("tag", &Type::U8, FieldAttributes::Public);
+                file.Field("value", &Type::U32, FieldAttributes::Public);
+                if aligned {
+                    let attribute = file.TypeRef("Winlex.Metadata", "NativeAlignmentAttribute");
+                    let ctor = file.constructor(attribute, vec![Type::I32]);
+                    file.Attribute(
+                        writer::HasAttribute::TypeDef(leaf),
+                        writer::AttributeType::MemberRef(ctor),
+                        &[(String::new(), Value::I32(16))],
+                    );
+                }
+                let parent = file.TypeDef(
+                    "Probe",
+                    "Parent",
+                    writer::TypeDefOrRef::TypeRef(base),
+                    TypeAttributes::Public | TypeAttributes::SequentialLayout,
+                );
+                file.ClassLayout(parent, pack, 0);
+                for (name, ty) in [
+                    ("header", Type::U8),
+                    ("first", Type::value_named("Probe", "Leaf")),
+                    ("second", Type::value_named("Probe", "Leaf")),
+                    (
+                        "array",
+                        Type::ArrayFixed(Box::new(Type::value_named("Probe", "Leaf")), 2),
+                    ),
+                    ("tail", Type::U8),
+                ] {
+                    file.Field(name, &ty, FieldAttributes::Public);
+                }
+                let db = catalog("NestedPacking", file);
+                // MSVC ABI: parent packing caps natural alignment, not a nested
+                // __declspec(align(16)); the leaf's own member offsets never change.
+                let (size, alignment, offsets, stride) = if aligned {
+                    (96, 16, [0, 16, 32, 48, 80], 16)
+                } else {
+                    match pack {
+                        1 => (34, 1, [0, 1, 9, 17, 33], 8),
+                        2 => (36, 2, [0, 2, 10, 18, 34], 8),
+                        _ => (40, 4, [0, 4, 12, 20, 36], 8),
+                    }
+                };
+                for arch in Architecture::ALL {
+                    let layout = db.layout(type_id(&db, "Parent"), arch).unwrap();
+                    assert_eq!(
+                        (layout.size_bits, layout.alignment_bits),
+                        (size * 8, alignment * 8)
+                    );
+                    assert_eq!(
+                        layout
+                            .fields
+                            .iter()
+                            .map(|f| f.offset_bits)
+                            .collect::<Vec<_>>(),
+                        offsets.map(|v| v * 8)
+                    );
+                    assert_eq!(layout.fields[3].size_bits, stride * 2 * 8);
+                    for field in &layout.fields[1..3] {
+                        assert_eq!(field.fields[1].offset_bits, 32);
+                        assert_eq!(field.fields[1].size_bits, 32);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn recursive_values_are_rejected_but_recursive_pointers_have_native_layout() {
+        for pointer in [false, true] {
+            let mut file = writer::File::new("RecursiveLayout");
+            let base = file.TypeRef("System", "ValueType");
+            for (name, other) in [("First", "Second"), ("Second", "First")] {
+                file.TypeDef(
+                    "Probe",
+                    name,
+                    writer::TypeDefOrRef::TypeRef(base),
+                    TypeAttributes::Public | TypeAttributes::SequentialLayout,
+                );
+                let ty = Type::value_named("Probe", other);
+                file.Field(
+                    "next",
+                    &if pointer {
+                        Type::PtrMut(Box::new(ty), 1)
+                    } else {
+                        ty
+                    },
+                    FieldAttributes::Public,
+                );
+            }
+            let db = catalog("RecursiveLayout", file);
+            for arch in Architecture::ALL {
+                let result = db.layout(type_id(&db, "First"), arch);
+                if pointer {
+                    let layout = result.unwrap();
+                    assert_eq!(
+                        (layout.size_bits, layout.alignment_bits),
+                        (
+                            arch.pointer_bytes() as u64 * 8,
+                            arch.pointer_bytes() as u64 * 8
+                        )
+                    );
+                } else {
+                    assert!(
+                        result.is_err(),
+                        "by-value recursion cannot have finite size"
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn explicit_alignment_propagates_through_unions_and_containing_records() {
