@@ -65,8 +65,28 @@ impl WheelState {
 }
 
 pub(super) fn wheel(hwnd: HWND, direction: i32, count: u64) {
+    if count == 0 {
+        return;
+    }
+    // Visible RichEdit20 synchronously copies pixels for every native scroll.
+    // Keep native line/page bounds, but paint the completed wheel step once.
+    let visible = unsafe { IsWindowVisible(hwnd) } != 0;
+    if visible {
+        send(hwnd, WM_SETREDRAW, 0, 0);
+    }
     for _ in 0..count {
         send(hwnd, WM_VSCROLL, direction as usize, 0);
+    }
+    if visible {
+        send(hwnd, WM_SETREDRAW, 1, 0);
+        unsafe {
+            RedrawWindow(
+                hwnd,
+                std::ptr::null(),
+                std::ptr::null_mut(),
+                RDW_INVALIDATE | RDW_ERASE | RDW_FRAME,
+            );
+        }
     }
 }
 
@@ -169,6 +189,23 @@ mod tests {
                 before.line_height,
             )
         });
+    }
+
+    #[test]
+    fn wheel_preserves_hidden_control_visibility_and_selection() {
+        let editor = Editor::long_document();
+        let hwnd = editor.1;
+        editor.select(10, 18);
+        unsafe { ShowWindow(hwnd, SW_HIDE) };
+        assert_eq!(unsafe { IsWindowVisible(hwnd) }, 0);
+        editor.wheel(-120);
+        assert_eq!(unsafe { IsWindowVisible(hwnd) }, 0);
+        assert_eq!(editor.selection(), (10, 18));
+        unsafe { ShowWindow(hwnd, SW_SHOWNA) };
+        assert_ne!(unsafe { IsWindowVisible(hwnd) }, 0);
+        editor.wheel(-120);
+        assert_ne!(unsafe { IsWindowVisible(hwnd) }, 0);
+        assert_eq!(editor.selection(), (10, 18));
     }
 
     #[test]
