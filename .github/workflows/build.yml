@@ -11,6 +11,14 @@ jobs:
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: '3.12'
+      - name: Prepare pinned test metadata
+        shell: pwsh
+        run: |
+          uv run --locked python tests/metadata/prepare_source.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Check formatting and host libraries
         shell: pwsh
         run: |

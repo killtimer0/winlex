@@ -22,7 +22,7 @@ rustup target add i686-pc-windows-msvc x86_64-pc-windows-msvc
 
 链接依赖写入 `tmp/deps/`。
 可用 `--architecture x86|x64|arm64` 只准备目标架构需要的依赖；ARM64 不获取 YY-Thunks。
-测试所需 Win32 输入的版本与哈希见 `tests/metadata/source.json`，将对应文件放入 `inputs/Windows.Win32.winmd`。
+测试所需 Win32 输入的版本与哈希见 `tests/metadata/source.json`，运行 `python tests/metadata/prepare_source.py` 下载并校验到 `inputs/Windows.Win32.winmd`。
 
 ## 构建程序
 
