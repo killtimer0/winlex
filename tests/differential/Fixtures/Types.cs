@@ -36,7 +36,17 @@ namespace Differential
 
     [Windows.Win32.Foundation.Metadata.Guid(0x12345678, 0xabcd, 0xef01)]
     [Windows.Win32.Foundation.Metadata.NativeArrayInfo(CountConst = 17, CountParamIndex = 2)]
+    [Winlex.Metadata.NativeAlignment(16)]
     public struct Attributed { public int Number; }
+}
+
+namespace Winlex.Metadata
+{
+    [AttributeUsage(AttributeTargets.Struct, AllowMultiple = false, Inherited = true)]
+    public sealed class NativeAlignmentAttribute : Attribute
+    {
+        public NativeAlignmentAttribute(int alignment) { }
+    }
 }
 
 namespace Windows.Win32.Foundation.Metadata

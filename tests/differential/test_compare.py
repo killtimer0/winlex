@@ -105,6 +105,9 @@ class IndependentReaders(unittest.TestCase):
         self.assertEqual(convert["signature"]["parameters"][0], {"kind": "var", "index": 0})
         native_array = next(v for v in facts["attributes_decoded"].values() if v["name"] == "NativeArrayInfoAttribute")
         self.assertEqual(native_array["arguments"], [{"name": "CountConst", "value": "17"}, {"name": "CountParamIndex", "value": "2"}])
+        alignment = next(v for v in facts["attributes_decoded"].values()
+                         if v["namespace"] == "Winlex.Metadata" and v["name"] == "NativeAlignmentAttribute")
+        self.assertEqual(alignment["arguments"], [{"name": "", "value": "16"}])
         self.assertIn("18446744073709551615", [v["value"] for v in facts["constants"].values()])
         (inputs / "broken.winmd").write_bytes(b"not a PE")
         failure = subprocess.run([sys.executable, ROOT / "tests/differential/run.py", inputs, "--output", folder / "failed"],

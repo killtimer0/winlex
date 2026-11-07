@@ -744,12 +744,16 @@ mod tests {
                 TypeAttributes::Public | TypeAttributes::WindowsRuntime,
             );
             file.Field("Value", &field_type, FieldAttributes::Public);
-            let attr = file.TypeRef("Windows.Win32.Metadata", "SupportedArchitectureAttribute");
-            let ctor = file.constructor(attr, vec![Type::I32]);
+            let ns = "Windows.Win32.Foundation.Metadata";
+            let attr = file.TypeRef(ns, "SupportedArchitectureAttribute");
+            let ctor = file.constructor(attr, vec![Type::value_named(ns, "Architecture")]);
             file.Attribute(
                 writer::HasAttribute::TypeDef(ty),
                 writer::AttributeType::MemberRef(ctor),
-                &[(String::new(), Value::I32(2))],
+                &[(
+                    String::new(),
+                    Value::EnumValue(TypeName::named(ns, "Architecture"), Box::new(Value::I32(2))),
+                )],
             );
             data("NavigationDependency", file)
         };

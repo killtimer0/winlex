@@ -92,17 +92,28 @@ impl Lower<'_> {
                     annotations.push(l::Annotation::PragmaPack(c.packing_size() as u64 * 8));
                 }
             }
-            if let Some(attribute) = t.attributes().find(|attribute| {
-                attribute.namespace() == "Windows.Win32.Metadata"
-                    && attribute.name() == "AlignmentAttribute"
-            }) {
+            let mut alignments = t.attributes().filter(|attribute| {
+                attribute.namespace() == "Winlex.Metadata"
+                    && attribute.name() == "NativeAlignmentAttribute"
+            });
+            if let Some(attribute) = alignments.next() {
+                ensure!(
+                    alignments.next().is_none(),
+                    "duplicate native alignment attribute"
+                );
+                ensure!(
+                    attribute.ctor().signature(&[]).types == [Type::I32],
+                    "invalid native alignment constructor"
+                );
                 let values = attribute.value();
                 let alignment = match values.as_slice() {
-                    [(_, Value::I32(value))] => u32::try_from(*value)?,
-                    [(_, Value::U32(value))] => *value,
-                    _ => bail!("invalid alignment attribute"),
+                    [(name, Value::I32(value))] if name.is_empty() && *value > 0 => *value as u32,
+                    _ => bail!("invalid native alignment attribute"),
                 };
-                ensure!(alignment.is_power_of_two(), "invalid alignment attribute");
+                ensure!(
+                    alignment.is_power_of_two(),
+                    "invalid native alignment attribute"
+                );
                 annotations.push(l::Annotation::Align(Some(u64::from(alignment) * 8)));
             }
             let mut fields = vec![];
@@ -232,7 +243,7 @@ mod tests {
     fn explicit_alignment_propagates_through_unions_and_containing_records() {
         let mut file = writer::File::new("AlignedRecords");
         let base = file.TypeRef("System", "ValueType");
-        let attribute = file.TypeRef("Windows.Win32.Metadata", "AlignmentAttribute");
+        let attribute = file.TypeRef("Winlex.Metadata", "NativeAlignmentAttribute");
         let constructor = file.constructor(attribute, vec![Type::I32]);
         for (name, union, fields) in [
             (
@@ -320,16 +331,138 @@ mod tests {
 
     #[test]
     fn invalid_explicit_alignment_is_rejected() {
-        for alignment in [
-            Value::I32(-1),
-            Value::I32(0),
-            Value::I32(3),
-            Value::Utf8("16".into()),
+        for (alignment, argument_name, copies) in [
+            (Value::I32(-1), "", 1),
+            (Value::I32(0), "", 1),
+            (Value::I32(3), "", 1),
+            (Value::U32(16), "", 1),
+            (Value::Utf8("16".into()), "", 1),
+            (Value::I32(16), "Alignment", 1),
+            (Value::I32(16), "", 2),
         ] {
             let mut file = writer::File::new("InvalidAlignment");
             let base = file.TypeRef("System", "ValueType");
-            let attribute = file.TypeRef("Windows.Win32.Metadata", "AlignmentAttribute");
-            let constructor = file.constructor(attribute, vec![alignment.ty()]);
+            let attribute = file.TypeRef("Winlex.Metadata", "NativeAlignmentAttribute");
+            let constructor = file.constructor(
+                attribute,
+                if argument_name.is_empty() {
+                    vec![alignment.ty()]
+                } else {
+                    vec![]
+                },
+            );
+            let record = file.TypeDef(
+                "Probe",
+                "Record",
+                writer::TypeDefOrRef::TypeRef(base),
+                TypeAttributes::Public | TypeAttributes::SequentialLayout,
+            );
+            file.Field("value", &Type::U32, FieldAttributes::Public);
+            for _ in 0..copies {
+                file.Attribute(
+                    writer::HasAttribute::TypeDef(record),
+                    writer::AttributeType::MemberRef(constructor),
+                    &[(argument_name.into(), alignment.clone())],
+                );
+            }
+            let db = catalog("InvalidAlignment", file);
+            for arch in Architecture::ALL {
+                assert!(db.layout(type_id(&db, "Record"), arch).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn native_alignment_is_distinct_from_pack_and_requires_its_full_name() {
+        for (namespace, name, pack, alignment, expected_size, expected_alignment, offset) in [
+            (
+                "Winlex.Metadata",
+                "NativeAlignmentAttribute",
+                0,
+                16,
+                16,
+                16,
+                4,
+            ),
+            (
+                "Winlex.Metadata",
+                "NativeAlignmentAttribute",
+                1,
+                16,
+                16,
+                16,
+                1,
+            ),
+            (
+                "Winlex.Metadata",
+                "NativeAlignmentAttribute",
+                16,
+                1,
+                8,
+                4,
+                4,
+            ),
+            ("Other", "NativeAlignmentAttribute", 0, 16, 8, 4, 4),
+            (
+                "Windows.Win32.Metadata",
+                "AlignmentAttribute",
+                0,
+                16,
+                8,
+                4,
+                4,
+            ),
+        ] {
+            let mut file = writer::File::new("Packing");
+            let base = file.TypeRef("System", "ValueType");
+            let attribute = file.TypeRef(namespace, name);
+            let constructor = file.constructor(attribute, vec![Type::I32]);
+            let record = file.TypeDef(
+                "Probe",
+                "Record",
+                writer::TypeDefOrRef::TypeRef(base),
+                TypeAttributes::Public | TypeAttributes::SequentialLayout,
+            );
+            file.ClassLayout(record, pack, 0);
+            file.Field("header", &Type::U8, FieldAttributes::Public);
+            file.Field("value", &Type::U32, FieldAttributes::Public);
+            file.Attribute(
+                writer::HasAttribute::TypeDef(record),
+                writer::AttributeType::MemberRef(constructor),
+                &[(String::new(), Value::I32(alignment))],
+            );
+            let db = catalog("Packing", file);
+            for arch in Architecture::ALL {
+                let layout = db.layout(type_id(&db, "Record"), arch).unwrap();
+                assert_eq!(
+                    (layout.size_bits, layout.alignment_bits),
+                    (expected_size * 8, expected_alignment * 8)
+                );
+                assert_eq!(layout.fields[1].offset_bits, offset * 8);
+            }
+        }
+    }
+
+    #[test]
+    fn architecture_merge_preserves_native_alignment_variants() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tmp")
+            .join(format!(
+                "alignment-merge-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut merger = windows_metadata::merge::Merger::new();
+        let mut inputs = vec![];
+        for (arch, alignment) in [(1, 8), (2, 16), (4, 16)] {
+            let mut file = writer::File::new("ArchAlignment");
+            let base = file.TypeRef("System", "ValueType");
+            let attribute = file.TypeRef("Winlex.Metadata", "NativeAlignmentAttribute");
+            let constructor = file.constructor(attribute, vec![Type::I32]);
             let record = file.TypeDef(
                 "Probe",
                 "Record",
@@ -340,12 +473,64 @@ mod tests {
             file.Attribute(
                 writer::HasAttribute::TypeDef(record),
                 writer::AttributeType::MemberRef(constructor),
-                &[(String::new(), alignment)],
+                &[(String::new(), Value::I32(alignment))],
             );
-            let db = catalog("InvalidAlignment", file);
+            let ns = "Windows.Win32.Foundation.Metadata";
+            let attribute = file.TypeRef(ns, "SupportedArchitectureAttribute");
+            let constructor =
+                file.constructor(attribute, vec![Type::value_named(ns, "Architecture")]);
+            file.Attribute(
+                writer::HasAttribute::TypeDef(record),
+                writer::AttributeType::MemberRef(constructor),
+                &[(
+                    String::new(),
+                    Value::EnumValue(TypeName::named(ns, "Architecture"), Box::new(Value::I32(7))),
+                )],
+            );
+            let path = dir.join(format!("{arch}.winmd"));
+            std::fs::write(&path, file.into_stream()).unwrap();
+            merger.arch_input(&path, arch);
+            inputs.push(path);
+        }
+        let output = dir.join("Merged.winmd");
+        merger.output(&output).merge().unwrap();
+        let union = dir.join("Union.winmd");
+        windows_metadata::merge::Merger::new()
+            .input(&output)
+            .union_enums()
+            .output(&union)
+            .merge()
+            .unwrap();
+        for path in [&output, &union] {
+            let db = crate::Catalog::from_inputs([crate::SourceData {
+                path: path.clone(),
+                bytes: std::fs::read(path).unwrap().into(),
+            }])
+            .unwrap();
             for arch in Architecture::ALL {
-                assert!(db.layout(type_id(&db, "Record"), arch).is_err());
+                let row = db
+                    .search_exact(
+                        "Record",
+                        crate::SearchOptions {
+                            architecture: Some(arch),
+                            ..Default::default()
+                        },
+                    )
+                    .unwrap()
+                    .next()
+                    .unwrap()
+                    .unwrap();
+                let layout = db.layout(row.id, arch).unwrap();
+                let expected = if arch == Architecture::X86 { 64 } else { 128 };
+                assert_eq!(
+                    (layout.size_bits, layout.alignment_bits),
+                    (expected, expected)
+                );
             }
         }
+        for path in inputs.into_iter().chain([output, union]) {
+            std::fs::remove_file(path).unwrap();
+        }
+        std::fs::remove_dir(dir).unwrap();
     }
 }

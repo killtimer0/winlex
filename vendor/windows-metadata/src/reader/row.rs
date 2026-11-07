@@ -181,22 +181,20 @@ impl<'a, R: AsRow<'a> + Into<HasAttribute<'a>>> HasAttributes<'a> for R {
     }
 
     fn arches(&self) -> i32 {
-        let mut arches = 0;
-
-        if let Some(attribute) = self.find_attribute("SupportedArchitectureAttribute") {
-            arches = match attribute.value().first() {
-                Some((_, Value::I32(v))) => *v,
-                Some((_, Value::EnumValue(_, inner))) => {
-                    if let Value::I32(v) = inner.as_ref() {
-                        *v
-                    } else {
-                        0
-                    }
-                }
-                _ => 0,
-            };
+        if let Some(attribute) = self.attributes().find(|attribute| {
+            attribute.namespace() == "Windows.Win32.Foundation.Metadata"
+                && attribute.name() == "SupportedArchitectureAttribute"
+        }) {
+            let values = attribute.value();
+            if let [(name, Value::EnumValue(ty, inner))] = values.as_slice()
+                && name.is_empty()
+                && ty.namespace == "Windows.Win32.Foundation.Metadata"
+                && ty.name == "Architecture"
+                && let Value::I32(bits) = inner.as_ref()
+            {
+                return *bits;
+            }
         }
-
-        arches
+        0
     }
 }

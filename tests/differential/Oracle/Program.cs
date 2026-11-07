@@ -187,6 +187,7 @@ sealed class AttributeTypes(MetadataReader reader) : ICustomAttributeTypeProvide
             _ => "" };
     }
     public bool Selected(CustomAttribute a) => Name(a) is
+        "Winlex.Metadata.NativeAlignmentAttribute" or
         "Windows.Win32.Foundation.Metadata.GuidAttribute" or
         "Windows.Win32.Foundation.Metadata.SupportedArchitectureAttribute" or
         "Windows.Win32.Foundation.Metadata.NativeArrayInfoAttribute" or

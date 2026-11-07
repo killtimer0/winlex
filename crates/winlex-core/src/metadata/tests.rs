@@ -4,6 +4,68 @@ use crate::{
 };
 use windows_metadata::{writer, *};
 
+#[test]
+fn architecture_filter_requires_the_qualified_attribute_and_enum() {
+    use crate::test_support::FixtureFile;
+    let ns = "Windows.Win32.Foundation.Metadata";
+    for (attribute_ns, value, mask) in [
+        (
+            ns,
+            Value::EnumValue(TypeName::named(ns, "Architecture"), Box::new(Value::I32(2))),
+            2,
+        ),
+        (
+            "Other",
+            Value::EnumValue(TypeName::named(ns, "Architecture"), Box::new(Value::I32(2))),
+            7,
+        ),
+        ("Windows.Win32.Metadata", Value::I32(2), 7),
+        (ns, Value::I32(2), 7),
+        (
+            ns,
+            Value::EnumValue(
+                TypeName::named("Other", "Architecture"),
+                Box::new(Value::I32(2)),
+            ),
+            7,
+        ),
+    ] {
+        let mut file = writer::File::new("ArchitectureContract");
+        let attribute = file.TypeRef(attribute_ns, "SupportedArchitectureAttribute");
+        let ctor = file.constructor(attribute, vec![value.ty()]);
+        let ty = file.TypeDef(
+            "Fixture",
+            "Restricted",
+            writer::TypeDefOrRef::default(),
+            TypeAttributes::Public,
+        );
+        file.Attribute(
+            writer::HasAttribute::TypeDef(ty),
+            writer::AttributeType::MemberRef(ctor),
+            &[(String::new(), value)],
+        );
+        let db = catalog("ArchitectureContract", file);
+        assert_eq!(
+            db.entity(id(&db, "Restricted")).unwrap().architecture_mask,
+            mask
+        );
+        for arch in Architecture::ALL {
+            let rows = db
+                .search_exact(
+                    "Restricted",
+                    crate::SearchOptions {
+                        architecture: Some(arch),
+                        ..Default::default()
+                    },
+                )
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            assert_eq!(!rows.is_empty(), mask & arch.bit() != 0);
+        }
+    }
+}
+
 fn method(file: &mut writer::File, name: &str, flags: MethodAttributes) {
     file.MethodDef(
         name,

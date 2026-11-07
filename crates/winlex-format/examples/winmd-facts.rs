@@ -130,6 +130,7 @@ fn facts(db: &Db) -> Json {
 
 fn selected_attribute(namespace: &str, name: &str) -> bool {
     match namespace {
+        "Winlex.Metadata" => name == "NativeAlignmentAttribute",
         "Windows.Win32.Foundation.Metadata" => matches!(
             name,
             "GuidAttribute"

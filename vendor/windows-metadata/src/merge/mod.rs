@@ -132,10 +132,7 @@ impl Merger {
                 // each arch keeps its own copy, tagged as the inputs had it.
                 let mut by_arch: BTreeMap<i32, Vec<reader::TypeDef<'_>>> = BTreeMap::new();
                 for copy in copies {
-                    by_arch
-                        .entry(type_arch_bits(*copy))
-                        .or_default()
-                        .push(*copy);
+                    by_arch.entry(copy.arches()).or_default().push(*copy);
                 }
 
                 for arch_copies in by_arch.values() {
@@ -386,20 +383,6 @@ fn write_field(file: &mut writer::File, field: reader::Field, arch_override: Opt
         field,
         arch_override,
     );
-}
-
-/// Returns the `SupportedArchitectureAttribute` bits on a type, or 0 (arch-neutral) if absent.
-fn type_arch_bits(def: reader::TypeDef) -> i32 {
-    for attribute in def.attributes() {
-        let ty = attribute.ctor().parent();
-        if ty.namespace() == "Windows.Win32.Metadata"
-            && ty.name() == "SupportedArchitectureAttribute"
-            && let Some((_, Value::I32(bits))) = attribute.value().first()
-        {
-            return *bits;
-        }
-    }
-    0
 }
 
 /// Extracts the integer value of an enum member for comparison, or `None` for non-integer values.
@@ -754,7 +737,7 @@ fn callback_attributes<'a, R: HasAttributes<'a>>(
     row.attributes()
         .filter_map(|attribute| {
             let ty = attribute.ctor().parent();
-            (!(ty.namespace() == "Windows.Win32.Metadata"
+            (!(ty.namespace() == "Windows.Win32.Foundation.Metadata"
                 && ty.name() == "SupportedArchitectureAttribute"))
                 .then(|| {
                     (
@@ -921,7 +904,11 @@ fn type_sig(index: &reader::Index, def: reader::TypeDef) -> String {
         .class_layout()
         .map(|l| (l.packing_size(), l.class_size()));
     let align = def
-        .find_attribute("AlignmentAttribute")
+        .attributes()
+        .find(|attribute| {
+            attribute.namespace() == "Winlex.Metadata"
+                && attribute.name() == "NativeAlignmentAttribute"
+        })
         .map(|a| format!("{:?}", a.value()));
     // Recurse into nested shapes; outer fields reference only invariant nested leaf names.
     let nested: Vec<String> = index
@@ -954,7 +941,7 @@ fn write_attributes_with_arch<'a, R: HasAttributes<'a>>(
         let ty = ctor.parent();
 
         if arch_override.is_some()
-            && ty.namespace() == "Windows.Win32.Metadata"
+            && ty.namespace() == "Windows.Win32.Foundation.Metadata"
             && ty.name() == "SupportedArchitectureAttribute"
         {
             continue;
@@ -984,7 +971,7 @@ fn write_supported_architecture_attr(
     parent: writer::HasAttribute,
     arch_bits: i32,
 ) {
-    let ns = "Windows.Win32.Metadata";
+    let ns = "Windows.Win32.Foundation.Metadata";
     let name = "SupportedArchitectureAttribute";
 
     let type_ref = writer::MemberRefParent::TypeRef(file.TypeRef(ns, name));
@@ -992,7 +979,7 @@ fn write_supported_architecture_attr(
     let sig = Signature {
         flags: MethodCallAttributes::HASTHIS,
         return_type: Type::Void,
-        types: vec![Type::I32],
+        types: vec![Type::value_named(ns, "Architecture")],
     };
 
     let ctor_ref = file.MemberRef(".ctor", &sig, type_ref);
@@ -1000,6 +987,12 @@ fn write_supported_architecture_attr(
     file.Attribute(
         parent,
         writer::AttributeType::MemberRef(ctor_ref),
-        &[(String::new(), Value::I32(arch_bits))],
+        &[(
+            String::new(),
+            Value::EnumValue(
+                TypeName::named(ns, "Architecture"),
+                Box::new(Value::I32(arch_bits)),
+            ),
+        )],
     );
 }
