@@ -5,11 +5,11 @@ use std::{mem::size_of, sync::OnceLock};
 use windows::Win32::UI::Controls::RichEdit::{
     CFE_LINK, CFE_LINKPROTECTED, CFE_UNDERLINE, CFM_COLOR, CFM_FACE, CFM_LINK, CFM_LINKPROTECTED,
     CFM_SIZE, CFM_UNDERLINE, CHARFORMAT2W, CHARFORMATW, CHARRANGE, EDITSTREAM, EM_EXGETSEL,
-    EM_EXSETSEL, EM_GETCHARFORMAT, EM_GETEVENTMASK, EM_GETOLEINTERFACE, EM_GETSELTEXT,
+    EM_EXSETSEL, EM_GETCHARFORMAT, EM_GETEVENTMASK, EM_GETOLEINTERFACE, EM_GETSELTEXT, EM_GETZOOM,
     EM_SETBKGNDCOLOR, EM_SETCHARFORMAT, EM_SETEDITSTYLEEX, EM_SETEVENTMASK, EM_SETPARAFORMAT,
-    EM_SETSCROLLPOS, EM_STREAMIN, ENLINK, ENM_LINK, IRichEditOle, ITextDocument, PARAFORMAT,
-    PARAFORMAT2, PFM_LINESPACING, PFM_RIGHTINDENT, PFM_STARTINDENT, SCF_ALL, SCF_SELECTION,
-    SES_EX_HANDLEFRIENDLYURL, SF_RTF,
+    EM_SETSCROLLPOS, EM_SETZOOM, EM_STREAMIN, ENLINK, ENM_LINK, IRichEditOle, ITextDocument,
+    PARAFORMAT, PARAFORMAT2, PFM_LINESPACING, PFM_RIGHTINDENT, PFM_STARTINDENT, SCF_ALL,
+    SCF_SELECTION, SES_EX_HANDLEFRIENDLYURL, SF_RTF,
 };
 use windows_core::Interface;
 use winlex_core::EntityId;
@@ -18,6 +18,12 @@ use winlex_format::declaration::{Region, RegionKind, Rendered};
 mod rtf;
 mod scroll;
 mod word_break;
+
+struct EditorState {
+    wheel: scroll::WheelState,
+    height: i32,
+    dpi: u32,
+}
 
 const KEYWORD_STYLE: u8 = 1;
 const COMMENT_STYLE: u8 = 2;
@@ -251,7 +257,8 @@ pub fn create(parent: HWND, id: u16) -> anyhow::Result<HWND> {
     static LOADED: OnceLock<Result<(), u32>> = OnceLock::new();
     static MODERN: OnceLock<Result<(), u32>> = OnceLock::new();
     // RichEdit 2.0 ignores explicit hyperlink colors when painting.
-    let class = if crate::theme::supported() && load_module(&MODERN, "msftedit.dll").is_ok() {
+    let modern = crate::theme::supported() && load_module(&MODERN, "msftedit.dll").is_ok();
+    let class = if modern {
         w!("RICHEDIT50W")
     } else {
         load_module(&LOADED, "riched20.dll").context("Load RichEdit")?;
@@ -271,7 +278,11 @@ pub fn create(parent: HWND, id: u16) -> anyhow::Result<HWND> {
             id,
         )
     }?;
-    let state = Box::into_raw(Box::<scroll::WheelState>::default());
+    let state = Box::into_raw(Box::new(EditorState {
+        wheel: scroll::WheelState::default(),
+        height: 0,
+        dpi: 0,
+    }));
     if unsafe { set_subclass(hwnd, Some(procedure), 1, state as usize) } == 0 {
         unsafe { drop(Box::from_raw(state)) };
         unsafe { DestroyWindow(hwnd) };
@@ -347,15 +358,19 @@ unsafe extern "system" fn procedure(
                         (&mut lines as *mut u32).cast(),
                         0,
                     );
-                    let (direction, count) =
-                        (*(data as *mut scroll::WheelState)).step(delta, lines);
+                    let (direction, count) = (*(data as *mut EditorState)).wheel.step(delta, lines);
                     scroll::wheel(hwnd, direction, count);
                 }
                 return 0;
             }
+            // Modern RichEdit changes its internal rendering DPI during the
+            // BEFORE notification. Own scaling in prepare() for both engines
+            // and awareness modes, including controls created on a secondary
+            // monitor, instead of compounding native DPI scaling with zoom.
+            WM_DPICHANGED_BEFOREPARENT | WM_DPICHANGED_AFTERPARENT => return 0,
             WM_NCDESTROY => {
                 remove_subclass(hwnd, Some(procedure), id);
-                drop(Box::from_raw(data as *mut scroll::WheelState));
+                drop(Box::from_raw(data as *mut EditorState));
             }
             _ => {}
         }
@@ -396,7 +411,69 @@ fn load_module(cache: &OnceLock<Result<(), u32>>, name: &str) -> std::io::Result
         .map_err(|code| std::io::Error::from_raw_os_error(code as i32))
 }
 
-pub fn font(hwnd: HWND) {
+pub fn prepare(hwnd: HWND, system_font: HFONT, dpi: crate::dpi::Dpi) -> anyhow::Result<()> {
+    // Store document sizes in points, independent of the current monitor.
+    // WM_SETFONT would reset the document's character colors and effects.
+    let (height, render_dpi) = unsafe {
+        let dc = GetDC(hwnd);
+        anyhow::ensure!(!dc.is_null(), "Get RichEdit font measurement DC failed");
+        let previous = SelectObject(dc, system_font);
+        let mut metrics: TEXTMETRICW = std::mem::zeroed();
+        let measured = GetTextMetricsW(dc, &mut metrics);
+        let render_dpi = GetDeviceCaps(dc, LOGPIXELSY as i32);
+        SelectObject(dc, previous);
+        ReleaseDC(hwnd, dc);
+        anyhow::ensure!(measured != 0, "Measure RichEdit font failed");
+        (
+            MulDiv(
+                metrics.tmHeight - metrics.tmInternalLeading,
+                1440,
+                dpi.system() as i32,
+            ),
+            render_dpi,
+        )
+    };
+    let mut data = 0;
+    anyhow::ensure!(
+        unsafe {
+            windows_sys::Win32::UI::Shell::GetWindowSubclass(hwnd, Some(procedure), 1, &mut data)
+        } != 0,
+        "Read RichEdit state failed"
+    );
+    let state = data as *mut EditorState;
+    let target_dpi = dpi.window(hwnd);
+    let font_changed = unsafe { (*state).height != height };
+    if !font_changed && unsafe { (*state).dpi == target_dpi } {
+        return Ok(());
+    }
+    let view = ViewState::capture(hwnd);
+    if font_changed {
+        let format = CHARFORMATW {
+            cbSize: size_of::<CHARFORMATW>() as u32,
+            dwMask: CFM_SIZE,
+            yHeight: height,
+            ..Default::default()
+        };
+        send_ref(hwnd, EM_SETCHARFORMAT, SCF_ALL as usize, &format);
+        self::font(hwnd);
+        unsafe {
+            (*state).height = height;
+        }
+    }
+    // Without native DPI updates, both engines render at the system DC DPI,
+    // not necessarily the DPI of the monitor where the control was created.
+    anyhow::ensure!(
+        send(hwnd, EM_SETZOOM, target_dpi as usize, render_dpi as isize) != 0,
+        "Set RichEdit DPI zoom failed"
+    );
+    unsafe {
+        (*state).dpi = target_dpi;
+    }
+    view.restore(hwnd);
+    Ok(())
+}
+
+fn font(hwnd: HWND) {
     let mut format = CHARFORMATW {
         cbSize: size_of::<CHARFORMATW>() as u32,
         dwMask: CFM_FACE,
@@ -434,11 +511,22 @@ pub fn font(hwnd: HWND) {
 }
 
 pub fn set_content(hwnd: HWND, content: &Content) -> anyhow::Result<()> {
+    let (mut numerator, mut denominator) = (0i32, 0i32);
+    send(
+        hwnd,
+        EM_GETZOOM,
+        &mut numerator as *mut _ as usize,
+        &mut denominator as *mut _ as isize,
+    );
     send(hwnd, WM_SETREDRAW, 0, 0);
     let frozen = freeze(hwnd);
     let result = replace(hwnd, content);
+    // Both RTF streaming and plain-text replacement reset display zoom.
+    let zoomed = send(hwnd, EM_SETZOOM, numerator as usize, denominator as isize);
     redraw(hwnd, frozen);
-    result
+    result?;
+    ensure!(zoomed != 0, "Restore RichEdit zoom failed");
+    Ok(())
 }
 
 pub fn recolor(hwnd: HWND, content: &Content) -> anyhow::Result<()> {
@@ -754,6 +842,148 @@ impl Drop for Editor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn content_replacement_preserves_zoom_and_rendered_size() {
+        let editor = Editor::new(WS_POPUP, crate::layout::rect(0, 0, 900, 600));
+        set_bounds(editor.1, crate::layout::rect(0, 0, 750, 500)).unwrap();
+        let body = "const UINT32 value = 42;\n";
+        let content = Content::new(body.into());
+        set_content(editor.1, &content).unwrap();
+        for (numerator, denominator) in [(1, 2), (3, 2), (0, 0)] {
+            assert_ne!(send(editor.1, EM_SETZOOM, numerator, denominator), 0);
+            let before = editor.character_position(5).x - editor.character_position(0).x;
+            assert!(before > 0);
+            for failed_stream in [false, true] {
+                let mut replacement = Content::new(body.into());
+                if failed_stream {
+                    replacement.rtf = b"not RTF".to_vec();
+                }
+                let result = set_content(editor.1, &replacement);
+                if failed_stream && syntax_enabled() {
+                    assert!(result.is_err());
+                } else {
+                    result.unwrap();
+                }
+                assert_eq!(text(editor.1).replace("\r\n", "\r"), content.text);
+                let (mut actual_numerator, mut actual_denominator) = (0i32, 0i32);
+                send(
+                    editor.1,
+                    EM_GETZOOM,
+                    &mut actual_numerator as *mut _ as usize,
+                    &mut actual_denominator as *mut _ as isize,
+                );
+                assert_eq!(
+                    (actual_numerator, actual_denominator),
+                    (numerator as i32, denominator as i32)
+                );
+                assert_eq!(
+                    editor.character_position(5).x - editor.character_position(0).x,
+                    before
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn dpi_zoom_preserves_character_colors_sizes_and_links() {
+        let fixture = Editor::new(WS_POPUP, crate::layout::rect(0, 0, 900, 600));
+        let reference = Editor::new(WS_POPUP, crate::layout::rect(0, 0, 900, 600));
+        for editor in [fixture.1, reference.1] {
+            set_bounds(editor, crate::layout::rect(0, 0, 750, 500)).unwrap();
+        }
+        let dpi = crate::dpi::Dpi {
+            mode: crate::dpi::Mode::System,
+        };
+        let initial_font = crate::dpi::Font::new(dpi.system()).unwrap();
+        prepare(fixture.1, initial_font.handle.0, dpi).unwrap();
+        send(reference.1, WM_SETFONT, initial_font.handle.0 as usize, 0);
+        super::font(reference.1);
+        let initial_height = reference.character_format().Base.yHeight;
+        assert_eq!(fixture.character_format().Base.yHeight, initial_height);
+        let body = "const UINT32 value = 42; // comment";
+        for mode in [2, 1] {
+            crate::theme::set_mode(mode);
+            let content = Content::new(body.into());
+            set_content(fixture.1, &content).unwrap();
+            set_content(reference.1, &content).unwrap();
+            assert_eq!(
+                fixture.character_format().Base.yHeight,
+                reference.character_format().Base.yHeight,
+                "content loading must retain the previously applied font size"
+            );
+            // A native link is another independently formatted range, not just
+            // the document's default foreground color.
+            fixture.select(13, 18);
+            let link = CHARFORMATW {
+                cbSize: size_of::<CHARFORMATW>() as u32,
+                dwMask: CFM_LINK | CFM_COLOR | CFM_UNDERLINE,
+                dwEffects: CFE_LINK | CFE_UNDERLINE,
+                crTextColor: windows::Win32::Foundation::COLORREF(crate::theme::color(
+                    COLOR_HOTLIGHT,
+                )),
+                ..Default::default()
+            };
+            send_ref(fixture.1, EM_SETCHARFORMAT, SCF_SELECTION as usize, &link);
+            fixture.select(6, 12);
+            let large = CHARFORMATW {
+                cbSize: size_of::<CHARFORMATW>() as u32,
+                dwMask: CFM_SIZE,
+                yHeight: 360,
+                ..Default::default()
+            };
+            send_ref(fixture.1, EM_SETCHARFORMAT, SCF_SELECTION as usize, &large);
+            let samples = [(0, 5), (6, 12), (13, 18), (26, 33)];
+            let before: Vec<_> = samples
+                .iter()
+                .map(|&(start, end)| {
+                    fixture.select(start, end);
+                    let format = fixture.character_format().Base;
+                    (format.crTextColor.0, format.dwEffects, format.yHeight)
+                })
+                .collect();
+            for (numerator, denominator) in [(2, 1), (1, 1), (3, 2), (1, 1)] {
+                fixture.select(6, 12);
+                assert_ne!(send(fixture.1, EM_SETZOOM, numerator, denominator), 0);
+                // Refreshing unchanged settings must not flatten mixed sizes.
+                prepare(fixture.1, initial_font.handle.0, dpi).unwrap();
+                assert_eq!(fixture.selection(), (6, 12));
+                for (&(start, end), expected) in samples.iter().zip(&before) {
+                    fixture.select(start, end);
+                    let format = fixture.character_format().Base;
+                    assert_eq!(
+                        (format.crTextColor.0, format.dwEffects, format.yHeight),
+                        *expected,
+                        "zoom changed formatting at {start}..{end}, mode={mode}"
+                    );
+                }
+            }
+        }
+        crate::theme::set_mode(0);
+    }
+
+    #[test]
+    fn dpi_zoom_preserves_scrolled_reading_anchor() {
+        let fixture = Editor::new(WS_POPUP, crate::layout::rect(0, 0, 1000, 600));
+        set_bounds(fixture.1, crate::layout::rect(0, 0, 950, 500)).unwrap();
+        let line = "const UINT32 value = 42;\n";
+        set_content(fixture.1, &Content::new(line.repeat(500))).unwrap();
+        fixture.select(6000, 6005);
+        send(fixture.1, EM_LINESCROLL, 0, 100);
+        let view = ViewState::capture(fixture.1);
+        assert!(view.anchor > 0);
+        for (numerator, denominator) in [(2, 1), (1, 1), (3, 2), (1, 1)] {
+            let before = ViewState::capture(fixture.1);
+            assert_ne!(send(fixture.1, EM_SETZOOM, numerator, denominator), 0);
+            before.restore(fixture.1);
+            let current = ViewState::capture(fixture.1);
+            assert_eq!(current.selection, view.selection);
+            assert_eq!(
+                current.anchor, view.anchor,
+                "font update must preserve the first visible logical line"
+            );
+        }
+    }
 
     #[test]
     fn native_link_pixels_use_theme_color_after_dark_and_light_recoloring() {

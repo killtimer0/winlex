@@ -678,12 +678,17 @@ impl View {
             self.browse,
             self.query,
             self.tooltip,
-            self.result,
             self.copy,
         ]) {
             super::super::bind(h, m.font);
         }
-        crate::rich_text::font(self.result);
+        let ctx = self.ctx();
+        let (system_font, _) = ctx.font_for(ctx.dpi().system());
+        ctx.checked(crate::rich_text::prepare(
+            self.result,
+            system_font,
+            ctx.dpi(),
+        ));
         send(self.tooltip, TTM_SETMAXTIPWIDTH, 0, m.px(480) as isize);
         self.layout();
     }

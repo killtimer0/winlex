@@ -405,17 +405,7 @@ fn apply_one(hwnd: HWND) {
                     send_ref(hwnd, TB_SETCOLORSCHEME, 0, &scheme);
                 }
                 "static" => static_text::install(hwnd),
-                "syslink" => {
-                    let mut item = LITEM {
-                        mask: LIF_ITEMINDEX | LIF_STATE,
-                        stateMask: LIS_DEFAULTCOLORS,
-                        state: if dark { LIS_DEFAULTCOLORS } else { 0 },
-                        ..std::mem::zeroed()
-                    };
-                    while send_mut(hwnd, LM_SETITEM, 0, &mut item) != 0 {
-                        item.iLink += 1;
-                    }
-                }
+                "syslink" => {}
                 _ => set_native_theme(hwnd, "DarkMode_Explorer", None),
             }
         }
@@ -546,6 +536,28 @@ unsafe fn notify(hwnd: HWND, msg: u32, w: usize, l: isize) -> Option<isize> {
         }
         let themed = match class_name(hdr.hwndFrom).as_str() {
             "toolbarwindow32" => controls::toolbar(&mut *(l as *mut NMTBCUSTOMDRAW)),
+            "syslink" => {
+                let draw = &*(l as *const NMCUSTOMDRAW);
+                match draw.dwDrawStage {
+                    CDDS_PREPAINT => CDRF_NOTIFYITEMDRAW as isize,
+                    CDDS_ITEMPREPAINT => {
+                        SetTextColor(
+                            draw.hdc,
+                            color_role(if draw.uItemState & CDIS_DISABLED != 0 {
+                                Role::DisabledText
+                            } else if draw.dwItemSpec == usize::MAX {
+                                // SysLink also custom-draws non-anchor text runs.
+                                Role::Text
+                            } else {
+                                Role::Link
+                            }),
+                        );
+                        SetBkColor(draw.hdc, color_role(Role::Dialog));
+                        CDRF_NEWFONT as isize
+                    }
+                    _ => 0,
+                }
+            }
             _ => 0,
         };
         Some(result | themed)
@@ -585,8 +597,6 @@ unsafe fn control_color(hwnd: HWND, msg: u32, w: usize, l: isize) -> isize {
             dc,
             color_role(if !enabled {
                 Role::DisabledText
-            } else if class == "syslink" {
-                Role::Link
             } else {
                 Role::Text
             }),

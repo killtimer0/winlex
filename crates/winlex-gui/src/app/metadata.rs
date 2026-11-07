@@ -516,12 +516,15 @@ impl MetadataView {
         let ctx = self.ctx();
         ctx.checked(self.update_icons());
         let (font, _) = ctx.font_for(ctx.dpi().window(hwnd));
-        for h in [self.editor, self.header] {
-            bind(h, font);
-        }
+        bind(self.header, font);
         self.find.prepare(font);
         ctx.checked(self.info.prepare(&ctx.metrics(hwnd)));
-        crate::rich_text::font(self.editor);
+        let (system_font, _) = ctx.font_for(ctx.dpi().system());
+        ctx.checked(crate::rich_text::prepare(
+            self.editor,
+            system_font,
+            ctx.dpi(),
+        ));
         self.layout();
     }
     pub(super) fn recolor(&self) {

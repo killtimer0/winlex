@@ -535,7 +535,7 @@ fn dark_checkbox_keeps_text_contrast_focus_and_check_state() {
 }
 
 #[test]
-fn syslink_native_draw_uses_readable_link_color_without_changing_link_state() {
+fn syslink_mixed_text_keeps_normal_link_and_disabled_colors_and_native_state() {
     if !supported() {
         return;
     }
@@ -546,54 +546,86 @@ fn syslink_native_draw_uses_readable_link_color_without_changing_link_state() {
             w!("STATIC"),
             ptr::null(),
             WS_POPUP,
-            crate::layout::rect(0, 0, 300, 100),
+            crate::layout::rect(0, 0, 600, 100),
         );
         let link = child(
             parent,
             w!("SysLink"),
-            &wide("<a href=\"https://example.com\">Readable link</a>"),
+            &wide(
+                "Ordinary before <a href=\"https://example.com\">Readable link</a> ordinary between \
+                 <a href=\"https://example.org\">Disabled link</a> ordinary after",
+            ),
             WS_TABSTOP,
             1,
         )
         .unwrap();
-        set_bounds(link, crate::layout::rect(0, 0, 250, 40)).unwrap();
+        set_bounds(link, crate::layout::rect(0, 0, 600, 80)).unwrap();
         let mut item = LITEM {
             mask: LIF_ITEMINDEX | LIF_STATE,
             iLink: 0,
-            stateMask: LIS_ENABLED | LIS_FOCUSED,
+            stateMask: LIS_VISITED,
+            state: LIS_VISITED,
             ..std::mem::zeroed()
         };
-        assert_ne!(send_mut(link, LM_GETITEM, 0, &mut item), 0);
-        let initial = item.state;
-        set_mode(2);
+        assert_ne!(send_mut(link, LM_SETITEM, 0, &mut item), 0);
+        item.iLink = 1;
+        item.stateMask = LIS_ENABLED;
+        item.state = 0;
+        assert_ne!(send_mut(link, LM_SETITEM, 0, &mut item), 0);
+        item.stateMask = LIS_ENABLED | LIS_FOCUSED | LIS_VISITED | LIS_DEFAULTCOLORS;
+        let initial = [0, 1].map(|index| {
+            item.iLink = index;
+            assert_ne!(send_mut(link, LM_GETITEM, 0, &mut item), 0);
+            item.state
+        });
+        let dc = CreateCompatibleDC(ptr::null_mut());
+        let screen = GetDC(parent);
+        let bitmap = GdiObject(CreateCompatibleBitmap(screen, 600, 80));
+        ReleaseDC(parent, screen);
+        assert!(!dc.is_null() && !bitmap.0.is_null());
+        let original = SelectObject(dc, bitmap.0);
         apply(parent);
-        if !high_contrast() {
-            let dc = CreateCompatibleDC(ptr::null_mut());
-            let screen = GetDC(parent);
-            let bitmap = GdiObject(CreateCompatibleBitmap(screen, 250, 40));
-            ReleaseDC(parent, screen);
-            assert!(!dc.is_null() && !bitmap.0.is_null());
-            let original = SelectObject(dc, bitmap.0);
-            FillRect(dc, &client(link), brush(COLOR_BTNFACE));
-            send(link, WM_PRINTCLIENT, dc as usize, PRF_CLIENT as isize);
-            let mut readable_pixels = 0;
-            for y in 0..40 {
-                for x in 0..250 {
-                    readable_pixels += usize::from(GetPixel(dc, x, y) == color(COLOR_HOTLIGHT));
+        for mode in [2, 1, 2] {
+            set_mode(mode);
+            if is_dark() {
+                FillRect(dc, &client(link), brush(COLOR_BTNFACE));
+                send(link, WM_PRINTCLIENT, dc as usize, PRF_CLIENT as isize);
+                let mut normal_pixels = 0;
+                let mut link_pixels = 0;
+                let mut disabled_pixels = 0;
+                for y in 0..80 {
+                    for x in 0..600 {
+                        let pixel = GetPixel(dc, x, y);
+                        assert_ne!(pixel, CLR_INVALID);
+                        normal_pixels += usize::from(pixel == color(COLOR_BTNTEXT));
+                        link_pixels += usize::from(pixel == color(COLOR_HOTLIGHT));
+                        disabled_pixels += usize::from(pixel == color(COLOR_GRAYTEXT));
+                    }
                 }
+                assert!(
+                    normal_pixels > 0,
+                    "Ordinary SysLink text must not use hyperlink color"
+                );
+                assert!(
+                    link_pixels > 0,
+                    "Enabled links must use the dark hyperlink palette"
+                );
+                assert!(
+                    disabled_pixels > 0,
+                    "Disabled links must use the disabled text palette"
+                );
             }
-            SelectObject(dc, original);
-            DeleteDC(dc);
-            assert!(
-                readable_pixels > 0,
-                "Native SysLink must use the dark hyperlink palette"
-            );
+            for (index, state) in initial.into_iter().enumerate() {
+                item.iLink = index as i32;
+                assert_ne!(send_mut(link, LM_GETITEM, 0, &mut item), 0);
+                assert_eq!(
+                    item.state, state,
+                    "Theme switches must preserve native link state"
+                );
+            }
         }
-        assert_ne!(send_mut(link, LM_GETITEM, 0, &mut item), 0);
-        assert_eq!(item.state, initial);
-        set_mode(1);
-        assert_ne!(send_mut(link, LM_GETITEM, 0, &mut item), 0);
-        assert_eq!(item.state, initial);
+        SelectObject(dc, original);
+        DeleteDC(dc);
         DestroyWindow(parent);
         set_mode(0);
     }

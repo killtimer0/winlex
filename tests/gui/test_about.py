@@ -7,7 +7,7 @@ import win32process
 import winreg
 import uiautomation as auto
 from support import native as n
-from support.diagnostics import screenshot
+from support.diagnostics import capture, screenshot
 from support.input_state import InputState, foreground
 from support.session import invoke
 
@@ -93,7 +93,9 @@ def test_about_content_modality_and_dpi(launch, profile, settings, language, mod
 
 
 @pytest.mark.interactive
-def test_about_real_keyboard(launch):
+@pytest.mark.parametrize('theme', ['light', 'dark'])
+def test_about_real_keyboard(launch, profile, settings, theme):
+    profile.set('Theme', winreg.REG_SZ, theme)
     app = launch()
     with InputState() as inputs, foreground(app, inputs):
         dialog = open_about(app)
@@ -108,6 +110,15 @@ def test_about_real_keyboard(launch):
                'license keyboard focus')
         inputs.key(win32con.VK_TAB)
         n.wait(lambda: app.focused() == n.get_item(dialog, 1), 'return to OK')
+
+        def painted():
+            with n.window_dpi_context(dialog), capture(dialog) as (_, _, pixels):
+                return any(pixels[index:index + 4] != pixels[:4]
+                           for index in range(4, len(pixels), 4))
+
+        n.wait(painted, 'about pixels presented')
+        with n.window_dpi_context(dialog):
+            screenshot(dialog, settings[2] / ('about-keyboard-' + theme + '.png'))
         inputs.key(win32con.VK_ESCAPE)
         n.wait(lambda: not n.is_window(dialog), 'real Escape closes about')
         dialog = open_about(app)
