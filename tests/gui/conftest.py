@@ -14,7 +14,7 @@ import win32con
 import win32service
 from support.config import ConfigProfile
 from support.languages import LANGUAGES, language
-from support.session import Session, invoke
+from support.session import Session, invoke, message_button
 from support.pe import is_64_bit
 from support import native as n
 from support.diagnostics import screenshot
@@ -146,7 +146,7 @@ def launch(request, settings, profile):
         if not metadata_prompt and not arguments and profile.get("Version") == 1 and profile.get("AutoLoad") in (None, []):
             prompt = auto.WindowControl(searchDepth=3, ClassName="#32770", ProcessId=session.process.pid)
             assert prompt.Exists(10), "empty-startup metadata guide prompt"
-            invoke(prompt.ButtonControl(AutomationId=str(win32con.IDNO)))
+            invoke(n.wait(lambda: message_button(prompt, win32con.IDNO), 'metadata prompt No button'))
             n.wait(lambda: not prompt.Exists(0, 0), "metadata guide prompt dismissed")
         return session
     yield start

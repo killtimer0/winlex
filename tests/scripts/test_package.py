@@ -60,7 +60,10 @@ class PackageContracts(unittest.TestCase):
                     files = {entry.filename for entry in z.infolist() if not entry.is_dir()}
                     self.assertTrue({"winlex.exe", "winlex-gui.exe", "LICENSE", "THIRD-PARTY-NOTICES.md",
                                      "SHA256SUMS.txt", "licenses/YY-Thunks-LICENSE",
-                                     "licenses/VC-LTL-LICENSE", "licenses/VC-LTL-sdk-license.rtf",
+                                      "licenses/win32-darkmodelib-MPL-2.0.md",
+                                      "licenses/win32-darkmodelib-UAHMenuBar.md",
+                                      "licenses/win32-darkmode-MIT.md",
+                                      "licenses/VC-LTL-LICENSE", "licenses/VC-LTL-sdk-license.rtf",
                                      "licenses/VC-LTL-sdk-third-party-notices.rtf",
                                      "vendor/PATCHES.md", "vendor/windows-metadata/license-mit",
                                      "vendor/windows-metadata/license-apache-2.0",

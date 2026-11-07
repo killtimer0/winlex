@@ -6,6 +6,7 @@ import winreg
 import uiautomation as auto
 
 from support import native as n
+from support.session import invoke, message_button
 
 
 def resource_text(exe, identifier, language):
@@ -39,7 +40,7 @@ def test_empty_startup_prompt_dismissal_and_runtime_removal(launch, profile, set
     try:
         assert not win32gui.IsWindowEnabled(app.frame)
     finally:
-        auto.ControlFromHandle(n.get_item(prompt, win32con.IDNO)).GetInvokePattern().Invoke(waitTime=0)
+        invoke(n.wait(lambda: message_button(prompt, win32con.IDNO), 'metadata prompt No button'))
         n.wait(lambda: not n.is_window(prompt), "metadata prompt dismissed")
 
     assert_no_dialog(app)

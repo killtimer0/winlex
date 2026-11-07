@@ -29,6 +29,8 @@ New-Item -ItemType Directory -Path $stage | Out-Null
 try {
     foreach ($binary in $binaries) { Copy-Item -LiteralPath $binary -Destination $stage }
     foreach ($path in @('LICENSE', 'THIRD-PARTY-NOTICES.md', 'licenses/YY-Thunks-LICENSE',
+            'licenses/win32-darkmodelib-MPL-2.0.md', 'licenses/win32-darkmodelib-UAHMenuBar.md',
+            'licenses/win32-darkmode-MIT.md',
             'licenses/VC-LTL-LICENSE', 'licenses/VC-LTL-sdk-license.rtf',
             'licenses/VC-LTL-sdk-third-party-notices.rtf',
             'vendor/PATCHES.md', 'vendor/windows-metadata/license-mit',

@@ -78,6 +78,19 @@ Codicon SVG 与生成的 EMF+ 位于 `crates/winlex-gui/res/codicons/`。
 
 所有架构均通过 `+crt-static` 选择 VC-LTL5 替换库。x86／x64 使用系统 `msvcrt.dll` 并链接 YY-Thunks XP 对象；ARM64 使用系统 `ucrtbase.dll`。
 
+暗色控件实现位于 `crates/winlex-gui/src/theme/`，从固定版本的 win32-darkmodelib
+移植为 Rust，来源和许可见 `THIRD-PARTY-NOTICES.md`。不依赖 C++ 库或额外 DLL。
+暗色能力从 Windows 10 1809（17763）起按 API 分支处理；旧系统使用原生浅色，
+高对比模式始终使用系统颜色。控件采用上游 `_DARKMODELIB_PREFER_THEME` 策略，
+按控件能力委托原生主题或使用对应自绘回退。更新实现时须同时验证标准控件状态、主题切换和 MDI 菜单。
+
+系统对话框按版本选择实现：Vista 及以上使用 TaskDialog 和 `IFileOpenDialog`，
+更早系统使用 MessageBox 和 `GetOpenFileNameW`。入口分别位于
+`crates/winlex-gui/src/message.rs` 和 `crates/winlex-gui/src/input.rs`；
+现代实现出错时返回错误，不自动改用旧实现。启动故障提示独立使用最小 MessageBox 路径。
+TaskDialog 暗色绘制沿用参考库的进程内 comctl32 IAT hook，在调用期间安装，
+最后一个嵌套或重叠调用结束时恢复；不安装系统级 hook。
+
 ## README 图片
 
 在已解锁的当前桌面生成主图和操作 GIF（录制期间会接管键鼠）：

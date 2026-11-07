@@ -1,4 +1,4 @@
-use std::{borrow::Cow, io::Write};
+use std::{borrow::Cow, io::Write, sync::LazyLock};
 
 const LIGHT_HEADER: &[u8] = concat!(
     r"{\rtf1\ansi\deff0\uc1{\fonttbl{\f0 Courier New;}}",
@@ -10,20 +10,28 @@ const LIGHT_HEADER: &[u8] = concat!(
     r"\pard\f0 ",
 )
 .as_bytes();
-const DARK_HEADER: &[u8] = concat!(
-    r"{\rtf1\ansi\deff0\uc1{\fonttbl{\f0 Courier New;}}",
-    r"{\colortbl\red238\green238\blue238;",
-    r"\red86\green156\blue214;",
-    r"\red87\green153\blue106;",
-    r"\red206\green156\blue120;",
-    r"\red181\green206\blue168;}",
-    r"\pard\f0\cf0 ",
-)
-.as_bytes();
+static DARK_HEADER: LazyLock<Vec<u8>> = LazyLock::new(|| {
+    let color = crate::theme::DARK_CONTENT_TEXT;
+    format!(
+        concat!(
+            r"{{\rtf1\ansi\deff0\uc1{{\fonttbl{{\f0 Courier New;}}}}",
+            r"{{\colortbl\red{}\green{}\blue{};",
+            r"\red86\green156\blue214;",
+            r"\red87\green153\blue106;",
+            r"\red206\green156\blue120;",
+            r"\red181\green206\blue168;}}",
+            r"\pard\f0\cf0 ",
+        ),
+        color & 255,
+        color >> 8 & 255,
+        color >> 16 & 255
+    )
+    .into_bytes()
+});
 
 pub(super) fn themed(data: &[u8], dark: bool) -> Cow<'_, [u8]> {
     match data.strip_prefix(LIGHT_HEADER).filter(|_| dark) {
-        Some(body) => [DARK_HEADER, body].concat().into(),
+        Some(body) => [DARK_HEADER.as_slice(), body].concat().into(),
         None => data.into(),
     }
 }
@@ -74,7 +82,9 @@ mod tests {
             expected.as_bytes()
         );
         assert_eq!(
-            themed(&light, true).strip_prefix(DARK_HEADER).unwrap(),
+            themed(&light, true)
+                .strip_prefix(DARK_HEADER.as_slice())
+                .unwrap(),
             expected.as_bytes()
         );
     }
@@ -85,7 +95,7 @@ mod tests {
         let dark = themed(&light, true);
         assert_eq!(
             light.strip_prefix(LIGHT_HEADER).unwrap(),
-            dark.strip_prefix(DARK_HEADER).unwrap()
+            dark.strip_prefix(DARK_HEADER.as_slice()).unwrap()
         );
         for invalid in [b"invalid RTF".as_slice(), br"invalid \pard\f0 body", b""] {
             for mode in [false, true] {

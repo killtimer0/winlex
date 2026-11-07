@@ -8,6 +8,7 @@ mod icons;
 mod input;
 mod layout;
 mod list;
+mod message;
 mod native;
 mod platform;
 mod resources;
@@ -37,13 +38,5 @@ pub fn run(args: impl Iterator<Item = std::ffi::OsString>) -> anyhow::Result<()>
 }
 
 pub fn show_error(message: &str) {
-    unsafe {
-        windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxW(
-            std::ptr::null_mut(),
-            native::wide(message).as_ptr(),
-            windows_sys::w!("Winlex"),
-            windows_sys::Win32::UI::WindowsAndMessaging::MB_OK
-                | windows_sys::Win32::UI::WindowsAndMessaging::MB_ICONERROR,
-        );
-    }
+    message::startup_error(message);
 }

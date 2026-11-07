@@ -13,9 +13,9 @@ from test_about import open_about
 from test_search_help import open_help
 
 
-THEME_SUPPORTED = tuple(sys.getwindowsversion()[:3]) >= (10, 0, 19045)
+THEME_SUPPORTED = tuple(sys.getwindowsversion()[:3]) >= (10, 0, 17763)
 modern_theme = pytest.mark.skipif(
-    not THEME_SUPPORTED, reason='requires Windows 10 build 19045 or later')
+    not THEME_SUPPORTED, reason='requires Windows 10 build 17763 or later')
 
 
 def select_theme(page, index):
@@ -139,6 +139,8 @@ def test_system_theme_uses_windows_preference(launch, profile):
 
 @modern_theme
 def test_modern_titlebar_tracks_explicit_theme(launch, profile):
+    if tuple(sys.getwindowsversion()[:3]) < (10, 0, 18362):
+        pytest.skip('Windows 10 1809 uses the legacy titlebar composition API')
     try:
         dwm = c.WinDLL('dwmapi')
         get_attribute = n.api(dwm, 'DwmGetWindowAttribute', c.c_long,

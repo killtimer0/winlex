@@ -7,6 +7,7 @@ use crate::{
 use anyhow::Context;
 use std::{ffi::OsString, os::windows::ffi::OsStringExt, path::PathBuf, ptr};
 use windows_sys::Win32::UI::Controls::Dialogs::*;
+mod file_dialog;
 pub struct Apartment(std::marker::PhantomData<std::rc::Rc<()>>);
 impl Apartment {
     pub fn initialize() -> anyhow::Result<Self> {
@@ -164,6 +165,7 @@ fn modern_choose(
                 pszSpec: w!("*.*"),
             },
         ])?;
+        let _events = file_dialog::advise(&dialog)?;
         if let Err(error) = dialog.Show(ComHwnd(owner)) {
             if error.code() == windows::core::HRESULT::from_win32(ERROR_CANCELLED.0) {
                 return Ok(Vec::new());

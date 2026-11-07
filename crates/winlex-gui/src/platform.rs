@@ -18,12 +18,12 @@ impl WindowsVersion {
     pub const DARK_MODE: Self = Self {
         major: 10,
         minor: 0,
-        build: 19045,
+        build: 17763,
     };
-    pub const WINDOWS_11_25H2: Self = Self {
+    pub const WINDOWS_11: Self = Self {
         major: 10,
         minor: 0,
-        build: 26200,
+        build: 22000,
     };
 
     pub fn query() -> anyhow::Result<Self> {
@@ -43,6 +43,10 @@ impl WindowsVersion {
     pub fn at_least(self, minimum: Self) -> bool {
         self >= minimum
     }
+
+    pub fn build(self) -> u32 {
+        self.build
+    }
 }
 
 #[cfg(test)]
@@ -54,8 +58,9 @@ mod tests {
         for (major, minor, build, supported) in [
             (5, 1, 2600, false),
             (6, 3, 9600, false),
-            (10, 0, 17763, false),
-            (10, 0, 19044, false),
+            (10, 0, 17762, false),
+            (10, 0, 17763, true),
+            (10, 0, 19044, true),
             (10, 0, 19045, true),
             (10, 0, 22000, true),
             (10, 0, 26200, true),

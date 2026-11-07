@@ -45,6 +45,16 @@ def invoke(value):
     return pattern(item, uia.PatternId.LegacyIAccessiblePattern).DoDefaultAction(waitTime=0)
 
 
+def message_button(dialog, identifier):
+    """Find the native command in either a MessageBox or a TaskDialog provider."""
+    root = control(dialog)
+    for automation_id in (str(identifier), 'CommandButton_%s' % identifier):
+        button = root.ButtonControl(AutomationId=automation_id)
+        if button.Exists(0, 0):
+            return button
+    return None
+
+
 def select_combo(value, label):
     combo = control(value)
     expansion = pattern(combo, uia.PatternId.ExpandCollapsePattern)
@@ -421,10 +431,8 @@ class Session:
                                 owners.append(item)
                     for dialog in reversed(dialogs):
                         handle = dialog.NativeWindowHandle
-                        button = dialog.ButtonControl(AutomationId='7')
-                        if not button.Exists(0, 0):
-                            button = dialog.ButtonControl(AutomationId='2')
-                        if button.Exists(0, 0):
+                        button = message_button(dialog, win32con.IDNO) or message_button(dialog, win32con.IDCANCEL)
+                        if button is not None:
                             invoke(button)
                         else:
                             pattern(dialog, uia.PatternId.WindowPattern).Close(waitTime=0)

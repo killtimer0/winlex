@@ -1214,16 +1214,22 @@ mod tests {
             light.split_once(r"\pard\f0 ").unwrap().1,
             dark.split_once(r"\pard\f0\cf0 ").unwrap().1,
         );
-        assert!(dark.contains(r"{\colortbl\red238\green238\blue238;"));
+        let default = crate::theme::DARK_CONTENT_TEXT;
+        assert!(dark.contains(&format!(
+            r"{{\colortbl\red{}\green{}\blue{};",
+            default & 255,
+            default >> 8 & 255,
+            default >> 16 & 255
+        )));
         crate::theme::set_mode(2);
         if crate::theme::is_dark() {
-            assert_eq!(crate::theme::color(COLOR_WINDOWTEXT), 0xeeeeee);
+            assert_eq!(crate::theme::color(COLOR_WINDOWTEXT), default);
         }
         crate::theme::set_mode(0);
         let fixture = Editor::new(WS_POPUP, crate::layout::rect(0, 0, 900, 600));
         stream_in(fixture.1, dark.as_bytes()).unwrap();
         assert_eq!(text(fixture.1).replace("\r\n", "\r"), content.text);
-        for (start, end, color) in [(0, 5, 0xd69c56), (5, 6, 0xeeeeee)] {
+        for (start, end, color) in [(0, 5, 0xd69c56), (5, 6, default)] {
             fixture.select(start, end);
             let mut format = CHARFORMATW {
                 cbSize: size_of::<CHARFORMATW>() as u32,

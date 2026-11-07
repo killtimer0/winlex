@@ -34,6 +34,20 @@ Rust's standard library is primarily MIT OR Apache-2.0, with additional notices
 for incorporated components. The matching Rust installation provides these in
 `share/doc/rust/COPYRIGHT-library.html` and `share/doc/rust/licenses/`.
 
+## Native dark-mode implementation
+
+The Rust implementation in `crates/winlex-gui/src/theme.rs` and
+`crates/winlex-gui/src/theme/`
+is adapted from [win32-darkmodelib](https://github.com/ozone10/win32-darkmodelib/tree/e8ec95ba631462f01e238e63f7d06c1e6829a7a1),
+revision `e8ec95ba631462f01e238e63f7d06c1e6829a7a1`.
+Copyright (c) 2025-2026 ozone10. The port replaces the C++ infrastructure with
+Rust ownership and Winlex's Windows bindings, preference policy and MDI integration.
+Its source is distributed in this repository under MPL-2.0; the complete
+[license](licenses/win32-darkmodelib-MPL-2.0.md) is included.
+The underlying win32-darkmode and UAH menu work retains its
+[win32-darkmode MIT notice](licenses/win32-darkmode-MIT.md) and
+[UAHMenuBar MIT notice](licenses/win32-darkmodelib-UAHMenuBar.md).
+
 ## Windows compatibility libraries
 
 All architectures use VC-LTL: x86/x64 share the system MSVCRT, while ARM64 shares

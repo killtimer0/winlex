@@ -79,8 +79,8 @@ def test_toolbar_names_on_hover(launch, settings):
         auto.ControlFromHandle(app.frame).SetActive()
         assert win32gui.GetForegroundWindow() == app.frame, 'toolbar foreground'
         for index, command in enumerate((1040, 1021)):
-            bounds = auto.ControlFromHandle(app.search).BoundingRectangle
-            auto.MoveTo(bounds.left + 8, bounds.top + 8)
+            bounds = auto.ControlFromHandle(app.frame).TitleBarControl().BoundingRectangle
+            auto.MoveTo(bounds.xcenter(), bounds.ycenter())
             n.wait(lambda: not tooltip.Exists(0, 0) or not n.is_visible(tooltip.NativeWindowHandle),
                    'toolbar tooltip hidden')
             time.sleep(.1)
@@ -102,9 +102,10 @@ def infotip(app, control, row, image):
     with InputState():
         auto.ControlFromHandle(app.frame).SetActive()
         assert win32gui.GetForegroundWindow() == app.frame, 'infotip foreground'
-        _, _, width, height = n.rectangle(control, client=True)
-        x, y = win32gui.ClientToScreen(control, (width - 8, height - 8))
-        auto.MoveTo(x, y)
+        # Neither list content nor the search Edit is a neutral hover target:
+        # both can provide their own tooltip while the previous tip is hiding.
+        bounds = auto.ControlFromHandle(app.frame).TitleBarControl().BoundingRectangle
+        auto.MoveTo(bounds.xcenter(), bounds.ycenter())
         n.wait(lambda: not tooltip.Exists(0, 0) or not n.is_visible(tooltip.NativeWindowHandle), 'infotip hidden')
         time.sleep(.1)
         bounds = item.BoundingRectangle

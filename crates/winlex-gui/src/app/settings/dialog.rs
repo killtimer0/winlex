@@ -170,12 +170,16 @@ unsafe extern "system" fn sheet_proc(
             WM_COMMAND if w as u16 == IDOK as u16 => match commit(state) {
                 Ok(()) => {}
                 Err(error) => {
-                    MessageBoxW(
+                    if let Err(display_error) = crate::message::error(
                         hwnd,
-                        wide(&format!("{error:#}")).as_ptr(),
-                        resources::wide_text(IDS_SETTINGS).as_ptr(),
-                        MB_OK | MB_ICONERROR,
-                    );
+                        &resources::text(IDS_SETTINGS),
+                        &format!("{error:#}"),
+                    ) {
+                        super::super::status::show_notice(
+                            state.ctx,
+                            format!("{error:#}\n{display_error:#}"),
+                        );
+                    }
                     return 0;
                 }
             },

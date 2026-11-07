@@ -17,15 +17,15 @@ pub(super) fn should_prompt(command_line: &[PathBuf], saved: Option<&[PathBuf]>)
 }
 
 pub(super) fn prompt_guide(ctx: &Context) {
-    let answer = unsafe {
-        MessageBoxW(
+    let answer = super::status::report(
+        ctx,
+        crate::message::confirm(
             ctx.frame(),
-            resources::wide_text(IDS_METADATA_PROMPT).as_ptr(),
-            resources::wide_text(IDS_APP_TITLE).as_ptr(),
-            MB_YESNO | MB_ICONQUESTION,
-        )
-    };
-    if answer == IDYES {
+            &resources::text(IDS_APP_TITLE),
+            &resources::text(IDS_METADATA_PROMPT),
+        ),
+    );
+    if answer == Some(true) {
         open_guide(ctx);
     }
 }

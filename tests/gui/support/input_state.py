@@ -1,5 +1,6 @@
 """Persist owned input changes before delivery so the outer runner can undo them."""
 import json
+import logging
 import os
 from contextlib import contextmanager
 from pathlib import Path
@@ -43,18 +44,6 @@ def recover(path):
             auto.ReleaseMouse(waitTime=0)
         else:
             auto.ReleaseKey(key, waitTime=0)
-    for key in state.get("released", []):
-        if auto.IsKeyPressed(key):
-            auto.ReleaseKey(key, waitTime=0)
-    releases = {win32con.VK_LBUTTON: auto.ReleaseMouse,
-                win32con.VK_RBUTTON: auto.RightReleaseMouse,
-                win32con.VK_MBUTTON: auto.MiddleReleaseMouse}
-    for key in state.get("released_mouse", []):
-        if auto.IsKeyPressed(key):
-            releases[key](waitTime=0)
-    for button in state.get("released_x", []):
-        if auto.IsKeyPressed(auto.Keys.VK_XBUTTON1 + button - 1):
-            assert auto.SendInput(auto.MouseInput(0, 0, button, auto.MouseEventFlag.XUp)) == 1
     ime = state.get("ime")
     if ime and n.is_window(ime["control"]):
         pid = n.w.DWORD()
@@ -67,18 +56,16 @@ def recover(path):
     try:
         if foreground and win32gui.IsWindow(foreground):
             foreground = get_ancestor(foreground, GA_ROOT)
-            assert foreground, "Cannot resolve previous foreground root"
+            if not foreground:
+                raise RuntimeError("Cannot resolve previous foreground root")
         if foreground and win32gui.IsWindow(foreground) and win32gui.GetForegroundWindow() != foreground:
-            window = auto.ControlFromHandle(foreground)
-            alt_pressed = auto.IsKeyPressed(auto.Keys.VK_MENU)
-            if not alt_pressed:
-                auto.PressKey(auto.Keys.VK_MENU, waitTime=0)
-            try:
-                auto.SetForegroundWindow(window.NativeWindowHandle)
-            finally:
-                if not alt_pressed:
-                    auto.ReleaseKey(auto.Keys.VK_MENU, waitTime=0)
-            n.wait(lambda: win32gui.GetForegroundWindow() == foreground, "foreground restored")
+            # Windows may deny foreground activation. Do not inject keys or wait
+            # for permission: restoring the user's foreground is best effort.
+            win32gui.SetForegroundWindow(foreground)
+            if win32gui.GetForegroundWindow() != foreground:
+                logging.getLogger(__name__).warning("Could not restore previous foreground window %s", foreground)
+    except Exception as error:
+        logging.getLogger(__name__).warning("Could not restore previous foreground window: %s", error)
     finally:
         auto.MoveTo(*state["cursor"], waitTime=0)
     path.unlink()
@@ -91,17 +78,12 @@ class InputState:
             raise RuntimeError("Actual-input tests require tests/gui/run.py cleanup ownership")
         self.path = Path(path) if path is not None else Path(root) / "input.json"
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        keys = range(8, 256)
         raw_foreground = win32gui.GetForegroundWindow()
         foreground = get_ancestor(raw_foreground, GA_ROOT) if raw_foreground else 0
         assert not raw_foreground or foreground, "Cannot resolve foreground root"
+        # Recovery releases only inputs explicitly recorded before delivery.
         self.state = {"held": [], "cursor": auto.GetCursorPos(),
-                      "foreground": foreground, "raw_foreground": raw_foreground,
-                      "released": [key for key in keys if not auto.IsKeyPressed(key)],
-                      "released_mouse": [key for key in (win32con.VK_LBUTTON, win32con.VK_RBUTTON,
-                                                         win32con.VK_MBUTTON) if not auto.IsKeyPressed(key)],
-                      "released_x": [button for button in (1, 2)
-                                     if not auto.IsKeyPressed(auto.Keys.VK_XBUTTON1 + button - 1)]}
+                      "foreground": foreground, "raw_foreground": raw_foreground}
 
     def save(self):
         temporary = self.path.with_suffix(".new")
@@ -144,7 +126,9 @@ class InputState:
     def key(self, code):
         self.state["held"].append(code)
         self.save()
-        auto.PressKey(code)
+        # A key() is a tap, not a held key. The provider's default 500 ms pause
+        # occurs before key-up and can cross the Windows auto-repeat threshold.
+        auto.PressKey(code, waitTime=0)
         auto.ReleaseKey(code)
         self.state["held"].remove(code)
         self.save()

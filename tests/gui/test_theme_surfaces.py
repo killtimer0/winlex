@@ -42,7 +42,7 @@ def foreground(app, inputs):
 
 def dark_app(launch, profile, arguments=()):
     if not THEME_SUPPORTED:
-        pytest.skip('requires Windows 10 build 19045 or later')
+        pytest.skip('requires Windows 10 build 17763 or later')
     profile.set('Language', winreg.REG_SZ, 'en-US')
     profile.set('Theme', winreg.REG_SZ, 'dark')
     app = launch(arguments)
@@ -126,6 +126,40 @@ def inset(rect, amount=3):
 
 def move(hwnd, point):
     auto.MoveTo(*win32gui.ClientToScreen(hwnd, point))
+
+
+def test_dark_status_text_remains_visible_after_search_and_theme_switch(launch, profile, settings):
+    from test_theme import dark_background, select_theme
+
+    app = dark_app(launch, profile, [settings[1]])
+    with InputState() as inputs, foreground(app, inputs), n.window_dpi_context(app.frame):
+        app.query('CreateFileW')
+        original = app.status_text()
+        assert original, 'completed search must expose status text'
+        for mode in (2, 1, 2):
+            sheet = app.settings()
+            select_theme(app.settings_page(sheet, 0), mode)
+            app.close_settings(sheet)
+            assert app.status_text() == original, 'theme switch must preserve search status'
+            assert dark_background(app.search) == (mode == 2)
+            # Sample the exposed text panes, not assumptions about the pane count.
+            status = auto.ControlFromHandle(app.status)
+            panes = [item for item in status.GetChildren() if item.Name and not item.IsOffscreen]
+            assert panes or status.Name, 'status text must remain accessible'
+            origin = win32gui.ClientToScreen(app.status, (0, 0))
+            _, _, width, height = n.rectangle(app.status, client=True)
+            for item in panes or [status]:
+                bounds = item.BoundingRectangle
+                rect = (max(0, bounds.left - origin[0]) + 3,
+                        max(0, bounds.top - origin[1]) + 3,
+                        min(width, bounds.right - origin[0]) - 3,
+                        min(height, bounds.bottom - origin[1]) - 3)
+                palette = colors(app.status, rect)
+                if mode == 2:
+                    background(app.status, rect)
+                assert any((min(color) > 150 if mode == 2 else max(color) < 100)
+                           for color in palette), 'status pane text must remain readable'
+            screenshot(app.status, settings[2] / ('theme-status-%s.png' % mode))
 
 
 def test_dark_toolbar_checked_hot_pixels_and_activation(launch, profile, settings):
