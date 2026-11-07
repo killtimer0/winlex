@@ -211,10 +211,10 @@ def test_primitives_unresolved_types_and_whitespace_have_no_navigation(launch, s
     app.query("Windows.Win32.Security.SECURITY_ATTRIBUTES")
     source = app.open_row()
     editor = n.get_item(source, 1203)
-    primitive = reference(app, source, "UINT32")
+    primitive = reference(app, source, "uint32")
     unresolved = reference(app, source, "ValueType")
     text = app.content(source).replace("\r\n", "\r")
-    space = text.index("UINT32") - 1
+    space = text.index("uint32") - 1
     assert text[space].isspace()
     whitespace = len(text[:space].encode("utf-16-le")) // 2
     for index in (primitive + 2, unresolved + 3, whitespace):

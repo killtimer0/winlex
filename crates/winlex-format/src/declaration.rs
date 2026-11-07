@@ -33,20 +33,23 @@ impl Types<'_> {
             Type::RefMut(t) => self.ty(t, name.prefix("&")),
             Type::RefConst(t) => self.ty(t, name).prefix("const "),
             _ => {
-                let base = match t {
+                let mut base = match t {
                     Type::ClassName(n) | Type::ValueName(n) => {
                         let head = if n.generics.is_empty() {
                             n.name.as_str()
                         } else {
                             n.name.split('`').next().unwrap_or(&n.name)
                         };
+                        let kind = self
+                            .catalog
+                            .resolve_type(self.owner, n, self.arch)
+                            .map(RegionKind::Reference)
+                            .unwrap_or(RegionKind::Type);
                         let mut base = Rendered::from(head);
-                        if let Ok(target) = self.catalog.resolve_type(self.owner, n, self.arch) {
-                            base.regions.push(Region {
-                                range: 0..base.position,
-                                kind: RegionKind::Reference(target),
-                            });
-                        }
+                        base.regions.push(Region {
+                            range: 0..base.position,
+                            kind,
+                        });
                         if !n.generics.is_empty() {
                             base.write_str("<").unwrap();
                             base.fragment(Rendered::join(
@@ -60,23 +63,29 @@ impl Types<'_> {
                     Type::Generic(n, _) | Type::MethodGeneric(n, _) => n.to_string().into(),
                     Type::Void => "void".into(),
                     Type::Bool => "bool".into(),
-                    Type::I8 => "INT8".into(),
-                    Type::U8 => "UINT8".into(),
-                    Type::I16 => "INT16".into(),
-                    Type::U16 => "UINT16".into(),
-                    Type::I32 => "INT32".into(),
-                    Type::U32 => "UINT32".into(),
-                    Type::I64 => "INT64".into(),
-                    Type::U64 => "UINT64".into(),
-                    Type::F32 => "float".into(),
-                    Type::F64 => "double".into(),
-                    Type::ISize => "INT_PTR".into(),
-                    Type::USize => "UINT_PTR".into(),
-                    Type::Char => "char16_t".into(),
+                    Type::I8 => "int8".into(),
+                    Type::U8 => "uint8".into(),
+                    Type::I16 => "int16".into(),
+                    Type::U16 => "uint16".into(),
+                    Type::I32 => "int32".into(),
+                    Type::U32 => "uint32".into(),
+                    Type::I64 => "int64".into(),
+                    Type::U64 => "uint64".into(),
+                    Type::F32 => "float32".into(),
+                    Type::F64 => "float64".into(),
+                    Type::ISize => "isize".into(),
+                    Type::USize => "usize".into(),
+                    Type::Char => "char".into(),
                     Type::String => "string".into(),
                     Type::Object => "object".into(),
                     other => format!("{other:?}").into(),
                 };
+                if base.regions.is_empty() && !base.text.is_empty() {
+                    base.regions.push(Region {
+                        range: 0..base.position,
+                        kind: RegionKind::Type,
+                    });
+                }
                 if name.text.is_empty() {
                     base
                 } else {
@@ -98,6 +107,8 @@ pub struct Region {
 
 #[derive(Clone, Debug)]
 pub enum RegionKind {
+    /// A signature type with no navigable definition in this catalog.
+    Type,
     Number(NumberValue),
     Reference(EntityId),
 }
@@ -744,11 +755,20 @@ mod tests {
             })
             .collect();
         assert_eq!(ids.len(), cases.len());
-        for (id, (_, _, _, expected)) in ids.into_iter().zip(cases) {
+        for (id, (base, _, _, expected)) in ids.into_iter().zip(cases) {
             for arch in Architecture::ALL {
                 let rendered = render(&catalog, id, arch).unwrap();
                 assert_eq!(rendered.text, expected);
-                assert!(rendered.regions.is_empty());
+                let units: Vec<_> = rendered.text.encode_utf16().collect();
+                let types: Vec<_> = rendered
+                    .regions
+                    .iter()
+                    .map(|region| {
+                        assert!(matches!(region.kind, RegionKind::Type));
+                        String::from_utf16(&units[region.range.clone()]).unwrap()
+                    })
+                    .collect();
+                assert_eq!(types, if base.is_empty() { vec![] } else { vec![base] });
             }
         }
     }

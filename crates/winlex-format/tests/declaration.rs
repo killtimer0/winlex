@@ -27,6 +27,54 @@ fn render(catalog: &Catalog, name: &str) -> winlex_format::declaration::Rendered
 }
 
 #[test]
+fn signature_types_use_metadata_names_and_semantic_regions() {
+    use winlex_core::windows_metadata::{writer, *};
+    use winlex_format::declaration::RegionKind;
+    let mut file = writer::File::new("SignatureTypes");
+    let base = file.TypeRef("System", "ValueType");
+    file.TypeDef(
+        "Fixture",
+        "Record😀",
+        writer::TypeDefOrRef::TypeRef(base),
+        TypeAttributes::Public | TypeAttributes::SequentialLayout,
+    );
+    let cases = [
+        (Type::Bool, "bool"),
+        (Type::Char, "char"),
+        (Type::I8, "int8"),
+        (Type::U8, "uint8"),
+        (Type::I16, "int16"),
+        (Type::U16, "uint16"),
+        (Type::I32, "int32"),
+        (Type::U32, "uint32"),
+        (Type::I64, "int64"),
+        (Type::U64, "uint64"),
+        (Type::F32, "float32"),
+        (Type::F64, "float64"),
+        (Type::ISize, "isize"),
+        (Type::USize, "usize"),
+        (Type::String, "string"),
+        (Type::Object, "object"),
+        (Type::value_named("System", "Guid"), "Guid"),
+        (Type::value_named("Missing", "INT32"), "INT32"),
+    ];
+    for (i, (ty, _)) in cases.iter().enumerate() {
+        file.Field(&format!("field{i}"), ty, FieldAttributes::Public);
+    }
+    let catalog = Catalog::from_inputs([source("signature-types", file.into_stream())]).unwrap();
+    for (i, (_, expected)) in cases.iter().enumerate() {
+        let rendered = render(&catalog, &format!("field{i}"));
+        assert_eq!(rendered.text, format!("{expected} field{i};\n"));
+        assert_eq!(rendered.regions.len(), 1);
+        assert!(matches!(rendered.regions[0].kind, RegionKind::Type));
+        assert_eq!(
+            rendered.regions[0].range,
+            0..expected.encode_utf16().count()
+        );
+    }
+}
+
+#[test]
 fn method_imports_and_variadic_signatures_preserve_metadata_meaning() {
     use winlex_core::windows_metadata::{writer, *};
     let mut file = writer::File::new("MethodPresentation");
@@ -64,28 +112,28 @@ fn method_imports_and_variadic_signatures_preserve_metadata_meaning() {
     for (name, expected) in [
         (
             "Print",
-            "// printf; C\nINT32 Print(\n    INT32 arg1,\n    ...\n);\n",
+            "// printf; C\nint32 Print(\n    int32 arg1,\n    ...\n);\n",
         ),
         (
             "Imported",
-            "// library.dll!entry; system\nINT32 Imported(void);\n",
+            "// library.dll!entry; system\nint32 Imported(void);\n",
         ),
         (
             "UnknownConvention",
-            "// entry\nINT32 UnknownConvention(void);\n",
+            "// entry\nint32 UnknownConvention(void);\n",
         ),
-        ("OnlyVariadic", "INT32 OnlyVariadic(...);\n"),
+        ("OnlyVariadic", "int32 OnlyVariadic(...);\n"),
         (
             "InstanceVariadic",
-            "INT32 InstanceVariadic(\n    INT32 arg1,\n    ...\n);\n",
+            "int32 InstanceVariadic(\n    int32 arg1,\n    ...\n);\n",
         ),
         (
             "VaList",
-            "INT32 VaList(\n    INT32 arg1,\n    INT32 arg2\n);\n",
+            "int32 VaList(\n    int32 arg1,\n    int32 arg2\n);\n",
         ),
         (
             "OtherConvention",
-            "INT32 OtherConvention(\n    INT32 arg1\n);\n",
+            "int32 OtherConvention(\n    int32 arg1\n);\n",
         ),
     ] {
         assert_eq!(render(&catalog, name).text, expected, "{name}");
@@ -134,7 +182,9 @@ fn external_references_remain_unlinked_when_missing_or_ambiguous() {
     ] {
         let rendered = render(catalog, "Member");
         assert_eq!(rendered.text, "Target Member;\n");
-        assert_eq!(rendered.regions.len(), usize::from(expected));
+        assert_eq!(rendered.regions.len(), 1);
+        assert_eq!(rendered.regions[0].range, 0..6);
+        assert_eq!(rendered.regions[0].reference().is_some(), expected);
         if expected {
             let target = rendered.regions[0].reference().unwrap();
             assert_eq!(target.source_id, 1);
@@ -324,11 +374,11 @@ fn parameter_modifiers_preserve_order_and_missing_parameter_names() {
         TypeAttributes::Public,
     );
     let cases = [
-        (0, "INT32 值😀,"),
-        (3, "[in, out] INT32 值😀,"),
+        (0, "int32 值😀,"),
+        (3, "[in, out] int32 值😀,"),
         (
             63,
-            "[in, out, optional, reserved, retval, const] INT32 值😀,",
+            "[in, out, optional, reserved, retval, const] int32 值😀,",
         ),
     ];
     for (mask, _) in cases {
@@ -372,7 +422,7 @@ fn parameter_modifiers_preserve_order_and_missing_parameter_names() {
             "{}",
             rendered.text
         );
-        assert!(rendered.text.contains("INT32 arg2"), "{}", rendered.text);
+        assert!(rendered.text.contains("int32 arg2"), "{}", rendered.text);
     }
 }
 
@@ -430,15 +480,15 @@ fn declarations_cover_native_signatures_and_architecture_specific_types() {
                 assert!(text.contains("optional"));
             } else {
                 assert!(text.contains("struct RECT"), "{text}");
-                assert!(text.contains("INT32 left;"));
-                assert!(text.contains("INT32 bottom;"));
+                assert!(text.contains("int32 left;"));
+                assert!(text.contains("int32 bottom;"));
                 assert!(text.contains("size: 16 bytes, alignment: 4 bytes"));
                 assert!(text.contains("offset: 12 bytes, size: 4 bytes"));
             }
         }
         let rendered = render("SECURITY_ATTRIBUTES");
         let text = &rendered.text;
-        assert!(text.contains("UINT32 nLength;"), "{text}");
+        assert!(text.contains("uint32 nLength;"), "{text}");
         assert!(text.contains("BOOL bInheritHandle;"), "{text}");
         let pointer_offset = if arch == Architecture::X86 { "4" } else { "8" };
         assert!(
@@ -456,7 +506,7 @@ fn declarations_cover_native_signatures_and_architecture_specific_types() {
         };
         assert!(
             text.contains(&format!(
-                "slot 2, vtable +{release_offset}\n    UINT32 Release("
+                "slot 2, vtable +{release_offset}\n    uint32 Release("
             )),
             "{text}"
         );
@@ -570,7 +620,7 @@ fn generic_inheritance_and_delegate_signatures_are_preserved() {
     assert!(text.contains("T Convert("), "{text}");
     assert!(text.contains("[in, out, optional] T value"), "{text}");
     let text = render(&catalog, "Callback").text;
-    assert!(text.starts_with("delegate INT32 Callback("), "{text}");
+    assert!(text.starts_with("delegate int32 Callback("), "{text}");
     assert!(!text.contains("Invoke"));
     let text = render(&catalog, "IGeneric`1").text;
     assert!(text.contains("Vtable unavailable:"), "{text}");
@@ -658,12 +708,12 @@ fn enum_members_and_individual_constants_share_annotations() {
         parent.text
     );
     assert!(member.text.contains("Failure = -1073741819; // 0xC0000005"));
-    assert_eq!(member.regions.len(), 2);
+    assert_eq!(member.regions.iter().filter_map(|r| r.number()).count(), 2);
     for number in member.regions.iter().filter_map(|r| r.number()) {
         assert_eq!(number.value, -1073741819);
         assert_eq!(number.hexadecimal(), "0xC0000005");
     }
-    assert_eq!(parent.regions.len(), 2);
+    assert_eq!(parent.regions.iter().filter_map(|r| r.number()).count(), 2);
     for (a, b) in parent
         .regions
         .iter()
@@ -684,15 +734,18 @@ fn enum_members_and_individual_constants_share_annotations() {
         parent.text
     );
     assert!(member.text.contains("length: 7 UTF-16 code units"));
-    assert_eq!(member.regions.len(), 1);
-    assert_eq!(member.regions[0].number().unwrap().value, 7);
+    let numbers: Vec<_> = member.regions.iter().filter_map(|r| r.number()).collect();
+    assert_eq!(numbers.len(), 1);
+    assert_eq!(numbers[0].value, 7);
+    assert_eq!(numbers[0].with_unit(), "7 UTF-16 code units");
     assert_eq!(
-        member.regions[0].number().unwrap().with_unit(),
-        "7 UTF-16 code units"
-    );
-    assert_eq!(
-        parent.regions[0].number().unwrap().entity,
-        member.regions[0].number().unwrap().entity
+        parent
+            .regions
+            .iter()
+            .find_map(|r| r.number())
+            .unwrap()
+            .entity,
+        numbers[0].entity
     );
     assert!(
         render("EmptyText")
@@ -701,5 +754,5 @@ fn enum_members_and_individual_constants_share_annotations() {
     );
     let null = render("NullText");
     assert!(null.text.contains("= null;"), "{}", null.text);
-    assert!(null.regions.is_empty());
+    assert!(null.regions.iter().all(|r| r.number().is_none()));
 }

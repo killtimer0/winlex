@@ -1,4 +1,5 @@
 use std::{borrow::Cow, io::Write, sync::LazyLock};
+use winlex_format::declaration::Region;
 
 const LIGHT_HEADER: &[u8] = concat!(
     r"{\rtf1\ansi\deff0\uc1{\fonttbl{\f0 Courier New;}}",
@@ -36,11 +37,11 @@ pub(super) fn themed(data: &[u8], dark: bool) -> Cow<'_, [u8]> {
     }
 }
 
-pub(super) fn render(text: &str) -> Vec<u8> {
+pub(super) fn render(text: &str, regions: &[Region]) -> Vec<u8> {
     let units: Vec<_> = text.encode_utf16().collect();
     let mut rtf = LIGHT_HEADER.to_vec();
     let mut end = 0;
-    for (start, next, style) in super::spans(&units) {
+    for (start, next, style) in super::spans(&units, regions) {
         append(&mut rtf, &units[end..start]);
         write!(rtf, "\\cf{style} ").unwrap();
         append(&mut rtf, &units[start..next]);
@@ -68,10 +69,33 @@ fn append(out: &mut Vec<u8>, text: &[u16]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use winlex_format::declaration::RegionKind;
+
+    #[test]
+    fn type_coloring_uses_semantics_not_identifier_spelling() {
+        let text = "// 😀\rGuid int32;\rusize string;\rstring Guid;";
+        let regions: Vec<_> = ["Guid int32", "usize string", "string Guid"]
+            .into_iter()
+            .map(|declaration| {
+                let byte_start = text.find(declaration).unwrap();
+                let start = text[..byte_start].encode_utf16().count();
+                let ty = declaration.rsplit_once(' ').unwrap().0;
+                Region {
+                    range: start..start + ty.encode_utf16().count(),
+                    kind: RegionKind::Type,
+                }
+            })
+            .collect();
+        let output = render(text, &regions);
+        let body = String::from_utf8(output).unwrap();
+        assert!(body.contains(r"\cf1 Guid\cf0  int32;"));
+        assert!(body.contains(r"\cf1 usize\cf0  string;"));
+        assert!(body.contains(r"\cf1 string\cf0  Guid;"));
+    }
 
     #[test]
     fn syntax_tokens_use_the_same_palette_slots_in_both_themes() {
-        let light = render("const x = 42; \"😀\" // int\r");
+        let light = render("const x = 42; \"😀\" // int\r", &[]);
         let expected = concat!(
             r"\cf1 const\cf0  x = \cf4 42\cf0 ; ",
             r#"\cf3 "\u-10179?\u-8704?"\cf0  "#,
@@ -91,7 +115,10 @@ mod tests {
 
     #[test]
     fn themed_headers_leave_escaped_body_and_invalid_input_untouched() {
-        let light = render("const char *s = \"\\pard\\f0 {中文😀}\"; // comment\r42");
+        let light = render(
+            "const char *s = \"\\pard\\f0 {中文😀}\"; // comment\r42",
+            &[],
+        );
         let dark = themed(&light, true);
         assert_eq!(
             light.strip_prefix(LIGHT_HEADER).unwrap(),

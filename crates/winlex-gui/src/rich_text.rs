@@ -90,7 +90,7 @@ impl From<Rendered> for Content {
     fn from(body: Rendered) -> Self {
         let text = body.text.replace("\r\n", "\n").replace('\n', "\r");
         Self {
-            rtf: rtf::render(&text),
+            rtf: rtf::render(&text, &body.regions),
             text,
             regions: body.regions,
         }
@@ -99,7 +99,8 @@ impl From<Rendered> for Content {
 
 pub fn region_at(regions: &[Region], range: std::ops::Range<usize>) -> Option<&Region> {
     regions.iter().find(|region| {
-        range.start <= range.end
+        !matches!(region.kind, RegionKind::Type)
+            && range.start <= range.end
             && region.range.start <= range.start
             && range.end <= region.range.end
             && (range.start < region.range.end || region.number().is_some())
@@ -189,6 +190,7 @@ pub fn context_menu(
     let mut actions = Vec::new();
     if let Some(region) = region {
         match &region.kind {
+            RegionKind::Type => {}
             RegionKind::Number(number) => {
                 actions.push((
                     IDS_COPY_DECIMAL,
@@ -677,10 +679,27 @@ fn stream_in(hwnd: HWND, data: &[u8]) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn spans(text: &[u16]) -> Vec<(usize, usize, u8)> {
+fn spans(text: &[u16], regions: &[Region]) -> Vec<(usize, usize, u8)> {
     let mut result = Vec::new();
+    let mut types = regions
+        .iter()
+        .filter(|region| {
+            matches!(region.kind, RegionKind::Type | RegionKind::Reference(_))
+                && region.range.start < region.range.end
+                && region.range.end <= text.len()
+        })
+        .peekable();
     let mut i = 0;
     while i < text.len() {
+        while types.peek().is_some_and(|region| region.range.start < i) {
+            types.next();
+        }
+        if let Some(region) = types.peek().filter(|region| region.range.start == i) {
+            result.push((i, region.range.end, KEYWORD_STYLE));
+            i = region.range.end;
+            types.next();
+            continue;
+        }
         let start = i;
         let ch = text[i];
         i += 1;
@@ -731,29 +750,7 @@ fn spans(text: &[u16]) -> Vec<(usize, usize, u8)> {
                         | "const"
                         | "void"
                         | "interface"
-                        | "unsigned"
-                        | "signed"
-                        | "int"
-                        | "long"
-                        | "short"
-                        | "char"
-                        | "float"
-                        | "double"
-                        | "bool"
                         | "return"
-                        | "INT8"
-                        | "UINT8"
-                        | "INT16"
-                        | "UINT16"
-                        | "INT32"
-                        | "UINT32"
-                        | "INT64"
-                        | "UINT64"
-                        | "INT_PTR"
-                        | "UINT_PTR"
-                        | "char16_t"
-                        | "string"
-                        | "object"
                 )
                 .then_some(KEYWORD_STYLE)
             }
@@ -1214,6 +1211,48 @@ mod tests {
     }
 
     #[test]
+    fn signature_types_are_colored_without_creating_navigation_links() {
+        let fixture = Editor::new(WS_POPUP, crate::layout::rect(0, 0, 900, 600));
+        let mut rendered = Rendered::from("// 😀\nconst Guid int32;\nusize string;\nstring Guid;");
+        for ty in ["Guid", "usize", "string Guid"] {
+            let byte_start = rendered.text.find(ty).unwrap();
+            let start = rendered.text[..byte_start].encode_utf16().count();
+            let length = if ty == "string Guid" {
+                6
+            } else {
+                ty.encode_utf16().count()
+            };
+            rendered.regions.push(Region {
+                range: start..start + length,
+                kind: RegionKind::Type,
+            });
+        }
+        let content = Content::from(rendered);
+        for mode in [1, 2] {
+            crate::theme::set_mode(mode);
+            set_content(fixture.1, &content).unwrap();
+            fixture.select(6, 11); // const, after the UTF-16 comment and newline
+            let keyword_color = fixture.character_format().Base.crTextColor;
+            for region in &content.regions {
+                for index in region.range.clone() {
+                    fixture.select(index as i32, index as i32 + 1);
+                    let format = fixture.character_format();
+                    assert_eq!(format.Base.crTextColor, keyword_color);
+                    assert_eq!(format.Base.dwEffects.0 & (CFE_LINK | CFE_UNDERLINE).0, 0);
+                    assert!(region_at(&content.regions, index..index).is_none());
+                }
+            }
+            for word in ["int32", "string;", "Guid;"] {
+                let byte_start = content.text.find(word).unwrap();
+                let start = content.text[..byte_start].encode_utf16().count();
+                fixture.select(start as i32, start as i32 + 1);
+                assert_ne!(fixture.character_format().Base.crTextColor, keyword_color);
+            }
+        }
+        crate::theme::set_mode(0);
+    }
+
+    #[test]
     fn native_word_selection_and_navigation_use_identifier_boundaries() {
         unsafe {
             let fixture = Editor::new(WS_POPUP, crate::layout::rect(0, 0, 900, 600));
@@ -1481,16 +1520,16 @@ mod tests {
             ("int1 _int UINT32_ 0xAf", vec![("0xAf", NUMBER_STYLE)]),
             ("/*/ int", vec![("/*/ int", COMMENT_STYLE)]),
             (
-                "/**/int",
-                vec![("/**/", COMMENT_STYLE), ("int", KEYWORD_STYLE)],
+                "/**/const",
+                vec![("/**/", COMMENT_STYLE), ("const", KEYWORD_STYLE)],
             ),
             (
                 "/* **/42",
                 vec![("/* **/", COMMENT_STYLE), ("42", NUMBER_STYLE)],
             ),
             (
-                "/*\r😀*/UINT32",
-                vec![("/*\r😀*/", COMMENT_STYLE), ("UINT32", KEYWORD_STYLE)],
+                "/*\r😀*/struct",
+                vec![("/*\r😀*/", COMMENT_STYLE), ("struct", KEYWORD_STYLE)],
             ),
             (
                 "\"int 123\" // UINT32\rconst",
@@ -1502,7 +1541,7 @@ mod tests {
             ),
         ] {
             let text: Vec<_> = body.encode_utf16().collect();
-            let found: Vec<_> = spans(&text)
+            let found: Vec<_> = spans(&text, &[])
                 .into_iter()
                 .map(|(start, end, style)| (String::from_utf16(&text[start..end]).unwrap(), style))
                 .collect();
@@ -1513,7 +1552,7 @@ mod tests {
             assert_eq!(found, expected, "{body}");
         }
         assert_eq!(
-            spans(&[b'1' as u16, 0xd800, b'2' as u16, 0xdc00]),
+            spans(&[b'1' as u16, 0xd800, b'2' as u16, 0xdc00], &[]),
             [(0, 1, NUMBER_STYLE), (2, 3, NUMBER_STYLE)]
         );
     }
@@ -1524,7 +1563,7 @@ mod tests {
             "// 😀 struct 42\rconst char *s = \"a\\\"b\"; /* int 7 */ 123 UINT32 UINT_PTR char16_t"
                 .encode_utf16()
                 .collect();
-        let tokens: Vec<_> = super::spans(&text)
+        let tokens: Vec<_> = super::spans(&text, &[])
             .into_iter()
             .map(|(start, end, _)| String::from_utf16(&text[start..end]).unwrap())
             .collect();
@@ -1533,13 +1572,9 @@ mod tests {
             [
                 "// 😀 struct 42",
                 "const",
-                "char",
                 "\"a\\\"b\"",
                 "/* int 7 */",
                 "123",
-                "UINT32",
-                "UINT_PTR",
-                "char16_t"
             ]
         );
     }
