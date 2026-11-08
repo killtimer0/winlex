@@ -328,7 +328,10 @@ mod tests {
         fn load(&self) -> Config {
             Config::from_root(&self.0, 1).unwrap()
         }
-        fn read_key(&self) -> Key {
+        fn write_key(&self) -> Key {
+            self.load().write_key().unwrap()
+        }
+        fn open_key(&self, desired_access: REG_SAM_FLAGS) -> Key {
             let path: Vec<_> = self.0.encode_wide().chain(Some(0)).collect();
             let mut handle = ptr::null_mut();
             assert_eq!(
@@ -337,7 +340,7 @@ mod tests {
                         HKEY_CURRENT_USER,
                         path.as_ptr(),
                         0,
-                        KEY_QUERY_VALUE,
+                        desired_access,
                         &mut handle,
                     )
                 },
@@ -358,8 +361,7 @@ mod tests {
     fn native_paths_and_typed_values_are_isolated() {
         let one = Profile::new();
         let two = Profile::new();
-        let config = one.load();
-        let key = config.write_key().unwrap();
+        let key = one.write_key();
         let path = PathBuf::from(OsString::from_wide(&[
             67, 58, 92, 0xd800, 46, 119, 105, 110, 109, 100,
         ]));
@@ -377,8 +379,7 @@ mod tests {
     #[test]
     fn future_version_is_preserved() {
         let profile = Profile::new();
-        let config = profile.load();
-        let key = config.write_key().unwrap();
+        let key = profile.write_key();
         key.set_bytes("Number", &[0; 4]).unwrap();
         let loaded = profile.load();
         assert!(loaded.key.as_ref().unwrap().number("Number").is_none());
@@ -391,21 +392,21 @@ mod tests {
     #[test]
     fn invalid_version_blocks_all_writes_without_overwriting_it() {
         let profile = Profile::new();
-        let key = profile.load().write_key().unwrap();
+        let key = profile.write_key();
         key.set_text("Version", "unknown").unwrap();
         let loaded = profile.load();
         assert!(loaded.warning().is_some());
         assert!(loaded.write_key().is_err());
         assert!(loaded.write_paths(&[]).is_err());
         assert_eq!(
-            profile.read_key().text("Version").as_deref(),
+            profile.open_key(KEY_QUERY_VALUE).text("Version").as_deref(),
             Some("unknown")
         );
     }
     #[test]
     fn missing_version_and_autoload_use_writable_defaults() {
         let profile = Profile::new();
-        let key = profile.load().write_key().unwrap();
+        let key = profile.write_key();
         assert_eq!(
             unsafe { RegDeleteValueW(key.0, wide("Version").as_ptr()) },
             ERROR_SUCCESS
@@ -414,7 +415,7 @@ mod tests {
         assert!(loaded.warning().is_none());
         assert_eq!(loaded.paths(), Some(vec![]));
         loaded.write_paths(&[]).unwrap();
-        assert_eq!(profile.read_key().number("Version"), Some(1));
+        assert_eq!(profile.open_key(KEY_QUERY_VALUE).number("Version"), Some(1));
     }
     #[test]
     fn invalid_autoload_is_preserved_without_blocking_preferences() {
@@ -423,19 +424,18 @@ mod tests {
             (REG_DWORD, 42u32.to_le_bytes().to_vec()),
         ] {
             let profile = Profile::new();
-            profile
-                .load()
-                .write_key()
+            profile.write_key().set("AutoLoad", kind, &bytes).unwrap();
+            let original = profile
+                .open_key(KEY_QUERY_VALUE)
+                .value("AutoLoad", kind)
                 .unwrap()
-                .set("AutoLoad", kind, &bytes)
                 .unwrap();
-            let original = profile.read_key().value("AutoLoad", kind).unwrap().unwrap();
             let loaded = profile.load();
             assert!(loaded.paths().is_none());
             assert!(loaded.warning().is_some());
             assert!(loaded.write_paths(&[]).is_err());
             loaded.write_key().unwrap().set_number("Other", 3).unwrap();
-            let saved = profile.read_key();
+            let saved = profile.open_key(KEY_QUERY_VALUE);
             assert_eq!(saved.value("AutoLoad", kind).unwrap().unwrap(), original);
             assert_eq!(saved.number("Other"), Some(3));
         }
@@ -443,23 +443,9 @@ mod tests {
     #[test]
     fn query_retains_registry_status() {
         let profile = Profile::new();
-        let key = profile.load().write_key().unwrap();
+        let key = profile.write_key();
         key.set_number("Value", 1).unwrap();
-        let path: Vec<_> = profile.0.encode_wide().chain(Some(0)).collect();
-        let mut handle = ptr::null_mut();
-        assert_eq!(
-            unsafe {
-                RegOpenKeyExW(
-                    HKEY_CURRENT_USER,
-                    path.as_ptr(),
-                    0,
-                    KEY_SET_VALUE,
-                    &mut handle,
-                )
-            },
-            ERROR_SUCCESS
-        );
-        let restricted = Key(handle);
+        let restricted = profile.open_key(KEY_SET_VALUE);
         assert_eq!(
             restricted.value("Value", REG_DWORD),
             Err(ERROR_ACCESS_DENIED)

@@ -45,10 +45,27 @@ class PackageContracts(unittest.TestCase):
             "-GuiBuildRecord", str(records[1]), "-OutputDir", str(output),
         ], text=True, capture_output=True, encoding="utf-8", errors="replace")
 
-    def test_debug_packages(self):
+    def assert_no_local_paths(self, data, name, paths):
+        for path in paths:
+            if path:
+                for spelling in {path, path.replace("\\", "/")}:
+                    for encoding in ("utf-8", "utf-16le"):
+                        self.assertNotIn(spelling.lower().encode(encoding), data.lower(), name)
+
+    def test_debug_packages_with_unicode_executable_paths(self):
         for arch in ARCHITECTURES:
             with self.subTest(arch=arch):
-                records = self.records(arch)
+                source = self.directory / f"程序 [build]-{arch}"
+                source.mkdir()
+                records = []
+                for path in self.records(arch):
+                    record = json.loads(path.read_text(encoding="utf-8-sig"))
+                    executable = source / Path(record["executable"]).name
+                    shutil.copyfile(record["executable"], executable)
+                    record["executable"] = str(executable)
+                    destination = source / path.name
+                    destination.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+                    records.append(destination)
                 out = self.directory / f"good-{arch}"
                 result = self.package(arch, records, out)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -60,7 +77,6 @@ class PackageContracts(unittest.TestCase):
                     files = {entry.filename for entry in z.infolist() if not entry.is_dir()}
                     self.assertEqual({"winlex.exe", "winlex-gui.exe", "LICENSE", "THIRD-PARTY-NOTICES.md",
                                       "SHA256SUMS.txt", "LICENSES.txt"}, files)
-                    self.assertFalse(any(name.lower().endswith((".winmd", ".build.json")) for name in files))
                     lines = z.read("SHA256SUMS.txt").decode("utf-8").splitlines()
                     manifest = {}
                     for line in lines:
@@ -73,15 +89,10 @@ class PackageContracts(unittest.TestCase):
                     for name, sha in manifest.items():
                         data = z.read(name)
                         self.assertEqual(hashlib.sha256(data).hexdigest(), sha, name)
-                        for path in (str(ROOT), str(self.directory)):
-                            for spelling in {path, path.replace("\\", "/")}:
-                                self.assertNotIn(spelling.lower().encode(), data.lower(), name)
-                                self.assertNotIn(spelling.lower().encode("utf-16le"), data.lower(), name)
-                        if not name.lower().endswith(".exe") and os.environ.get("USERPROFILE"):
-                            profile = os.environ["USERPROFILE"]
-                            for spelling in {profile, profile.replace("\\", "/")}:
-                                self.assertNotIn(spelling.lower().encode(), data.lower(), name)
-                                self.assertNotIn(spelling.lower().encode("utf-16le"), data.lower(), name)
+                        paths = [str(ROOT), str(self.directory)]
+                        if not name.lower().endswith(".exe"):
+                            paths.append(os.environ.get("USERPROFILE", ""))
+                        self.assert_no_local_paths(data, name, paths)
                 for record, name in zip(records, ("winlex.exe", "winlex-gui.exe")):
                     with ZipFile(archive) as z:
                         self.assertEqual(hashlib.sha256(z.read(name)).hexdigest(),
@@ -96,11 +107,7 @@ class PackageContracts(unittest.TestCase):
                     self.assertFalse(any(name.endswith((".exe", ".build.json")) for name in z.namelist()))
                     for name in z.namelist():
                         data = z.read(name)
-                        for path in (str(ROOT), os.environ.get("USERPROFILE", "")):
-                            if path:
-                                for spelling in {path, path.replace("\\", "/")}:
-                                    for encoding in ("utf-8", "utf-16le"):
-                                        self.assertNotIn(spelling.lower().encode(encoding), data.lower(), name)
+                        self.assert_no_local_paths(data, name, (str(ROOT), os.environ.get("USERPROFILE", "")))
 
     def test_rejects_bad_records_and_existing_outputs(self):
         arch = ARCHITECTURES[0] if os.environ.get("WINLEX_PACKAGE_REQUIRE_ARCH") else "x64"
@@ -131,22 +138,6 @@ class PackageContracts(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("Output already exists", result.stdout + result.stderr)
                 self.assertEqual(existing.read_bytes(), b"keep")
-
-    def test_packages_unicode_executable_paths(self):
-        arch = ARCHITECTURES[0] if os.environ.get("WINLEX_PACKAGE_REQUIRE_ARCH") else "x64"
-        source = self.directory / "程序 [build]"
-        source.mkdir()
-        paths = []
-        for path in self.records(arch):
-            record = json.loads(path.read_text(encoding="utf-8-sig"))
-            executable = source / Path(record["executable"]).name
-            shutil.copyfile(record["executable"], executable)
-            record["executable"] = str(executable)
-            destination = source / path.name
-            destination.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
-            paths.append(destination)
-        result = self.package(arch, paths, self.directory / "unicode-package")
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_system_crt_imports_and_build_records(self):
         for arch in ARCHITECTURES:

@@ -1,5 +1,5 @@
 use super::*;
-use crate::test_support::{FixtureFile, catalog, source, type_id};
+use crate::test_support::{FixtureFile, catalog, search_results, source, type_id};
 use crate::{Catalog, EntityCategory, SearchOptions, SourceData};
 use windows_metadata::{writer, *};
 
@@ -79,17 +79,14 @@ fn fixture() -> SourceData {
 }
 
 fn hits(db: &Catalog, query: &str, mode: SearchMode) -> Vec<SearchMatch> {
-    let mut hits = db
-        .search(
-            query,
-            SearchOptions {
-                mode,
-                ..Default::default()
-            },
-        )
-        .unwrap()
-        .collect::<anyhow::Result<Vec<_>>>()
-        .unwrap();
+    let mut hits: Vec<_> = search_results(db.search(
+        query,
+        SearchOptions {
+            mode,
+            ..Default::default()
+        },
+    ))
+    .collect();
     hits.sort_unstable_by(SearchMatch::compare);
     hits
 }
@@ -251,18 +248,16 @@ fn category_vocabulary_preserves_bits_summary_kinds_and_condition_parsing() {
         if category != EntityCategory::Type {
             assert_eq!(selected.kind, spelling);
         }
-        let expected: Vec<_> = db
-            .search(
-                "not name = \"missing\"",
-                SearchOptions {
-                    mode: SearchMode::Condition,
-                    categories: Some(bit),
-                    ..Default::default()
-                },
-            )
-            .unwrap()
-            .map(|hit| hit.unwrap().id)
-            .collect();
+        let expected: Vec<_> = search_results(db.search(
+            "not name = \"missing\"",
+            SearchOptions {
+                mode: SearchMode::Condition,
+                categories: Some(bit),
+                ..Default::default()
+            },
+        ))
+        .map(|hit| hit.id)
+        .collect();
         for text in [spelling.to_owned(), spelling.to_ascii_uppercase()] {
             let mut found = hits(&db, &format!("category = {text:?}"), SearchMode::Condition);
             found.sort_unstable_by_key(|hit| hit.id);
@@ -671,17 +666,14 @@ fn search_entry_points_preserve_input_diagnostic_wrappers() {
 fn compiled_search_applies_external_source_filter() {
     let db = Catalog::from_inputs([fixture(), fixture()]).unwrap();
     let compiled = SearchQuery::compile("ValueOnly", SearchMode::Name, false).unwrap();
-    let found = db
-        .search_compiled(
-            compiled,
-            SearchOptions {
-                source: Some(1),
-                ..Default::default()
-            },
-        )
-        .unwrap()
-        .collect::<anyhow::Result<Vec<_>>>()
-        .unwrap();
+    let found: Vec<_> = search_results(db.search_compiled(
+        compiled,
+        SearchOptions {
+            source: Some(1),
+            ..Default::default()
+        },
+    ))
+    .collect();
     assert_eq!(found.len(), 1);
     assert_eq!(found[0].id.source_id, 1);
     assert_eq!(found[0].full_name, "Fixture.Outer.ValueOnly");
@@ -708,18 +700,15 @@ fn namespace_filters_and_entity_context_agree_for_nested_and_global_declarations
     let db = catalog("NamespaceFixture", file);
     let mut covered = 0;
     for namespace in ["", "命名.空间", "System"] {
-        let found = db
-            .search(
-                &format!("namespace = {namespace:?}"),
-                SearchOptions {
-                    mode: SearchMode::Condition,
-                    categories: Some(EntityCategory::ALL),
-                    ..Default::default()
-                },
-            )
-            .unwrap()
-            .collect::<anyhow::Result<Vec<_>>>()
-            .unwrap();
+        let found: Vec<_> = search_results(db.search(
+            &format!("namespace = {namespace:?}"),
+            SearchOptions {
+                mode: SearchMode::Condition,
+                categories: Some(EntityCategory::ALL),
+                ..Default::default()
+            },
+        ))
+        .collect();
         assert!(!found.is_empty(), "{namespace}");
         for hit in found {
             covered += 1;
@@ -735,18 +724,15 @@ fn namespace_filters_and_entity_context_agree_for_nested_and_global_declarations
             );
         }
     }
-    let all = db
-        .search(
-            "not namespace = \"missing\"",
-            SearchOptions {
-                mode: SearchMode::Condition,
-                categories: Some(EntityCategory::ALL),
-                ..Default::default()
-            },
-        )
-        .unwrap()
-        .collect::<anyhow::Result<Vec<_>>>()
-        .unwrap();
+    let all: Vec<_> = search_results(db.search(
+        "not namespace = \"missing\"",
+        SearchOptions {
+            mode: SearchMode::Condition,
+            categories: Some(EntityCategory::ALL),
+            ..Default::default()
+        },
+    ))
+    .collect();
     assert_eq!(covered, all.len());
 }
 
@@ -860,19 +846,16 @@ fn float_equality_guid_order_and_source_filters_use_shared_scan() {
         );
     }
     assert!(hits(&db, "78563412", SearchMode::Guid).is_empty());
-    let filtered = db
-        .search(
-            "12345678",
-            SearchOptions {
-                mode: SearchMode::Guid,
-                source: Some(1),
-                categories: Some(EntityCategory::Type as u32),
-                ..Default::default()
-            },
-        )
-        .unwrap()
-        .collect::<anyhow::Result<Vec<_>>>()
-        .unwrap();
+    let filtered: Vec<_> = search_results(db.search(
+        "12345678",
+        SearchOptions {
+            mode: SearchMode::Guid,
+            source: Some(1),
+            categories: Some(EntityCategory::Type as u32),
+            ..Default::default()
+        },
+    ))
+    .collect();
     assert_eq!(filtered.len(), 1);
     assert_eq!(filtered[0].id.source_id, 1);
     assert_eq!(filtered[0].name, "Guid257");

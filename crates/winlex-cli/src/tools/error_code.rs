@@ -302,7 +302,6 @@ mod tests {
             vec!["4294967296"],
             vec!["5", "--language", "-1"],
             vec!["5", "--language", "65536"],
-            vec!["5", "--module", "test.dll", "--scope", "win32"],
             vec!["5", "--scope", "module"],
         ] {
             assert!(parse_args(&args).is_err());

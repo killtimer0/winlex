@@ -1269,6 +1269,10 @@ mod tests {
     use super::*;
     use windows_sys::Win32::System::SystemServices::MK_LBUTTON;
 
+    fn static_window(area: RECT) -> HWND {
+        unsafe { test_window(w!("STATIC"), ptr::null(), WS_POPUP, area) }
+    }
+
     thread_local! {
         pub(super) static CUSTOM_OVERFLOW: Cell<bool> = const { Cell::new(false) };
         static ANIMATION_PROBE: RefCell<Option<AnimationProbe>> = const { RefCell::new(None) };
@@ -1450,6 +1454,32 @@ mod tests {
         );
     }
 
+    fn empty_tab(parent: HWND) -> HWND {
+        let classes = INITCOMMONCONTROLSEX {
+            dwSize: std::mem::size_of::<INITCOMMONCONTROLSEX>() as u32,
+            dwICC: ICC_TAB_CLASSES | ICC_UPDOWN_CLASS,
+        };
+        assert_ne!(unsafe { InitCommonControlsEx(&classes) }, 0);
+        unsafe { child(parent, w!("SysTabControl32"), &[0], WS_TABSTOP, 1) }.unwrap()
+    }
+
+    fn fill_tab(tab: HWND) {
+        for index in 0..12 {
+            let mut text = wide(&format!("Page {index}"));
+            let item = TCITEMW {
+                mask: TCIF_TEXT,
+                pszText: text.as_mut_ptr(),
+                ..unsafe { std::mem::zeroed() }
+            };
+            assert_eq!(send_ref(tab, TCM_INSERTITEMW, index, &item), index as isize);
+        }
+    }
+
+    fn click_arrow(hwnd: HWND, position: isize) {
+        send(hwnd, WM_LBUTTONDOWN, MK_LBUTTON as usize, position);
+        send(hwnd, WM_LBUTTONUP, 0, position);
+    }
+
     struct OverflowWindow {
         parent: HWND,
         tab: HWND,
@@ -1459,23 +1489,13 @@ mod tests {
     impl OverflowWindow {
         unsafe fn new() -> Self {
             unsafe {
-                let classes = INITCOMMONCONTROLSEX {
-                    dwSize: std::mem::size_of::<INITCOMMONCONTROLSEX>() as u32,
-                    dwICC: ICC_TAB_CLASSES | ICC_UPDOWN_CLASS,
-                };
-                assert_ne!(InitCommonControlsEx(&classes), 0);
-                let parent = test_window(
-                    w!("STATIC"),
-                    ptr::null(),
-                    WS_POPUP,
-                    RECT {
-                        left: 0,
-                        top: 0,
-                        right: 180,
-                        bottom: 100,
-                    },
-                );
-                let tab = child(parent, w!("SysTabControl32"), &[0], WS_TABSTOP, 1).unwrap();
+                let parent = static_window(RECT {
+                    left: 0,
+                    top: 0,
+                    right: 180,
+                    bottom: 100,
+                });
+                let tab = empty_tab(parent);
                 set_bounds(
                     tab,
                     RECT {
@@ -1486,15 +1506,7 @@ mod tests {
                     },
                 )
                 .unwrap();
-                for index in 0..12 {
-                    let mut text = wide(&format!("Page {index}"));
-                    let item = TCITEMW {
-                        mask: TCIF_TEXT,
-                        pszText: text.as_mut_ptr(),
-                        ..std::mem::zeroed()
-                    };
-                    assert_eq!(send_ref(tab, TCM_INSERTITEMW, index, &item), index as isize);
-                }
+                fill_tab(tab);
                 let hwnd = FindWindowExW(tab, ptr::null_mut(), UPDOWN_CLASSW, ptr::null());
                 assert!(!hwnd.is_null());
                 let result = Self { parent, tab, hwnd };
@@ -1503,8 +1515,7 @@ mod tests {
                 let before = result.native_state();
                 let next = overflow_rects(hwnd)[1];
                 let point = (((next.top + next.bottom) / 2) << 16) | ((next.left + next.right) / 2);
-                send(hwnd, WM_LBUTTONDOWN, MK_LBUTTON as usize, point as isize);
-                send(hwnd, WM_LBUTTONUP, 0, point as isize);
+                click_arrow(hwnd, point as isize);
                 let after = result.native_state();
                 assert!(
                     after.2 < before.2,
@@ -1595,27 +1606,16 @@ mod tests {
         }
     }
 
-    unsafe fn cached_overflow_bitmap(hwnd: HWND, state: &ControlData) -> HBITMAP {
-        unsafe {
-            let bitmap = state.buffer.borrow().as_ref().unwrap().bitmap;
-            let mut info: BITMAP = std::mem::zeroed();
-            assert_ne!(
-                GetObjectW(
-                    bitmap,
-                    std::mem::size_of::<BITMAP>() as i32,
-                    (&mut info as *mut BITMAP).cast()
-                ),
-                0
-            );
-            let area = client(hwnd);
-            assert!(area.right > 1 && area.bottom > 1);
-            assert_eq!(
-                (info.bmWidth, info.bmHeight),
-                (area.right, area.bottom),
-                "the release assertion must cover a real full-size bitmap, not a stock zero-size substitute"
-            );
-            bitmap
-        }
+    fn cached_overflow_bitmap(hwnd: HWND, state: &ControlData) -> HBITMAP {
+        let bitmap = state.buffer.borrow().as_ref().unwrap().bitmap;
+        let area = client(hwnd);
+        assert!(area.right > 1 && area.bottom > 1);
+        assert_eq!(
+            crate::test_support::bitmap_size(bitmap),
+            (area.right, area.bottom),
+            "the release assertion must cover a real full-size bitmap, not a stock zero-size substitute"
+        );
+        bitmap
     }
 
     struct DestroyObservation {
@@ -1934,23 +1934,13 @@ mod tests {
     fn tab_overflow_created_after_install_keeps_native_scrolling_and_selection() {
         let _activation = super::super::tests::CommonControls::activate();
         unsafe {
-            let classes = INITCOMMONCONTROLSEX {
-                dwSize: std::mem::size_of::<INITCOMMONCONTROLSEX>() as u32,
-                dwICC: ICC_TAB_CLASSES | ICC_UPDOWN_CLASS,
-            };
-            assert_ne!(InitCommonControlsEx(&classes), 0);
-            let parent = test_window(
-                w!("STATIC"),
-                ptr::null(),
-                WS_POPUP,
-                RECT {
-                    left: 0,
-                    top: 0,
-                    right: 1800,
-                    bottom: 200,
-                },
-            );
-            let tab = child(parent, w!("SysTabControl32"), &[0], WS_TABSTOP, 1).unwrap();
+            let parent = static_window(RECT {
+                left: 0,
+                top: 0,
+                right: 1800,
+                bottom: 200,
+            });
+            let tab = empty_tab(parent);
             set_bounds(
                 tab,
                 RECT {
@@ -1964,15 +1954,7 @@ mod tests {
             install(tab, "systabcontrol32");
             // Create overflow after installation: only fallback tabs detect it.
             assert!(FindWindowExW(tab, ptr::null_mut(), UPDOWN_CLASSW, ptr::null()).is_null());
-            for index in 0..12 {
-                let mut text = wide(&format!("Page {index}"));
-                let item = TCITEMW {
-                    mask: TCIF_TEXT,
-                    pszText: text.as_mut_ptr(),
-                    ..std::mem::zeroed()
-                };
-                assert_eq!(send_ref(tab, TCM_INSERTITEMW, index, &item), index as isize);
-            }
+            fill_tab(tab);
             set_bounds(
                 tab,
                 RECT {
@@ -2007,13 +1989,7 @@ mod tests {
             assert_ne!(send_mut(tab, TCM_GETITEMRECT, 0, &mut before), 0);
             let next = overflow_rects(overflow)[1];
             let position = (((next.top + next.bottom) / 2) << 16) | ((next.left + next.right) / 2);
-            send(
-                overflow,
-                WM_LBUTTONDOWN,
-                MK_LBUTTON as usize,
-                position as isize,
-            );
-            send(overflow, WM_LBUTTONUP, 0, position as isize);
+            click_arrow(overflow, position as isize);
             let mut after: RECT = std::mem::zeroed();
             assert_ne!(send_mut(tab, TCM_GETITEMRECT, 0, &mut after), 0);
             assert!(
@@ -2158,31 +2134,21 @@ mod tests {
         let _activation = super::super::tests::CommonControls::activate();
         assert!(!CUSTOM_OVERFLOW.with(Cell::get));
         unsafe {
-            let classes = INITCOMMONCONTROLSEX {
-                dwSize: std::mem::size_of::<INITCOMMONCONTROLSEX>() as u32,
-                dwICC: ICC_TAB_CLASSES | ICC_UPDOWN_CLASS,
-            };
-            assert_ne!(InitCommonControlsEx(&classes), 0);
             let mode = super::super::STATE.with(|state| state.borrow().mode);
             let mut cursor = std::mem::zeroed();
             assert_ne!(GetCursorPos(&mut cursor), 0);
-            let parent = test_window(
-                w!("STATIC"),
-                ptr::null(),
-                WS_POPUP,
-                RECT {
-                    left: 64,
-                    top: 64,
-                    right: 1900,
-                    bottom: 260,
-                },
-            );
+            let parent = static_window(RECT {
+                left: 64,
+                top: 64,
+                right: 1900,
+                bottom: 260,
+            });
             let _window = NativeOverflowWindow {
                 parent,
                 mode,
                 cursor,
             };
-            let tab = child(parent, w!("SysTabControl32"), &[0], WS_TABSTOP, 1).unwrap();
+            let tab = empty_tab(parent);
             let resize = |width| {
                 set_bounds(
                     tab,
@@ -2196,15 +2162,7 @@ mod tests {
                 .unwrap();
             };
             resize(if late { 1800 } else { 160 });
-            for index in 0..12 {
-                let mut text = wide(&format!("Page {index}"));
-                let item = TCITEMW {
-                    mask: TCIF_TEXT,
-                    pszText: text.as_mut_ptr(),
-                    ..std::mem::zeroed()
-                };
-                assert_eq!(send_ref(tab, TCM_INSERTITEMW, index, &item), index as isize);
-            }
+            fill_tab(tab);
             let find = || FindWindowExW(tab, ptr::null_mut(), UPDOWN_CLASSW, ptr::null());
             if late {
                 assert!(
@@ -2265,13 +2223,7 @@ mod tests {
             assert_ne!(SetCursorPos(screen.x, screen.y), 0);
             settle_native_overflow(parent);
             themed_overflow_pixels(overflow, "dark hot", true, 45);
-            send(
-                overflow,
-                WM_LBUTTONDOWN,
-                MK_LBUTTON as usize,
-                position as isize,
-            );
-            send(overflow, WM_LBUTTONUP, 0, position as isize);
+            click_arrow(overflow, position as isize);
             let mut after: RECT = std::mem::zeroed();
             assert_ne!(send_mut(tab, TCM_GETITEMRECT, 0, &mut after), 0);
             assert!(
@@ -2332,17 +2284,12 @@ mod tests {
     #[test]
     fn overflow_without_a_spin_theme_draws_readable_font_arrows_and_preserves_dc() {
         unsafe {
-            let hwnd = test_window(
-                w!("STATIC"),
-                ptr::null(),
-                WS_POPUP,
-                RECT {
-                    left: 0,
-                    top: 0,
-                    right: 80,
-                    bottom: 24,
-                },
-            );
+            let hwnd = static_window(RECT {
+                left: 0,
+                top: 0,
+                right: 80,
+                bottom: 24,
+            });
             let screen = GetDC(hwnd);
             let surface = Buffer::new(screen, 80, 24).unwrap();
             let previous = GetCurrentObject(surface.dc, OBJ_FONT as u32);
@@ -2379,17 +2326,12 @@ mod tests {
                 dwICC: ICC_BAR_CLASSES,
             };
             assert_ne!(InitCommonControlsEx(&classes), 0);
-            let parent = test_window(
-                w!("STATIC"),
-                ptr::null(),
-                WS_POPUP,
-                RECT {
-                    left: 0,
-                    top: 0,
-                    right: 100,
-                    bottom: 40,
-                },
-            );
+            let parent = static_window(RECT {
+                left: 0,
+                top: 0,
+                right: 100,
+                bottom: 40,
+            });
             let control = child(parent, w!("ToolbarWindow32"), &[0], TBSTYLE_FLAT, 7).unwrap();
             send(
                 control,
@@ -2457,126 +2399,75 @@ mod tests {
         }
     }
 
-    #[test]
-    fn nested_status_owner_draw_uses_an_independent_buffer() {
-        struct Observation {
-            state: ControlData,
-            outer_dc: Cell<HDC>,
-            nested: Cell<bool>,
-            independent: Cell<bool>,
-        }
-        unsafe extern "system" fn observe(
-            hwnd: HWND,
-            msg: u32,
-            w: usize,
-            l: isize,
-            _: usize,
-            data: usize,
-        ) -> isize {
-            unsafe {
-                if msg == WM_DRAWITEM {
-                    let draw = &*(l as *const DRAWITEMSTRUCT);
-                    let observation = &*(data as *const Observation);
-                    if observation.nested.replace(true) {
-                        observation
-                            .independent
-                            .set(draw.hDC != observation.outer_dc.get());
-                    } else {
-                        observation.outer_dc.set(draw.hDC);
-                        let target = Buffer::new(draw.hDC, 300, 100).unwrap();
-                        buffered(
-                            draw.hwndItem,
-                            target.dc,
-                            &observation.state,
-                            client(draw.hwndItem),
-                        );
-                        // A nested paint must restore the outer erase target too.
-                        observation.independent.set(
-                            observation.independent.get()
-                                && observation.state.active_dc.get() == draw.hDC,
-                        );
-                    }
-                    return 1;
-                }
-                default_subclass(hwnd, msg, w, l)
-            }
-        }
+    fn owner_draw_status() -> (HWND, HWND) {
         unsafe {
             let controls = INITCOMMONCONTROLSEX {
                 dwSize: std::mem::size_of::<INITCOMMONCONTROLSEX>() as u32,
                 dwICC: ICC_BAR_CLASSES,
             };
             assert_ne!(InitCommonControlsEx(&controls), 0);
-            let parent = test_window(
-                w!("STATIC"),
-                ptr::null(),
-                WS_POPUP,
-                RECT {
-                    left: 0,
-                    top: 0,
-                    right: 300,
-                    bottom: 100,
-                },
-            );
+            let parent = static_window(crate::layout::rect(0, 0, 300, 100));
             let status = child(parent, STATUSCLASSNAMEW, &[0], 0, 42).unwrap();
-            set_bounds(
-                status,
-                RECT {
-                    left: 0,
-                    top: 0,
-                    right: 300,
-                    bottom: 24,
-                },
-            )
-            .unwrap();
-            let observation = Observation {
-                state: ControlData::new(Control::Status),
-                outer_dc: Cell::new(ptr::null_mut()),
-                nested: Cell::new(false),
-                independent: Cell::new(false),
+            set_bounds(status, crate::layout::rect(0, 0, 300, 24)).unwrap();
+            (parent, status)
+        }
+    }
+
+    #[test]
+    fn nested_status_owner_draw_uses_an_independent_buffer() {
+        unsafe {
+            let (parent, status) = owner_draw_status();
+            let state = ControlData::new(Control::Status);
+            let outer_dc = Cell::new(ptr::null_mut());
+            let nested = Cell::new(false);
+            let independent = Cell::new(false);
+            let observe = |_, msg, _, l| {
+                if msg != WM_DRAWITEM {
+                    return None;
+                }
+                let draw = &*(l as *const DRAWITEMSTRUCT);
+                if nested.replace(true) {
+                    independent.set(draw.hDC != outer_dc.get());
+                } else {
+                    outer_dc.set(draw.hDC);
+                    let target = Buffer::new(draw.hDC, 300, 100).unwrap();
+                    buffered(draw.hwndItem, target.dc, &state, client(draw.hwndItem));
+                    // A nested paint must restore the outer erase target too.
+                    independent.set(independent.get() && state.active_dc.get() == draw.hDC);
+                }
+                Some(1)
             };
-            set_subclass(parent, Some(observe), 1, &observation as *const _ as usize);
+            let callback = crate::test_support::observe_messages(parent, 1, &observe);
             assert_ne!(send(status, SB_SETTEXTW, SBT_OWNERDRAW as usize, 123), 0);
             let dc = GetDC(status);
-            buffered(status, dc, &observation.state, client(status));
+            buffered(status, dc, &state, client(status));
+            assert!(nested.get(), "owner drawing must still be dispatched");
             assert!(
-                observation.nested.get(),
-                "owner drawing must still be dispatched"
-            );
-            assert!(
-                observation.independent.get(),
+                independent.get(),
                 "nested status paints must not overwrite the outer cached surface"
             );
             ReleaseDC(status, dc);
+            remove_subclass(parent, callback, 1);
             DestroyWindow(parent);
         }
     }
 
     #[test]
     fn cached_buffer_clips_repaint_reuses_surface_and_resizes() {
+        use crate::test_support as surfaces;
+
         unsafe {
-            let hwnd = test_window(
-                w!("STATIC"),
-                ptr::null(),
-                WS_POPUP,
-                RECT {
-                    left: 0,
-                    top: 0,
-                    right: 100,
-                    bottom: 40,
-                },
-            );
+            let hwnd = static_window(RECT {
+                left: 0,
+                top: 0,
+                right: 100,
+                bottom: 40,
+            });
             let state = ControlData::new(Control::Overflow);
             let screen = GetDC(hwnd);
             let target = Buffer::new(screen, 160, 80).unwrap();
-            let marker = GdiObject(CreateSolidBrush(0x00123456));
-            let full = RECT {
-                left: 0,
-                top: 0,
-                right: 160,
-                bottom: 80,
-            };
-            FillRect(target.dc, &full, marker.0);
+            let full = crate::layout::rect(0, 0, 160, 80);
+            surfaces::mark_surface(target.dc, full);
             let dirty = RECT {
                 left: 10,
                 top: 10,
@@ -2584,59 +2475,29 @@ mod tests {
                 bottom: 20,
             };
             buffered(hwnd, target.dc, &state, dirty);
-            assert_eq!(
-                GetPixel(target.dc, 5, 5),
-                0x00123456,
-                "partial paint must not blit outside rcPaint"
-            );
+            surfaces::assert_surface_clipped(target.dc);
             assert_ne!(
                 GetPixel(target.dc, 15, 15),
-                0x00123456,
+                surfaces::SURFACE_MARKER,
                 "partial paint must update rcPaint"
             );
             let (dc, bitmap) = {
                 let cached = state.buffer.borrow();
                 let cached = cached.as_ref().unwrap();
-                FillRect(cached.dc, &full, marker.0);
+                surfaces::mark_surface(cached.dc, full);
                 (cached.dc, cached.bitmap)
             };
             buffered(hwnd, target.dc, &state, dirty);
             {
                 let cached = state.buffer.borrow();
                 let cached = cached.as_ref().unwrap();
-                assert_eq!(
-                    (cached.dc, cached.bitmap),
-                    (dc, bitmap),
-                    "same-size repaints reuse their GDI surface"
-                );
-                assert_eq!(
-                    GetPixel(cached.dc, 5, 5),
-                    0x00123456,
-                    "drawing itself must also be clipped to rcPaint"
-                );
+                surfaces::assert_surface_reused((dc, bitmap), (cached.dc, cached.bitmap));
             }
-            SetWindowPos(
-                hwnd,
-                ptr::null_mut(),
-                0,
-                0,
-                140,
-                60,
-                SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
-            );
+            surfaces::resize_surface_window(hwnd, 140, 60);
             buffered(hwnd, target.dc, &state, client(hwnd));
-            let mut info: BITMAP = std::mem::zeroed();
             let cached = state.buffer.borrow();
-            assert_ne!(
-                GetObjectW(
-                    cached.as_ref().unwrap().bitmap,
-                    std::mem::size_of::<BITMAP>() as i32,
-                    (&mut info as *mut BITMAP).cast()
-                ),
-                0
-            );
             assert_eq!(
-                (info.bmWidth, info.bmHeight),
+                surfaces::bitmap_size(cached.as_ref().unwrap().bitmap),
                 (140, 60),
                 "resize replaces the cached bitmap with the client size"
             );
@@ -2648,17 +2509,12 @@ mod tests {
     #[test]
     fn status_theme_and_dpi_messages_retire_cached_resources_without_invalidating_active_paints() {
         unsafe {
-            let hwnd = test_window(
-                w!("STATIC"),
-                ptr::null(),
-                WS_POPUP,
-                RECT {
-                    left: 0,
-                    top: 0,
-                    right: 100,
-                    bottom: 40,
-                },
-            );
+            let hwnd = static_window(RECT {
+                left: 0,
+                top: 0,
+                right: 100,
+                bottom: 40,
+            });
             install_one(hwnd, Control::Status);
             let mut data = 0;
             assert_ne!(
@@ -2705,61 +2561,25 @@ mod tests {
 
     #[test]
     fn status_owner_draw_retains_pointer_sized_data_and_restores_the_dc() {
-        unsafe extern "system" fn observe(
-            hwnd: HWND,
-            msg: u32,
-            w: usize,
-            l: isize,
-            _: usize,
-            data: usize,
-        ) -> isize {
-            unsafe {
-                if msg == WM_DRAWITEM {
-                    let draw = &*(l as *const DRAWITEMSTRUCT);
-                    let result = &mut *(data as *mut Option<(usize, u32, u32, bool)>);
-                    *result = Some((
-                        draw.itemData,
-                        draw.itemID,
-                        draw.CtlID,
-                        draw.rcItem.right > draw.rcItem.left,
-                    ));
-                    // An owner is allowed to alter its drawing DC.
-                    SetTextColor(draw.hDC, 0x00123456);
-                    return 1;
-                }
-                default_subclass(hwnd, msg, w, l)
-            }
-        }
         unsafe {
-            let controls = INITCOMMONCONTROLSEX {
-                dwSize: std::mem::size_of::<INITCOMMONCONTROLSEX>() as u32,
-                dwICC: ICC_BAR_CLASSES,
+            let (parent, status) = owner_draw_status();
+            let observed = Cell::new(None);
+            let observe = |_, msg, _, l| {
+                if msg != WM_DRAWITEM {
+                    return None;
+                }
+                let draw = &*(l as *const DRAWITEMSTRUCT);
+                observed.set(Some((
+                    draw.itemData,
+                    draw.itemID,
+                    draw.CtlID,
+                    draw.rcItem.right > draw.rcItem.left,
+                )));
+                // An owner is allowed to alter its drawing DC.
+                SetTextColor(draw.hDC, 0x00123456);
+                Some(1)
             };
-            assert_ne!(InitCommonControlsEx(&controls), 0);
-            let parent = test_window(
-                w!("STATIC"),
-                ptr::null(),
-                WS_POPUP,
-                RECT {
-                    left: 0,
-                    top: 0,
-                    right: 300,
-                    bottom: 100,
-                },
-            );
-            let status = child(parent, STATUSCLASSNAMEW, &[0], 0, 42).unwrap();
-            set_bounds(
-                status,
-                RECT {
-                    left: 0,
-                    top: 0,
-                    right: 300,
-                    bottom: 24,
-                },
-            )
-            .unwrap();
-            let mut observed: Option<(usize, u32, u32, bool)> = None;
-            set_subclass(parent, Some(observe), 1, &mut observed as *mut _ as usize);
+            let callback = crate::test_support::observe_messages(parent, 1, &observe);
             let item_data = usize::MAX - 0x1234;
             assert_ne!(
                 send(
@@ -2777,11 +2597,12 @@ mod tests {
             SetBkMode(dc, OPAQUE as i32);
             let resources = StatusResources::new(status);
             paint(status, dc, Control::Status, Some(&resources), None);
-            assert_eq!(observed, Some((item_data, 0, 42, true)));
+            assert_eq!(observed.get(), Some((item_data, 0, 42, true)));
             assert_eq!(GetTextColor(dc), 0x00654321);
             assert_eq!(GetBkMode(dc), OPAQUE as i32);
             assert_eq!(GetCurrentObject(dc, OBJ_FONT as u32), before_font);
             ReleaseDC(status, dc);
+            remove_subclass(parent, callback, 1);
             DestroyWindow(parent);
         }
     }

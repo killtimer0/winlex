@@ -248,27 +248,6 @@ mod tests {
 
     #[test]
     fn nonclient_refresh_preserves_activation_and_bounds_reentry() {
-        unsafe extern "system" fn observe(
-            hwnd: HWND,
-            message: u32,
-            w: usize,
-            l: isize,
-            _: usize,
-            data: usize,
-        ) -> isize {
-            unsafe {
-                if message == WM_NCACTIVATE {
-                    let notifications = &mut *(data as *mut Vec<usize>);
-                    notifications.push(w);
-                    assert!(
-                        notifications.len() <= 2,
-                        "non-client refresh must not recurse"
-                    );
-                    refresh_titlebar(hwnd);
-                }
-                default_subclass(hwnd, message, w, l)
-            }
-        }
         unsafe {
             let hwnd = test_window(
                 w!("STATIC"),
@@ -276,27 +255,33 @@ mod tests {
                 WS_POPUP,
                 crate::layout::rect(0, 0, 100, 100),
             );
-            let mut notifications = Vec::<usize>::new();
+            let notifications = std::cell::RefCell::new(Vec::<usize>::new());
+            let observe = |hwnd, message, w, _| {
+                if message == WM_NCACTIVATE {
+                    {
+                        let mut notifications = notifications.borrow_mut();
+                        notifications.push(w);
+                        assert!(
+                            notifications.len() <= 2,
+                            "non-client refresh must not recurse"
+                        );
+                    }
+                    refresh_titlebar(hwnd);
+                }
+                None
+            };
             let active = GetActiveWindow();
             let foreground = GetForegroundWindow();
             let expected = hwnd == active && hwnd == foreground;
-            assert_ne!(
-                set_subclass(
-                    hwnd,
-                    Some(observe),
-                    1,
-                    &mut notifications as *mut _ as usize
-                ),
-                0
-            );
+            let callback = crate::test_support::observe_messages(hwnd, 1, &observe);
             refresh_titlebar(hwnd);
             assert_eq!(
-                notifications,
+                *notifications.borrow(),
                 [usize::from(!expected), usize::from(expected)]
             );
             assert_eq!(GetActiveWindow(), active);
             assert_eq!(GetForegroundWindow(), foreground);
-            remove_subclass(hwnd, Some(observe), 1);
+            remove_subclass(hwnd, callback, 1);
             DestroyWindow(hwnd);
         }
     }

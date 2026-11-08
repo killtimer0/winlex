@@ -1064,25 +1064,6 @@ mod tests {
     fn native_links_preserve_utf16_ranges_recoloring_and_plain_text_fallback() {
         use windows::Win32::UI::Controls::RichEdit::EN_LINK;
 
-        unsafe extern "system" fn observe(
-            hwnd: HWND,
-            msg: u32,
-            w: usize,
-            l: isize,
-            _id: usize,
-            data: usize,
-        ) -> isize {
-            unsafe {
-                if msg == WM_NOTIFY && (l as *const NMHDR).read_unaligned().code == EN_LINK {
-                    let link = (l as *const ENLINK).read_unaligned();
-                    let received = &mut *(data as *mut Vec<ENLINK>);
-                    received.push(link);
-                    return 0;
-                }
-                default_subclass(hwnd, msg, w, l)
-            }
-        }
-
         unsafe {
             let fixture = Editor::new(
                 WS_POPUP | WS_VISIBLE,
@@ -1090,11 +1071,17 @@ mod tests {
             );
             let Editor(parent, editor) = fixture;
             set_bounds(editor, crate::layout::rect(0, 0, 750, 500)).unwrap();
-            let mut received = Vec::<ENLINK>::new();
-            assert_ne!(
-                set_subclass(parent, Some(observe), 1, &mut received as *mut _ as usize),
-                0
-            );
+            let received = std::cell::RefCell::new(Vec::<ENLINK>::new());
+            let observe = |_, msg, _, l| {
+                if msg == WM_NOTIFY && (l as *const NMHDR).read_unaligned().code == EN_LINK {
+                    received
+                        .borrow_mut()
+                        .push((l as *const ENLINK).read_unaligned());
+                    return Some(0);
+                }
+                None
+            };
+            let callback = crate::test_support::observe_messages(parent, 1, &observe);
             let target = EntityId {
                 source_id: 7,
                 token: 0x02000002,
@@ -1171,13 +1158,14 @@ mod tests {
                         for (x, expected) in
                             [((last.x + end.x) / 2 + 1, Some(target)), (end.x + 30, None)]
                         {
-                            received.clear();
+                            received.borrow_mut().clear();
                             fixture.select(0, 0);
                             let location =
                                 (((end.y + 6) as u16 as u32) << 16 | x as u16 as u32) as isize;
                             send(editor, WM_LBUTTONDOWN, 9, location);
                             send(editor, WM_LBUTTONUP, 8, location);
-                            let actual = received.iter().find_map(|link| {
+                            let links = received.take();
+                            let actual = links.iter().find_map(|link| {
                                 link_region(editor, &content, link).and_then(Region::reference)
                             });
                             assert_eq!(
@@ -1187,10 +1175,10 @@ mod tests {
                                 region.range,
                                 end.x,
                                 end.y,
-                                received.len()
+                                links.len()
                             );
                             if expected.is_some() {
-                                let range = received.last().unwrap().chrg;
+                                let range = links.last().unwrap().chrg;
                                 assert_eq!(
                                     range.cpMin as usize..range.cpMax as usize,
                                     region.range
@@ -1205,6 +1193,7 @@ mod tests {
                 let format = fixture.character_format();
                 assert_eq!(format.Base.dwEffects.0 & (CFE_LINK | CFE_UNDERLINE).0, 0);
             }
+            remove_subclass(parent, callback, 1);
             drop(fixture);
             crate::theme::set_mode(0);
         }
@@ -1306,27 +1295,18 @@ mod tests {
     #[test]
     fn large_declaration_load_keeps_ui_pause_bounded() {
         use std::time::{Duration, Instant};
-        use winlex_core::{Architecture, Catalog, EntityCategory, SearchMode, SearchOptions};
+        use winlex_core::{Architecture, EntityCategory, SearchMode, SearchOptions};
 
-        let catalog = Catalog::open(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../inputs/Windows.Win32.winmd"),
-        )
-        .unwrap();
-        let entity = catalog
-            .search(
-                "Windows.Win32.Graphics.Gdi.Apis",
-                SearchOptions {
-                    mode: SearchMode::Name,
-                    architecture: Some(Architecture::X64),
-                    categories: Some(EntityCategory::ALL & !(EntityCategory::TypeReference as u32)),
-                    ..Default::default()
-                },
-            )
-            .unwrap()
-            .next()
-            .unwrap()
-            .unwrap();
+        let catalog = crate::test_support::catalog();
+        let entity = crate::test_support::first_match(catalog.search(
+            "Windows.Win32.Graphics.Gdi.Apis",
+            SearchOptions {
+                mode: SearchMode::Name,
+                architecture: Some(Architecture::X64),
+                categories: Some(EntityCategory::ALL & !(EntityCategory::TypeReference as u32)),
+                ..Default::default()
+            },
+        ));
         let rendered =
             winlex_format::declaration::render(&catalog, entity.id, Architecture::X64).unwrap();
         let body = rendered.text.clone();

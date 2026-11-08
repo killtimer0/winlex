@@ -399,32 +399,14 @@ mod tests {
     #[test]
     fn native_integer_widths_follow_target_architecture() {
         let q = NumberQuery::compile("0xffffffff").unwrap();
-        assert!(
-            q.matches(
-                &Value::ISize(-1),
-                Some(Architecture::X86),
-                7,
-                Comparison::Equal
-            )
-            .is_some()
-        );
-        assert!(
-            q.matches(
-                &Value::ISize(-1),
-                Some(Architecture::X64),
-                7,
-                Comparison::Equal
-            )
-            .is_none()
-        );
-        assert!(
-            q.matches(
-                &Value::ISize(-1),
-                None,
-                Architecture::X64.bit(),
-                Comparison::Equal
-            )
-            .is_none()
-        );
+        for (architecture, mask) in [
+            (Some(Architecture::X64), 7),
+            (None, Architecture::X64.bit()),
+        ] {
+            assert!(
+                q.matches(&Value::ISize(-1), architecture, mask, Comparison::Equal)
+                    .is_none()
+            );
+        }
     }
 }

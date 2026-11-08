@@ -276,23 +276,26 @@ mod tests {
 
     #[test]
     fn overlapping_name_and_namespace_evidence_projects_once_per_display_character() {
-        let mut hit = item(
-            "😀W",
-            "中😀.Outer+Inner.😀W",
-            "method",
-            MatchQuality::Filter,
-        );
-        hit.evidence = vec![
+        let project_evidence = |evidence| {
+            let mut hit = item(
+                "😀W",
+                "中😀.Outer+Inner.😀W",
+                "method",
+                MatchQuality::Filter,
+            );
+            hit.evidence = evidence;
+            let mut ctx = context();
+            ctx.namespace = "中😀".into();
+            present(hit, ctx)
+        };
+        let result = project_evidence(vec![
             evidence(
                 EvidenceField::FullName,
                 Some(vec![15, 9, 0, 1, 3, 8, 14, 15, u32::MAX]),
             ),
             evidence(EvidenceField::Name, Some(vec![1, 1])),
             evidence(EvidenceField::Namespace, Some(vec![1])),
-        ];
-        let mut ctx = context();
-        ctx.namespace = "中😀".into();
-        let result = present(hit, ctx);
+        ]);
         assert_eq!(
             result.display.title,
             "😀W".encode_utf16().collect::<Vec<_>>()
@@ -301,16 +304,7 @@ mod tests {
         assert_eq!(text(&result.display.detail), "Outer+Inner · 中😀");
         assert_eq!(matches(&result.display.detail), [0..1, 5..7, 14..17]);
 
-        let mut hit = item(
-            "😀W",
-            "中😀.Outer+Inner.😀W",
-            "method",
-            MatchQuality::Filter,
-        );
-        hit.evidence = vec![evidence(EvidenceField::FullName, None)];
-        let mut ctx = context();
-        ctx.namespace = "中😀".into();
-        let result = present(hit, ctx);
+        let result = project_evidence(vec![evidence(EvidenceField::FullName, None)]);
         assert_eq!(result.display.title_matches, vec![0..3]);
         assert_eq!(matches(&result.display.detail), [0..11, 14..17]);
     }

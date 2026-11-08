@@ -366,15 +366,7 @@ mod tests {
         assert!(history.next(Forward).is_none());
     }
 
-    fn catalog() -> Arc<Catalog> {
-        Arc::new(
-            Catalog::open(
-                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .join("../../inputs/Windows.Win32.winmd"),
-            )
-            .unwrap(),
-        )
-    }
+    use crate::test_support::catalog;
     fn entry(catalog: &Arc<Catalog>, token: u32) -> Entry {
         Entry {
             document: 1,

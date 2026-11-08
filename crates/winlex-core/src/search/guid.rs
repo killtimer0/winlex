@@ -148,33 +148,22 @@ mod tests {
             ("FF 10", "ff10", "ff0a"),
             ("010,020", "0a14", "0810"),
             ("0Xbc,010", "bc0a", "bc08"),
+            ("239254", "239254", "effe"),
         ] {
             let query = GuidQuery::compile(text).unwrap();
-            assert_eq!(query.digit_count(), 4, "{text}");
+            assert_eq!(query.digit_count(), expected.len(), "{text}");
             assert_eq!(
-                query.matches(&format!("00000000-0000-0000-0000-00000000{expected}")),
+                query.matches(&format!("00000000-0000-0000-0000-{expected:0>12}")),
                 Some(MatchQuality::GuidFragment),
                 "{text}"
             );
             assert!(
                 query
-                    .matches(&format!("00000000-0000-0000-0000-00000000{other}"))
+                    .matches(&format!("00000000-0000-0000-0000-{other:0>12}"))
                     .is_none(),
                 "{text}"
             );
         }
-        let query = GuidQuery::compile("239254").unwrap();
-        assert_eq!(query.digit_count(), 6);
-        assert!(
-            query
-                .matches("00000000-0000-0000-0000-000000239254")
-                .is_some()
-        );
-        assert!(
-            query
-                .matches("00000000-0000-0000-0000-00000000effe")
-                .is_none()
-        );
         for text in [
             "256,1", "-1,0", "+1,0", "0x+1", "FF 239", "0x100", "1,,2", ",1", "1,", "0x", "１２,1",
             "0xé",

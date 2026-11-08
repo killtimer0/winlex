@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "prepare-inputs.py"
@@ -63,13 +63,13 @@ class PrepareInputsContracts(unittest.TestCase):
             library = deps / "vc-ltl-2/sdk/TargetPlatform/platform/lib.lib"
             library.parent.mkdir(parents=True)
             library.write_bytes(b"library")
-            archive = MagicMock()
-            archive.__enter__.return_value.namelist.return_value = ["objects/x86/YY_Thunks_for_WinXP.obj"]
-            archive.__enter__.return_value.read.return_value = b"object"
+            archive = deps / "yy-thunks-1/objects.zip"
+            archive.parent.mkdir()
+            with prepare.zipfile.ZipFile(archive, "w") as package:
+                package.writestr("objects/x86/YY_Thunks_for_WinXP.obj", b"object")
             with patch.object(prepare, "ROOT", root), patch.object(prepare, "DEPS", deps), \
                  patch("sys.argv", [str(SCRIPT)]), \
                  patch.object(prepare, "download", side_effect=lambda url, path, digest: path) as download, \
-                 patch.object(prepare.zipfile, "ZipFile", return_value=archive), \
                  patch("py7zr.SevenZipFile"):
                 prepare.main()
                 self.assertEqual({(call.args[0], call.args[2]) for call in download.call_args_list},

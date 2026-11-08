@@ -667,18 +667,13 @@ mod tests {
             }])
             .unwrap();
             for arch in Architecture::ALL {
-                let row = db
-                    .search_exact(
-                        "Record",
-                        crate::SearchOptions {
-                            architecture: Some(arch),
-                            ..Default::default()
-                        },
-                    )
-                    .unwrap()
-                    .next()
-                    .unwrap()
-                    .unwrap();
+                let row = crate::test_support::first_match(db.search_exact(
+                    "Record",
+                    crate::SearchOptions {
+                        architecture: Some(arch),
+                        ..Default::default()
+                    },
+                ));
                 let layout = db.layout(row.id, arch).unwrap();
                 let expected = if arch == Architecture::X86 { 64 } else { 128 };
                 assert_eq!(

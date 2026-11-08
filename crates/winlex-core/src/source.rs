@@ -4,9 +4,13 @@ use windows_metadata::reader::{Assembly, AssemblyRef};
 #[cfg(test)]
 mod snapshot_tests {
     use super::SourceData;
-    use crate::test_support::{source as data, type_id as find};
+    use crate::test_support::{search_results, source as data, type_id as find};
     use std::sync::Arc;
     use windows_metadata::{FieldAttributes, Type, TypeAttributes, reader, writer};
+
+    fn layout_bits(db: &crate::Catalog, id: crate::EntityId, arch: crate::Architecture) -> u64 {
+        db.layout(id, arch).unwrap().size_bits
+    }
 
     fn dependency(ty: Type) -> SourceData {
         let mut file = writer::File::new("Dependency");
@@ -55,17 +59,14 @@ mod snapshot_tests {
         let original = dependency(Type::I32);
         let db = crate::Catalog::from_inputs([original.clone(), original.clone()]).unwrap();
         assert_eq!(db.sources().len(), 2);
-        let page = db
-            .search(
-                "Widget",
-                crate::SearchOptions {
-                    mode: crate::SearchMode::Name,
-                    ..Default::default()
-                },
-            )
-            .unwrap()
-            .collect::<crate::Result<Vec<_>>>()
-            .unwrap();
+        let page: Vec<_> = search_results(db.search(
+            "Widget",
+            crate::SearchOptions {
+                mode: crate::SearchMode::Name,
+                ..Default::default()
+            },
+        ))
+        .collect();
         assert_eq!(page.len(), 2);
         let [first, second] = [page[0].id, page[1].id];
         assert_eq!(first.source_id, 0);
@@ -85,26 +86,9 @@ mod snapshot_tests {
             .is_err()
         );
         let current = crate::Catalog::from_inputs([dependency(Type::I64), original]).unwrap();
-        assert_eq!(
-            db.layout(first, crate::Architecture::X64)
-                .unwrap()
-                .size_bits,
-            32
-        );
-        assert_eq!(
-            current
-                .layout(first, crate::Architecture::X64)
-                .unwrap()
-                .size_bits,
-            64
-        );
-        assert_eq!(
-            current
-                .layout(second, crate::Architecture::X64)
-                .unwrap()
-                .size_bits,
-            32
-        );
+        assert_eq!(layout_bits(&db, first, crate::Architecture::X64), 32);
+        assert_eq!(layout_bits(&current, first, crate::Architecture::X64), 64);
+        assert_eq!(layout_bits(&current, second, crate::Architecture::X64), 32);
     }
     #[test]
     fn dependency_replacement_does_not_repair_or_rebind_old_snapshots() {
@@ -147,18 +131,13 @@ mod snapshot_tests {
         );
         let old = Arc::new(crate::Catalog::from_inputs([consumer.clone(), original]).unwrap());
         assert_eq!(
-            old.layout(find(&old, "Holder"), crate::Architecture::X64)
-                .unwrap()
-                .size_bits,
+            layout_bits(&old, find(&old, "Holder"), crate::Architecture::X64),
             32
         );
         let current =
             Arc::new(crate::Catalog::from_inputs([consumer, dependency(Type::I64)]).unwrap());
         assert_eq!(
-            current
-                .layout(find(&current, "Holder"), crate::Architecture::X64)
-                .unwrap()
-                .size_bits,
+            layout_bits(&current, find(&current, "Holder"), crate::Architecture::X64),
             64
         );
         assert!(
@@ -168,9 +147,7 @@ mod snapshot_tests {
         );
         drop(current);
         assert_eq!(
-            old.layout(find(&old, "Holder"), crate::Architecture::X86)
-                .unwrap()
-                .size_bits,
+            layout_bits(&old, find(&old, "Holder"), crate::Architecture::X86),
             32
         );
         assert!(retained.upgrade().is_some());

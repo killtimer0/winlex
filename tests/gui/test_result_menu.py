@@ -59,18 +59,30 @@ def choose(app, ids, command):
     n.send(app.results, win32con.WM_NULL)
 
 
-def test_result_menu_actions_available_by_result_kind(launch, settings):
+@pytest.mark.parametrize("query,condition,expected", [
+    ("ERROR_ACCESS_DENIED", False, {1, 2, 3, 4, 5}),
+    ("CreateFileW", False, {1, 2, 3}),
+    ('guid = "0000000c-0000-0000-c000-000000000046"', True, {1, 2, 3, 4}),
+], ids=["integer", "method", "guid"])
+def test_result_menu_actions_available_by_result_kind(launch, settings, query, condition, expected):
     app = launch([settings[1]])
-    for name, expected in [("ERROR_ACCESS_DENIED", [1, 2, 3, 4, 5]),
-                           ("CreateFileW", [1, 2, 3])]:
-        result(app, name)
-        _, ids = popup(app, app.results, keyboard=True)
-        try:
-            assert set(expected) <= set(ids)
-            if name == "CreateFileW":
-                assert 4 not in ids and 5 not in ids
-        finally:
-            dismiss(app.results)
+    if condition:
+        mode = n.get_item(app.frame, 1114)
+        select_combo(mode, app.choices(mode)[1])
+        app.query(query)
+        assert app.count() > 0
+        app.select(0)
+        app.focus(app.results)
+    else:
+        result(app, query)
+    _, ids = popup(app, app.results, keyboard=True)
+    try:
+        assert expected <= set(ids)
+        for command in [4, 5]:
+            if command not in expected:
+                assert command not in ids
+    finally:
+        dismiss(app.results)
 
 
 def test_search_entry_enter_does_not_open_selected_result(launch, settings):
@@ -81,22 +93,6 @@ def test_search_entry_enter_does_not_open_selected_result(launch, settings):
     n.wait(lambda: app.status_text().startswith(("Results ", "共 ")), "explicit search completed", 45)
     assert not app.documents()
     assert app.focused() == app.search
-
-
-def test_guid_result_menu_has_value_without_hexadecimal(launch, settings):
-    app = launch([settings[1]])
-    mode = n.get_item(app.frame, 1114)
-    select_combo(mode, app.choices(mode)[1])
-    app.query('guid = "0000000c-0000-0000-c000-000000000046"')
-    assert app.count() > 0
-    app.select(0)
-    app.focus(app.results)
-    _, ids = popup(app, app.results, keyboard=True)
-    try:
-        assert {1, 2, 3, 4} <= set(ids)
-        assert 5 not in ids
-    finally:
-        dismiss(app.results)
 
 
 @pytest.mark.interactive

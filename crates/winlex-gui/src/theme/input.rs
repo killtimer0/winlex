@@ -977,21 +977,12 @@ mod tests {
         super::super::set_mode(2);
         unsafe {
             for style in [CBS_DROPDOWNLIST, CBS_DROPDOWN] {
-                let hwnd = CreateWindowExW(
-                    0,
+                let hwnd = test_window(
                     w!("COMBOBOX"),
                     ptr::null(),
                     WS_POPUP | style as u32,
-                    0,
-                    0,
-                    160,
-                    100,
-                    ptr::null_mut(),
-                    ptr::null_mut(),
-                    ptr::null_mut(),
-                    ptr::null(),
+                    crate::layout::rect(0, 0, 160, 100),
                 );
-                assert!(!hwnd.is_null());
                 install(hwnd, "ComboBox");
                 apply(hwnd, "ComboBox");
                 assert_eq!(
@@ -1147,21 +1138,12 @@ mod tests {
         super::super::set_mode(2);
         unsafe {
             for style in [CBS_DROPDOWNLIST, CBS_DROPDOWN, CBS_SIMPLE] {
-                let hwnd = CreateWindowExW(
-                    0,
+                let hwnd = test_window(
                     w!("COMBOBOX"),
                     ptr::null(),
                     WS_POPUP | style as u32,
-                    0,
-                    0,
-                    100,
-                    100,
-                    ptr::null_mut(),
-                    ptr::null_mut(),
-                    ptr::null_mut(),
-                    ptr::null(),
+                    crate::layout::rect(0, 0, 100, 100),
                 );
-                assert!(!hwnd.is_null());
                 let mut state = fallback_combo();
                 state.style = style;
                 let combo = Rc::new(state);
@@ -1217,33 +1199,20 @@ mod tests {
 
     #[test]
     fn fallback_surface_clips_reuses_and_resizes() {
+        use crate::test_support as surfaces;
+
         unsafe {
-            let hwnd = CreateWindowExW(
-                0,
+            let hwnd = test_window(
                 w!("COMBOBOX"),
                 ptr::null(),
                 WS_POPUP | CBS_DROPDOWNLIST as u32,
-                0,
-                0,
-                100,
-                100,
-                ptr::null_mut(),
-                ptr::null_mut(),
-                ptr::null_mut(),
-                ptr::null(),
+                crate::layout::rect(0, 0, 100, 100),
             );
-            assert!(!hwnd.is_null());
             let combo = fallback_combo();
             let screen = GetDC(hwnd);
             let target = ComboBuffer::new(screen, 160, 80).unwrap();
-            let marker = GdiObject(CreateSolidBrush(0x00123456));
-            let full = RECT {
-                left: 0,
-                top: 0,
-                right: 160,
-                bottom: 80,
-            };
-            FillRect(target.dc, &full, marker.0);
+            let full = crate::layout::rect(0, 0, 160, 80);
+            surfaces::mark_surface(target.dc, full);
             let dirty = RECT {
                 left: 10,
                 top: 5,
@@ -1251,11 +1220,7 @@ mod tests {
                 bottom: 10,
             };
             buffered_combo(hwnd, target.dc, &combo, CBXSR_NORMAL, dirty);
-            assert_eq!(
-                GetPixel(target.dc, 5, 5),
-                0x00123456,
-                "copying must not affect pixels outside rcPaint"
-            );
+            surfaces::assert_surface_clipped(target.dc);
             assert_eq!(
                 GetPixel(target.dc, 15, 7),
                 color_role(Role::Control),
@@ -1264,46 +1229,20 @@ mod tests {
             let (dc, bitmap) = {
                 let cached = combo.buffer.borrow();
                 let cached = cached.as_ref().unwrap();
-                FillRect(cached.dc, &full, marker.0);
+                surfaces::mark_surface(cached.dc, full);
                 (cached.dc, cached.bitmap)
             };
             buffered_combo(hwnd, target.dc, &combo, CBXSR_NORMAL, dirty);
             {
                 let cached = combo.buffer.borrow();
                 let cached = cached.as_ref().unwrap();
-                assert_eq!(
-                    (cached.dc, cached.bitmap),
-                    (dc, bitmap),
-                    "same-size paints must retain the compatible surface"
-                );
-                assert_eq!(
-                    GetPixel(cached.dc, 5, 5),
-                    0x00123456,
-                    "rendering itself must be clipped to rcPaint"
-                );
+                surfaces::assert_surface_reused((dc, bitmap), (cached.dc, cached.bitmap));
             }
-            SetWindowPos(
-                hwnd,
-                ptr::null_mut(),
-                0,
-                0,
-                140,
-                100,
-                SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
-            );
+            surfaces::resize_surface_window(hwnd, 140, 100);
             let area = client(hwnd);
             buffered_combo(hwnd, target.dc, &combo, CBXSR_NORMAL, area);
-            let mut bitmap: BITMAP = std::mem::zeroed();
-            assert_ne!(
-                GetObjectW(
-                    combo.buffer.borrow().as_ref().unwrap().bitmap,
-                    std::mem::size_of::<BITMAP>() as i32,
-                    (&mut bitmap as *mut BITMAP).cast()
-                ),
-                0
-            );
             assert_eq!(
-                (bitmap.bmWidth, bitmap.bmHeight),
+                surfaces::bitmap_size(combo.buffer.borrow().as_ref().unwrap().bitmap),
                 (area.right, area.bottom),
                 "resizing must replace the backing bitmap with the new client size"
             );
@@ -1319,76 +1258,13 @@ mod tests {
         }
         let _controls = super::super::tests::CommonControls::activate();
         super::super::set_mode(2);
-        struct Observation {
-            combo: Rc<Combo>,
-            outer: Cell<HDC>,
-            nested: Cell<bool>,
-            independent: Cell<bool>,
-            erasure_valid: Cell<bool>,
-        }
-        unsafe extern "system" fn observe(
-            hwnd: HWND,
-            msg: u32,
-            wp: WPARAM,
-            lp: LPARAM,
-            _: usize,
-            data: usize,
-        ) -> LRESULT {
-            unsafe {
-                if msg == WM_DRAWITEM {
-                    let observation = &*(data as *const Observation);
-                    let draw = &*(lp as *const DRAWITEMSTRUCT);
-                    observation.erasure_valid.set(
-                        observation.erasure_valid.get()
-                            && SendMessageW(draw.hwndItem, WM_ERASEBKGND, draw.hDC as usize, 0)
-                                == 1,
-                    );
-                    if observation.nested.replace(true) {
-                        observation.erasure_valid.set(
-                            observation.erasure_valid.get()
-                                && SendMessageW(
-                                    draw.hwndItem,
-                                    WM_ERASEBKGND,
-                                    observation.outer.get() as usize,
-                                    0,
-                                ) == 1,
-                        );
-                        observation
-                            .independent
-                            .set(draw.hDC != observation.outer.get());
-                        DestroyWindow(draw.hwndItem);
-                    } else {
-                        observation.outer.set(draw.hDC);
-                        let target = ComboBuffer::new(draw.hDC, 160, 80).unwrap();
-                        buffered_combo(
-                            draw.hwndItem,
-                            target.dc,
-                            &observation.combo,
-                            CBXSR_NORMAL,
-                            client(draw.hwndItem),
-                        );
-                    }
-                    return 1;
-                }
-                default_subclass(hwnd, msg, wp, lp)
-            }
-        }
         unsafe {
-            let parent = CreateWindowExW(
-                0,
+            let parent = test_window(
                 w!("STATIC"),
                 ptr::null(),
                 WS_POPUP,
-                0,
-                0,
-                160,
-                100,
-                ptr::null_mut(),
-                ptr::null_mut(),
-                ptr::null_mut(),
-                ptr::null(),
+                crate::layout::rect(0, 0, 160, 100),
             );
-            assert!(!parent.is_null());
             let hwnd = CreateWindowExW(
                 0,
                 w!("COMBOBOX"),
@@ -1416,36 +1292,48 @@ mod tests {
                 ),
                 0
             );
-            let observation = Observation {
-                combo,
-                outer: Cell::new(ptr::null_mut()),
-                nested: Cell::new(false),
-                independent: Cell::new(false),
-                erasure_valid: Cell::new(true),
+            let outer = Cell::new(ptr::null_mut());
+            let nested = Cell::new(false);
+            let independent = Cell::new(false);
+            let erasure_valid = Cell::new(true);
+            let observe = |_, msg, _, lp| {
+                if msg != WM_DRAWITEM {
+                    return None;
+                }
+                let draw = &*(lp as *const DRAWITEMSTRUCT);
+                erasure_valid.set(
+                    erasure_valid.get()
+                        && SendMessageW(draw.hwndItem, WM_ERASEBKGND, draw.hDC as usize, 0) == 1,
+                );
+                if nested.replace(true) {
+                    erasure_valid.set(
+                        erasure_valid.get()
+                            && SendMessageW(draw.hwndItem, WM_ERASEBKGND, outer.get() as usize, 0)
+                                == 1,
+                    );
+                    independent.set(draw.hDC != outer.get());
+                    DestroyWindow(draw.hwndItem);
+                } else {
+                    outer.set(draw.hDC);
+                    let target = ComboBuffer::new(draw.hDC, 160, 80).unwrap();
+                    buffered_combo(
+                        draw.hwndItem,
+                        target.dc,
+                        &combo,
+                        CBXSR_NORMAL,
+                        client(draw.hwndItem),
+                    );
+                }
+                Some(1)
             };
-            assert_ne!(
-                set_subclass(parent, Some(observe), 1, &observation as *const _ as usize),
-                0
-            );
+            let callback = crate::test_support::observe_messages(parent, 1, &observe);
             let screen = GetDC(parent);
             let target = ComboBuffer::new(screen, 160, 80).unwrap();
-            buffered_combo(
-                hwnd,
-                target.dc,
-                &observation.combo,
-                CBXSR_NORMAL,
-                client(hwnd),
-            );
+            buffered_combo(hwnd, target.dc, &combo, CBXSR_NORMAL, client(hwnd));
+            assert!(nested.get(), "native owner drawing must be dispatched");
+            assert!(independent.get(), "nested paints need independent surfaces");
             assert!(
-                observation.nested.get(),
-                "native owner drawing must be dispatched"
-            );
-            assert!(
-                observation.independent.get(),
-                "nested paints need independent surfaces"
-            );
-            assert!(
-                observation.erasure_valid.get(),
+                erasure_valid.get(),
                 "each live fallback surface must acknowledge erasure throughout nested owner drawing"
             );
             assert_eq!(
@@ -1454,10 +1342,11 @@ mod tests {
                 "owner drawing must be allowed to destroy the combo"
             );
             assert!(
-                observation.combo.buffer.borrow().is_none(),
+                combo.buffer.borrow().is_none(),
                 "an active paint must not restore a cache after control destruction"
             );
             ReleaseDC(parent, screen);
+            remove_subclass(parent, callback, 1);
             DestroyWindow(parent);
         }
         super::super::set_mode(0);

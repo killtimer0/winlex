@@ -437,35 +437,6 @@ mod tests {
             return;
         };
         let allowed: Allowed = unsafe { std::mem::transmute(allowed) };
-        struct Owner {
-            child: HWND,
-            opposite: Cell<bool>,
-        }
-        unsafe extern "system" fn observe(
-            hwnd: HWND,
-            message: u32,
-            w: usize,
-            l: isize,
-            _: usize,
-            data: usize,
-        ) -> isize {
-            unsafe {
-                if matches!(
-                    message,
-                    WM_SETTINGCHANGE | WM_SYSCOLORCHANGE | WM_THEMECHANGED
-                ) && !REFRESHING.with(Cell::get)
-                {
-                    let owner = &*(data as *const Owner);
-                    super::super::api::allow_window(hwnd, owner.opposite.get());
-                    super::super::api::allow_window(owner.child, owner.opposite.get());
-                    return 73;
-                }
-                if message == WM_CTLCOLORSTATIC {
-                    return 73;
-                }
-                default_subclass(hwnd, message, w, l)
-            }
-        }
         unsafe {
             let hwnd = test_window(
                 w!("#32770"),
@@ -474,14 +445,20 @@ mod tests {
                 crate::layout::rect(0, 0, 100, 100),
             );
             let button = child(hwnd, w!("BUTTON"), &[0], BS_PUSHBUTTON as u32, 1).unwrap();
-            let owner = Owner {
-                child: button,
-                opposite: Cell::new(false),
+            let opposite = Cell::new(false);
+            let observe = |hwnd, message, _, _| {
+                if matches!(
+                    message,
+                    WM_SETTINGCHANGE | WM_SYSCOLORCHANGE | WM_THEMECHANGED
+                ) && !REFRESHING.with(Cell::get)
+                {
+                    super::super::api::allow_window(hwnd, opposite.get());
+                    super::super::api::allow_window(button, opposite.get());
+                    return Some(73);
+                }
+                (message == WM_CTLCOLORSTATIC).then_some(73)
             };
-            assert_ne!(
-                set_subclass(hwnd, Some(observe), 1, &owner as *const _ as usize),
-                0
-            );
+            let callback = crate::test_support::observe_messages(hwnd, 1, &observe);
             if shell {
                 apply(hwnd);
             } else {
@@ -490,7 +467,7 @@ mod tests {
             for mode in [2, 1, 2] {
                 super::super::set_mode(mode);
                 let expected = super::super::is_dark();
-                owner.opposite.set(!expected);
+                opposite.set(!expected);
                 for message in [WM_SETTINGCHANGE, WM_SYSCOLORCHANGE, WM_THEMECHANGED] {
                     assert_eq!(send(hwnd, message, 0, 0), 73);
                     assert_eq!(
@@ -512,7 +489,7 @@ mod tests {
                     );
                 }
             }
-            remove_subclass(hwnd, Some(observe), 1);
+            remove_subclass(hwnd, callback, 1);
             DestroyWindow(hwnd);
             super::super::set_mode(0);
         }

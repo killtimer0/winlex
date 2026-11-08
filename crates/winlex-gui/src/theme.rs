@@ -848,7 +848,7 @@ unsafe fn paint_mdi_menu_bitmap(
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 #[cfg(test)]
 mod file_dialog_tests {

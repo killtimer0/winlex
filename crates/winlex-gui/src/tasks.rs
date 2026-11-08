@@ -257,6 +257,10 @@ mod tests {
     }
 
     type BatchLog = Vec<(u64, Vec<u32>)>;
+    fn batch_tokens(batches: BatchLog) -> Vec<u32> {
+        batches.into_iter().flat_map(|(_, batch)| batch).collect()
+    }
+
     fn prepare(matched: SearchMatch) -> anyhow::Result<Box<ResultItem>> {
         Ok(Box::new(ResultItem {
             matched,
@@ -305,13 +309,7 @@ mod tests {
             None,
         );
         assert!(result.is_ok());
-        assert_eq!(
-            batches
-                .into_iter()
-                .flat_map(|(_, batch)| batch)
-                .collect::<Vec<_>>(),
-            [1, 2]
-        );
+        assert_eq!(batch_tokens(batches), [1, 2]);
     }
 
     #[test]
@@ -346,13 +344,7 @@ mod tests {
             None,
         );
         assert_eq!(result.err().unwrap().to_string(), "scan failed");
-        assert_eq!(
-            batches
-                .into_iter()
-                .flat_map(|(_, batch)| batch)
-                .collect::<Vec<_>>(),
-            [1, 2]
-        );
+        assert_eq!(batch_tokens(batches), [1, 2]);
         let (result, batches) = collect_batches(vec![(1000, Ok(SearchStep::Done))], None);
         assert!(result.is_ok());
         assert!(batches.is_empty());
@@ -370,13 +362,7 @@ mod tests {
             Some(3),
         );
         assert_eq!(result.err().unwrap().to_string(), "cancelled");
-        assert_eq!(
-            batches
-                .into_iter()
-                .flat_map(|(_, batch)| batch)
-                .collect::<Vec<_>>(),
-            [1]
-        );
+        assert_eq!(batch_tokens(batches), [1]);
     }
 
     #[test]
@@ -401,73 +387,61 @@ mod tests {
 
     #[test]
     fn job_completions_preserve_request_and_document_identity() {
-        let catalog = Arc::new(
-            Catalog::open(
-                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .join("../../inputs/Windows.Win32.winmd"),
-            )
-            .unwrap(),
-        );
+        let catalog = crate::test_support::catalog();
         let worker = crate::worker::Worker::new(run).unwrap();
+        let submit = |id, job| worker.replace(None, Ticket::new(id), job).unwrap();
         let receive = || worker.rx.recv_timeout(Duration::from_secs(5)).unwrap();
-        worker
-            .replace(
-                None,
-                Ticket::new(1),
-                Job::Search {
-                    catalog: catalog.clone(),
-                    compiled: Box::new(
-                        winlex_core::CompiledQuery::compile(
-                            "__winlex_missing_protocol_contract_entity__",
-                            winlex_core::SearchMode::Name,
-                            false,
-                        )
-                        .unwrap(),
-                    ),
-                    categories: winlex_core::EntityCategory::ALL,
-                },
-            )
-            .unwrap();
+        let receive_description = |expected| {
+            let Completion::Description {
+                id,
+                document,
+                result,
+            } = receive()
+            else {
+                panic!("expected description completion");
+            };
+            assert_eq!((id, document), expected);
+            result
+        };
+        submit(
+            1,
+            Job::Search {
+                catalog: catalog.clone(),
+                compiled: Box::new(
+                    winlex_core::CompiledQuery::compile(
+                        "__winlex_missing_protocol_contract_entity__",
+                        winlex_core::SearchMode::Name,
+                        false,
+                    )
+                    .unwrap(),
+                ),
+                categories: winlex_core::EntityCategory::ALL,
+            },
+        );
         let Completion::SearchDone { id, result } = receive() else {
             panic!("expected empty search completion");
         };
         assert_eq!(id, 1);
         result.unwrap();
-        let entity = catalog
-            .search(
-                "Windows.Win32.Security.SECURITY_ATTRIBUTES",
-                SearchOptions {
-                    mode: winlex_core::SearchMode::Name,
-                    categories: Some(winlex_core::EntityCategory::Type as u32),
-                    ..Default::default()
-                },
-            )
-            .unwrap()
-            .next()
-            .unwrap()
-            .unwrap()
-            .id;
-        worker
-            .replace(
-                None,
-                Ticket::new(2),
-                Job::Describe {
-                    document: 42,
-                    catalog: catalog.clone(),
-                    entity,
-                    arch: Architecture::X64,
-                },
-            )
-            .unwrap();
-        let Completion::Description {
-            id,
-            document,
-            result,
-        } = receive()
-        else {
-            panic!("expected description completion");
-        };
-        assert_eq!((id, document), (2, 42));
+        let entity = crate::test_support::first_match(catalog.search(
+            "Windows.Win32.Security.SECURITY_ATTRIBUTES",
+            SearchOptions {
+                mode: winlex_core::SearchMode::Name,
+                categories: Some(winlex_core::EntityCategory::Type as u32),
+                ..Default::default()
+            },
+        ))
+        .id;
+        submit(
+            2,
+            Job::Describe {
+                document: 42,
+                catalog: catalog.clone(),
+                entity,
+                arch: Architecture::X64,
+            },
+        );
+        let result = receive_description((2, 42));
         assert!(
             result
                 .unwrap()
@@ -479,41 +453,26 @@ mod tests {
                         && number.unit == Some("bytes")))
         );
 
-        worker
-            .replace(
-                None,
-                Ticket::new(3),
-                Job::Describe {
-                    document: 43,
-                    catalog,
-                    entity: EntityId {
-                        source_id: 0,
-                        token: 0,
-                    },
-                    arch: Architecture::X64,
+        submit(
+            3,
+            Job::Describe {
+                document: 43,
+                catalog,
+                entity: EntityId {
+                    source_id: 0,
+                    token: 0,
                 },
-            )
-            .unwrap();
-        let Completion::Description {
-            id,
-            document,
-            result,
-        } = receive()
-        else {
-            panic!("expected description failure");
-        };
-        assert_eq!((id, document), (3, 43));
-        assert!(result.is_err());
+                arch: Architecture::X64,
+            },
+        );
+        assert!(receive_description((3, 43)).is_err());
 
-        worker
-            .replace(
-                None,
-                Ticket::new(4),
-                Job::Load {
-                    inputs: Arc::from([]),
-                },
-            )
-            .unwrap();
+        submit(
+            4,
+            Job::Load {
+                inputs: Arc::from([]),
+            },
+        );
         let Completion::Loaded { id, result } = receive() else {
             panic!("expected empty catalog completion");
         };

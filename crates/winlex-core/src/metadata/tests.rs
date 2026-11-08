@@ -1,6 +1,6 @@
 use crate::{
     Architecture,
-    test_support::{catalog, type_id as id},
+    test_support::{catalog, search_results, type_id as id},
 };
 use windows_metadata::{writer, *};
 
@@ -50,17 +50,14 @@ fn architecture_filter_requires_the_qualified_attribute_and_enum() {
             mask
         );
         for arch in Architecture::ALL {
-            let rows = db
-                .search_exact(
-                    "Restricted",
-                    crate::SearchOptions {
-                        architecture: Some(arch),
-                        ..Default::default()
-                    },
-                )
-                .unwrap()
-                .collect::<Result<Vec<_>, _>>()
-                .unwrap();
+            let rows: Vec<_> = search_results(db.search_exact(
+                "Restricted",
+                crate::SearchOptions {
+                    architecture: Some(arch),
+                    ..Default::default()
+                },
+            ))
+            .collect();
             assert_eq!(!rows.is_empty(), mask & arch.bit() != 0);
         }
     }

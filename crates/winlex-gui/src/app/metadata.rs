@@ -614,15 +614,7 @@ fn old_version(ctx: &Context, binding: &Binding) -> bool {
 mod tests {
     use super::*;
 
-    fn catalog() -> Arc<Catalog> {
-        Arc::new(
-            Catalog::open(
-                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .join("../../inputs/Windows.Win32.winmd"),
-            )
-            .unwrap(),
-        )
-    }
+    use crate::test_support::catalog;
 
     #[test]
     fn preference_falls_back_to_canonical_order() {
@@ -651,12 +643,11 @@ mod tests {
     #[test]
     fn materialization_keeps_snapshot_identity_and_exact_architecture() {
         let snapshot = catalog();
-        let entity = snapshot
-            .search("SECURITY_ATTRIBUTES", Default::default())
-            .unwrap()
-            .map(Result::unwrap)
-            .find(|entity| entity.name == "SECURITY_ATTRIBUTES")
-            .unwrap();
+        let entity = crate::test_support::search_results(
+            snapshot.search("SECURITY_ATTRIBUTES", Default::default()),
+        )
+        .find(|entity| entity.name == "SECURITY_ATTRIBUTES")
+        .unwrap();
         let first = Binding::resolve(
             snapshot.clone(),
             entity.id,

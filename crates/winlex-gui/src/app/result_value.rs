@@ -69,22 +69,16 @@ mod tests {
 
     #[test]
     fn metadata_values_copy_without_declarations_and_preserve_integer_width() {
-        let catalog = Catalog::open(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../inputs/Windows.Win32.winmd"),
-        )
-        .unwrap();
+        let catalog = crate::test_support::catalog();
         for (name, decimal, hexadecimal) in [
             ("ERROR_ACCESS_DENIED", "5", Some("0x00000005")),
             ("E_FAIL", "-2147467259", Some("0x80004005")),
             ("IStream", "{0000000C-0000-0000-C000-000000000046}", None),
         ] {
-            let entity = catalog
-                .search(name, Default::default())
-                .unwrap()
-                .map(Result::unwrap)
-                .find(|e| e.name == name && (name != "IStream" || e.id.token >> 24 == 2))
-                .unwrap();
+            let entity =
+                crate::test_support::search_results(catalog.search(name, Default::default()))
+                    .find(|e| e.name == name && (name != "IStream" || e.id.token >> 24 == 2))
+                    .unwrap();
             let value = read(&catalog, entity.id, Architecture::X64)
                 .unwrap()
                 .unwrap_or_else(|| panic!("missing value for {name}: {:?}", entity.id));
@@ -92,12 +86,10 @@ mod tests {
             assert_eq!(value.hexadecimal.as_deref(), hexadecimal, "{name}");
             assert_eq!(value.integer, decimal.parse().ok(), "{name}");
         }
-        let entity = catalog
-            .search("CreateFileW", Default::default())
-            .unwrap()
-            .map(Result::unwrap)
-            .find(|e| e.name == "CreateFileW")
-            .unwrap();
+        let entity =
+            crate::test_support::search_results(catalog.search("CreateFileW", Default::default()))
+                .find(|e| e.name == "CreateFileW")
+                .unwrap();
         assert!(
             read(&catalog, entity.id, Architecture::X64)
                 .unwrap()

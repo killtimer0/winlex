@@ -93,9 +93,9 @@ pub(super) fn wheel(hwnd: HWND, direction: i32, count: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rich_text::{Content, Editor, ViewState, set_content};
+    use crate::rich_text::{Content, Editor, EditorState, ViewState, set_content};
 
-    fn wheel(hwnd: HWND, delta: i16, lines: u32) {
+    fn editor_data(hwnd: HWND) -> usize {
         let mut data = 0;
         assert_ne!(
             unsafe {
@@ -108,7 +108,12 @@ mod tests {
             },
             0
         );
-        let (direction, count) = unsafe { (*(data as *mut WheelState)).step(delta, lines) };
+        data
+    }
+
+    fn wheel(hwnd: HWND, delta: i16, lines: u32) {
+        let state = unsafe { &mut *(editor_data(hwnd) as *mut EditorState) };
+        let (direction, count) = state.wheel.step(delta, lines);
         super::wheel(hwnd, direction, count);
     }
 
@@ -276,21 +281,18 @@ mod tests {
             },
             0
         );
-        if lines == u32::MAX {
-            send(hwnd, WM_VSCROLL, SB_PAGEDOWN as usize, 0);
-        } else {
-            for _ in 0..lines {
-                send(hwnd, WM_VSCROLL, SB_LINEDOWN as usize, 0);
+        let native_scroll = |line, page| {
+            if lines == u32::MAX {
+                send(hwnd, WM_VSCROLL, page as usize, 0);
+            } else {
+                for _ in 0..lines {
+                    send(hwnd, WM_VSCROLL, line as usize, 0);
+                }
             }
-        }
+        };
+        native_scroll(SB_LINEDOWN, SB_PAGEDOWN);
         let expected = position(hwnd).y;
-        if lines == u32::MAX {
-            send(hwnd, WM_VSCROLL, SB_PAGEUP as usize, 0);
-        } else {
-            for _ in 0..lines {
-                send(hwnd, WM_VSCROLL, SB_LINEUP as usize, 0);
-            }
-        }
+        native_scroll(SB_LINEUP, SB_PAGEUP);
         let reversed = position(hwnd).y;
         editor.scroll_to(70000);
         // Use the actual system preference without changing a global desktop setting.
@@ -396,41 +398,21 @@ mod tests {
 
     #[test]
     fn modified_and_horizontal_wheels_keep_the_native_path() {
-        unsafe extern "system" fn observe(
-            hwnd: HWND,
-            msg: u32,
-            w: usize,
-            l: isize,
-            _id: usize,
-            data: usize,
-        ) -> isize {
-            unsafe {
-                if matches!(msg, WM_MOUSEWHEEL | WM_MOUSEHWHEEL) {
-                    *(data as *mut (u32, usize, isize)) = (msg, w, l);
-                    return 77;
-                }
-                default_subclass(hwnd, msg, w, l)
-            }
-        }
         let editor = Editor::long_document();
         let hwnd = editor.1;
-        let mut received = (0u32, 0usize, 0isize);
-        let mut data = 0;
+        let received = std::cell::Cell::new((0u32, 0usize, 0isize));
+        let observe = |_, msg, w, l| {
+            if matches!(msg, WM_MOUSEWHEEL | WM_MOUSEHWHEEL) {
+                received.set((msg, w, l));
+                return Some(77);
+            }
+            None
+        };
+        let data = editor_data(hwnd);
+        let callback;
         unsafe {
-            assert_ne!(
-                windows_sys::Win32::UI::Shell::GetWindowSubclass(
-                    hwnd,
-                    Some(crate::rich_text::procedure),
-                    1,
-                    &mut data,
-                ),
-                0
-            );
             remove_subclass(hwnd, Some(crate::rich_text::procedure), 1);
-            assert_ne!(
-                set_subclass(hwnd, Some(observe), 2, &mut received as *mut _ as usize),
-                0
-            );
+            callback = crate::test_support::observe_messages(hwnd, 2, &observe);
         }
         assert_ne!(
             unsafe { set_subclass(hwnd, Some(crate::rich_text::procedure), 1, data) },
@@ -444,11 +426,11 @@ mod tests {
         ] {
             let w = (120usize << 16) | keys;
             assert_eq!(send(hwnd, message, w, 0x123456), 77);
-            assert_eq!(received, (message, w, 0x123456));
+            assert_eq!(received.get(), (message, w, 0x123456));
         }
-        received = (0, 0, 0);
+        received.set((0, 0, 0));
         editor.wheel(-120);
-        assert_eq!(received, (0, 0, 0));
+        assert_eq!(received.get(), (0, 0, 0));
         let mut original = [0u8; 256];
         assert_ne!(unsafe { GetKeyboardState(original.as_mut_ptr()) }, 0);
         let mut alt = original;
@@ -457,7 +439,7 @@ mod tests {
         let result = send(hwnd, WM_MOUSEWHEEL, 120 << 16, 0);
         assert_ne!(unsafe { SetKeyboardState(original.as_ptr()) }, 0);
         assert_eq!(result, 77);
-        assert_eq!(received, (WM_MOUSEWHEEL, 120 << 16, 0));
-        unsafe { remove_subclass(hwnd, Some(observe), 2) };
+        assert_eq!(received.get(), (WM_MOUSEWHEEL, 120 << 16, 0));
+        unsafe { remove_subclass(hwnd, callback, 2) };
     }
 }

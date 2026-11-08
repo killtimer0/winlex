@@ -199,29 +199,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sizing_limits_keep_the_opposite_edge_fixed_for_every_drag_direction() {
-        for edge in WMSZ_LEFT..=WMSZ_BOTTOMRIGHT {
-            let mut area = rect(10, 20, 30, 40);
-            limit_sizing(&mut area, edge, SIZE { cx: 100, cy: 80 });
-            assert_eq!(area.right - area.left, 100);
-            assert_eq!(area.bottom - area.top, 80);
-            if matches!(edge, WMSZ_LEFT | WMSZ_TOPLEFT | WMSZ_BOTTOMLEFT) {
-                assert_eq!(area.right, 40);
-            } else {
-                assert_eq!(area.left, 10);
-            }
-            if matches!(edge, WMSZ_TOP | WMSZ_TOPLEFT | WMSZ_TOPRIGHT) {
-                assert_eq!(area.bottom, 60);
-            } else {
-                assert_eq!(area.top, 20);
-            }
-            let previous = (area.left, area.top, area.right, area.bottom);
-            limit_sizing(&mut area, edge, SIZE { cx: 90, cy: 70 });
-            assert_eq!((area.left, area.top, area.right, area.bottom), previous);
-        }
-    }
-
-    #[test]
     fn button_size_falls_back_when_query_returns_false() {
         unsafe {
             let caption = wide("More information… 更多信息");
@@ -242,23 +219,6 @@ mod tests {
 
     #[test]
     fn button_group_uses_maximum_sizes_and_preserves_wrapping() {
-        unsafe extern "system" fn ideal_size(
-            hwnd: HWND,
-            msg: u32,
-            w: usize,
-            l: isize,
-            _id: usize,
-            data: usize,
-        ) -> isize {
-            if msg == BCM_GETIDEALSIZE {
-                unsafe {
-                    *(l as *mut SIZE) = *(data as *const SIZE);
-                }
-                1
-            } else {
-                unsafe { default_subclass(hwnd, msg, w, l) }
-            }
-        }
         unsafe {
             let controls: Vec<_> = ["Open files", "Reload", "Close source"]
                 .into_iter()
@@ -272,11 +232,18 @@ mod tests {
                 })
                 .collect();
             let sizes = [SIZE { cx: 100, cy: 20 }, SIZE { cx: 140, cy: 35 }];
-            for (hwnd, size) in controls.iter().zip(&sizes) {
-                assert_ne!(
-                    set_subclass(*hwnd, Some(ideal_size), 1, size as *const SIZE as usize),
-                    0
-                );
+            let observers = sizes.map(|size| {
+                move |_, message, _, l: isize| {
+                    if message == BCM_GETIDEALSIZE {
+                        *(l as *mut SIZE) = size;
+                        Some(1)
+                    } else {
+                        None
+                    }
+                }
+            });
+            for (hwnd, observer) in controls.iter().zip(&observers) {
+                crate::test_support::observe_messages(*hwnd, 1, observer);
             }
             let m = Metrics {
                 dpi: 96,

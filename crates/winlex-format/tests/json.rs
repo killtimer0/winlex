@@ -1,6 +1,8 @@
 use serde_json::json;
 use winlex_core::{Architecture, Bitfield, EntityId, FieldLayout, Layout, Slot, Vtable};
 
+include!("support/source.rs");
+
 #[test]
 fn reference_json_distinguishes_builtin_definition_and_missing_dependency() {
     use winlex_core::{
@@ -19,13 +21,7 @@ fn reference_json_distinguishes_builtin_definition_and_missing_dependency() {
     );
     let bytes = file.into_stream();
     let index = reader::Index::new(vec![reader::File::new(bytes.clone()).unwrap()]);
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tmp")
-        .join(format!("reference-semantics-{}.winmd", std::process::id()));
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(&path, bytes).unwrap();
-    let catalog = Catalog::open(&path).unwrap();
-    std::fs::remove_file(path).unwrap();
+    let catalog = Catalog::from_inputs([source("reference-semantics", bytes)]).unwrap();
     for r in index.rows::<reader::TypeRef>(0) {
         let id = winlex_core::metadata::key(r, 1);
         let result = winlex_format::describe(&catalog, id, Some(Architecture::X64)).unwrap();

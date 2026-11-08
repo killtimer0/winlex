@@ -451,7 +451,9 @@ mod tests {
         CLEANED.with(|cleaned| assert_eq!(*cleaned.borrow(), [1, 3, 0, 2]));
     }
 
-    struct ResourceWindow(HWND);
+    owned_handle! {
+        struct ResourceWindow(HWND); DestroyWindow
+    }
     impl ResourceWindow {
         fn new() -> Self {
             unsafe {
@@ -500,12 +502,6 @@ mod tests {
             data.1
         }
     }
-    impl Drop for ResourceWindow {
-        fn drop(&mut self) {
-            unsafe { DestroyWindow(self.0) };
-        }
-    }
-
     #[test]
     fn window_font_restores_selection_and_retains_callback_errors() {
         let window = ResourceWindow::new();
@@ -545,11 +541,7 @@ mod tests {
     fn tooltip_registration_retains_size_and_owner_and_cleans_up_failure() {
         let window = ResourceWindow::new();
         unsafe {
-            let controls = INITCOMMONCONTROLSEX {
-                dwSize: std::mem::size_of::<INITCOMMONCONTROLSEX>() as u32,
-                dwICC: ICC_WIN95_CLASSES,
-            };
-            assert_ne!(InitCommonControlsEx(&controls), 0);
+            crate::test_support::initialize_controls(ICC_WIN95_CLASSES);
             for size in [
                 std::mem::offset_of!(TTTOOLINFOW, lParam) as u32,
                 std::mem::offset_of!(TTTOOLINFOW, lpReserved) as u32,
@@ -593,30 +585,6 @@ mod tests {
 
     #[test]
     fn sibling_layout_is_committed_before_resize_notifications() {
-        struct Observation {
-            sibling: HWND,
-            edges: Vec<(i32, i32)>,
-        }
-        unsafe extern "system" fn observe(
-            h: HWND,
-            msg: u32,
-            w: usize,
-            l: isize,
-            _: usize,
-            data: usize,
-        ) -> isize {
-            unsafe {
-                if msg == WM_SIZE {
-                    let observation = &mut *(data as *mut Observation);
-                    let parent = GetParent(h);
-                    observation.edges.push((
-                        bounds(h, parent).right,
-                        bounds(observation.sibling, parent).left,
-                    ));
-                }
-                default_subclass(h, msg, w, l)
-            }
-        }
         unsafe {
             let parent = test_window(
                 w!("STATIC"),
@@ -628,32 +596,35 @@ mod tests {
             let sibling = child(parent, w!("STATIC"), &[0], 0, 2).unwrap();
             set_bounds(edit, crate::layout::rect(10, 10, 200, 28)).unwrap();
             set_bounds(sibling, crate::layout::rect(220, 10, 100, 28)).unwrap();
-            let mut observation = Observation {
-                sibling,
-                edges: vec![],
+            let edges = std::cell::RefCell::new(Vec::new());
+            let observe = |hwnd, message, _, _| {
+                if message == WM_SIZE {
+                    let parent = GetParent(hwnd);
+                    edges
+                        .borrow_mut()
+                        .push((bounds(hwnd, parent).right, bounds(sibling, parent).left));
+                }
+                None
             };
-            assert_ne!(
-                set_subclass(edit, Some(observe), 1, &mut observation as *mut _ as usize),
-                0
-            );
+            let callback = crate::test_support::observe_messages(edit, 1, &observe);
             for width in [400, 150, 500, 200] {
                 let positions = [
                     (edit, crate::layout::rect(10, 10, width, 28)),
                     (sibling, crate::layout::rect(width + 20, 10, 100, 28)),
                 ];
                 place_all(&positions).unwrap();
-                let count = observation.edges.len();
+                let count = edges.borrow().len();
                 place_all(&positions).unwrap();
                 assert_eq!(
-                    observation.edges.len(),
+                    edges.borrow().len(),
                     count,
                     "unchanged layout must not resize controls"
                 );
             }
-            remove_subclass(edit, Some(observe), 1);
+            remove_subclass(edit, callback, 1);
             DestroyWindow(parent);
             assert_eq!(
-                observation.edges,
+                edges.into_inner(),
                 [(410, 420), (160, 170), (510, 520), (210, 220)]
             );
         }

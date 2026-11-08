@@ -717,9 +717,11 @@ fn append(
 mod tests {
     use super::*;
 
+    include!("../tests/support/source.rs");
+
     #[test]
     fn pointer_qualifiers_preserve_c_levels_and_named_type_links() {
-        use winlex_core::{SourceData, windows_metadata::writer};
+        use winlex_core::windows_metadata::writer;
         let mut file = writer::File::new("PointerQualifiers");
         file.TypeDef(
             "Fixture",
@@ -727,14 +729,8 @@ mod tests {
             writer::TypeDefOrRef::default(),
             TypeAttributes::Public,
         );
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tmp")
-            .join(format!("pointer-qualifiers-{}.winmd", std::process::id()));
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, file.into_stream()).unwrap();
-        let source = SourceData::read(&path).unwrap();
-        std::fs::remove_file(path).unwrap();
-        let catalog = Catalog::from_inputs([source]).unwrap();
+        let catalog =
+            Catalog::from_inputs([source("pointer-qualifiers", file.into_stream())]).unwrap();
         let owner = catalog
             .type_ids()
             .find(|&id| catalog.entity(id).unwrap().name == "Record😀")
@@ -794,7 +790,7 @@ mod tests {
 
     #[test]
     fn type_dispatch_preserves_module_attribute_and_explicit_layout_fallbacks() {
-        use winlex_core::{SourceData, windows_metadata::writer};
+        use winlex_core::windows_metadata::writer;
 
         let mut file = writer::File::new("TypeDispatch");
         let cases = [
@@ -855,12 +851,8 @@ mod tests {
                     },
             );
         }
-        let path =
-            std::env::temp_dir().join(format!("winlex-type-dispatch-{}.winmd", std::process::id()));
-        std::fs::write(&path, file.into_stream()).unwrap();
-        let source = SourceData::read(&path).unwrap();
-        std::fs::remove_file(path).unwrap();
-        let catalog = Catalog::from_inputs([source]).unwrap();
+        let catalog =
+            Catalog::from_inputs([source("winlex-type-dispatch", file.into_stream())]).unwrap();
         let ids: Vec<_> = catalog
             .type_ids()
             .filter(|&id| {
@@ -928,6 +920,12 @@ mod tests {
         }
     }
 
+    fn render_constant(value: &Value, t: &Type, arch: Architecture, suffix: &str) -> Rendered {
+        let mut out = Rendered::default();
+        constant(&mut out, value, t, arch, entity(), suffix).unwrap();
+        out
+    }
+
     #[test]
     fn integer_annotations_preserve_signedness_and_width() {
         let cases = [
@@ -951,16 +949,7 @@ mod tests {
             (Value::I32(i32::MAX), "2147483647", "0x7FFFFFFF"),
         ];
         for (value, decimal, hex) in cases {
-            let mut out = Rendered::default();
-            constant(
-                &mut out,
-                &value,
-                &value.ty(),
-                Architecture::X64,
-                entity(),
-                ";",
-            )
-            .unwrap();
+            let out = render_constant(&value, &value.ty(), Architecture::X64, ";");
             assert_eq!(out.text, format!("{decimal}; // {hex}\n"));
             let utf16: Vec<_> = out.text.encode_utf16().collect();
             for (region, expected) in out.regions.iter().zip([decimal, hex]) {
@@ -972,16 +961,7 @@ mod tests {
                 assert_eq!(region.number().unwrap().hexadecimal(), hex);
             }
         }
-        let mut out = Rendered::default();
-        constant(
-            &mut out,
-            &Value::U32(0xFFFF_FFFF),
-            &Type::I32,
-            Architecture::X64,
-            entity(),
-            ",",
-        )
-        .unwrap();
+        let out = render_constant(&Value::U32(0xFFFF_FFFF), &Type::I32, Architecture::X64, ",");
         assert_eq!(out.text, "-1, // 0xFFFFFFFF\n");
     }
 
@@ -1025,16 +1005,7 @@ mod tests {
             (Architecture::X86, "-1; // 0xFFFFFFFF\n"),
             (Architecture::X64, "-1; // 0xFFFFFFFFFFFFFFFF\n"),
         ] {
-            let mut out = Rendered::default();
-            constant(
-                &mut out,
-                &Value::ISize(-1),
-                &Type::ISize,
-                arch,
-                entity(),
-                ";",
-            )
-            .unwrap();
+            let out = render_constant(&Value::ISize(-1), &Type::ISize, arch, ";");
             assert_eq!(out.text, expected);
         }
         for (value, t, expected) in [
@@ -1042,8 +1013,7 @@ mod tests {
             (Value::F32(1.5), Type::F32, "F32(1.5);\n"),
             (Value::U16(65), Type::Char, "65;\n"),
         ] {
-            let mut out = Rendered::default();
-            constant(&mut out, &value, &t, Architecture::X64, entity(), ";").unwrap();
+            let out = render_constant(&value, &t, Architecture::X64, ";");
             assert_eq!(out.text, expected);
             assert!(out.regions.is_empty());
         }

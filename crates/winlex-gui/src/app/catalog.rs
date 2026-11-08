@@ -685,14 +685,7 @@ mod tests {
         let (_, unload, job) = session.begin_load(vec![], vec![]);
         assert!(session.accept_load(unload.id, execute_load(&unload, job)));
         assert!(session.catalog.is_none());
-        assert!(
-            document
-                .search("CreateFileW", Default::default())
-                .unwrap()
-                .next()
-                .unwrap()
-                .is_ok()
-        );
+        crate::test_support::first_match(document.search("CreateFileW", Default::default()));
     }
     fn hit(token: u32, score: u16) -> Box<ResultItem> {
         Box::new(ResultItem {

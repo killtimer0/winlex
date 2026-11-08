@@ -3,6 +3,8 @@ use serde_json::Value;
 use std::{ffi::OsString, path::PathBuf, sync::OnceLock};
 use winlex_core::{Architecture, Catalog, SearchMode, SearchOptions};
 
+include!("../../../tests/rust_search.rs");
+
 fn input() -> PathBuf {
     if let Some(path) = std::env::var_os("WINLEX_TEST_WINMD") {
         return path.into();
@@ -20,15 +22,7 @@ fn catalog() -> &'static Catalog {
     DB.get_or_init(|| Catalog::open(input()).expect("prepare pinned inputs/Windows.Win32.winmd"))
 }
 
-fn invoke(args: impl IntoIterator<Item = OsString>) -> (u8, String, String) {
-    let (mut out, mut err) = (Vec::new(), Vec::new());
-    let code = winlex_cli::run(args, &mut out, &mut err);
-    (
-        code,
-        String::from_utf8(out).unwrap(),
-        String::from_utf8(err).unwrap(),
-    )
-}
+include!("support/invoke.rs");
 
 #[test]
 fn search_mode_flags_are_exclusive_and_only_apply_to_search() {
@@ -232,6 +226,12 @@ fn cli(args: &[&str]) -> (u8, Value, String) {
     (code, response, err)
 }
 
+fn show_x64(selector: &str) -> Value {
+    let (code, mut response, _) = cli(&["show", selector, "--arch", "x64"]);
+    assert_eq!(code, 0, "{response}");
+    response["result"].take()
+}
+
 #[test]
 fn cli_errors_are_machine_readable() {
     for (args, code) in [
@@ -309,9 +309,7 @@ fn architecture_ambiguity_and_pagination_are_preserved() {
 
 #[test]
 fn declaration_to_callback_reference_is_navigable() {
-    let (code, response, _) = cli(&["show", "OPENFILENAMEW", "--arch", "x64"]);
-    assert_eq!(code, 0);
-    let d = &response["result"];
+    let d = show_x64("OPENFILENAMEW");
     let fields = d["fields"].as_array().unwrap();
     assert_eq!(fields.len(), 23);
     let f = fields
@@ -319,21 +317,8 @@ fn declaration_to_callback_reference_is_navigable() {
         .find(|f| f["entity"]["name"] == "lpfnHook")
         .unwrap();
     assert_eq!(f["type"]["name"], "LPOFNHOOKPROC");
-    let (code, r, _) = cli(&[
-        "show",
-        &entity_id(&f["type"]["reference_id"]).to_string(),
-        "--arch",
-        "x64",
-    ]);
-    assert_eq!(code, 0);
-    let (code, response, _) = cli(&[
-        "show",
-        &entity_id(&r["result"]["resolution"]["target_id"]).to_string(),
-        "--arch",
-        "x64",
-    ]);
-    assert_eq!(code, 0);
-    let callback = &response["result"];
+    let r = show_x64(&entity_id(&f["type"]["reference_id"]).to_string());
+    let callback = show_x64(&entity_id(&r["resolution"]["target_id"]).to_string());
     let invoke = callback["methods"]
         .as_array()
         .unwrap()
@@ -353,9 +338,7 @@ fn declaration_to_callback_reference_is_navigable() {
 
 #[test]
 fn api_has_import_and_parameter_semantics() {
-    let (code, response, _) = cli(&["show", "CreateFileW", "--arch", "x64"]);
-    assert_eq!(code, 0);
-    let d = &response["result"];
+    let d = show_x64("CreateFileW");
     assert_eq!(d["entity"]["kind"], "method");
     assert_eq!(
         d["import"]["dll"].as_str().unwrap().to_lowercase(),
@@ -369,9 +352,7 @@ fn api_has_import_and_parameter_semantics() {
 
 #[test]
 fn constant_values_include_decimal_and_hex() {
-    let (code, response, _) = cli(&["show", "GENERIC_READ", "--arch", "x64"]);
-    assert_eq!(code, 0);
-    let d = &response["result"];
+    let d = show_x64("GENERIC_READ");
     assert_eq!(d["value"]["decimal"], "2147483648");
     assert_eq!(d["value"]["hex"], "0x80000000");
 }
@@ -380,26 +361,15 @@ fn constant_values_include_decimal_and_hex() {
 fn reverse_uses_and_cancellation() {
     use std::sync::atomic::AtomicBool;
     let db = catalog();
-    let r = db
-        .references(
-            winlex_cli::select(db, "LPOFNHOOKPROC", Some(Architecture::X64), true).unwrap(),
-            Architecture::X64,
-            None,
-        )
-        .unwrap()
-        .collect::<winlex_core::Result<Vec<_>>>()
-        .unwrap();
+    let id = winlex_cli::select(db, "LPOFNHOOKPROC", Some(Architecture::X64), true).unwrap();
+    let r: Vec<_> = search_results(db.references(id, Architecture::X64, None)).collect();
     assert!(
         r.iter()
             .any(|e| e.full_name.ends_with("OPENFILENAMEW.lpfnHook"))
     );
     let stop = AtomicBool::new(true);
     let e = db
-        .references(
-            winlex_cli::select(db, "LPOFNHOOKPROC", Some(Architecture::X64), true).unwrap(),
-            Architecture::X64,
-            Some(&stop),
-        )
+        .references(id, Architecture::X64, Some(&stop))
         .unwrap()
         .next()
         .unwrap()
@@ -440,19 +410,16 @@ fn cli_search_options_preserve_core_modes_architectures_and_pagination() {
         }
         let (code, result, _) = cli(&args);
         assert_eq!(code, 0, "{args:?}: {result}");
-        let mut expected = catalog()
-            .search(
-                query,
-                SearchOptions {
-                    source: Some(0),
-                    mode,
-                    architecture,
-                    ..Default::default()
-                },
-            )
-            .unwrap()
-            .collect::<winlex_core::Result<Vec<_>>>()
-            .unwrap();
+        let mut expected: Vec<_> = search_results(catalog().search(
+            query,
+            SearchOptions {
+                source: Some(0),
+                mode,
+                architecture,
+                ..Default::default()
+            },
+        ))
+        .collect();
         expected.sort_unstable_by(winlex_core::SearchMatch::compare);
         assert_eq!(result["result"]["total"], expected.len());
         assert_eq!(result["result"]["offset"], 1);
@@ -681,9 +648,7 @@ fn text_output_and_input_error() {
         }
         assert!(err.is_empty());
     }
-    let (code, response, _) = cli(&["show", "OVERLAPPED", "--arch", "x64"]);
-    assert_eq!(code, 0);
-    assert_eq!(response["result"]["layout_kind"], "sequential");
+    assert_eq!(show_x64("OVERLAPPED")["layout_kind"], "sequential");
     let args = ["/does-not-exist.winmd", "--json", "summary"].map(OsString::from);
     let (code, out, _) = invoke(args);
     assert_eq!(code, 3);

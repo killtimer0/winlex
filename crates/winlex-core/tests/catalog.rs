@@ -7,6 +7,8 @@ use std::{
 };
 use winlex_core::{Architecture, Catalog, EntityCategory, SearchMode, SearchOptions, SearchStep};
 
+include!("../../../tests/rust_search.rs");
+
 fn catalog() -> &'static Catalog {
     static DB: OnceLock<Catalog> = OnceLock::new();
     DB.get_or_init(|| {
@@ -22,11 +24,7 @@ fn catalog() -> &'static Catalog {
 #[test]
 fn search_categories_partition_results_without_name_conventions() {
     let db = catalog();
-    let all = db
-        .search("e", SearchOptions::default())
-        .unwrap()
-        .collect::<winlex_core::Result<Vec<_>>>()
-        .unwrap();
+    let all: Vec<_> = search_results(db.search("e", SearchOptions::default())).collect();
     assert!(all.iter().any(|hit| hit.id.token >> 24 == 1));
     for mask in [
         0,
@@ -45,17 +43,15 @@ fn search_categories_partition_results_without_name_conventions() {
             .filter(|hit| db.declaration(hit.id, None).unwrap().category() as u32 & mask != 0)
             .map(|hit| hit.id)
             .collect();
-        let actual = db
-            .search(
-                "e",
-                SearchOptions {
-                    categories: Some(mask),
-                    ..Default::default()
-                },
-            )
-            .unwrap()
-            .map(|hit| hit.unwrap().id)
-            .collect::<Vec<_>>();
+        let actual = search_results(db.search(
+            "e",
+            SearchOptions {
+                categories: Some(mask),
+                ..Default::default()
+            },
+        ))
+        .map(|hit| hit.id)
+        .collect::<Vec<_>>();
         assert_eq!(actual, expected, "mask {mask}");
     }
 }
@@ -73,18 +69,15 @@ fn index_keeps_types_and_members_uniformly() {
         ),
         ("Windows.Win32.Foundation.POINT.x", EntityCategory::Field),
     ] {
-        let results = catalog()
-            .search(
-                name,
-                SearchOptions {
-                    mode: SearchMode::Name,
-                    categories: Some(category as u32),
-                    ..Default::default()
-                },
-            )
-            .unwrap()
-            .collect::<winlex_core::Result<Vec<_>>>()
-            .unwrap();
+        let results: Vec<_> = search_results(catalog().search(
+            name,
+            SearchOptions {
+                mode: SearchMode::Name,
+                categories: Some(category as u32),
+                ..Default::default()
+            },
+        ))
+        .collect();
         assert!(!results.is_empty(), "{name}");
         assert!(results.iter().all(|hit| hit.full_name == name));
     }
@@ -94,9 +87,8 @@ fn index_keeps_types_and_members_uniformly() {
 fn stepped_and_iterated_search_share_progress_and_cancellation() {
     let db = catalog();
     let collect = || {
-        db.search("CrtFlW", SearchOptions::default())
-            .unwrap()
-            .map(|hit| hit.unwrap().id)
+        search_results(db.search("CrtFlW", SearchOptions::default()))
+            .map(|hit| hit.id)
             .collect::<Vec<_>>()
     };
     let expected = collect();
@@ -175,23 +167,18 @@ fn stepped_and_iterated_search_share_progress_and_cancellation() {
 #[test]
 fn calculations_use_selected_architecture() {
     let db = catalog();
-    let layout = |name, arch| {
-        let id = db
-            .search_exact(
-                name,
-                SearchOptions {
-                    architecture: Some(arch),
-                    categories: Some(EntityCategory::Type as u32),
-                    ..Default::default()
-                },
-            )
-            .unwrap()
-            .next()
-            .unwrap()
-            .unwrap()
-            .id;
-        db.layout(id, arch).unwrap()
+    let type_id = |name, arch| {
+        first_match(db.search_exact(
+            name,
+            SearchOptions {
+                architecture: Some(arch),
+                categories: Some(EntityCategory::Type as u32),
+                ..Default::default()
+            },
+        ))
+        .id
     };
+    let layout = |name, arch| db.layout(type_id(name, arch), arch).unwrap();
     assert_eq!(layout("POINT", Architecture::X64).size_bits, 64);
     let dcb = layout("DCB", Architecture::X64);
     assert!(
@@ -215,21 +202,9 @@ fn calculations_use_selected_architecture() {
     let union = ov.fields.iter().find(|f| f.name == "Anonymous").unwrap();
     assert_eq!(union.offset_bits, 128);
     assert!(!union.fields.is_empty());
-    let id = db
-        .search_exact(
-            "IStream",
-            SearchOptions {
-                architecture: Some(Architecture::X64),
-                categories: Some(EntityCategory::Type as u32),
-                ..Default::default()
-            },
-        )
-        .unwrap()
-        .next()
-        .unwrap()
-        .unwrap()
-        .id;
-    let vt = db.vtable(id, Architecture::X64).unwrap();
+    let vt = db
+        .vtable(type_id("IStream", Architecture::X64), Architecture::X64)
+        .unwrap();
     assert_eq!(vt.slots[5].method, "Seek");
     assert_eq!(vt.slots[13].method, "Clone");
 }

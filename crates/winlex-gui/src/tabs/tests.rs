@@ -25,11 +25,7 @@ impl Fixture {
     fn new() -> Self {
         let apartment = crate::input::Apartment::initialize().unwrap();
         unsafe {
-            let init = INITCOMMONCONTROLSEX {
-                dwSize: std::mem::size_of::<INITCOMMONCONTROLSEX>() as u32,
-                dwICC: ICC_WIN95_CLASSES,
-            };
-            assert_ne!(InitCommonControlsEx(&init), 0);
+            crate::test_support::initialize_controls(ICC_WIN95_CLASSES);
             let class = WNDCLASSW {
                 lpfnWndProc: Some(host),
                 hInstance: instance(),
@@ -95,6 +91,14 @@ fn children(root: &IAccessible) -> Vec<IAccessible> {
 }
 fn page(value: VARIANT) -> IAccessible {
     IDispatch::try_from(&value).unwrap().cast().unwrap()
+}
+fn accessible_name(object: &IAccessible, child: i32) -> String {
+    unsafe {
+        object
+            .get_accName(&VARIANT::from(child))
+            .unwrap()
+            .to_string()
+    }
 }
 fn variant_i32(value: &VARIANT) -> i32 {
     unsafe {
@@ -295,12 +299,7 @@ fn focus_cue_changes_repaint_without_changing_accessible_focus() {
         );
         assert_ne!(unsafe { GetUpdateRect(f.tabs, ptr::null_mut(), 0) }, 0);
         let page = page(unsafe { root.accFocus() }.unwrap());
-        assert_eq!(
-            unsafe { page.get_accName(&0i32.into()) }
-                .unwrap()
-                .to_string(),
-            "Alpha"
-        );
+        assert_eq!(accessible_name(&page, 0), "Alpha");
         assert!(requests().is_empty());
     }
 }
@@ -379,7 +378,7 @@ fn msaa_focus_and_selection_are_independent_and_none_is_noop() {
             requests().is_empty(),
             "focus alone must not activate a document"
         );
-        let title = |value: VARIANT| page(value).get_accName(&self_id).unwrap().to_string();
+        let title = |value: VARIANT| accessible_name(&page(value), 0);
         assert_eq!(title(root.accSelection().unwrap()), "Alpha");
         assert_eq!(title(root.accFocus().unwrap()), "Beta");
         let flags = variant_i32(&beta.get_accState(&self_id).unwrap()) as u32;
@@ -405,7 +404,7 @@ fn msaa_tree_identity_requests_and_disconnection() {
     let root = f.accessible();
     let self_id = VARIANT::from(0i32);
     unsafe {
-        assert_eq!(root.get_accName(&self_id).unwrap().to_string(), "Pages");
+        assert_eq!(accessible_name(&root, 0), "Pages");
         let dispatch: IDispatch = root.cast().unwrap();
         let name = wide("accName");
         let mut member = 0;
@@ -443,7 +442,7 @@ fn msaa_tree_identity_requests_and_disconnection() {
         let alpha = &original[0];
         assert_eq!(alpha.accChildCount().unwrap(), 0);
         assert!(alpha.get_accChild(&VARIANT::from(1i32)).is_err());
-        assert_eq!(alpha.get_accName(&self_id).unwrap().to_string(), "Alpha");
+        assert_eq!(accessible_name(alpha, 0), "Alpha");
         assert_eq!(
             alpha.get_accDescription(&self_id).unwrap().to_string(),
             format!("source {}", a.id)
@@ -480,7 +479,7 @@ fn msaa_tree_identity_requests_and_disconnection() {
         let mut renamed = a.clone();
         renamed.title = "Renamed".into();
         set_items(f.tabs, vec![b.clone(), renamed]);
-        assert_eq!(alpha.get_accName(&self_id).unwrap().to_string(), "Renamed");
+        assert_eq!(accessible_name(alpha, 0), "Renamed");
         set_items(f.tabs, vec![b]);
         assert!(alpha.get_accName(&self_id).is_err());
         assert!(alpha.accDoDefaultAction(&self_id).is_err());
@@ -603,13 +602,8 @@ fn msaa_events_describe_committed_selection_with_stable_child_ids() {
             EVENTS.with(|e| e.borrow_mut().push((event, child)));
         }
     }
-    struct Hook(HWINEVENTHOOK);
-    impl Drop for Hook {
-        fn drop(&mut self) {
-            unsafe {
-                UnhookWinEvent(self.0);
-            }
-        }
+    owned_handle! {
+        struct Hook(HWINEVENTHOOK); UnhookWinEvent
     }
     fn drain() -> Vec<(u32, i32)> {
         unsafe {
@@ -644,12 +638,7 @@ fn msaa_events_describe_committed_selection_with_stable_child_ids() {
         .iter()
         .find_map(|&(event, id)| (event == EVENT_OBJECT_SELECTION).then_some(id))
         .expect("selection event");
-    unsafe {
-        assert_eq!(
-            root.get_accName(&VARIANT::from(child)).unwrap().to_string(),
-            "One"
-        );
-    }
+    assert_eq!(accessible_name(&root, child), "One");
     select(f.tabs, Some(a.id));
     assert!(
         !drain()
@@ -659,12 +648,7 @@ fn msaa_events_describe_committed_selection_with_stable_child_ids() {
     );
     set_items(f.tabs, vec![b, a]);
     assert!(drain().contains(&(EVENT_OBJECT_REORDER, 0)));
-    unsafe {
-        assert_eq!(
-            root.get_accName(&VARIANT::from(child)).unwrap().to_string(),
-            "One"
-        );
-    }
+    assert_eq!(accessible_name(&root, child), "One");
     let mut styled = item(100, "One");
     styled.italic = true;
     styled.description = "Temporary item".into();
@@ -676,11 +660,8 @@ fn msaa_events_describe_committed_selection_with_stable_child_ids() {
             .iter()
             .any(|&(event, _)| event == EVENT_OBJECT_NAMECHANGE)
     );
+    assert_eq!(accessible_name(&root, child), "One");
     unsafe {
-        assert_eq!(
-            root.get_accName(&VARIANT::from(child)).unwrap().to_string(),
-            "One"
-        );
         assert_eq!(
             root.get_accDescription(&VARIANT::from(child))
                 .unwrap()

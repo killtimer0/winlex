@@ -779,19 +779,14 @@ mod tests {
         let current = Catalog::from_inputs([consumer.clone(), dependency(Type::I64)]).unwrap();
         let ambiguous = Catalog::from_inputs([consumer, original.clone(), original]).unwrap();
         let member = |catalog: &Catalog| {
-            catalog
-                .search(
-                    "Member",
-                    crate::SearchOptions {
-                        mode: crate::SearchMode::Name,
-                        ..Default::default()
-                    },
-                )
-                .unwrap()
-                .next()
-                .unwrap()
-                .unwrap()
-                .id
+            crate::test_support::first_match(catalog.search(
+                "Member",
+                crate::SearchOptions {
+                    mode: crate::SearchMode::Name,
+                    ..Default::default()
+                },
+            ))
+            .id
         };
         let field_name = |catalog: &Catalog| {
             let Declaration::Field(field) = catalog.declaration(member(catalog), None).unwrap()

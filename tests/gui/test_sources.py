@@ -12,7 +12,7 @@ from support import native as n
 from support.messages import LVM_GETITEMTEXTW
 from support.pe import is_64_bit
 from test_context import selection_packed
-from test_metadata_guide import resource_text
+from test_metadata_guide import assert_no_dialog, resource_text
 
 
 def complete_list_text(app, hwnd, row, bits):
@@ -225,6 +225,7 @@ def test_failed_restore_preserves_saved_files(launch, profile, settings, ui_lang
     n.wait(lambda: failed in app.status_text(), "restore error")
     assert profile.get("AutoLoad") == [missing]
     assert app.count(app.sources) == 0
+    assert_no_dialog(app)
 
 
 def test_multiple_positional_inputs_preserve_order(launch, profile, settings):
@@ -239,6 +240,7 @@ def test_multiple_positional_inputs_preserve_order(launch, profile, settings):
     assert str(first) in app.cell(0, app.sources)
     assert str(second) in app.cell(1, app.sources)
     assert profile.get("AutoLoad") == [str(settings[1])]
+    assert_no_dialog(app)
     app.query("CreateFileW")
     assert len(app.named_rows("CreateFileW")) == 2
 

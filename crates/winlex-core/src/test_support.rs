@@ -1,5 +1,8 @@
+use crate as winlex_core;
 use crate::{Catalog, EntityCategory, EntityId, SearchOptions, SourceData};
 use windows_metadata::{writer, *};
+
+include!("../../../tests/rust_search.rs");
 
 pub fn source(name: &str, file: writer::File) -> SourceData {
     SourceData {
@@ -13,17 +16,13 @@ pub fn catalog(name: &str, file: writer::File) -> Catalog {
 }
 
 pub fn type_id(db: &Catalog, name: &str) -> EntityId {
-    db.search_exact(
+    first_match(db.search_exact(
         name,
         SearchOptions {
             categories: Some(EntityCategory::Type as u32),
             ..Default::default()
         },
-    )
-    .unwrap()
-    .next()
-    .unwrap()
-    .unwrap()
+    ))
     .id
 }
 

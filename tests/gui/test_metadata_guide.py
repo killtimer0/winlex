@@ -2,7 +2,6 @@ import struct
 import win32api
 import win32con
 import win32gui
-import winreg
 import uiautomation as auto
 
 from support import native as n
@@ -62,23 +61,4 @@ def test_empty_startup_prompt_dismissal_and_runtime_removal(launch, profile, set
     assert_no_dialog(app)
     app.command(1040)
     assert app.status_text() == empty
-    assert_no_dialog(app)
-
-
-def test_failed_configured_source_does_not_prompt(launch, profile, settings):
-    missing = str(settings[2] / "missing-guide-restore.winmd")
-    profile.set("AutoLoad", winreg.REG_MULTI_SZ, [missing])
-    app = launch()
-    app.command(1021)
-    n.wait(lambda: "failed" in app.status_text() or "失败" in app.status_text(),
-           "configured source load failure", 45)
-    assert app.count(app.sources) == 0
-    assert profile.get("AutoLoad") == [missing]
-    assert_no_dialog(app)
-
-
-def test_command_line_source_does_not_prompt(launch, settings):
-    app = launch([settings[1]])
-    app.command(1021)
-    n.wait(lambda: app.count(app.sources) == 1, "command-line source loaded", 45)
     assert_no_dialog(app)

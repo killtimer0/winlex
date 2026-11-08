@@ -166,16 +166,7 @@ fn dialog_minimum_constrains_user_sizing_without_blocking_top_level_dpi_downscal
     )
     .unwrap();
     let minimum = layout.initial_size(96).unwrap();
-    for edge in [
-        WMSZ_LEFT,
-        WMSZ_RIGHT,
-        WMSZ_TOP,
-        WMSZ_BOTTOM,
-        WMSZ_TOPLEFT,
-        WMSZ_TOPRIGHT,
-        WMSZ_BOTTOMLEFT,
-        WMSZ_BOTTOMRIGHT,
-    ] {
+    for edge in WMSZ_LEFT..=WMSZ_BOTTOMRIGHT {
         let mut r = crate::layout::rect(100, 100, 20, 20);
         unsafe {
             assert!(
@@ -190,10 +181,25 @@ fn dialog_minimum_constrains_user_sizing_without_blocking_top_level_dpi_downscal
         );
         if matches!(edge, WMSZ_LEFT | WMSZ_TOPLEFT | WMSZ_BOTTOMLEFT) {
             assert_eq!(r.right, 120);
+        } else {
+            assert_eq!(r.left, 100);
         }
         if matches!(edge, WMSZ_TOP | WMSZ_TOPLEFT | WMSZ_TOPRIGHT) {
             assert_eq!(r.bottom, 120);
+        } else {
+            assert_eq!(r.top, 100);
         }
+        let mut larger = crate::layout::rect(100, 100, minimum.cx + 20, minimum.cy + 20);
+        let before = (larger.left, larger.top, larger.right, larger.bottom);
+        unsafe {
+            layout
+                .message(WM_SIZING, edge as usize, &mut larger as *mut RECT as isize)
+                .unwrap();
+        }
+        assert_eq!(
+            (larger.left, larger.top, larger.right, larger.bottom),
+            before
+        );
     }
     let mut limits: MINMAXINFO = unsafe { std::mem::zeroed() };
     unsafe {

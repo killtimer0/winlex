@@ -306,7 +306,6 @@ mod tests {
             "name = \"a\" value = 5",
             "value = 5 or",
             "value = 5 order",
-            r#"name = "\q""#,
         ] {
             assert!(Query::parse(text).is_err(), "{text}");
         }

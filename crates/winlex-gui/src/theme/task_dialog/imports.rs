@@ -544,16 +544,7 @@ mod tests {
                         (slot as *const usize).read(),
                         before + if installed { 0x1000 } else { 0 }
                     );
-                    let mut info: MEMORY_BASIC_INFORMATION = mem::zeroed();
-                    assert_ne!(
-                        VirtualQuery(
-                            slot as *const _,
-                            &mut info,
-                            mem::size_of::<MEMORY_BASIC_INFORMATION>()
-                        ),
-                        0
-                    );
-                    assert_eq!(info.Protect, protection);
+                    assert_eq!(page_protection(slot), protection);
                 }
             }
         }
@@ -585,28 +576,17 @@ mod tests {
     }
 
     #[test]
-    fn install_failure_after_first_slot_restores_ordinary_and_delay_imports() {
+    fn recoverable_install_failures_restore_ordinary_and_delay_imports() {
         for delay in [false, true] {
-            let mut fixture = InstallFixture::new(delay);
-            {
-                // First slot installs and regains read-only protection; opening
-                // the second slot fails, entering the real transaction rollback.
-                let _fault = ProtectionFaultScope::new(&[3]);
-                assert!(!fixture.hooks.install_patches(fixture.memory as usize));
+            // Fail restoring the first slot's protection or opening the second slot.
+            for call in [2, 3] {
+                let mut fixture = InstallFixture::new(delay);
+                {
+                    let _fault = ProtectionFaultScope::new(&[call]);
+                    assert!(!fixture.hooks.install_patches(fixture.memory as usize));
+                }
+                fixture.assert_retry();
             }
-            fixture.assert_retry();
-        }
-    }
-
-    #[test]
-    fn install_failure_restoring_protection_rolls_back_pointer_and_protection() {
-        for delay in [false, true] {
-            let mut fixture = InstallFixture::new(delay);
-            {
-                let _fault = ProtectionFaultScope::new(&[2]);
-                assert!(!fixture.hooks.install_patches(fixture.memory as usize));
-            }
-            fixture.assert_retry();
         }
     }
 
@@ -673,6 +653,21 @@ mod tests {
         }
     }
 
+    fn page_protection(address: usize) -> u32 {
+        unsafe {
+            let mut info: MEMORY_BASIC_INFORMATION = mem::zeroed();
+            assert_ne!(
+                VirtualQuery(
+                    address as *const _,
+                    &mut info,
+                    mem::size_of::<MEMORY_BASIC_INFORMATION>()
+                ),
+                0
+            );
+            info.Protect
+        }
+    }
+
     #[test]
     fn last_overlapping_scope_restores_value_and_page_protection() {
         unsafe {
@@ -712,97 +707,14 @@ mod tests {
                 0x5678,
                 "an inner scope must not detach an outer scope's imports"
             );
-            let mut info: MEMORY_BASIC_INFORMATION = mem::zeroed();
-            assert_ne!(
-                VirtualQuery(
-                    memory,
-                    &mut info,
-                    mem::size_of::<MEMORY_BASIC_INFORMATION>()
-                ),
-                0
-            );
-            assert_eq!(info.Protect, PAGE_READONLY);
+            assert_eq!(page_protection(memory as usize), PAGE_READONLY);
             hooks.release();
             assert!(hooks.patches.is_empty());
             assert_eq!((memory as *const usize).read(), 0x1234);
-            assert_ne!(
-                VirtualQuery(
-                    memory,
-                    &mut info,
-                    mem::size_of::<MEMORY_BASIC_INFORMATION>()
-                ),
-                0
-            );
-            assert_eq!(info.Protect, PAGE_READONLY);
+            assert_eq!(page_protection(memory as usize), PAGE_READONLY);
         }
     }
 
-    #[repr(C)]
-    struct ActCtx {
-        size: u32,
-        flags: u32,
-        source: *const u16,
-        processor: u16,
-        language: u16,
-        directory: *const u16,
-        resource: *const u16,
-        application: *const u16,
-        module: HMODULE,
-    }
-    #[link(name = "kernel32")]
-    unsafe extern "system" {
-        fn CreateActCtxW(context: *const ActCtx) -> HANDLE;
-        fn ActivateActCtx(context: HANDLE, cookie: *mut usize) -> BOOL;
-        fn DeactivateActCtx(flags: u32, cookie: usize) -> BOOL;
-        fn ReleaseActCtx(context: HANDLE);
-    }
-    struct Activation {
-        handle: HANDLE,
-        cookie: usize,
-        module: HMODULE,
-    }
-    impl Drop for Activation {
-        fn drop(&mut self) {
-            unsafe {
-                if !self.module.is_null() {
-                    FreeLibrary(self.module);
-                }
-                if self.cookie != 0 {
-                    DeactivateActCtx(0, self.cookie);
-                }
-                ReleaseActCtx(self.handle);
-            }
-        }
-    }
-    impl Activation {
-        fn new() -> Self {
-            use std::os::windows::ffi::OsStrExt;
-            let manifest = std::env::var_os("WINLEX_TEST_GUI_MANIFEST")
-                .map(std::path::PathBuf::from)
-                .unwrap_or_else(|| {
-                    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("res/gui.manifest")
-                });
-            let source: Vec<_> = manifest.as_os_str().encode_wide().chain(Some(0)).collect();
-            unsafe {
-                let context = ActCtx {
-                    size: mem::size_of::<ActCtx>() as u32,
-                    source: source.as_ptr(),
-                    ..mem::zeroed()
-                };
-                let handle = CreateActCtxW(&context);
-                assert_ne!(handle, INVALID_HANDLE_VALUE);
-                let mut activation = Self {
-                    handle,
-                    cookie: 0,
-                    module: ptr::null_mut(),
-                };
-                assert_ne!(ActivateActCtx(handle, &mut activation.cookie), 0);
-                activation.module = LoadLibraryW(w!("comctl32.dll"));
-                assert!(!activation.module.is_null());
-                activation
-            }
-        }
-    }
     unsafe fn snapshot(module: HMODULE) -> Vec<(usize, usize, u32)> {
         unsafe {
             find_slots(image(module).unwrap(), mem::size_of::<usize>())
@@ -810,19 +722,10 @@ mod tests {
                 .into_iter()
                 .map(|(offset, _)| {
                     let slot = module as usize + offset;
-                    let mut info: MEMORY_BASIC_INFORMATION = mem::zeroed();
-                    assert_ne!(
-                        VirtualQuery(
-                            slot as *const _,
-                            &mut info,
-                            mem::size_of::<MEMORY_BASIC_INFORMATION>()
-                        ),
-                        0
-                    );
                     (
                         slot,
                         AtomicUsize::from_ptr(slot as *mut usize).load(Ordering::Acquire),
-                        info.Protect,
+                        page_protection(slot),
                     )
                 })
                 .collect()
@@ -848,7 +751,8 @@ mod tests {
                 );
             }
         }
-        let activation = Activation::new();
+        let _activation = crate::theme::tests::CommonControls::activate();
+        let module = _activation.module();
         assert_eq!(
             super::super::HOOKS.lock().unwrap().references,
             0,
@@ -857,12 +761,12 @@ mod tests {
         let mut owner = RestoreHooks(Hooks::new());
         let hooks = &mut owner.0;
         unsafe {
-            let address = GetProcAddress(activation.module, c"TaskDialogIndirect".as_ptr().cast())
+            let address = GetProcAddress(module, c"TaskDialogIndirect".as_ptr().cast())
                 .expect("v6 common controls must export TaskDialogIndirect")
                 as usize;
             let color = super::super::theme_color as *const () as usize;
             let background = super::super::theme_background as *const () as usize;
-            let original = snapshot(activation.module);
+            let original = snapshot(module);
             assert!(original.len() >= 2);
             assert!(
                 original
@@ -875,7 +779,7 @@ mod tests {
                 assert!(!hooks.acquire(address, color, background));
             }
             assert_eq!(hooks.references, 0, "failed acquisition must not be active");
-            assert_eq!(snapshot(activation.module), original);
+            assert_eq!(snapshot(module), original);
             assert!(hooks.patches.is_empty());
             assert_eq!(
                 hooks.module, 0,
@@ -891,10 +795,10 @@ mod tests {
                 assert!(!hooks.acquire(address, color, background));
             }
             assert_eq!(hooks.references, 0, "failed acquisition must not be active");
-            assert_eq!(hooks.module, activation.module as usize);
+            assert_eq!(hooks.module, module as usize);
             assert!(hooks.patches.iter().any(|patch| patch.protection.is_some()));
             assert!(
-                snapshot(activation.module)
+                snapshot(module)
                     .iter()
                     .zip(&original)
                     .all(|(current, before)| { current.0 == before.0 && current.1 == before.1 }),
@@ -906,27 +810,26 @@ mod tests {
             assert!(hooks.acquire(address, color, background));
             assert_eq!(hooks.references, 1);
             assert_eq!(hooks.address, address);
-            let expected: Vec<_> =
-                find_slots(image(activation.module).unwrap(), mem::size_of::<usize>())
-                    .unwrap()
-                    .into_iter()
-                    .zip(&original)
-                    .map(|((offset, function), before)| {
-                        assert_eq!(activation.module as usize + offset, before.0);
-                        (
-                            before.0,
-                            if function == Function::Color {
-                                color
-                            } else {
-                                background
-                            },
-                            before.2,
-                        )
-                    })
-                    .collect();
-            assert_eq!(snapshot(activation.module), expected);
+            let expected: Vec<_> = find_slots(image(module).unwrap(), mem::size_of::<usize>())
+                .unwrap()
+                .into_iter()
+                .zip(&original)
+                .map(|((offset, function), before)| {
+                    assert_eq!(module as usize + offset, before.0);
+                    (
+                        before.0,
+                        if function == Function::Color {
+                            color
+                        } else {
+                            background
+                        },
+                        before.2,
+                    )
+                })
+                .collect();
+            assert_eq!(snapshot(module), expected);
             hooks.release();
-            assert_eq!(snapshot(activation.module), original);
+            assert_eq!(snapshot(module), original);
             assert_eq!(hooks.references, 0);
             assert_eq!(hooks.address, 0);
             assert_eq!(hooks.module, 0);
@@ -952,15 +855,7 @@ mod tests {
             unsafe {
                 if notification == TDN_DIALOG_CONSTRUCTED {
                     super::super::apply_native(hwnd);
-                    SetWindowPos(
-                        hwnd,
-                        ptr::null_mut(),
-                        -32000,
-                        -32000,
-                        0,
-                        0,
-                        SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
-                    );
+                    crate::test_support::move_offscreen(hwnd);
                 } else if notification == TDN_CREATED
                     || notification == TDN_TIMER && elapsed >= 1000
                 {
@@ -971,9 +866,10 @@ mod tests {
             }
             S_OK
         }
-        let activation = Activation::new();
+        let _activation = crate::theme::tests::CommonControls::activate();
+        let module = _activation.module();
         unsafe {
-            let address = GetProcAddress(activation.module, c"TaskDialogIndirect".as_ptr().cast())
+            let address = GetProcAddress(module, c"TaskDialogIndirect".as_ptr().cast())
                 .expect("v6 common controls must export TaskDialogIndirect");
             type TaskDialog = unsafe extern "system" fn(
                 *const TASKDIALOGCONFIG,
@@ -982,7 +878,7 @@ mod tests {
                 *mut BOOL,
             ) -> HRESULT;
             let task: TaskDialog = mem::transmute(address);
-            let original = snapshot(activation.module);
+            let original = snapshot(module);
             assert!(original.len() >= 2);
             assert_eq!(
                 super::super::HOOKS.lock().unwrap().references,
@@ -993,10 +889,10 @@ mod tests {
             // unguarded call may resolve a cold slot; the next acquire must save
             // and restore that new value instead of reusing a stale snapshot.
             for _ in 0..2 {
-                let original = snapshot(activation.module);
+                let original = snapshot(module);
                 let outer = super::super::HookGuard::new(address as usize);
                 assert!(outer.is_active());
-                let installed = snapshot(activation.module);
+                let installed = snapshot(module);
                 assert!(
                     original
                         .iter()
@@ -1021,13 +917,13 @@ mod tests {
                 assert_eq!(button, IDOK);
                 drop(inner);
                 assert_eq!(
-                    snapshot(activation.module),
+                    snapshot(module),
                     installed,
                     "inner guard must not detach outer guard imports"
                 );
                 drop(outer);
                 assert_eq!(
-                    snapshot(activation.module),
+                    snapshot(module),
                     original,
                     "last guard must restore every original pointer and page protection"
                 );

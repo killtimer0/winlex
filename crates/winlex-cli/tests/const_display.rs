@@ -2,6 +2,9 @@ use std::ffi::OsString;
 use winlex_core::windows_metadata::{writer, *};
 use winlex_core::{Architecture, Catalog, SearchMode, SearchOptions};
 
+include!("../../../tests/rust_search.rs");
+include!("support/invoke.rs");
+
 #[test]
 fn official_const_owners_remain_visible_without_replacing_native_string_types() {
     let mut file = writer::File::new("ConstDisplay");
@@ -60,22 +63,12 @@ fn official_const_owners_remain_visible_without_replacing_native_string_types() 
     let catalog = Catalog::open(&path).unwrap();
     for (name, annotated) in [("Official", true), ("Foreign", false)] {
         for selector in [name.to_owned(), format!("{name}Field")] {
-            let (mut out, mut err) = (Vec::new(), Vec::new());
-            assert_eq!(
-                winlex_cli::run(
-                    [
-                        path.as_os_str().to_owned(),
-                        OsString::from("show"),
-                        OsString::from(&selector)
-                    ],
-                    &mut out,
-                    &mut err
-                ),
-                0,
-                "{}",
-                String::from_utf8_lossy(&err)
-            );
-            let text = String::from_utf8(out).unwrap();
+            let (exit, text, err) = invoke([
+                path.as_os_str().to_owned(),
+                OsString::from("show"),
+                OsString::from(&selector),
+            ]);
+            assert_eq!(exit, 0, "{err}");
             let prefix = if annotated { "[const] " } else { "" };
             if selector.ends_with("Field") {
                 assert!(text.contains(&format!("type: {prefix}PSTR ->")), "{text}");
@@ -86,18 +79,13 @@ fn official_const_owners_remain_visible_without_replacing_native_string_types() 
                 );
                 assert!(text.contains(&format!("input: {prefix}PSTR ->")), "{text}");
             }
-            let entity = catalog
-                .search(
-                    &selector,
-                    SearchOptions {
-                        mode: SearchMode::Name,
-                        ..Default::default()
-                    },
-                )
-                .unwrap()
-                .next()
-                .unwrap()
-                .unwrap();
+            let entity = first_match(catalog.search(
+                &selector,
+                SearchOptions {
+                    mode: SearchMode::Name,
+                    ..Default::default()
+                },
+            ));
             let rendered =
                 winlex_format::declaration::render(&catalog, entity.id, Architecture::X64).unwrap();
             assert!(

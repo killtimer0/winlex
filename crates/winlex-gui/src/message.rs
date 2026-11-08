@@ -272,63 +272,6 @@ mod tests {
         );
     }
 
-    // Unit-test executables do not embed the application's v6 manifest.
-    #[repr(C)]
-    struct ActCtx {
-        size: u32,
-        flags: u32,
-        source: *const u16,
-        processor: u16,
-        language: u16,
-        directory: *const u16,
-        resource: *const u16,
-        application: *const u16,
-        module: HMODULE,
-    }
-
-    #[link(name = "kernel32")]
-    unsafe extern "system" {
-        fn CreateActCtxW(context: *const ActCtx) -> HANDLE;
-        fn ActivateActCtx(context: HANDLE, cookie: *mut usize) -> BOOL;
-        fn DeactivateActCtx(flags: u32, cookie: usize) -> BOOL;
-        fn ReleaseActCtx(context: HANDLE);
-    }
-
-    struct Activation(HANDLE, usize);
-    impl Activation {
-        fn new() -> Self {
-            use std::os::windows::ffi::OsStrExt;
-            let manifest = std::env::var_os("WINLEX_TEST_GUI_MANIFEST")
-                .map(std::path::PathBuf::from)
-                .unwrap_or_else(|| {
-                    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("res/gui.manifest")
-                });
-            let source: Vec<_> = manifest.as_os_str().encode_wide().chain(Some(0)).collect();
-            unsafe {
-                let context = ActCtx {
-                    size: std::mem::size_of::<ActCtx>() as u32,
-                    source: source.as_ptr(),
-                    ..std::mem::zeroed()
-                };
-                let handle = CreateActCtxW(&context);
-                assert_ne!(handle, INVALID_HANDLE_VALUE);
-                let mut activation = Self(handle, 0);
-                assert_ne!(ActivateActCtx(handle, &mut activation.1), 0);
-                activation
-            }
-        }
-    }
-    impl Drop for Activation {
-        fn drop(&mut self) {
-            unsafe {
-                if self.1 != 0 {
-                    DeactivateActCtx(0, self.1);
-                }
-                ReleaseActCtx(self.0);
-            }
-        }
-    }
-
     #[test]
     fn native_task_dialog_returns_native_button_ids_without_user_interaction() {
         if backend(WindowsVersion::query().unwrap()) != Backend::TaskDialog {
@@ -350,15 +293,7 @@ mod tests {
                 let selection = &mut *(data as *mut Selection);
                 if notification == TDN_DIALOG_CONSTRUCTED {
                     selection.constructed = true;
-                    SetWindowPos(
-                        hwnd,
-                        ptr::null_mut(),
-                        -32000,
-                        -32000,
-                        0,
-                        0,
-                        SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
-                    );
+                    crate::test_support::move_offscreen(hwnd);
                 } else if notification == TDN_CREATED {
                     let button = selection.button;
                     ShowWindow(hwnd, SW_HIDE);
@@ -376,30 +311,28 @@ mod tests {
             }
             0
         }
-        let _activation = Activation::new();
+        let _activation = crate::theme::tests::CommonControls::activate();
         let title = wide("Winlex message test");
         let text = wide("Native dialog result");
-        for (mode, icon, buttons, button) in [
-            (1, Icon::Information, Buttons::YesNo, IDYES),
-            (1, Icon::Information, Buttons::YesNo, IDNO),
-            (1, Icon::Error, Buttons::Ok, IDOK),
-            (1, Icon::Error, Buttons::Ok, IDCANCEL),
-            (2, Icon::Information, Buttons::YesNo, IDYES),
-            (2, Icon::Information, Buttons::YesNo, IDNO),
-            (2, Icon::Error, Buttons::Ok, IDOK),
-            (2, Icon::Error, Buttons::Ok, IDCANCEL),
-        ] {
-            crate::theme::set_mode(mode);
-            let mut selection = Selection {
-                button,
-                constructed: false,
-            };
-            let mut config = task_config(ptr::null_mut(), &title, &text, icon, buttons);
-            config.pfCallback = Some(select);
-            config.dwFlags |= TDF_CALLBACK_TIMER;
-            config.lpCallbackData = &mut selection as *mut Selection as isize;
-            assert_eq!(run_task_dialog(&config).unwrap(), button);
-            assert!(selection.constructed);
+        for mode in [1, 2] {
+            for (icon, buttons, button) in [
+                (Icon::Information, Buttons::YesNo, IDYES),
+                (Icon::Information, Buttons::YesNo, IDNO),
+                (Icon::Error, Buttons::Ok, IDOK),
+                (Icon::Error, Buttons::Ok, IDCANCEL),
+            ] {
+                crate::theme::set_mode(mode);
+                let mut selection = Selection {
+                    button,
+                    constructed: false,
+                };
+                let mut config = task_config(ptr::null_mut(), &title, &text, icon, buttons);
+                config.pfCallback = Some(select);
+                config.dwFlags |= TDF_CALLBACK_TIMER;
+                config.lpCallbackData = &mut selection as *mut Selection as isize;
+                assert_eq!(run_task_dialog(&config).unwrap(), button);
+                assert!(selection.constructed);
+            }
         }
         crate::theme::set_mode(0);
     }

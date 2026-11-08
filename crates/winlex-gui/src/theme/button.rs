@@ -609,43 +609,14 @@ mod tests {
         }
         let _controls = super::super::tests::CommonControls::activate();
         super::super::set_mode(2);
-        unsafe extern "system" fn destroy_child(
-            hwnd: HWND,
-            msg: u32,
-            wp: WPARAM,
-            lp: LPARAM,
-            _: usize,
-            data: usize,
-        ) -> LRESULT {
-            unsafe {
-                if matches!(msg, WM_ERASEBKGND | WM_PRINTCLIENT) {
-                    let child = &*(data as *const Cell<HWND>);
-                    let target = child.replace(ptr::null_mut());
-                    if !target.is_null() {
-                        DestroyWindow(target);
-                        return 1;
-                    }
-                }
-                default_subclass(hwnd, msg, wp, lp)
-            }
-        }
         unsafe {
             for message in [WM_PRINTCLIENT, WM_PAINT] {
-                let parent = CreateWindowExW(
-                    0,
+                let parent = test_window(
                     w!("STATIC"),
                     ptr::null(),
                     WS_POPUP,
-                    0,
-                    0,
-                    200,
-                    100,
-                    ptr::null_mut(),
-                    ptr::null_mut(),
-                    ptr::null_mut(),
-                    ptr::null(),
+                    crate::layout::rect(0, 0, 200, 100),
                 );
-                assert!(!parent.is_null());
                 let hwnd = CreateWindowExW(
                     0,
                     w!("BUTTON"),
@@ -674,10 +645,17 @@ mod tests {
                 let weak = Rc::downgrade(&state);
                 drop(state);
                 let child = Cell::new(hwnd);
-                assert_ne!(
-                    set_subclass(parent, Some(destroy_child), 1, &child as *const _ as usize),
-                    0
-                );
+                let observe = |_, msg, _, _| {
+                    if matches!(msg, WM_ERASEBKGND | WM_PRINTCLIENT) {
+                        let target = child.replace(ptr::null_mut());
+                        if !target.is_null() {
+                            DestroyWindow(target);
+                            return Some(1);
+                        }
+                    }
+                    None
+                };
+                let callback = crate::test_support::observe_messages(parent, 1, &observe);
                 let dc = GetDC(parent);
                 let target = CreateCompatibleDC(dc);
                 let bitmap = GdiObject(CreateCompatibleBitmap(dc, 150, 30));
@@ -700,6 +678,7 @@ mod tests {
                 SelectObject(target, old);
                 DeleteDC(target);
                 ReleaseDC(parent, dc);
+                remove_subclass(parent, callback, 1);
                 DestroyWindow(parent);
             }
         }
@@ -708,28 +687,16 @@ mod tests {
 
     #[test]
     fn native_three_state_cycle_survives_subclass_and_theme_refresh() {
-        struct Window(HWND);
-        impl Drop for Window {
-            fn drop(&mut self) {
-                unsafe { DestroyWindow(self.0) };
-            }
+        owned_handle! {
+            struct Window(HWND); DestroyWindow
         }
         unsafe {
-            let parent = Window(CreateWindowExW(
-                0,
+            let parent = Window(test_window(
                 w!("STATIC"),
                 ptr::null(),
                 WS_POPUP,
-                0,
-                0,
-                200,
-                100,
-                ptr::null_mut(),
-                ptr::null_mut(),
-                ptr::null_mut(),
-                ptr::null(),
+                crate::layout::rect(0, 0, 200, 100),
             ));
-            assert!(!parent.0.is_null());
             let hwnd = CreateWindowExW(
                 0,
                 w!("BUTTON"),

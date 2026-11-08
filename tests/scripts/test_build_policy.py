@@ -73,14 +73,11 @@ class BuildPolicyContracts(unittest.TestCase):
 
     def test_static_crt_and_vc_ltl_are_required(self):
         for target in ("i686-pc-windows-msvc", "x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"):
-            with self.subTest(target=target):
-                result = self.run_build(target, static=False)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn("+crt-static", result.stderr)
-        for target in ("i686-pc-windows-msvc", "x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"):
-            result = self.run_build(target)
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn("WINLEX_VC_LTL_ROOT", result.stderr)
+            for static, reason in ((False, "+crt-static"), (True, "WINLEX_VC_LTL_ROOT")):
+                with self.subTest(target=target, static=static):
+                    result = self.run_build(target, static=static)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(reason, result.stderr)
 
     def test_legacy_thunks_are_required(self):
         for target, platform in (("i686-pc-windows-msvc", "5.1.2600.0/lib/Win32"),

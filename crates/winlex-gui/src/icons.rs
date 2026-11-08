@@ -381,8 +381,8 @@ mod tests {
                 bitmap.tint(0x00336699);
                 let pixels = unsafe { std::slice::from_raw_parts(bitmap.pixels, bitmap.count) };
                 assert!(
-                    pixels.iter().any(|&p| p >> 24 > 0),
-                    "empty icon at {size}px; max pixel {:08x}",
+                    pixels.iter().any(|&p| p >> 24 != 0 && p >> 24 != 255),
+                    "no antialiased icon at {size}px; max pixel {:08x}",
                     pixels.iter().max().unwrap()
                 );
                 assert!(pixels.contains(&0));
@@ -398,7 +398,6 @@ mod tests {
                         <= size / 4,
                     "icon is not centered at {size}px"
                 );
-                assert!(pixels.iter().any(|&p| p >> 24 != 0 && p >> 24 != 255));
                 assert!(pixels.iter().all(|&p| (p & 255) <= p >> 24
                     && ((p >> 8) & 255) <= p >> 24
                     && ((p >> 16) & 255) <= p >> 24));

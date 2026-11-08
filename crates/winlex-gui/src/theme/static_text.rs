@@ -156,21 +156,12 @@ mod tests {
                 ..std::mem::zeroed()
             };
             assert!(RegisterClassW(&class) != 0 || GetLastError() == ERROR_CLASS_ALREADY_EXISTS);
-            let parent = CreateWindowExW(
-                0,
+            let parent = test_window(
                 class.lpszClassName,
                 w!(""),
                 WS_POPUP,
-                -30000,
-                -30000,
-                180,
-                30,
-                ptr::null_mut(),
-                ptr::null_mut(),
-                instance(),
-                ptr::null(),
+                crate::layout::rect(-30000, -30000, 180, 30),
             );
-            assert!(!parent.is_null());
             let text = child(
                 parent,
                 w!("STATIC"),

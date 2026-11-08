@@ -67,6 +67,11 @@ class DeliveryContracts(unittest.TestCase):
     def assemble(self):
         delivery.assemble(self.inputs, self.output, "Debug", "revision")
 
+    def assert_refused(self, reason):
+        with self.assertRaisesRegex(ValueError, reason):
+            self.assemble()
+        self.assertFalse(self.output.exists())
+
     def test_union_deduplicates_and_checks_complete_delivery(self):
         result = subprocess.run([
             sys.executable, str(ROOT / "scripts/delivery.py"), "assemble",
@@ -98,16 +103,12 @@ class DeliveryContracts(unittest.TestCase):
         self.assertFalse(self.output.exists())
         path.write_bytes(before)
         self.change("winlex-x64-licenses.zip", lambda files: files.pop("licenses/VC-LTL-LICENSE"))
-        with self.assertRaisesRegex(ValueError, "Missing required license"):
-            self.assemble()
-        self.assertFalse(self.output.exists())
+        self.assert_refused("Missing required license")
 
     def test_conflicting_licenses_refuse_delivery(self):
         self.change("winlex-arm64-licenses.zip", lambda files: files.update({
             "licenses/crates/shared/LICENSE": b"different license"}))
-        with self.assertRaisesRegex(ValueError, "Conflicting license material"):
-            self.assemble()
-        self.assertFalse(self.output.exists())
+        self.assert_refused("Conflicting license material")
 
     def test_corrupt_program_and_license_checksums_refuse_delivery(self):
         path = self.inputs / "winlex-arm64.zip"
@@ -118,9 +119,7 @@ class DeliveryContracts(unittest.TestCase):
         path.write_bytes(original)
         with zipfile.ZipFile(self.inputs / "winlex-arm64-licenses.zip", "a") as archive:
             archive.writestr("unexpected.txt", b"not checksummed")
-        with self.assertRaisesRegex(ValueError, "Archive checksum set mismatch"):
-            self.assemble()
-        self.assertFalse(self.output.exists())
+        self.assert_refused("Archive checksum set mismatch")
 
     def test_wrong_source_configuration_and_executable_refuse_delivery(self):
         with self.assertRaisesRegex(ValueError, "Delivery configuration mismatch"):
@@ -129,9 +128,7 @@ class DeliveryContracts(unittest.TestCase):
             delivery.assemble(self.inputs, self.output, "Debug", "another-revision")
         self.change("winlex-arm64.zip", lambda files: files.update({"winlex.exe": b"wrong binary"}))
         self.program_checksum("arm64")
-        with self.assertRaisesRegex(ValueError, "Executable hash mismatch"):
-            self.assemble()
-        self.assertFalse(self.output.exists())
+        self.assert_refused("Executable hash mismatch")
 
     def test_unsafe_members_and_local_paths_refuse_delivery(self):
         path = self.inputs / "winlex-arm64-licenses.zip"
@@ -144,9 +141,7 @@ class DeliveryContracts(unittest.TestCase):
             with self.subTest(name=name):
                 path.write_bytes(original)
                 self.change(path.name, lambda files: files.update({name: data}))
-                with self.assertRaisesRegex(ValueError, reason):
-                    self.assemble()
-                self.assertFalse(self.output.exists())
+                self.assert_refused(reason)
 
     @unittest.skipUnless(os.name == "nt", "Windows extended paths")
     def test_long_delivery_path(self):

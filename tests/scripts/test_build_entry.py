@@ -40,16 +40,6 @@ function cargo {{ {cargo_body} }}
         return subprocess.run(["pwsh", "-NoProfile", "-Command", script], cwd=ROOT,
                               text=True, capture_output=True, encoding="utf-8", errors="replace")
 
-    def test_cargo_diagnostics_survive_failed_build(self):
-        messages = [json.dumps({"reason": "compiler-message", "message": {"rendered": text}})
-                    for text in ("warning: contract warning\n", "error: contract compile failure\n")]
-        body = "; ".join("'" + message + "'" for message in messages) + "; $global:LASTEXITCODE = 1"
-        result = self.run_entry(body)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("warning: contract warning", result.stderr)
-        self.assertIn("error: contract compile failure", result.stderr)
-        self.assertIn("Build failed", result.stderr)
-
     def test_real_cargo_compile_error_is_rendered(self):
         with tempfile.TemporaryDirectory(dir=ROOT / "tmp") as folder:
             directory = Path(folder)
@@ -64,8 +54,8 @@ function cargo {{ {cargo_body} }}
                     "--message-format=json; $global:LASTEXITCODE=$LASTEXITCODE")
             result = self.run_entry(body)
             self.assertNotEqual(result.returncode, 0)
-            self.assertIn("contract warning", result.stderr)
-            self.assertIn("contract compile failure", result.stderr)
+            self.assertRegex(result.stderr, r"warning:[^\n]*contract warning")
+            self.assertIn("error: contract compile failure", result.stderr)
             self.assertIn("Build failed", result.stderr)
 
     def test_modified_dependency_is_rejected_before_cargo(self):

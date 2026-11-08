@@ -1,28 +1,16 @@
 use winlex_core::{Architecture, Catalog, SearchMode, SearchOptions};
 
-fn source(name: &str, bytes: Vec<u8>) -> winlex_core::SourceData {
-    let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tmp");
-    std::fs::create_dir_all(&directory).unwrap();
-    let path = directory.join(format!("{name}-{}.winmd", std::process::id()));
-    std::fs::write(&path, bytes).unwrap();
-    let source = winlex_core::SourceData::read(&path).unwrap();
-    std::fs::remove_file(path).unwrap();
-    source
-}
+include!("../../../tests/rust_search.rs");
+include!("support/source.rs");
 
 fn render(catalog: &Catalog, name: &str) -> winlex_format::declaration::Rendered {
-    let entity = catalog
-        .search(
-            name,
-            SearchOptions {
-                mode: SearchMode::Name,
-                ..Default::default()
-            },
-        )
-        .unwrap()
-        .next()
-        .unwrap()
-        .unwrap();
+    let entity = first_match(catalog.search(
+        name,
+        SearchOptions {
+            mode: SearchMode::Name,
+            ..Default::default()
+        },
+    ));
     winlex_format::declaration::render(catalog, entity.id, Architecture::X64).unwrap()
 }
 
@@ -316,19 +304,14 @@ fn named_references_keep_identity_through_declarators_generics_and_utf16() {
     for pair in rendered.regions.windows(2) {
         assert!(pair[0].range.end <= pair[1].range.start);
     }
-    let reference = catalog
-        .search(
-            "Left.Item",
-            SearchOptions {
-                mode: SearchMode::Name,
-                categories: Some(winlex_core::EntityCategory::TypeReference as u32),
-                ..Default::default()
-            },
-        )
-        .unwrap()
-        .next()
-        .unwrap()
-        .unwrap();
+    let reference = first_match(catalog.search(
+        "Left.Item",
+        SearchOptions {
+            mode: SearchMode::Name,
+            categories: Some(winlex_core::EntityCategory::TypeReference as u32),
+            ..Default::default()
+        },
+    ));
     let resolved =
         winlex_format::declaration::render(&catalog, reference.id, Architecture::X64).unwrap();
     let link = resolved
@@ -434,23 +417,18 @@ fn declarations_cover_native_signatures_and_architecture_specific_types() {
     .unwrap();
     for arch in [Architecture::X86, Architecture::X64, Architecture::Arm64] {
         let render = |name| {
-            let entity = catalog
-                .search(
-                    name,
-                    SearchOptions {
-                        mode: SearchMode::Name,
-                        categories: Some(
-                            winlex_core::EntityCategory::ALL
-                                & !(winlex_core::EntityCategory::TypeReference as u32),
-                        ),
-                        architecture: Some(arch),
-                        ..Default::default()
-                    },
-                )
-                .unwrap()
-                .next()
-                .unwrap()
-                .unwrap();
+            let entity = first_match(catalog.search(
+                name,
+                SearchOptions {
+                    mode: SearchMode::Name,
+                    categories: Some(
+                        winlex_core::EntityCategory::ALL
+                            & !(winlex_core::EntityCategory::TypeReference as u32),
+                    ),
+                    architecture: Some(arch),
+                    ..Default::default()
+                },
+            ));
             winlex_format::declaration::render(&catalog, entity.id, arch).unwrap()
         };
         for name in ["CreateFileW", "RECT"] {

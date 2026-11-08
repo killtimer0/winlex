@@ -505,16 +505,13 @@ fn error_detail(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate as winlex_cli;
 
-    fn invoke(args: impl IntoIterator<Item = OsString>) -> (u8, String, String) {
-        let (mut out, mut err) = (Vec::new(), Vec::new());
-        let exit = run(args, &mut out, &mut err);
-        (
-            exit,
-            String::from_utf8(out).unwrap(),
-            String::from_utf8(err).unwrap(),
-        )
+    fn metadata_path() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../inputs/Windows.Win32.winmd")
     }
+
+    include!("../tests/support/invoke.rs");
 
     #[test]
     fn immediate_output_keeps_aliases_and_requires_a_standalone_option() {
@@ -576,11 +573,9 @@ mod tests {
                 let out: Value = serde_json::from_str(&out).unwrap();
                 assert_eq!(out["ok"], false);
             }
-        }
-        #[cfg(windows)]
-        {
-            use std::os::windows::ffi::OsStringExt;
-            for option in ["--where", "--source", "--arch", "--limit", "--offset"] {
+            #[cfg(windows)]
+            {
+                use std::os::windows::ffi::OsStringExt;
                 let (exit, _, err) = invoke([
                     "missing.winmd".into(),
                     "search".into(),
@@ -595,9 +590,7 @@ mod tests {
 
     #[test]
     fn conditional_search_options_may_precede_or_follow_the_command() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../inputs/Windows.Win32.winmd")
-            .into_os_string();
+        let path = metadata_path().into_os_string();
         let query = "name = \"CreateFileW\"";
         let before = invoke([
             "--where".into(),
@@ -619,11 +612,7 @@ mod tests {
 
     #[test]
     fn type_selection_uses_the_same_category_for_names_and_tokens() {
-        let db = Catalog::open(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../inputs/Windows.Win32.winmd"),
-        )
-        .unwrap();
+        let db = Catalog::open(metadata_path()).unwrap();
         let name = "Windows.Win32.Security.SECURITY_ATTRIBUTES";
         let ty = select(&db, name, None, true).unwrap();
         assert!(matches!(

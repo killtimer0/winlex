@@ -52,14 +52,16 @@ class ArtifactContracts(unittest.TestCase):
             build_example("winlex-cli", "host-cli", [])
 
     def test_persisted_manifest_and_explicit_overrides(self):
-        with tempfile.TemporaryDirectory(prefix="winlex artifacts ") as folder:
+        with tempfile.TemporaryDirectory(prefix="winlex 元数据 ") as folder:
             root = Path(folder)
-            manifest = root / "gate paths.json"
-            reported = root / "cargo output.exe"
-            override = root / "explicit override.exe"
+            manifest = root / "产物清单.json"
+            reported = root / "读取器 é.exe"
+            override = root / "显式覆盖 ü.exe"
             reported.touch()
             override.touch()
+            self.assertEqual(select_executable([artifact(reported)], "host-cli"), reported)
             write_manifest({name: reported for name in OVERRIDES}, manifest)
+            self.assertEqual(json.loads(manifest.read_text(encoding="utf-8"))["executables"]["host-cli"], str(reported))
             with patch.dict(os.environ, {"WINLEX_GATE_ARTIFACTS": str(manifest)}, clear=True):
                 for name, variable in OVERRIDES.items():
                     with self.subTest(name=name):
@@ -87,23 +89,6 @@ class ArtifactContracts(unittest.TestCase):
                 manifest.write_text('{"version": 2}', encoding="utf-8")
                 with self.assertRaisesRegex(RuntimeError, "unsupported manifest version"):
                     executable("host-cli")
-
-    def test_non_ascii_manifest_and_executable_paths(self):
-        with tempfile.TemporaryDirectory(prefix="winlex 元数据 ") as folder:
-            root = Path(folder)
-            binary = root / "读取器 é.exe"
-            override = root / "显式覆盖 ü.exe"
-            manifest = root / "产物清单.json"
-            binary.touch()
-            override.touch()
-            selected = select_executable([artifact(binary)], "host-cli")
-            self.assertEqual(selected, binary)
-            write_manifest({"host-cli": selected}, manifest)
-            self.assertEqual(json.loads(manifest.read_text(encoding="utf-8"))["executables"]["host-cli"], str(binary))
-            with patch.dict(os.environ, {"WINLEX_GATE_ARTIFACTS": str(manifest)}, clear=True):
-                self.assertEqual(executable("host-cli"), binary)
-                with patch.dict(os.environ, {"WINLEX_GATE_CLI": str(override)}):
-                    self.assertEqual(executable("host-cli"), override)
 
     @unittest.skipUnless(os.name == "nt", "Windows extended paths require Windows filesystem APIs")
     def test_windows_extended_long_manifest_and_executable_paths(self):

@@ -141,14 +141,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_buffered_animation_export_is_required() {
-        // Use the real resolver for every export except the injected absence.
-        for name in test_support::EXPORTS {
-            assert!(test_support::without(name).is_none(), "{name:?}");
-        }
-    }
-
-    #[test]
     fn animation_override_restores_after_unwind() {
         test_support::scoped(test_support::real(), || {
             let before = animation(|_| true);

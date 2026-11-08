@@ -841,11 +841,7 @@ mod tests {
     #[test]
     fn custom_draw_preserves_native_state_backgrounds_in_both_palettes() {
         unsafe {
-            let controls = INITCOMMONCONTROLSEX {
-                dwSize: std::mem::size_of::<INITCOMMONCONTROLSEX>() as u32,
-                dwICC: ICC_LISTVIEW_CLASSES,
-            };
-            assert_ne!(InitCommonControlsEx(&controls), 0);
+            crate::test_support::initialize_controls(ICC_LISTVIEW_CLASSES);
             let parent = test_window(
                 w!("STATIC"),
                 ptr::null(),
@@ -938,11 +934,7 @@ mod tests {
     #[test]
     fn context_target_uses_hit_row_or_keyboard_selection_and_ignores_blank_space() {
         unsafe {
-            let controls = INITCOMMONCONTROLSEX {
-                dwSize: std::mem::size_of::<INITCOMMONCONTROLSEX>() as u32,
-                dwICC: ICC_LISTVIEW_CLASSES,
-            };
-            assert_ne!(InitCommonControlsEx(&controls), 0);
+            crate::test_support::initialize_controls(ICC_LISTVIEW_CLASSES);
             let hwnd = test_window(
                 w!("SysListView32"),
                 ptr::null(),
@@ -974,11 +966,7 @@ mod tests {
     #[test]
     fn restored_list_state_preserves_selection_focus_mark_and_scroll() {
         unsafe {
-            let controls = INITCOMMONCONTROLSEX {
-                dwSize: std::mem::size_of::<INITCOMMONCONTROLSEX>() as u32,
-                dwICC: ICC_LISTVIEW_CLASSES,
-            };
-            assert_ne!(InitCommonControlsEx(&controls), 0);
+            crate::test_support::initialize_controls(ICC_LISTVIEW_CLASSES);
             let hwnd = test_window(
                 w!("SysListView32"),
                 ptr::null(),
@@ -1060,12 +1048,11 @@ mod tests {
             "label {…} C:\\long\\folder\\tail"
         );
         assert_eq!(matches, [0..5, 6..7, 8..9]);
-        let (narrow, _) = line.fit(20, measure);
-        assert!(String::from_utf16(&narrow).unwrap().ends_with("\\tail"));
-        assert!(narrow.len() <= 20);
-        let (small, _) = line.fit(14, measure);
-        assert!(String::from_utf16(&small).unwrap().ends_with("\\tail"));
-        assert!(small.len() <= 14);
+        for width in [20, 14] {
+            let (shown, _) = line.fit(width, measure);
+            assert!(String::from_utf16(&shown).unwrap().ends_with("\\tail"));
+            assert!(shown.len() <= width as usize);
+        }
         let (shown, matches) = sample(true).fit(16, measure);
         assert_eq!(&shown[matches[0].clone()], &text[..matches[0].len()]);
         assert_eq!(

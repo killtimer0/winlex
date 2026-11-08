@@ -271,17 +271,18 @@ impl NameMatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn literal_fuzzy_matching_and_highlight_agree() {
-        let mut matcher = NameMatcher::new("CW", false);
-        let hit = NameQuery::compile("CW", true, false)
-            .matches("CreateWindow", "Win32.CreateWindow")
-            .unwrap();
+
+    fn assert_fuzzy_evidence(
+        hit: &Hit,
+        query: &str,
+        text: &str,
+        expected_field: MatchField,
+    ) -> (NameMatcher, Vec<u32>) {
         let MatchQuality::Fuzzy { score, field } = hit.quality else {
             panic!("expected a fuzzy match")
         };
-        assert_eq!(field, MatchField::Name);
-        let text = "CreateWindow";
+        assert_eq!(field, expected_field);
+        let mut matcher = NameMatcher::new(query, false);
         let mut indices = vec![999];
         assert_eq!(matcher.indices(text, &mut indices), Some(score));
         assert_eq!(hit.evidence[0].indices.as_deref(), Some(indices.as_slice()));
@@ -290,8 +291,18 @@ mod tests {
                 .iter()
                 .map(|&i| text.chars().nth(i as usize).unwrap())
                 .collect::<String>(),
-            "CW"
+            query
         );
+        (matcher, indices)
+    }
+
+    #[test]
+    fn literal_fuzzy_matching_and_highlight_agree() {
+        let hit = NameQuery::compile("CW", true, false)
+            .matches("CreateWindow", "Win32.CreateWindow")
+            .unwrap();
+        let (mut matcher, mut indices) =
+            assert_fuzzy_evidence(&hit, "CW", "CreateWindow", MatchField::Name);
         assert!(matcher.indices("MessageBox", &mut indices).is_none());
         let mut literal = NameMatcher::new("^File", false);
         assert!(literal.indices("File", &mut indices).is_none());
@@ -365,24 +376,10 @@ mod tests {
             ("N.CW", "Namespace.CreateWindow"),
             ("O+I", "Namespace.Outer+Inner"),
         ] {
-            let mut matcher = NameMatcher::new(query, false);
             let mut name_query = NameQuery::compile(query, true, false);
             let hit = name_query.matches("Unrelated", text).unwrap();
-            let MatchQuality::Fuzzy { score, field } = hit.quality else {
-                panic!("expected a fuzzy match")
-            };
-            assert_eq!(field, MatchField::FullName);
-            let mut indices = vec![];
-            assert_eq!(matcher.indices(text, &mut indices), Some(score));
+            assert_fuzzy_evidence(&hit, query, text, MatchField::FullName);
             assert_eq!(hit.evidence[0].field, EvidenceField::FullName);
-            assert_eq!(hit.evidence[0].indices.as_deref(), Some(indices.as_slice()));
-            assert_eq!(
-                indices
-                    .iter()
-                    .map(|&i| text.chars().nth(i as usize).unwrap())
-                    .collect::<String>(),
-                query
-            );
             assert!(name_query.matches(query, "Unrelated").is_none());
         }
     }

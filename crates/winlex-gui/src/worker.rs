@@ -295,6 +295,17 @@ fn publish<J, O>(results: &Results<J, O>, ticket: &Ticket, mut value: O) -> anyh
 mod tests {
     use super::*;
     use windows_sys::Win32::{Foundation::WAIT_OBJECT_0, System::Threading::WaitForSingleObject};
+
+    fn receive<T>(channel: &Receiver<T>) -> T {
+        channel
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap()
+    }
+
+    fn assert_signaled(event: HANDLE) {
+        assert_eq!(unsafe { WaitForSingleObject(event, 5000) }, WAIT_OBJECT_0);
+    }
+
     #[test]
     fn window_notifications_coalesce_rearm_and_detach() {
         use crate::native::*;
@@ -321,26 +332,16 @@ mod tests {
                 worker.resignal();
             }
             let mut msg: MSG = std::mem::zeroed();
-            assert_ne!(
-                PeekMessageW(&mut msg, window, message, message, PM_REMOVE),
-                0
-            );
-            assert_eq!(
-                PeekMessageW(&mut msg, window, message, message, PM_REMOVE),
-                0
-            );
+            let mut take_notification =
+                || PeekMessageW(&mut msg, window, message, message, PM_REMOVE);
+            assert_ne!(take_notification(), 0);
+            assert_eq!(take_notification(), 0);
             worker.acknowledge_notification();
             worker.resignal();
-            assert_ne!(
-                PeekMessageW(&mut msg, window, message, message, PM_REMOVE),
-                0
-            );
+            assert_ne!(take_notification(), 0);
             worker.notify_window(std::ptr::null_mut(), 0);
             worker.resignal();
-            assert_eq!(
-                PeekMessageW(&mut msg, window, message, message, PM_REMOVE),
-                0
-            );
+            assert_eq!(take_notification(), 0);
             DestroyWindow(window);
         }
     }
@@ -392,16 +393,10 @@ mod tests {
         })
         .unwrap();
         worker.replace(None, Ticket::new(7), ()).unwrap();
-        assert_eq!(
-            unsafe { WaitForSingleObject(worker.event(), 5000) },
-            WAIT_OBJECT_0
-        );
+        assert_signaled(worker.event());
         assert_eq!(worker.try_completion().unwrap(), 7);
         worker.requests.close();
-        assert_eq!(
-            unsafe { WaitForSingleObject(worker.event(), 5000) },
-            WAIT_OBJECT_0
-        );
+        assert_signaled(worker.event());
         assert!(matches!(
             worker.try_completion(),
             Err(mpsc::TryRecvError::Disconnected)
@@ -428,9 +423,7 @@ mod tests {
             },
         );
         assert!(result.is_err());
-        finished
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .unwrap();
+        receive(&finished);
     }
     #[test]
     fn panicking_job_stops_pool_and_disconnects_output() {
@@ -446,10 +439,7 @@ mod tests {
         ));
         assert!(ticket.cancelled());
         assert!(worker.replace(None, Ticket::new(2), ()).is_err());
-        assert_eq!(
-            unsafe { WaitForSingleObject(worker.event(), 5000) },
-            WAIT_OBJECT_0
-        );
+        assert_signaled(worker.event());
     }
     #[test]
     fn worker_failure_is_visible_while_another_job_is_blocked() {
@@ -469,14 +459,9 @@ mod tests {
         .unwrap();
         let ticket = Ticket::new(1);
         worker.replace(None, ticket.clone(), false).unwrap();
-        active
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .unwrap();
+        receive(&active);
         worker.replace(None, Ticket::new(2), true).unwrap();
-        assert_eq!(
-            unsafe { WaitForSingleObject(worker.event(), 5000) },
-            WAIT_OBJECT_0
-        );
+        assert_signaled(worker.event());
         assert!(matches!(
             worker.try_completion(),
             Err(mpsc::TryRecvError::Disconnected)
@@ -502,10 +487,7 @@ mod tests {
         worker.replace(None, Ticket::new(1), ()).unwrap();
         worker.replace(None, Ticket::new(2), ()).unwrap();
         for _ in 0..2 {
-            worker
-                .rx
-                .recv_timeout(std::time::Duration::from_secs(5))
-                .unwrap();
+            receive(&worker.rx);
         }
     }
     #[test]
@@ -526,23 +508,12 @@ mod tests {
         for ticket in &tickets {
             worker.replace(None, ticket.clone(), ()).unwrap();
         }
-        ready
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .unwrap();
+        receive(&ready);
         worker.cancel(tickets[8].id);
         worker.replace(None, Ticket::new(10), ()).unwrap();
         for _ in 0..8 {
-            worker
-                .rx
-                .recv_timeout(std::time::Duration::from_secs(5))
-                .unwrap();
+            receive(&worker.rx);
         }
-        assert_eq!(
-            worker
-                .rx
-                .recv_timeout(std::time::Duration::from_secs(5))
-                .unwrap(),
-            10
-        );
+        assert_eq!(receive(&worker.rx), 10);
     }
 }

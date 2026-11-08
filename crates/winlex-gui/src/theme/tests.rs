@@ -40,9 +40,9 @@ unsafe extern "system" {
     fn ReleaseActCtx(context: HANDLE);
 }
 
-pub(super) struct CommonControls(HANDLE, usize, HMODULE);
+pub(crate) struct CommonControls(HANDLE, usize, HMODULE);
 impl CommonControls {
-    pub(super) fn activate() -> Self {
+    pub(crate) fn activate() -> Self {
         use std::os::windows::ffi::OsStrExt;
         let manifest = std::env::var_os("WINLEX_TEST_GUI_MANIFEST")
             .map(std::path::PathBuf::from)
@@ -58,12 +58,16 @@ impl CommonControls {
             };
             let handle = CreateActCtxW(&context);
             assert_ne!(handle, INVALID_HANDLE_VALUE);
-            let mut cookie = 0;
-            assert_ne!(ActivateActCtx(handle, &mut cookie), 0);
-            let module = LoadLibraryW(w!("comctl32.dll"));
-            assert!(!module.is_null());
-            Self(handle, cookie, module)
+            let mut activation = Self(handle, 0, ptr::null_mut());
+            assert_ne!(ActivateActCtx(handle, &mut activation.1), 0);
+            activation.2 = LoadLibraryW(w!("comctl32.dll"));
+            assert!(!activation.2.is_null());
+            activation
         }
+    }
+
+    pub(crate) fn module(&self) -> HMODULE {
+        self.2
     }
 
     fn initialize(&self, classes: u32) {
@@ -82,8 +86,12 @@ impl CommonControls {
 impl Drop for CommonControls {
     fn drop(&mut self) {
         unsafe {
-            FreeLibrary(self.2);
-            DeactivateActCtx(0, self.1);
+            if !self.2.is_null() {
+                FreeLibrary(self.2);
+            }
+            if self.1 != 0 {
+                DeactivateActCtx(0, self.1);
+            }
             ReleaseActCtx(self.0);
         }
     }
