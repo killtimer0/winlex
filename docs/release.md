@@ -9,13 +9,11 @@
 3. 运行结束后，在该次运行的 Artifacts 中获取 `winlex-delivery`。带 `intermediate` 的 artifact 是按架构汇总前的中间材料，不是完整交付集合。
 4. 最终集合包含 `winlex-x86.zip`、`winlex-x64.zip`、`winlex-arm64.zip`、公共 `licenses.zip` 和统一的 `SHA256SUMS`。
 
-程序 ZIP 包含 CLI、GUI、GPL 许可证、第三方声明、许可材料获取说明及包内 `SHA256SUMS.txt`。公共许可证包包含三架构详细许可材料的并集和不含本机路径的构建来源记录。下载对应架构的程序包和同版本 `licenses.zip`，将两者解压到同一目录，使声明中的相对链接可用；再分发须同时提供匹配材料并履行适用的源码提供义务。
+下载对应架构的程序包和同版本 `licenses.zip`，解压到同一目录，使第三方声明中的相对链接可用；再分发须同时提供匹配材料并履行适用的源码提供义务。
 
 可用 `sha256sum --check SHA256SUMS` 检查下载的全部 ZIP；Windows 可通过 `Get-FileHash -Algorithm SHA256` 与清单逐项比对。元数据须另外下载，程序包不包含 WinMD。GitHub 自动生成的 Source code 压缩包不是可执行程序包。
 
-流水线使用 `Dist` profile。最低系统、兼容库和构建环境见[构建指南](build.md)。
-
-工作流中的检查和工具链配置见 `.github/workflows/build.yml`。
+流水线使用 `Dist` profile，检查与工具配置见[工作流](../.github/workflows/build.yml)；最低系统、兼容库和本地环境见[构建指南](build.md)。
 
 ### tag 与草稿 Release
 
@@ -46,7 +44,7 @@ uv run --locked python scripts/delivery.py assemble --inputs ./tmp/packages --ou
 
 `$cli`、`$gui` 为构建显示的可执行文件绝对路径。两份记录的目标策略和配置必须一致，可以来自不同次构建；打包前应确认选择了预期的 CLI 和 GUI 版本。不受支持的旧格式记录需重新构建生成。
 
-打包脚本核对构建记录、二进制哈希、目标架构和 CRT 导入，并验证归档校验值；许可材料从当前源码、Cargo 依赖及 Rust 安装收集，应使用与待分发产物对应的材料。输出可放在 `tmp/` 或 `artifacts/`；已有输出不会被覆盖。构建记录含本机路径，不放入交付包；公共许可证包仅保留来源提交、工具版本、目标策略和输入／二进制哈希等可移植信息。
+许可材料从当前源码、Cargo 依赖及 Rust 安装收集，须与待分发产物对应。程序包内含 `SHA256SUMS.txt`；公共许可证包合并三架构许可和可移植构建来源，不含本机路径。已有输出不会被覆盖。
 
 ## 公开分发前
 

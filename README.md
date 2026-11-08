@@ -43,11 +43,4 @@ Winlex 采用 [GNU GPL v3.0](LICENSE)（`GPL-3.0-only`）许可证。第三方�
 
 ## 开发
 
-使用 Rust MSVC 工具链。准备链接依赖，并按[构建指南](docs/build.md)放置测试元数据后运行核心测试：
-
-```powershell
-python scripts/prepare-inputs.py
-cargo test -p winlex-core -p winlex-format -p winlex-cli --locked
-```
-
-构建步骤和测试指南见 [构建与验证](docs/build.md)。
+环境准备、构建和测试见[构建与验证](docs/build.md)，打包和发布见[构建与交付](docs/release.md)。

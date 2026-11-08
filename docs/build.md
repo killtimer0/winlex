@@ -3,7 +3,7 @@
 ## 环境与依赖
 
 - Windows 开发机，Rust MSVC 工具链。
-- Git 用于记录提交与工作区状态；源码归档中构建时该信息留空。
+- Git（可选，用于记录构建来源）。
 - PowerShell 7.2+（`pwsh`）。
 - Visual Studio C++ 工具和 Windows SDK。
 - Python 3.12+ 和 `uv`。
@@ -18,7 +18,7 @@ python scripts/prepare-inputs.py
 rustup target add i686-pc-windows-msvc x86_64-pc-windows-msvc
 ```
 
-以上在开发机项目根目录创建并激活 `.venv`；后续 Python 命令均使用该环境。`tests`、`gui`、`media` 分别提供常规测试、GUI 测试和图片生成依赖，可按需选择。依赖定义及锁定版本见 `pyproject.toml` 和 `uv.lock`。
+所有命令从项目根目录运行。以上创建并激活开发机 `.venv`，后续 Python 命令均使用该环境；依赖组可按需选择，定义及锁定版本见 `pyproject.toml` 和 `uv.lock`。
 
 链接依赖写入 `tmp/deps/`。
 可用 `--architecture x86|x64|arm64` 只准备目标架构需要的依赖；ARM64 不获取 YY-Thunks。
@@ -32,27 +32,13 @@ rustup target add i686-pc-windows-msvc x86_64-pc-windows-msvc
 ./scripts/build.ps1 -Architecture x64
 ```
 
-也可在 MSVC 开发终端中显式指定工具路径；`$link` 须指向匹配架构的 Hostx64 Microsoft `link.exe`：
+`-Architecture` 可选 `x86`、`x64`、`arm64`；ARM64 另需安装 Rust 的 `aarch64-pc-windows-msvc` target 和 Visual Studio C++ ARM64 生成工具，不需要 YY-Thunks。
+默认使用 Debug 和当前 Rust 工具链；优化版本和分发版本分别使用 `-Configuration Release` 和 `Dist`。
+输出目录可用 `-TargetDir PATH` 指定，否则遵循 Cargo 配置。
+在 MSVC 开发终端中可用 `-LinkExe PATH` 指定匹配架构的 `Hostx64/<arch>/link.exe`，用 `-RcExe PATH` 指定 Microsoft `rc.exe`；兼容库路径可用 `-YyThunksObject` 和 `-VcLtlRoot` 覆盖。
 
-```powershell
-$link = Join-Path $env:VCToolsInstallDir 'bin/Hostx64/x86/link.exe'
-./scripts/build.ps1 -Architecture x86 -Configuration Debug -LinkExe $link
-```
-
-x64 构建将架构和链接器路径改为 x64。兼容库默认使用准备脚本的输出，也可用 `-YyThunksObject` 和 `-VcLtlRoot` 指定路径。
-ARM64 需要 Rust 的 `aarch64-pc-windows-msvc` target 及 Visual Studio C++ ARM64 生成工具，使用 `Hostx64/arm64/link.exe`，不需要 YY-Thunks：
-
-```powershell
-$link = Join-Path $env:VCToolsInstallDir 'bin/Hostx64/arm64/link.exe'
-./scripts/build.ps1 -Architecture arm64 -Configuration Debug -LinkExe $link
-```
-开发构建使用 `-Configuration Debug`；优化版本和分发版本分别使用 `Release` 和 `Dist`。
-脚本使用所选 SDK 的 Microsoft `rc.exe`，也可用 `-RcExe PATH` 指定；Dist 不回退搜索其他 SDK。输出目录可用 `-TargetDir PATH` 指定，否则遵循 Cargo 配置。
-构建入口在编译前校验清单中的兼容库与 SHA-256，并记录源码提交、工作区状态、目标策略、实际 Rust／Cargo／原生工具版本及依赖。Rust 使用当前工具链。
-
-CI 的 Rust、Python 和 Windows SDK 选择见 `.github/workflows/build.yml`，.NET SDK 以 `global.json` 为准。本地可设置 `WINLEX_SDK_VERSION` 要求工具链初始化使用指定 SDK，缺失或选择不符时报错，不回退到其他版本；未设置时保持 Visual Studio 默认选择。
-手动工作流、分发打包及上传前检查见[手动构建与交付](release.md)。
-构建结束后显示 `winlex.exe`、`winlex-gui.exe` 的实际路径；对应的 `.build.json` 可用于生成消息资源 fixture 和验证打包产物。默认输出位于标准 `target/` 目录。
+CI 工具版本见 [工作流](../.github/workflows/build.yml)，.NET SDK 以 `global.json` 为准。本地可设置 `WINLEX_SDK_VERSION` 强制选择 SDK，缺失或不符时报错；未设置时使用 Visual Studio 默认值。Dist 不回退搜索其他 SDK。
+构建会校验兼容库哈希，显示 EXE 路径，并生成记录源码、工具和依赖的 `.build.json`，供 fixture 生成与[打包](release.md)使用。
 
 ## 更新图标资源
 
@@ -70,28 +56,10 @@ Codicon SVG 与生成的 EMF+ 位于 `crates/winlex-gui/res/codicons/`。
 
 ## 系统兼容性
 
-`inputs/targets.json` 集中定义各架构的构建与兼容策略，供原生链接、构建记录和打包校验共用。
+最低系统为 x86 的 XP RTM、x64 的 XP x64 / Server 2003，以及 ARM64 的 Windows 10 1809。精确版本号、Rust target 和链接策略以 [inputs/targets.json](../inputs/targets.json) 为准；构建目标基线不代表已通过对应真机验证。
 
-| 程序架构 | 最低系统 | Rust target |
-|---|---|---|
-| x86 | XP RTM 5.1.2600.0 | i686-pc-windows-msvc |
-| x64 | XP x64 / Server 2003，5.2.3790 系列 | x86_64-pc-windows-msvc |
-| ARM64 | Windows 10 1809，10.0.17763.0（构建目标基线） | aarch64-pc-windows-msvc |
-
-所有架构均通过 `+crt-static` 选择 VC-LTL5 替换库。x86／x64 使用系统 `msvcrt.dll` 并链接 YY-Thunks XP 对象；ARM64 使用系统 `ucrtbase.dll`。
-
-暗色控件实现位于 `crates/winlex-gui/src/theme/`，从固定版本的 win32-darkmodelib
-移植为 Rust，来源和许可见 `THIRD-PARTY-NOTICES.md`。不依赖 C++ 库或额外 DLL。
-暗色能力从 Windows 10 1809（17763）起按 API 分支处理；旧系统使用原生浅色，
-高对比模式始终使用系统颜色。控件采用上游 `_DARKMODELIB_PREFER_THEME` 策略，
-按控件能力委托原生主题或使用对应自绘回退。更新实现时须同时验证标准控件状态、主题切换和 MDI 菜单。
-
-系统对话框按版本选择实现：Vista 及以上使用 TaskDialog 和 `IFileOpenDialog`，
-更早系统使用 MessageBox 和 `GetOpenFileNameW`。入口分别位于
-`crates/winlex-gui/src/message.rs` 和 `crates/winlex-gui/src/input.rs`；
-现代实现出错时返回错误，不自动改用旧实现。启动故障提示独立使用最小 MessageBox 路径。
-TaskDialog 暗色绘制沿用参考库的进程内 comctl32 IAT hook，在调用期间安装，
-最后一个嵌套或重叠调用结束时恢复；不安装系统级 hook。
+兼容库与暗色实现的来源和许可见[第三方声明](../THIRD-PARTY-NOTICES.md)。暗色实现不依赖额外 DLL；外观可用范围见 [GUI 指南](gui.md#界面与设置)。修改主题时须验证控件状态、主题切换和 MDI 菜单。
+系统对话框在 Vista 及以上使用 TaskDialog 和 `IFileOpenDialog`，旧系统使用 MessageBox 和 `GetOpenFileNameW`；现代实现失败不自动回退。
 
 ## README 图片
 
@@ -105,11 +73,10 @@ python scripts/readme-media.py --exe target/x86_64-pc-windows-msvc/debug/winlex-
 
 ## 测试与独立验证
 
-运行库测试和开发用 CLI：
+运行库测试、静态检查和独立验证：
 
 ```powershell
 cargo test -p winlex-core -p winlex-format -p winlex-cli --locked
-cargo build -p winlex-cli --example host-cli --locked
 cargo fmt --all --check
 cargo clippy -p winlex-core -p winlex-format -p winlex-cli --all-targets --locked -- -D warnings
 python tests/metadata/run.py
@@ -118,11 +85,16 @@ python -m unittest discover -s tests/differential -v
 python -m unittest discover -s tests/scripts -v
 ```
 
-`tests/metadata/run.py` 验证 CLI、布局、泛型及跨源引用样例。报告写入 `tmp/verify/`。
+`tests/metadata/run.py` 自动构建开发用 CLI，验证布局、泛型及跨源引用，报告写入 `tmp/verify/`。默认使用 Debug 和 Cargo 配置，可用 `--target`、`--target-dir`、`--profile` 覆盖。
 
-`python tests/metadata/foundation_gate.py --reference PATH/TO/netstandard.dll` 验证 GUID 及 COM 结构体布局不受官方 NETStandard.Library.Ref 2.1.0 参考程序集影响；`--inputs` 可指定单个 WinMD 或集合目录。先运行 `tests/metadata/run.py` 准备开发用 CLI。`--abi` 的 SDK 编译检查包含 GUID、TYPEATTR 和 TLIBATTR 的原生布局。
+验证 GUID 及 COM 结构体的原生布局不受 CLR 参考程序集影响：
 
-可先运行 `python tests/metadata/prepare_source.py --foundation-reference`，按 `tests/metadata/foundation-reference.json` 从官方 NuGet 包提取并校验原始 DLL，输出到 `tmp/verify/reference/`。该 DLL 仅用于回归验证，不作为正式 WinMD 输入分发。
+```powershell
+python tests/metadata/prepare_source.py --foundation-reference
+python tests/metadata/foundation_gate.py --reference tmp/verify/reference/netstandard.dll
+```
+
+下载内容由[参考程序集清单](../tests/metadata/foundation-reference.json)锁定，仅供回归验证；`foundation_gate.py --inputs` 可指定 WinMD 或集合目录。
 
 对拍本地目录中的 WinMD：
 
@@ -134,7 +106,6 @@ python tests/differential/run.py inputs
 
 打包契约测试默认读取标准输出目录下的 Debug 构建记录；可用 `WINLEX_PACKAGE_X86_BUILD_DIR`／`WINLEX_PACKAGE_X64_BUILD_DIR`／`WINLEX_PACKAGE_ARM64_BUILD_DIR` 指定其他目录，缺少记录时跳过打包用例。工作流 YAML 验证使用 `tests` 依赖组中的 PyYAML。
 `WINLEX_PACKAGE_REQUIRE_ARCH` 指定必须验证的架构，缺少该架构的记录将失败；`WINLEX_TEST_ARCH` 为构建入口契约测试选择目标，默认 x64。
-默认使用 Debug 和 Cargo 的 target、输出目录配置；可用 `--target`、`--target-dir`、`--profile` 显式选择。
 各 gate 也可独立运行，默认读取 `tmp/verify/artifacts.json` 中的可执行文件路径；用 `--artifacts PATH` 更改记录位置后，通过 `WINLEX_GATE_ARTIFACTS` 指定该记录。
 
 ```powershell
@@ -161,10 +132,9 @@ python tests/gui/resources.py --exe "$guiExe"
 ```
 
 `$guiExe` 为构建显示的 GUI 完整路径。`--dpi` 可改为 `pmv1`、`system`、`unaware` 或 `auto`。默认使用 `--desktop isolated`；也可使用 `--desktop current` 在当前桌面运行契约测试。
-已知限制：UIA 自动聚焦在非活动桌面上可能每次等待约 2 秒；可通过 `IUIAutomation2::AutoSetFocus = false` 关闭，测试客户端尚未接入。
-结果写入 `tmp/gui-tests/<run-id>/`，包括 JUnit、无损 PNG 失败截图和 `run.json`；`progress.jsonl` 即时记录当前用例及阶段，`timings.jsonl` 记录 setup、call、teardown 耗时，整批中断后仍可查看已完成阶段。
-测试结束时将生成的 WinMD 路径与 SHA256 写入 `fixture-hashes.json`，再移除与标准输入内容完全相同的副本；变异或损坏的 fixture 保留。标准输入路径与哈希记录在 `environment.json` 中。强制中断导致未执行 fixture 收尾时，输入副本也会保留。
-交互与屏幕呈现测试使用 `--desktop current --real-input` 选择；不指定 `--real-input` 时运行其余用例。交互测试需要已解锁的独占活动桌面，运行期间不要操作键鼠。
+结果写入 `tmp/gui-tests/<run-id>/`：`run.json` 和 JUnit 汇总结果，失败时保留无损截图，`progress.jsonl` 与 `timings.jsonl` 用于定位中断或慢阶段；输入来源与 fixture 哈希见 `environment.json` 和 `fixture-hashes.json`。与标准输入相同的 fixture 副本会在收尾时移除，变异或损坏的输入保留。
+`--desktop current --real-input` 只选择 `interactive` 交互与屏幕呈现测试，不指定时运行其余用例；可用 `--collect-only -q` 检查选择结果。交互测试须独占已解锁的活动桌面，运行期间不要操作键鼠。独立桌面也不隔离剪贴板等会话共享资源。
+维护屏幕呈现测试时，首帧和残留像素检查必须读取当前画面，不能主动重绘；键鼠交互须用真实输入。
 XP 目标执行端需有兼容 XP 的 Python 3.8 和 UI Automation 组件；通过 `python -m pip install -r tests/gui/requirements.lock` 安装目标端依赖，不使用开发机的 `.venv` 或 uv 锁文件。
 `tests/gui/requirements.txt` 定义目标端直接依赖，`requirements.lock` 固定其 Python 3.8 Windows 传递依赖。在开发机更新清单后重新生成：
 
@@ -172,11 +142,11 @@ XP 目标执行端需有兼容 XP 的 Python 3.8 和 UI Automation 组件；通�
 uv pip compile tests/gui/requirements.txt --python .venv/Scripts/python.exe --python-version 3.8 --python-platform windows --no-python-downloads --no-annotate --output-file tests/gui/requirements.lock
 ```
 
-消息资源等可选 fixture 的部署要求见 [测试目录说明](../tests/README.md)。
+将 `winlex.exe` 与被测 `winlex-gui.exe` 放在同一目录。自定义消息资源测试还需部署 `tmp/message-fixtures/` 中的 `messages-*.dll`、`neutral-*.dll` 和 `empty-*.dll`；缺少可选资源时相应用例跳过。UNC 用例使用测试机自身的管理共享，无权限时跳过。
 
 ### 本机/SSH 调度
 
-目标配置统一放在 `tests/gui/config/<target>.json`，例如 `tests/gui/config/xp.json`、`tests/gui/config/win10.json`；这些本机配置被 Git 忽略，不随克隆提供。新增目标时复制模板，再手动修改：
+目标配置放在 `tests/gui/config/<target>.json`，被 Git 忽略；新增目标时复制模板并修改：
 
 ```powershell
 Copy-Item tests/gui/config/target.example.json tests/gui/config/win10.json
@@ -216,11 +186,7 @@ WinMD 输入部署到目标端固定位置，通过 `--winmd` 复用，不为每
 
 `watch` 在当前阶段达到 `--slow-after` 秒、运行结束或观察时间到期时返回，不会终止测试。慢阶段预警包含用例、setup／call／teardown 阶段及耗时，可结合运行日志中的线程栈及时诊断。
 
-### 临时构建与产物保留
-
-日常构建复用默认 `target/`，不按轮次创建 `tmp/` 下的 Cargo 输出目录。仅在必须隔离源码或构建条件的对照中指定独立 `-TargetDir`；对照结束后保留所需 EXE、`.build.json` 与日志，再清理该轮独立构建目录。项目默认 `target/` 保留供后续增量构建使用。
-
-历史测试优先保留报告、输入哈希和必要的故障证据；大型原始输出可压缩归档。删除唯一故障证据或未提交工作前须确认，不按目录年龄自动清空 `tmp/`。
+### SDK ABI 与 WinRT
 
 可选的 SDK ABI 检查使用真实 SDK 声明验证布局、COM 槽位及位域初始化字节：
 
@@ -242,3 +208,8 @@ python tests/metadata/run.py --winrt-sdk "$env:WindowsSdkDir" --winrt-version "$
 ```
 
 `--winrt-apps` 可省略；指定时目录应包含 Foundation、WinUI 包的 `metadata/*.winmd`。`--winrt-version` 使用本机 SDK 版本。
+
+### 临时构建与产物保留
+
+日常构建复用默认 `target/`；仅在对照实验必须隔离时使用独立 `-TargetDir`，结束后保留所需 EXE、`.build.json` 与日志，清理该轮构建目录。
+历史测试保留报告、输入哈希和必要故障证据；大型输出可压缩。删除唯一故障证据或未提交工作前须确认，不按目录年龄自动清空 `tmp/`。

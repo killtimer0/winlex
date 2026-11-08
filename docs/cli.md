@@ -30,9 +30,10 @@ winlex Windows.Win32.winmd Windows.Wdk.winmd show Windows.Wdk.winmd::NtCancelIoF
 ## 搜索
 
 搜索不区分大小写，声明名称选择区分大小写。`--name`、`--value`、`--guid`、`--where` 互斥，且仅用于 `search`。
+快速搜索和 `--name` 在查询不含 `.` 或 `+` 时匹配短名称，否则匹配完整限定名；末尾 `.`／`+` 可浏览命名空间后代或嵌套类型。
 
 - 快速搜索同时尝试名称模糊匹配、数字等值、字符串常量子串和 GUID，每个实体只返回一次。GUID 查询须在去除花括号、连字符或转换字节列表后包含至少 4 个十六进制字符；GUID 专用模式允许更短的片段。普通文本不解释为条件表达式，空格不表示 AND。
-- `--name` 精确匹配名称；以 `.` 结尾浏览命名空间后代，以 `+` 结尾浏览嵌套类型。查询不含 `.` 或 `+` 时匹配短名称，否则匹配完整限定名。
+- `--name` 精确匹配名称，不做模糊匹配。
 - 快速搜索的模糊匹配允许字符不连续，但须保持顺序；标点按字面匹配，不忽略重音。
 - `--value` 接受带正负号的二进制 `0b`、前导零八进制、`0o`、十进制和 `0x` 整数。按能容纳输入的 8/16/32/64 位解释位模式，不截断；同一位宽可重解释符号。例如 `257` 不匹配 8 位的 `1`，`0xffffffff` 匹配 32 位的 `-1`，但不匹配 64 位的 `-1`。
 - 含小数点或指数时搜索浮点常量，按常量声明类型转换后比较，`1.5` 和 `1.50` 等价。整数语法不搜索浮点值。`nan` 匹配任意 NaN，`inf`／`+inf` 匹配正无穷，`-inf` 匹配负无穷。不区分大小写，正负零相等。
@@ -47,9 +48,7 @@ winlex Windows.Win32.winmd Windows.Wdk.winmd show Windows.Wdk.winmd::NtCancelIoF
 `--source SOURCE` 在搜索时过滤来源，在 show/layout/vtable/references 时限定目标来源，不能与 `SOURCE::` 同用；反向引用仍查找所有已加载来源。独立来源中的同名声明不会自动合并。
 跨文件引用所需的依赖须显式加载；非 WinRT 引用要求程序集身份匹配。
 
-受支持核心程序集身份中的基础引用按使用上下文消费，不要求额外加载 CLR 基础程序集。基类标记用于识别结构体、枚举、委托及特性；`System.Type` 用于特性中的类型名序列化，`IsConst` 用于逐层签名限定符，不能据此为它们推测原生值布局。识别同时检查限定类型名和程序集身份，不忽略任意 `System.*` 引用。
-
-`System.Guid` 的原生布局在 x86、x64、ARM64 上均为 16 字节、对齐 4 字节；包含它的结构体不使用 CLR 参考程序集的占位字段。加载参考程序集不会改变该 ABI。WinRT 标记规则见 [WinMD 类型系统编码](https://learn.microsoft.com/en-us/uwp/winrt-cref/winmd-files#type-system-encoding)。
+受支持核心程序集中的基础引用无需额外加载 CLR 程序集，身份范围与上下文语义见 [foundation.rs](../vendor/windows-metadata/src/reader/foundation.rs)。`System.Guid` 的原生大小为 16 字节、对齐 4 字节，加载 CLR 参考程序集不会改变该 ABI。
 
 ## 错误码查询
 
@@ -118,7 +117,7 @@ winlex Windows.Win32.winmd search --where 'value = nan or value = inf'
 - 布局、vtable 和反向引用结果使用 `architecture` 字段，值为 `x86`、`x64` 或 `arm64`。
 - `sources` 提供来源编号、路径、程序集身份和依赖。实体 ID 为 `{"source_id":0,"token":33554433}`，token 使用数值表示。
 - 类型签名保留具名引用的 `reference_id`，解析后的 TypeRef 提供 `target_id`；可转换为 `SOURCE::0xTOKEN` 继续查询。
-- TypeRef 的 `resolution` 区分实际定义 `target_id`、消费器内建语义 `builtin`／`semantics` 和未解决依赖 `unresolved`。内建语义不代表已加载 CLR 定义；名称覆盖也不代表程序集身份闭合或 ABI 正确。
+- TypeRef 的 `resolution` 区分实际定义 `target_id`、消费器内建语义 `builtin`／`semantics` 和未解决依赖 `unresolved`；内建语义不代表已加载 CLR 定义。
 - 布局单位为 bit，偏移相对直接包含它的聚合；位域另提供相对底层字段的偏移。
 - vtable 同时提供槽位和字节偏移。
 

@@ -2,7 +2,6 @@
 /tests/gui/config/*.json
 !/tests/gui/config/target.example.json
 /inputs/*.winmd
-/target/
 /artifacts/
 /node_modules/
 /.venv/
