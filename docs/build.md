@@ -56,9 +56,9 @@ Codicon SVG 与生成的 EMF+ 位于 `crates/winlex-gui/res/codicons/`。
 
 ## 系统兼容性
 
-最低系统为 x86 的 XP RTM、x64 的 XP x64 / Server 2003，以及 ARM64 的 Windows 10 1809。精确版本号、Rust target 和链接策略以 [inputs/targets.json](../inputs/targets.json) 为准；构建目标基线不代表已通过对应真机验证。
+构建目标的最低系统为 x86 的 XP RTM、x64 的 XP x64 / Server 2003，以及 ARM64 的 Windows 10 1809。精确版本号、Rust target 和链接策略见 [inputs/targets.json](../inputs/targets.json)。
 
-兼容库与暗色实现的来源和许可见[第三方声明](../THIRD-PARTY-NOTICES.md)。暗色实现不依赖额外 DLL；外观可用范围见 [GUI 指南](gui.md#界面与设置)。修改主题时须验证控件状态、主题切换和 MDI 菜单。
+兼容库与暗色实现的来源和许可见[第三方声明](../THIRD-PARTY-NOTICES.md)。暗色实现不依赖额外 DLL；外观可用范围见 [GUI 指南](gui.md#界面与设置)。
 系统对话框在 Vista 及以上使用 TaskDialog 和 `IFileOpenDialog`，旧系统使用 MessageBox 和 `GetOpenFileNameW`；现代实现失败不自动回退。
 
 ## README 图片
@@ -134,7 +134,6 @@ python tests/gui/resources.py --exe "$guiExe"
 `$guiExe` 为构建显示的 GUI 完整路径。`--dpi` 可改为 `pmv1`、`system`、`unaware` 或 `auto`。默认使用 `--desktop isolated`；也可使用 `--desktop current` 在当前桌面运行契约测试。
 结果写入 `tmp/gui-tests/<run-id>/`：`run.json` 和 JUnit 汇总结果，失败时保留无损截图，`progress.jsonl` 与 `timings.jsonl` 用于定位中断或慢阶段；输入来源与 fixture 哈希见 `environment.json` 和 `fixture-hashes.json`。与标准输入相同的 fixture 副本会在收尾时移除，变异或损坏的输入保留。
 `--desktop current --real-input` 只选择 `interactive` 交互与屏幕呈现测试，不指定时运行其余用例；可用 `--collect-only -q` 检查选择结果。交互测试须独占已解锁的活动桌面，运行期间不要操作键鼠。独立桌面也不隔离剪贴板等会话共享资源。
-维护屏幕呈现测试时，首帧和残留像素检查必须读取当前画面，不能主动重绘；键鼠交互须用真实输入。
 XP 目标执行端需有兼容 XP 的 Python 3.8 和 UI Automation 组件；通过 `python -m pip install -r tests/gui/requirements.lock` 安装目标端依赖，不使用开发机的 `.venv` 或 uv 锁文件。
 `tests/gui/requirements.txt` 定义目标端直接依赖，`requirements.lock` 固定其 Python 3.8 Windows 传递依赖。在开发机更新清单后重新生成：
 
@@ -182,7 +181,7 @@ python tests/gui/remote.py --config tests/gui/config/win10.json collect --run-id
 `start-worker` 通过任务计划程序请求在当前用户已登录的交互会话中启动 worker，使用配置指定的 Python；`capabilities` 显示解释器路径、桌面和心跳。修改配置并完成部署后，用 `capabilities` 确认 `worker_available` 为 `true`，并核对 `executable`、`desktop` 和 `heartbeat_age`。需要该用户已登录以及创建计划任务的权限。也可在目标交互桌面手动执行 `python tests/gui/remote.py worker --root C:/WinlexTests/runs`。远程提交默认使用独立桌面；交互测试期间该会话须解锁且由测试独占，同一桌面只运行一个 worker。
 `deploy` 的目标父目录须已存在。SSH 负责调度和传输，GUI 由交互 worker 启动。收集 ZIP 默认回收到 `tmp/remote-tests/`。选择交互测试可在提交时增加 `--desktop current --real-input -k real_search_keyboard`。
 
-WinMD 输入部署到目标端固定位置，通过 `--winmd` 复用，不为每轮运行另行复制。收集 ZIP 不会自动解压；需要展开检查时使用临时目录，检查后保留 ZIP 或展开结果之一，避免长期重复存放。
+WinMD 输入部署到目标端固定位置，通过 `--winmd` 复用。收集结果以 ZIP 保存，可解压查看报告和故障截图。
 
 `watch` 在当前阶段达到 `--slow-after` 秒、运行结束或观察时间到期时返回，不会终止测试。慢阶段预警包含用例、setup／call／teardown 阶段及耗时，可结合运行日志中的线程栈及时诊断。
 
@@ -208,8 +207,3 @@ python tests/metadata/run.py --winrt-sdk "$env:WindowsSdkDir" --winrt-version "$
 ```
 
 `--winrt-apps` 可省略；指定时目录应包含 Foundation、WinUI 包的 `metadata/*.winmd`。`--winrt-version` 使用本机 SDK 版本。
-
-### 临时构建与产物保留
-
-日常构建复用默认 `target/`；仅在对照实验必须隔离时使用独立 `-TargetDir`，结束后保留所需 EXE、`.build.json` 与日志，清理该轮构建目录。
-历史测试保留报告、输入哈希和必要故障证据；大型输出可压缩。删除唯一故障证据或未提交工作前须确认，不按目录年龄自动清空 `tmp/`。

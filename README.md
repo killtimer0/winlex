@@ -15,7 +15,7 @@
 
 从 [Winlex Releases](https://github.com/killtimer0/winlex/releases) 下载程序，从 [winmd-collection Releases](https://github.com/killtimer0/winmd-collection/releases) 获取 WinMD。
 
-按架构选择 `winlex-x86.zip`、`winlex-x64.zip` 或 `winlex-arm64.zip`，每包均含 CLI 和 GUI；同时下载同版本的 `licenses.zip` 并解压到程序目录。校验值见 Release 的 `SHA256SUMS`。自动生成的 Source code 附件不是程序包，完整交付说明见[构建与交付](docs/release.md)。
+按架构选择 `winlex-x86.zip`、`winlex-x64.zip` 或 `winlex-arm64.zip`，每包均含 CLI 和 GUI；同时下载同版本的 `licenses.zip` 并解压到程序目录。校验值见 Release 的 `SHA256SUMS`，完整交付说明见[构建与交付](docs/release.md)。
 
 ### 图形界面
 

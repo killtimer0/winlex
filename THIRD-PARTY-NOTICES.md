@@ -4,12 +4,9 @@ Third-party components retain their own licenses. Cargo dependency versions are
 recorded in `Cargo.lock`; source packages and their original copyright and license
 texts are available from the linked crates.io pages. The list below includes
 normal and build dependencies for Windows x86/x64/ARM64.
-When distributing binaries, retain the applicable copyright notices and license
-texts alongside this document.
 Binary releases collect the detailed materials in the accompanying `licenses.zip`.
 Extract that archive alongside the program files to retain the relative paths
-used below. Redistribution must include the matching materials; the separate
-archive does not replace applicable source-code distribution obligations.
+used below.
 
 ## Rust dependencies
 
@@ -64,8 +61,7 @@ the system UCRT. Only x86/x64 link YY-Thunks compatibility objects.
 - [VC-LTL 5.3.1](https://github.com/Chuyu-Team/VC-LTL5/tree/v5.3.1):
   the upstream [LICENSE](https://github.com/Chuyu-Team/VC-LTL5/blob/v5.3.1/LICENSE)
   is EPL-2.0. The source also includes Microsoft SDK terms under
-  `Sources/ucrt/Licenses/`. The libraries are linked into Winlex; their applicable
-  object-level grants and GPL combination terms remain to be confirmed.
+  `Sources/ucrt/Licenses/`. The libraries are linked into Winlex.
   The upstream [EPL text](licenses/VC-LTL-LICENSE),
   [SDK terms](licenses/VC-LTL-sdk-license.rtf) and
   [SDK notices](licenses/VC-LTL-sdk-third-party-notices.rtf) are retained unchanged.

@@ -117,7 +117,7 @@ winlex Windows.Win32.winmd search --where 'value = nan or value = inf'
 - 布局、vtable 和反向引用结果使用 `architecture` 字段，值为 `x86`、`x64` 或 `arm64`。
 - `sources` 提供来源编号、路径、程序集身份和依赖。实体 ID 为 `{"source_id":0,"token":33554433}`，token 使用数值表示。
 - 类型签名保留具名引用的 `reference_id`，解析后的 TypeRef 提供 `target_id`；可转换为 `SOURCE::0xTOKEN` 继续查询。
-- TypeRef 的 `resolution` 区分实际定义 `target_id`、消费器内建语义 `builtin`／`semantics` 和未解决依赖 `unresolved`；内建语义不代表已加载 CLR 定义。
+- TypeRef 的 `resolution` 区分已加载的实际定义 `target_id`、由读取器直接解释的内建语义 `builtin`／`semantics` 和未解决依赖 `unresolved`。
 - 布局单位为 bit，偏移相对直接包含它的聚合；位域另提供相对底层字段的偏移。
 - vtable 同时提供槽位和字节偏移。
 
@@ -138,4 +138,4 @@ winlex Windows.Win32.winmd search --where 'value = nan or value = inf'
 - 暂不支持 ModuleRef、类型转发和 retargetable 程序集引用。
 - 非零显式偏移、显式大小和灵活数组等尚不支持布局计算。
 
-请使用可信来源的 WinMD 文件；损坏的输入可能导致程序异常退出。
+损坏的 WinMD 输入可能导致程序异常退出。
