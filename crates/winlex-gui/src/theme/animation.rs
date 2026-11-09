@@ -91,6 +91,19 @@ pub(super) fn stop_animation(hwnd: HWND) {
     animation(|api| unsafe { (api.stop)(hwnd) });
 }
 
+pub(super) fn client_animation_enabled() -> bool {
+    let mut enabled = 0i32;
+    unsafe {
+        SystemParametersInfoW(
+            SPI_GETCLIENTAREAANIMATION,
+            0,
+            (&mut enabled as *mut i32).cast(),
+            0,
+        ) != 0
+            && enabled != 0
+    }
+}
+
 #[cfg(test)]
 pub(super) mod test_support {
     use super::*;

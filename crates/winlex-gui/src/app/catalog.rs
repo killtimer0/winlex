@@ -124,22 +124,20 @@ impl Session {
             None
         }
     }
-    fn accept_matches(&mut self, ticket: u64, items: Items) -> bool {
+    fn accept_matches(&mut self, ticket: u64, items: Items) {
         if !matches!(self.search, Search::Running(id) if id == ticket) {
-            return false;
+            return;
         }
         self.pending_results.extend(items);
-        true
     }
-    fn finish_search(&mut self, ticket: u64, result: anyhow::Result<()>) -> bool {
+    fn finish_search(&mut self, ticket: u64, result: anyhow::Result<()>) {
         if !matches!(self.search, Search::Running(id) if id == ticket) {
-            return false;
+            return;
         }
         self.search = match result {
             Ok(()) => Search::Done,
             Err(error) => Search::Failed(error),
         };
-        true
     }
     pub fn pending(&self, path: &std::path::Path) -> bool {
         self.load
@@ -354,7 +352,7 @@ fn merge_results(results: &mut Items, batch: &mut Items, tracked: &mut [isize; 4
             .map(|item| std::ptr::from_ref(&**item))
     });
     results.append(batch);
-    results.sort_by(|a, b| a.compare(b));
+    results.sort_by(|a, b| a.matched.compare(&b.matched));
     for (index, item) in tracked.iter_mut().zip(original) {
         if let Some(item) = item {
             *index = results
@@ -396,8 +394,9 @@ pub(super) fn row_text(ctx: &Context, row: usize) -> Vec<u16> {
         };
         // Results are cleared when the catalog changes; each ID belongs to this snapshot.
         let catalog = session.catalog.as_ref().expect("search result snapshot");
-        let source = &catalog.sources()[e.id.source_id];
-        let mut value: Vec<u16> = format!("{}\r\n{} · ", e.full_name, e.kind)
+        let matched = &e.matched;
+        let source = &catalog.sources()[matched.id.source_id];
+        let mut value: Vec<u16> = format!("{}\r\n{} · ", matched.full_name, matched.kind)
             .encode_utf16()
             .collect();
         value.extend(source.path.file_name().unwrap_or_default().encode_wide());
@@ -405,7 +404,7 @@ pub(super) fn row_text(ctx: &Context, row: usize) -> Vec<u16> {
         value.extend(e.display.detail.text());
         value.extend("\r\n".encode_utf16());
         value.extend(source.path.as_os_str().encode_wide());
-        value.extend(format!("\r\n{}", e.id).encode_utf16());
+        value.extend(format!("\r\n{}", matched.id).encode_utf16());
         value
     })
 }
@@ -414,13 +413,14 @@ pub(super) fn context_menu(ctx: &Context, hwnd: HWND, location: isize) -> anyhow
         return Ok(());
     };
     let Some((catalog, id, name)) = ctx.with_session(|session| {
-        let item = session.results.get(row)?;
+        let item = &session.results.get(row)?.matched;
         Some((session.catalog.clone()?, item.id, item.full_name.clone()))
     }) else {
         return Ok(());
     };
     let preferred = settings::preferred_architecture(ctx);
-    let current = metadata::binding(ctx, workspace::active(ctx)).map(|b| b.architecture);
+    let current =
+        workspace::view(ctx, workspace::active(ctx)).map(|doc| doc.binding().architecture);
     let binding = Binding::resolve(
         catalog,
         id,
@@ -438,12 +438,10 @@ pub(super) fn context_menu(ctx: &Context, hwnd: HWND, location: isize) -> anyhow
             menu.item(5, resources::wide_text(IDS_RESULT_COPY_HEX), true)?;
         }
     }
-    let actions = super::tools::item_actions(value.as_ref());
-    if !actions.is_empty() {
+    let code = super::tools::item_code(value.as_ref());
+    if code.is_some() {
         menu.separator()?;
-        for (index, action) in actions.iter().enumerate() {
-            menu.item(100 + index as u16, resources::wide_text(action.label), true)?;
-        }
+        menu.item(100, resources::wide_text(IDS_ERROR_CODE_SEARCH), true)?;
     }
     match menu.track(hwnd, point) {
         command @ (1 | 2) => {
@@ -481,9 +479,11 @@ pub(super) fn context_menu(ctx: &Context, hwnd: HWND, location: isize) -> anyhow
                 }
             }
         }
-        command if command >= 100 => {
-            if let Some(action) = actions.into_iter().nth((command - 100) as usize) {
-                action.execute(ctx);
+        100 => {
+            if let Some(code) = code
+                && let Some(view) = super::tools::open(ctx, false)
+            {
+                view.search_code(code);
             }
         }
         _ => {}
@@ -497,18 +497,16 @@ pub(super) enum Open {
     Pin,
     New,
 }
-pub(super) fn activate(ctx: &Context, row: isize, double: bool) {
-    open(ctx, row, if double { Open::Pin } else { Open::Preview });
+pub(super) fn activate(ctx: &Context, row: usize, double: bool) {
+    let mode = if double { Open::Pin } else { Open::Preview };
+    open(ctx, Some(row), mode);
 }
 pub(super) fn open_selected(ctx: &Context, mode: Open) {
-    let row = crate::list::selected(results_list(ctx)).map_or(-1, |index| index as isize);
+    let row = crate::list::selected(results_list(ctx));
     open(ctx, row, mode);
 }
-pub(super) fn open(ctx: &Context, row: isize, mode: Open) {
-    history::visit(ctx, || open_document(ctx, row, mode));
-}
-fn open_document(ctx: &Context, row: isize, mode: Open) {
-    match mode {
+pub(super) fn open(ctx: &Context, row: Option<usize>, mode: Open) {
+    history::visit(ctx, || match mode {
         // A preview shows the document but leaves the keyboard in the sidebar.
         Open::Preview => workspace::keep_focus(ctx, || {
             open_now(ctx, row, mode);
@@ -521,17 +519,15 @@ fn open_document(ctx: &Context, row: isize, mode: Open) {
                 document.focus();
             }
         }
-    }
+    });
 }
-fn open_now(ctx: &Context, row: isize, mode: Open) -> Option<HWND> {
-    if row < 0 {
-        return None;
-    }
+fn open_now(ctx: &Context, row: Option<usize>, mode: Open) -> Option<HWND> {
+    let row = row?;
     let item = ctx.with_session(|session| {
         session
             .results
-            .get(row as usize)
-            .map(|e| (e.id, session.catalog.clone()))
+            .get(row)
+            .map(|e| (e.matched.id, session.catalog.clone()))
     });
     let (id, Some(catalog)) = item? else {
         return None;
@@ -541,7 +537,7 @@ fn open_now(ctx: &Context, row: isize, mode: Open) -> Option<HWND> {
     let current = if mode == Open::New {
         None
     } else {
-        metadata::binding(ctx, workspace::active(ctx)).map(|binding| binding.architecture)
+        workspace::view(ctx, workspace::active(ctx)).map(|doc| doc.binding().architecture)
     };
     let binding = super::status::report(
         ctx,
@@ -559,7 +555,6 @@ pub(super) fn open_binding(
     mode: Open,
     original: Option<u64>,
 ) -> Option<HWND> {
-    let preview = workspace::preview_document(ctx);
     let existing = (mode != Open::New)
         .then(|| {
             original
@@ -573,9 +568,9 @@ pub(super) fn open_binding(
                 })
                 .or_else(|| metadata::find(ctx, &binding))
                 .or_else(|| {
-                    preview.and_then(|hwnd| {
-                        workspace::view(ctx, hwnd)?.rebind(binding.clone());
-                        Some(hwnd)
+                    workspace::preview_document(ctx).map(|doc| {
+                        doc.rebind(binding.clone());
+                        doc.hwnd
                     })
                 })
         })
@@ -720,13 +715,17 @@ mod tests {
                     .map(|&id| hit(id, (id * 71 % 23) as u16))
                     .collect();
                 merge_results(&mut results, &mut batch, &mut tracked);
-                assert!(results.windows(2).all(|p| !p[0].compare(&p[1]).is_gt()));
+                assert!(
+                    results
+                        .windows(2)
+                        .all(|p| !p[0].matched.compare(&p[1].matched).is_gt())
+                );
             }
             let mut expected: Vec<_> = (1..=200).map(|id| hit(id, (id * 71 % 23) as u16)).collect();
-            expected.sort_unstable_by(|a, b| a.compare(b));
+            expected.sort_unstable_by(|a, b| a.matched.compare(&b.matched));
             assert_eq!(
-                results.iter().map(|m| m.id).collect::<Vec<_>>(),
-                expected.iter().map(|m| m.id).collect::<Vec<_>>()
+                results.iter().map(|m| m.matched.id).collect::<Vec<_>>(),
+                expected.iter().map(|m| m.matched.id).collect::<Vec<_>>()
             );
         }
     }
@@ -752,7 +751,7 @@ mod tests {
         }
         let equal: Vec<_> = results
             .iter()
-            .filter(|row| row.id.token == 10)
+            .filter(|row| row.matched.id.token == 10)
             .map(|row| String::from_utf16(&row.display.title).unwrap())
             .collect();
         assert_eq!(equal, ["first", "second", "third", "fourth"]);
@@ -765,7 +764,7 @@ mod tests {
         let mut tracked = [1, 2, 1, 0];
         merge_results(&mut results, &mut batch, &mut tracked);
         for (index, token) in tracked.into_iter().zip([20, 30, 20, 10]) {
-            assert_eq!(results[index as usize].id.token, token);
+            assert_eq!(results[index as usize].matched.id.token, token);
         }
         let mut missing = [-1; 4];
         merge_results(&mut results, &mut vec![hit(99, 200)], &mut missing);
@@ -778,12 +777,27 @@ mod tests {
         assert_eq!(session.reset_search(), Some(1));
         session.search = Search::Running(2);
         session.load_error = Some("load transaction failed".into());
-        assert!(!session.finish_search(1, Ok(())));
-        assert!(session.accept_matches(2, vec![]));
+        session.finish_search(1, Ok(()));
+        session.accept_matches(2, vec![hit(2, 100)]);
+        session.accept_matches(1, vec![hit(1, 100)]);
         assert_eq!(session.source_status(), "load transaction failed");
-        assert!(session.finish_search(2, Ok(())));
+        session.finish_search(2, Ok(()));
         assert_eq!(session.source_status(), "load transaction failed");
-        assert!(!session.finish_search(2, Err(anyhow::anyhow!("late failure"))));
+        session.finish_search(2, Err(anyhow::anyhow!("late failure")));
         assert!(matches!(session.search, Search::Done));
+        session.accept_matches(2, vec![hit(3, 100)]);
+        merge_results(
+            &mut session.results,
+            &mut session.pending_results,
+            &mut [-1; 4],
+        );
+        assert_eq!(
+            session
+                .results
+                .iter()
+                .map(|row| row.matched.id.token)
+                .collect::<Vec<_>>(),
+            [2]
+        );
     }
 }

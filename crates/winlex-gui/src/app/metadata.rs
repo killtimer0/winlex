@@ -118,9 +118,6 @@ pub(super) struct MetadataView {
     info: info::Info,
     find: find::Find,
 }
-pub(super) fn binding(ctx: &Context, hwnd: HWND) -> Option<Binding> {
-    Some(workspace::view(ctx, hwnd)?.binding())
-}
 pub(super) fn find(ctx: &Context, binding: &Binding) -> Option<HWND> {
     workspace::views(ctx).into_iter().find_map(|content| {
         let matches = content.state.borrow().binding.same_location(binding);
@@ -130,7 +127,7 @@ pub(super) fn find(ctx: &Context, binding: &Binding) -> Option<HWND> {
 pub(super) fn open(ctx: &Context, binding: Binding, preview: bool) -> anyhow::Result<HWND> {
     let content = MetadataView {
         ctx: ctx as *const Context,
-        id: workspace::next_id(ctx),
+        id: workspace::next_serial(ctx),
         hwnd: std::ptr::null_mut(),
         placement: Cell::new(None),
         preview: Cell::new(preview),
@@ -295,11 +292,6 @@ impl MetadataView {
     }
     pub(super) fn focus(&self) {
         focus(self.editor);
-    }
-    pub(super) fn cancel(&self) {
-        if let Some(ticket) = &self.state.borrow().ticket {
-            self.ctx().cancel_job(*ticket);
-        }
     }
     pub(super) fn complete(&self, ticket: u64, result: anyhow::Result<crate::rich_text::Content>) {
         let restore = {
@@ -577,6 +569,9 @@ impl MetadataView {
         self.info.color(control, dc)
     }
     pub(super) fn destroy(&self) {
+        if let Some(ticket) = &self.state.borrow().ticket {
+            self.ctx().cancel_job(*ticket);
+        }
         self.info.clear_accessibility();
     }
     pub(super) fn find_key(&self, msg: &MSG) -> bool {

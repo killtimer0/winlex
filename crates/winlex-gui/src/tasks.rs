@@ -292,7 +292,7 @@ mod tests {
                 assert!(!batch.is_empty());
                 batches.borrow_mut().push((
                     time.get().duration_since(base).as_millis() as u64,
-                    batch.iter().map(|item| item.id.token).collect(),
+                    batch.iter().map(|item| item.matched.id.token).collect(),
                 ));
                 Ok(())
             },

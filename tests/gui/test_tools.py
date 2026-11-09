@@ -128,6 +128,12 @@ def test_tool_list_context_menu_offers_instance_actions_without_opening(launch):
     app.command(1800)
     panel = app.tool_list
     app.select(0, panel)
+    app.row(0, panel).GetSelectionItemPattern().RemoveFromSelection()
+    assert app.selected_row(panel) == -1
+    for command in (1049, 1050):
+        app.command(command)
+        assert not tools(app), "opening without a selected tool must be harmless"
+    app.select(0, panel)
     app.focus(panel)
     win32gui.PostMessage(panel, win32con.WM_CONTEXTMENU, panel, -1)
     _, ids = find_popup(app)
@@ -367,6 +373,26 @@ def test_tools_without_metadata_are_fixed_independent_and_reused_by_recency(laun
     assert not n.window_text(n.get_item(fresh, 1810)) and not body(fresh)
 
 
+def test_tool_tab_name_tracks_native_caption_across_queries_and_recreation(launch):
+    app = launch()
+    doc = tool(app)
+    initial = n.window_text(doc)
+    assert initial and app.tab_labels() == [initial]
+    choose_scope(app, doc, 1)
+    query(app, doc, "5")
+    updated = n.window_text(doc)
+    assert updated != initial
+    assert app.tab_labels() == [updated]
+    edit(doc, 1810, "invalid")
+    invoke(n.get_item(doc, 1815))
+    assert n.window_text(doc) == updated and app.tab_labels() == [updated]
+    close(doc)
+    n.wait(lambda: not tools(app), "queried tool closed")
+    assert not app.tab_labels()
+    fresh = tool(app)
+    assert n.window_text(fresh) == initial and app.tab_labels() == [initial]
+
+
 def test_explicit_query_stale_results_checked_numbers_and_language(launch, settings, ui_language):
     app = launch()
     doc = tool(app)
@@ -419,6 +445,35 @@ def test_tool_history_preserves_current_results_and_skips_closed_instances(launc
     app.command(HISTORY_FORWARD)
     assert not tools(app), "history must not recreate a closed tool"
     assert not enabled(app, HISTORY_FORWARD)
+
+
+def test_tool_history_expires_without_reviving_recreated_instances(launch):
+    app = launch()
+    first = tool(app)
+    second = tool(app, new=True)
+    activate(first)
+    app.command(HISTORY_BACK)
+    n.wait(lambda: app.active_document() == second, "back to second tool")
+    app.command(HISTORY_FORWARD)
+    n.wait(lambda: app.active_document() == first, "forward to first tool")
+    close(first)
+    n.wait(lambda: tools(app) == [second], "first tool removed")
+    assert not enabled(app, HISTORY_BACK)
+    fresh = tool(app, new=True)
+    assert not body(fresh)
+    app.command(HISTORY_BACK)
+    n.wait(lambda: app.active_document() == second, "back skips expired first instance")
+    assert not enabled(app, HISTORY_BACK), "recreation must not revive older visits"
+    app.command(HISTORY_FORWARD)
+    n.wait(lambda: app.active_document() == fresh, "forward to fresh instance")
+    assert not enabled(app, HISTORY_FORWARD)
+    close(fresh)
+    close(second)
+    n.wait(lambda: not tools(app), "all visited tools closed")
+    for direction in (HISTORY_BACK, HISTORY_FORWARD):
+        assert not enabled(app, direction)
+        app.command(direction)
+        assert not tools(app), "expired tool visits must not recreate instances"
 
 
 def test_custom_module_scope_candidates_are_not_system_language_promises(launch, settings, ui_language):

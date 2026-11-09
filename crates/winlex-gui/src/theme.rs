@@ -11,11 +11,11 @@ mod input;
 mod static_text;
 mod task_dialog;
 
-pub(crate) fn apply_task_dialog(hwnd: HWND) {
-    task_dialog::apply_native(hwnd);
-}
-
-pub(crate) use task_dialog::HookGuard as TaskDialogThemeGuard;
+pub(crate) use api::supported;
+use api::{native_dark_theme, windows11};
+pub(crate) use task_dialog::{
+    HookGuard as TaskDialogThemeGuard, apply_native as apply_task_dialog,
+};
 
 /// IFileDialog::Show selects AllowDark internally. Restore our preference from
 /// its first navigation event, before Shell creates the native client controls.
@@ -24,12 +24,7 @@ pub(crate) fn prepare_file_dialog() {
 }
 
 /// Shell dialogs retain their native client rendering and input ownership.
-pub(crate) fn apply_file_dialog(hwnd: HWND) {
-    if hwnd.is_null() || !supported() {
-        return;
-    }
-    task_dialog::apply(hwnd);
-}
+pub(crate) use task_dialog::apply as apply_file_dialog;
 
 fn refresh_file_dialog(hwnd: HWND) {
     // Shell can replace the process preference even when our palette is unchanged.
@@ -76,6 +71,54 @@ use windows_sys::Win32::UI::Shell::GetWindowSubclass;
 
 const SUBCLASS: usize = 0x574c5448;
 pub(crate) const DARK_CONTENT_TEXT: COLORREF = rgb(0xe0e2e4);
+
+// DmlibSubclass.h::BufferData: retain a compatible surface until its size changes.
+struct Buffer {
+    dc: HDC,
+    bitmap: HBITMAP,
+    old_bitmap: HGDIOBJ,
+    width: i32,
+    height: i32,
+}
+
+impl Buffer {
+    unsafe fn new(target: HDC, width: i32, height: i32) -> Option<Self> {
+        unsafe {
+            let dc = CreateCompatibleDC(target);
+            if dc.is_null() {
+                return None;
+            }
+            let bitmap = CreateCompatibleBitmap(target, width, height);
+            if bitmap.is_null() {
+                DeleteDC(dc);
+                return None;
+            }
+            let old_bitmap = SelectObject(dc, bitmap);
+            if old_bitmap.is_null() || old_bitmap as isize == -1 {
+                DeleteObject(bitmap);
+                DeleteDC(dc);
+                return None;
+            }
+            Some(Self {
+                dc,
+                bitmap,
+                old_bitmap,
+                width,
+                height,
+            })
+        }
+    }
+}
+
+impl Drop for Buffer {
+    fn drop(&mut self) {
+        unsafe {
+            SelectObject(self.dc, self.old_bitmap);
+            DeleteObject(self.bitmap);
+            DeleteDC(self.dc);
+        }
+    }
+}
 
 #[derive(Default)]
 struct State {
@@ -160,24 +203,6 @@ fn brush_role(role: Role) -> HBRUSH {
     cached_brush(color_role(role))
 }
 
-pub fn supported() -> bool {
-    api::supported()
-}
-fn windows11() -> bool {
-    api::windows11()
-}
-fn native_dark_theme() -> bool {
-    api::native_dark_theme()
-}
-// Match _DARKMODELIB_PREFER_THEME: capability selects the rendering path;
-// changing the user's color preference must not replace control ownership.
-fn prefer_theme() -> bool {
-    supported()
-}
-fn prefer_native_tabs() -> bool {
-    // Unlike Edit/Combo's CFD theme, native dark tabs require DarkTheme.
-    prefer_theme() && native_dark_theme()
-}
 pub fn is_dark() -> bool {
     STATE.with(|state| state.borrow().dark)
 }
@@ -366,7 +391,7 @@ fn apply_one(hwnd: HWND) {
                 "systabcontrol32" => {
                     set_native_theme(
                         hwnd,
-                        if prefer_native_tabs() {
+                        if native_dark_theme() {
                             "DarkMode_DarkTheme"
                         } else {
                             ""
@@ -442,7 +467,7 @@ unsafe extern "system" fn subclass(
         }
         if msg == WM_PARENTNOTIFY
             && w as u16 as u32 == WM_CREATE
-            && prefer_native_tabs()
+            && native_dark_theme()
             && class_name(hwnd) == "systabcontrol32"
             && class_name(l as HWND) == "msctls_updown32"
         {

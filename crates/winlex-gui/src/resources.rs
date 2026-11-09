@@ -121,24 +121,20 @@ fn data(kind: *const u16, id: u16) -> anyhow::Result<&'static [u8]> {
 }
 fn load_text(id: u16) -> anyhow::Result<Vec<u16>> {
     let bytes = data(RT_STRING, id / 16 + 1)?;
-    let mut words = bytes
-        .as_chunks::<2>()
-        .0
-        .iter()
-        .map(|b| u16::from_le_bytes([b[0], b[1]]));
+    let mut words = bytes.as_chunks::<2>().0;
     for index in 0..=id % 16 {
-        let count = words
-            .next()
-            .ok_or_else(|| anyhow::anyhow!("Invalid string resource {id}"))?
-            as usize;
-        let mut value: Vec<_> = words.by_ref().take(count).collect();
-        if value.len() != count {
-            anyhow::bail!("Truncated string resource {id}");
-        }
+        let (count, rest) = words
+            .split_first()
+            .ok_or_else(|| anyhow::anyhow!("Invalid string resource {id}"))?;
+        let (value, rest) = rest
+            .split_at_checked(u16::from_le_bytes(*count) as usize)
+            .ok_or_else(|| anyhow::anyhow!("Truncated string resource {id}"))?;
+        words = rest;
         if index == id % 16 {
             if value.is_empty() {
                 anyhow::bail!("Missing string resource {id}");
             }
+            let mut value: Vec<_> = value.iter().map(|&word| u16::from_le_bytes(word)).collect();
             if char::decode_utf16(value.iter().copied()).any(|c| c.is_err()) {
                 anyhow::bail!("Invalid UTF-16 resource {id}");
             }

@@ -44,7 +44,10 @@ impl Content {
         forward!(self, v, v.hwnd)
     }
     pub fn title(&self) -> String {
-        forward!(self, v, v.title())
+        match self {
+            Self::Declaration(v) => v.title(),
+            Self::Tool(v) => text(v.hwnd),
+        }
     }
     pub fn preview(&self) -> bool {
         matches!(self, Self::Declaration(v) if v.preview.get())
@@ -73,12 +76,6 @@ impl Content {
     pub fn recolor(&self) {
         forward!(self, v, v.recolor())
     }
-    pub fn command(&self, id: u16, code: u32) -> bool {
-        match self {
-            Self::Declaration(v) => v.command(id, code),
-            Self::Tool(_) => false,
-        }
-    }
     pub fn find_key(&self, msg: &MSG) -> bool {
         match self {
             Self::Declaration(v) => v.find_key(msg),
@@ -87,17 +84,8 @@ impl Content {
     }
     pub fn destroy(&self) {
         match self {
-            Self::Declaration(v) => {
-                v.cancel();
-                v.destroy();
-            }
+            Self::Declaration(v) => v.destroy(),
             Self::Tool(v) => v.destroy(),
-        }
-    }
-    pub fn supports_find(&self) -> bool {
-        match self {
-            Self::Declaration(_) => true,
-            Self::Tool(_) => false,
         }
     }
     pub fn activated(&self) {
@@ -115,7 +103,7 @@ impl Content {
                     b.entity.id.token
                 )
             }
-            Self::Tool(v) => crate::resources::text(v.descriptor.description),
+            Self::Tool(_) => crate::resources::text(crate::resources::IDS_ERROR_CODE_DESCRIPTION),
         }
     }
 }

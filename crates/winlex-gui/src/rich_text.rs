@@ -738,20 +738,20 @@ fn spans(text: &[u16], regions: &[Region]) -> Vec<(usize, usize, u8)> {
             if number {
                 Some(NUMBER_STYLE)
             } else {
-                let word = String::from_utf16_lossy(&text[start..i]);
-                matches!(
-                    word.as_str(),
-                    "struct"
-                        | "class"
-                        | "delegate"
-                        | "union"
-                        | "enum"
-                        | "typedef"
-                        | "const"
-                        | "void"
-                        | "interface"
-                        | "return"
-                )
+                [
+                    "struct",
+                    "class",
+                    "delegate",
+                    "union",
+                    "enum",
+                    "typedef",
+                    "const",
+                    "void",
+                    "interface",
+                    "return",
+                ]
+                .iter()
+                .any(|word| text[start..i].iter().copied().eq(word.encode_utf16()))
                 .then_some(KEYWORD_STYLE)
             }
         } else {

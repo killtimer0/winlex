@@ -220,7 +220,7 @@ pub fn tooltip_field(text: &mut Vec<u16>, label: u16, value: impl IntoIterator<I
 
 type RowReader = Box<dyn Fn(usize, &mut dyn FnMut(&Display))>;
 type TextReader = Box<dyn Fn(usize) -> Vec<u16>>;
-type OpenHandler = Box<dyn Fn(isize, bool)>;
+type OpenHandler = Box<dyn Fn(usize, bool)>;
 
 pub struct List {
     pub hwnd: HWND,
@@ -237,7 +237,7 @@ impl List {
         id: u16,
         row: impl Fn(usize, &mut dyn FnMut(&Display)) + 'static,
         text: impl Fn(usize) -> Vec<u16> + 'static,
-        open: Option<Box<dyn Fn(isize, bool)>>,
+        open: Option<OpenHandler>,
         version: WindowsVersion,
     ) -> anyhow::Result<Self> {
         let hwnd = unsafe {
@@ -269,7 +269,7 @@ impl List {
             row: Box::new(row),
             text: Box::new(text),
             open,
-            native_background: version.at_least(WindowsVersion::VISTA),
+            native_background: version >= WindowsVersion::VISTA,
             tooltip_item: Cell::new(-1),
         })
     }
@@ -327,7 +327,7 @@ impl List {
             return false;
         };
         if let Some(row) = selected(self.hwnd) {
-            open(row as isize, true);
+            open(row, true);
         }
         true
     }
@@ -388,7 +388,7 @@ impl List {
                     if i.iItem >= 0
                         && let Some(open) = &self.open
                     {
-                        open(i.iItem as isize, hdr.code == NM_DBLCLK);
+                        open(i.iItem as usize, hdr.code == NM_DBLCLK);
                     }
                     Some(0)
                 }

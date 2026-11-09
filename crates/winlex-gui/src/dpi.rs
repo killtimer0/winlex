@@ -136,23 +136,22 @@ impl Font {
             if handle.is_null() {
                 anyhow::bail!("Create system font failed");
             }
-            let mut font = Self {
-                dpi,
-                handle: GdiObject(handle),
-                height: 0,
-            };
+            let handle = GdiObject(handle);
             let dc = CreateCompatibleDC(ptr::null_mut());
             if dc.is_null() {
                 anyhow::bail!("Create font measurement DC failed");
             }
-            let previous = SelectObject(dc, handle);
+            let previous = SelectObject(dc, handle.0);
             let mut metrics: TEXTMETRICW = std::mem::zeroed();
             let success = GetTextMetricsW(dc, &mut metrics);
             SelectObject(dc, previous);
             DeleteDC(dc);
             anyhow::ensure!(success != 0, "Measure system font failed");
-            font.height = metrics.tmHeight;
-            Ok(font)
+            Ok(Self {
+                dpi,
+                handle,
+                height: metrics.tmHeight,
+            })
         }
     }
 }

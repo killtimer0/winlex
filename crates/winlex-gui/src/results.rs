@@ -4,7 +4,7 @@ use crate::{
     list::{Display, FoldKind, TextSegment, tooltip_field},
     resources::*,
 };
-use std::{ops::Deref, ops::Range, os::windows::ffi::OsStrExt};
+use std::{ops::Range, os::windows::ffi::OsStrExt};
 use winlex_core::{Architecture, Catalog, EntityContext, EvidenceField, SearchMatch};
 
 pub struct ResultItem {
@@ -16,12 +16,6 @@ pub struct ResultItem {
     reason = "Keep incremental sorting and merging pointer-sized."
 )]
 pub type Items = Vec<Box<ResultItem>>;
-impl Deref for ResultItem {
-    type Target = SearchMatch;
-    fn deref(&self) -> &Self::Target {
-        &self.matched
-    }
-}
 pub fn prepare(catalog: &Catalog, matched: SearchMatch) -> anyhow::Result<Box<ResultItem>> {
     let context = catalog.entity_context(matched.id)?;
     let source = &catalog.sources()[matched.id.source_id];
@@ -194,7 +188,6 @@ fn project(
         }
     }
     indices.sort_unstable();
-    indices.dedup();
     let mut ranges: Vec<Range<usize>> = Vec::new();
     let mut position = 0;
     for (index, ch) in text.chars().enumerate() {

@@ -15,7 +15,7 @@ pub struct Config {
     version: u32,
     warning: Option<Warning>,
     paths_warning: Option<Warning>,
-    paths: Option<Vec<PathBuf>>,
+    pub paths: Option<Vec<PathBuf>>,
     pub key: Option<Key>,
 }
 owned_handle! { pub struct Key(HKEY); RegCloseKey }
@@ -36,11 +36,7 @@ impl Config {
     }
     fn from_root(root: &OsStr, version: u32) -> anyhow::Result<Self> {
         let mut root: Vec<_> = root.encode_wide().collect();
-        if root.is_empty()
-            || root.contains(&0)
-            || root[0] == b'\\' as u16
-            || root.split(|&c| c == b'\\' as u16).any(|s| s.is_empty())
-        {
+        if root.contains(&0) || root.split(|&c| c == b'\\' as u16).any(|s| s.is_empty()) {
             anyhow::bail!("WINLEX_CONFIG_ROOT must be a nonempty HKCU-relative registry path");
         }
         root.push(0);
@@ -118,9 +114,6 @@ impl Config {
                 registry_error(&format!("Read configuration value {name}"), *status)
             }
         }
-    }
-    pub fn paths(&self) -> Option<Vec<PathBuf>> {
-        self.paths.clone()
     }
     pub fn write_paths(&self, paths: &[PathBuf]) -> anyhow::Result<()> {
         if let Some(warning) = &self.paths_warning {
@@ -226,21 +219,19 @@ impl Key {
         String::from_utf16(&words[..words.len() - 1]).ok()
     }
     pub fn set_text(&self, name: &str, value: &str) -> anyhow::Result<()> {
-        let bytes: Vec<_> = wide(value).into_iter().flat_map(u16::to_le_bytes).collect();
+        let words = value.encode_utf16().chain(Some(0));
+        let bytes: Vec<_> = words.flat_map(u16::to_le_bytes).collect();
         self.set(name, REG_SZ, &bytes)
     }
     pub fn set_paths(&self, name: &str, paths: &[PathBuf]) -> anyhow::Result<()> {
-        let mut words = Vec::new();
-        for path in paths {
-            let path: Vec<_> = path.as_os_str().encode_wide().collect();
-            if path.is_empty() || path.contains(&0) {
+        let mut bytes = Vec::new();
+        for path in paths.iter().map(|path| path.as_os_str()) {
+            if path.is_empty() || path.encode_wide().any(|unit| unit == 0) {
                 anyhow::bail!("Invalid configuration path");
             }
-            words.extend(path);
-            words.push(0);
+            bytes.extend(path.encode_wide().chain(Some(0)).flat_map(u16::to_le_bytes));
         }
-        words.push(0);
-        let bytes: Vec<_> = words.into_iter().flat_map(u16::to_le_bytes).collect();
+        bytes.extend_from_slice(&[0, 0]);
         if bytes.len() > MAX_VALUE as usize {
             anyhow::bail!("Configuration paths too large");
         }
@@ -281,6 +272,20 @@ fn decode_paths(bytes: &[u8]) -> Option<Vec<PathBuf>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn configuration_root_rejects_empty_components_and_nul() {
+        for root in [
+            "",
+            "\\",
+            "\\Software",
+            "Software\\",
+            "Software\\\\Winlex",
+            "Soft\0ware",
+        ] {
+            assert!(Config::from_root(OsStr::new(root), 1).is_err());
+        }
+    }
+
     #[test]
     fn read_warning_preserves_status_when_writes_are_blocked() {
         let config = Config {
@@ -371,7 +376,7 @@ mod tests {
         key.set_text("Text", "中文").unwrap();
         let loaded = one.load();
         let key = loaded.key.as_ref().unwrap();
-        assert_eq!(loaded.paths(), Some(vec![path]));
+        assert_eq!(loaded.paths, Some(vec![path]));
         assert_eq!(key.number("Number"), Some(144));
         assert_eq!(key.text("Text").as_deref(), Some("中文"));
         assert!(two.load().key.is_none());
@@ -413,7 +418,7 @@ mod tests {
         );
         let loaded = profile.load();
         assert!(loaded.warning().is_none());
-        assert_eq!(loaded.paths(), Some(vec![]));
+        assert_eq!(loaded.paths, Some(vec![]));
         loaded.write_paths(&[]).unwrap();
         assert_eq!(profile.open_key(KEY_QUERY_VALUE).number("Version"), Some(1));
     }
@@ -431,7 +436,7 @@ mod tests {
                 .unwrap()
                 .unwrap();
             let loaded = profile.load();
-            assert!(loaded.paths().is_none());
+            assert!(loaded.paths.is_none());
             assert!(loaded.warning().is_some());
             assert!(loaded.write_paths(&[]).is_err());
             loaded.write_key().unwrap().set_number("Other", 3).unwrap();

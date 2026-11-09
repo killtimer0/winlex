@@ -40,7 +40,7 @@ pub(super) fn command(ctx: &Context, id: u16) -> bool {
     }
     match id {
         FIND_DOCUMENT | FIND_NEXT | FIND_PREVIOUS => {
-            if let Some(document) = workspace::content(ctx, workspace::active(ctx)) {
+            if let Some(document) = workspace::view(ctx, workspace::active(ctx)) {
                 document.command(id, 0);
             }
         }
@@ -114,8 +114,7 @@ pub(super) fn command(ctx: &Context, id: u16) -> bool {
 }
 
 pub(super) fn update_commands(ctx: &Context) {
-    let enabled =
-        workspace::content(ctx, workspace::active(ctx)).is_some_and(|c| c.supports_find());
+    let enabled = workspace::view(ctx, workspace::active(ctx)).is_some();
     let frame = ctx.frame();
     if frame.is_null() {
         return;

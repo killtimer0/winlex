@@ -152,7 +152,6 @@ impl<J, O> Drop for Running<J, O> {
 }
 impl<J, O> Drop for Results<J, O> {
     fn drop(&mut self) {
-        self.requests.close();
         self.tx.take();
         self.ready.signal();
     }

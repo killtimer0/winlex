@@ -23,7 +23,7 @@ enum Backend {
 }
 
 fn backend(version: WindowsVersion) -> Backend {
-    if version.at_least(WindowsVersion::VISTA) {
+    if version >= WindowsVersion::VISTA {
         Backend::TaskDialog
     } else {
         Backend::MessageBox

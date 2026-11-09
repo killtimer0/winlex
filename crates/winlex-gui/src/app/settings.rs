@@ -131,30 +131,6 @@ impl Settings {
             preferred_architecture,
         }
     }
-    pub fn set_preferred_architecture(
-        &mut self,
-        config: &Config,
-        architecture: Architecture,
-    ) -> anyhow::Result<()> {
-        if self.preferred_architecture != Some(architecture) {
-            config
-                .write_key()?
-                .set_text("PreferredArchitecture", architecture.name())?;
-            self.preferred_architecture = Some(architecture);
-        }
-        Ok(())
-    }
-    pub fn set_preferences(
-        &mut self,
-        config: &Config,
-        preferences: Preferences,
-    ) -> anyhow::Result<()> {
-        if self.preferences != preferences {
-            preferences.save(config)?;
-            self.preferences = preferences;
-        }
-        Ok(())
-    }
 }
 
 pub(super) fn preferences(ctx: &Context) -> Preferences {
@@ -171,12 +147,24 @@ pub(super) fn set_preferred_architecture(
     architecture: Architecture,
 ) -> anyhow::Result<()> {
     ctx.with_settings_and_config(|settings, config| {
-        settings.set_preferred_architecture(config, architecture)
+        if settings.preferred_architecture != Some(architecture) {
+            config
+                .write_key()?
+                .set_text("PreferredArchitecture", architecture.name())?;
+            settings.preferred_architecture = Some(architecture);
+        }
+        Ok(())
     })
 }
 pub(super) fn apply_preferences(ctx: &Context, preferences: Preferences) -> anyhow::Result<()> {
     let previous = self::preferences(ctx);
-    ctx.with_settings_and_config(|settings, config| settings.set_preferences(config, preferences))?;
+    ctx.with_settings_and_config(|settings, config| -> anyhow::Result<()> {
+        if settings.preferences != preferences {
+            preferences.save(config)?;
+            settings.preferences = preferences;
+        }
+        Ok(())
+    })?;
     if previous.theme != preferences.theme {
         crate::theme::set_mode(preferences.theme as u32);
         send(ctx.frame(), WM_THEMECHANGED, 0, 0);

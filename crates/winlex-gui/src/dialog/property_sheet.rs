@@ -8,7 +8,7 @@ use std::{
     ptr,
 };
 
-pub type Callback = unsafe extern "system" fn(HWND, u32, isize, usize) -> i32;
+pub type Callback = unsafe extern "system" fn(HWND, u32, isize) -> i32;
 
 struct Sheet {
     dpi: Dpi,
@@ -18,7 +18,6 @@ struct Sheet {
     layouts: RefCell<Vec<Layout>>,
     prepared: Cell<bool>,
     callback: Callback,
-    data: usize,
     failure: RefCell<Option<anyhow::Error>>,
 }
 impl Sheet {
@@ -137,9 +136,8 @@ pub fn show(
     header: &mut PROPSHEETHEADERW_V2,
     dpi: Dpi,
     baseline: Vec<SIZE>,
-    data: usize,
     callback: Callback,
-) -> anyhow::Result<isize> {
+) -> anyhow::Result<()> {
     anyhow::ensure!(
         header.dwFlags & PSH_MODELESS == 0 && header.nPages as usize == baseline.len(),
         "Invalid modal property sheet configuration"
@@ -152,7 +150,6 @@ pub fn show(
         layouts: RefCell::new(Vec::new()),
         prepared: Cell::new(false),
         callback,
-        data,
         failure: RefCell::new(None),
     };
     let _hook = CreationHook::new(dpi, header.hwndParent)?;
@@ -169,7 +166,7 @@ pub fn show(
         return Err(error);
     }
     anyhow::ensure!(result != -1, "Create property sheet failed");
-    Ok(result)
+    Ok(())
 }
 
 unsafe extern "system" fn sheet_callback(hwnd: HWND, message: u32, l: isize) -> i32 {
@@ -178,7 +175,7 @@ unsafe extern "system" fn sheet_callback(hwnd: HWND, message: u32, l: isize) -> 
             let Some(state) = current.get().as_ref() else {
                 return 0;
             };
-            let result = (state.callback)(hwnd, message, l, state.data);
+            let result = (state.callback)(hwnd, message, l);
             if message == PSCB_INITIALIZED {
                 crate::theme::apply(hwnd);
                 if set_subclass(hwnd, Some(sheet_proc), 1, current.get() as usize) == 0 {

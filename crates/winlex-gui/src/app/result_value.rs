@@ -53,8 +53,8 @@ pub(super) fn read(
         }))
     } else {
         Ok(Some(ResultValue {
-            text: match &value {
-                Value::Utf8(text) | Value::Utf16(text) => text.clone(),
+            text: match value {
+                Value::Utf8(text) | Value::Utf16(text) => text,
                 _ => winlex_format::constant(&value),
             },
             hexadecimal: None,

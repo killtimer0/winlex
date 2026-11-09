@@ -42,7 +42,7 @@ fn bind(hwnd: HWND, font: HFONT) {
 
 pub fn run(
     dpi: Dpi,
-    config: crate::config::Config,
+    mut config: crate::config::Config,
     paths: Vec<std::path::PathBuf>,
 ) -> anyhow::Result<()> {
     let system_version = crate::platform::WindowsVersion::query()?;
@@ -53,7 +53,7 @@ pub fn run(
     resources::initialize(settings.preferences.language)?;
     let session = catalog::Session::new(paths.is_empty());
     let worker = crate::worker::Worker::new(crate::tasks::run)?;
-    let saved_paths = config.paths();
+    let saved_paths = config.paths.take();
     let prompt = sources::should_prompt(&paths, saved_paths.as_deref());
     let paths = if paths.is_empty() {
         saved_paths.unwrap_or_default()
@@ -236,7 +236,11 @@ fn poll_completions(ctx: &Context) {
                 id,
                 document,
                 completion,
-            }) => tools::complete(ctx, document, id, completion),
+            }) => {
+                if let Some(tool) = workspace::content_by_id(ctx, document).and_then(|c| c.tool()) {
+                    tool.complete(id, completion);
+                }
+            }
             Err(std::sync::mpsc::TryRecvError::Empty) => {
                 catalog::flush_results(ctx);
                 return;
@@ -247,7 +251,12 @@ fn poll_completions(ctx: &Context) {
                 for view in workspace::views(ctx) {
                     view.worker_stopped();
                 }
-                tools::worker_stopped(ctx);
+                for tool in workspace::contents(ctx)
+                    .into_iter()
+                    .filter_map(|c| c.tool())
+                {
+                    tool.worker_stopped();
+                }
                 panel::cancel_debounce(ctx);
                 return;
             }

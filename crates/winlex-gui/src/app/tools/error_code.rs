@@ -1,5 +1,4 @@
 //! Error-code controls and instance-local asynchronous message queries.
-use super::Descriptor;
 use crate::app::context::Context;
 use crate::native::text;
 use crate::{
@@ -23,29 +22,15 @@ use winlex_core::{
 };
 
 const TEXT_SUBCLASS: usize = 1810;
-fn item_code(value: Option<&crate::app::result_value::ResultValue>) -> Option<u32> {
+pub(in crate::app) fn item_code(
+    value: Option<&crate::app::result_value::ResultValue>,
+) -> Option<u32> {
     let number = value?.integer?;
     if number < 0 {
         i32::try_from(number).ok().map(|number| number as u32)
     } else {
         u32::try_from(number).ok()
     }
-}
-pub(super) fn item_actions(
-    descriptor: &'static Descriptor,
-    value: Option<&crate::app::result_value::ResultValue>,
-) -> Vec<super::ItemAction> {
-    let Some(code) = item_code(value) else {
-        return Vec::new();
-    };
-    vec![super::ItemAction {
-        label: IDS_ERROR_CODE_SEARCH,
-        run: Box::new(move |ctx| {
-            if let Some(view) = super::open_descriptor(ctx, descriptor, false) {
-                view.search_code(code);
-            }
-        }),
-    }]
 }
 const SCOPES: &[(u16, Scope)] = &[
     (IDS_ERROR_CODE_AUTO, Scope::Auto),
@@ -60,8 +45,6 @@ pub(in crate::app) struct View {
     ctx: *const Context,
     pub id: u64,
     pub hwnd: HWND,
-    pub descriptor: &'static Descriptor,
-    pub lifetime: Rc<()>,
     pub placement: Cell<Option<layout::Placement>>,
     pub live: Cell<bool>,
     pub(super) recent: Cell<u64>,
@@ -88,13 +71,11 @@ impl View {
     fn ctx(&self) -> &Context {
         unsafe { &*self.ctx }
     }
-    pub fn new(ctx: &Context, descriptor: &'static Descriptor) -> Self {
+    pub fn new(ctx: &Context) -> Self {
         Self {
             ctx: ctx as *const Context,
-            id: super::super::workspace::next_id(ctx),
+            id: super::super::workspace::next_serial(ctx),
             hwnd: std::ptr::null_mut(),
-            descriptor,
-            lifetime: Rc::new(()),
             placement: Cell::new(None),
             live: Cell::new(true),
             recent: Cell::new(0),
@@ -130,14 +111,7 @@ fn language_identity(ids: &[u16], selected: isize, value: &str) -> Option<u16> {
         .filter(|id| language_label(*id) == value)
 }
 impl View {
-    pub fn title(&self) -> String {
-        if self.hwnd.is_null() {
-            resources::text(self.descriptor.title)
-        } else {
-            text(self.hwnd)
-        }
-    }
-    fn search_code(&self, code: u32) {
+    pub(in crate::app) fn search_code(&self, code: u32) {
         self.cancel_languages();
         if let Some(id) = self.query_ticket.take() {
             self.ctx().cancel_job(id);
@@ -160,12 +134,17 @@ impl View {
         let ctx = self.ctx();
         super::super::status::report(
             ctx,
-            super::super::document::update_icons(ctx, self.hwnd, self.descriptor.icon, &self.icons),
+            super::super::document::update_icons(
+                ctx,
+                self.hwnd,
+                crate::icons::Icon::Constant,
+                &self.icons,
+            ),
         );
     }
     pub fn activated(&self) {
         self.recent
-            .set(super::super::workspace::next_tool_clock(self.ctx()));
+            .set(super::super::workspace::next_serial(self.ctx()));
     }
     fn command(&self, id: u16, code: u32) -> bool {
         if self.setting.get() {
@@ -243,9 +222,6 @@ impl View {
         Ok(request)
     }
     fn changed(&self) {
-        if self.setting.get() {
-            return;
-        }
         self.revision.set(self.revision.get() + 1);
         self.set_status(&resources::text(IDS_ERROR_CODE_STALE));
     }
@@ -346,12 +322,14 @@ impl View {
             Err(error) => self.set_status(&format!("{error:#}")),
         }
     }
-    pub(super) fn query_complete(
-        &self,
-        id: u64,
-        revision: u64,
-        result: anyhow::Result<QueryResult>,
-    ) {
+    pub fn complete(&self, id: u64, completion: crate::tasks::tools::Completion) {
+        use crate::tasks::tools::Completion;
+        match completion {
+            Completion::Query { revision, result } => self.query_complete(id, revision, result),
+            Completion::Languages { path, result } => self.languages_complete(id, path, result),
+        }
+    }
+    fn query_complete(&self, id: u64, revision: u64, result: anyhow::Result<QueryResult>) {
         if self.query_ticket.get() != Some(id) {
             return;
         }
@@ -384,12 +362,7 @@ impl View {
             });
         }
     }
-    pub(super) fn languages_complete(
-        &self,
-        id: u64,
-        path: PathBuf,
-        result: Result<Vec<u16>, core::Failure>,
-    ) {
+    fn languages_complete(&self, id: u64, path: PathBuf, result: Result<Vec<u16>, core::Failure>) {
         if self.languages_ticket.get() != Some(id) {
             return;
         }
@@ -738,7 +711,7 @@ impl View {
             DestroyWindow(self.tooltip);
         }
     }
-    pub(super) fn worker_stopped(&self) {
+    pub(in crate::app) fn worker_stopped(&self) {
         let querying = self.query_ticket.take().is_some();
         let languages = self.languages_ticket.take().is_some();
         if querying || languages {
@@ -821,8 +794,6 @@ fn language_label(id: u16) -> String {
 }
 fn order_languages(mut ids: Vec<u16>, interface: u16, user: u16) -> Vec<u16> {
     ids.push(0);
-    ids.sort_unstable();
-    ids.dedup();
     ids.sort_by_cached_key(|id| {
         let priority = if *id == 0 {
             0
@@ -835,8 +806,9 @@ fn order_languages(mut ids: Vec<u16>, interface: u16, user: u16) -> Vec<u16> {
         } else {
             4
         };
-        (priority, language_tag(*id))
+        (priority, language_tag(*id), *id)
     });
+    ids.dedup();
     ids
 }
 fn scope_label(scope: &Scope) -> u16 {

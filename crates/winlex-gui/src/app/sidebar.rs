@@ -67,8 +67,9 @@ pub(super) fn panel(ctx: &Context, id: PanelId) -> Rc<Panel> {
 pub(super) fn owner(ctx: &Context, hwnd: HWND) -> Option<Rc<Panel>> {
     ctx.with_sidebar(|sidebar| sidebar.owner(hwnd))
 }
-pub(super) fn search(ctx: &Context) -> Option<Rc<Search>> {
+pub(super) fn search(ctx: &Context) -> Rc<Search> {
     ctx.with_sidebar(|sidebar| sidebar.search.clone())
+        .expect("search panel")
 }
 pub(super) fn current(ctx: &Context) -> Option<Rc<Panel>> {
     ctx.with_sidebar(|sidebar| {
@@ -197,7 +198,7 @@ pub(super) fn prepare(ctx: &Context) {
         panel.prepare(ctx, &m);
     }
     super::tools::refresh(ctx);
-    panel::search(ctx).prepare(&m);
+    search(ctx).prepare(&m);
 }
 fn update_images(ctx: &Context, toolbar: HWND, size: i32) {
     if let Some(images) = ctx.checked(Images::toolbar(
@@ -237,7 +238,7 @@ pub(super) fn layout(ctx: &Context, bottom: i32, positions: &mut Vec<(HWND, RECT
     };
     let mut area = layout::inset(layout::rect(x, 0, width, bottom), m.px(4));
     match ctx.with_sidebar(|sidebar| sidebar.active) {
-        PanelId::Search => panel::search(ctx).layout(ctx, &mut area, &m, positions),
+        PanelId::Search => search(ctx).layout(ctx, &mut area, &m, positions),
         PanelId::Sources => m.buttons(&mut area, panel.controls[1..].iter().copied(), positions),
         PanelId::Tools => m.buttons(&mut area, panel.controls[1..].iter().copied(), positions),
     }

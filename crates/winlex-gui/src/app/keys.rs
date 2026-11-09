@@ -18,11 +18,9 @@ pub(super) fn translate(ctx: &Context, msg: &MSG) -> bool {
     {
         return true;
     }
+    let search = sidebar::search(ctx);
     match msg.wParam {
-        key if key == VK_RETURN as usize
-            && sidebar::search(ctx)
-                .is_some_and(|search| msg.hwnd == search.input && !search.composing.get()) =>
-        {
+        key if key == VK_RETURN as usize && msg.hwnd == search.input && !search.composing.get() => {
             catalog::search(ctx);
         }
         key if key == VK_SPACE as usize

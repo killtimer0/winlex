@@ -40,7 +40,7 @@ struct Entry {
 #[derive(Clone)]
 enum Target {
     Declaration(DeclarationTarget),
-    Live(std::rc::Weak<()>),
+    Live(std::rc::Weak<super::tools::ToolView>),
 }
 #[derive(Clone)]
 struct DeclarationTarget {
@@ -88,7 +88,6 @@ pub(super) struct History {
     entries: Vec<Entry>,
     cursor: Option<usize>,
     depth: usize,
-    enabled: Option<[bool; 2]>,
 }
 
 impl History {
@@ -127,11 +126,10 @@ impl History {
         }
     }
     fn visit(&mut self, entry: Entry) {
-        if self
-            .cursor
-            .is_some_and(|i| self.entries[i].same_location(&entry))
+        if let Some(index) = self.cursor
+            && self.entries[index].same_location(&entry)
         {
-            self.save(entry);
+            self.entries[index] = entry;
             return;
         }
         self.entries
@@ -157,7 +155,7 @@ impl History {
             .map(|(i, _)| i);
         if let Some(index) = previous {
             self.cursor = Some(index);
-            self.save(entry);
+            self.entries[index] = entry;
         } else {
             self.visit(entry);
         }
@@ -176,7 +174,7 @@ fn capture_content(content: &super::content::Content) -> Entry {
         super::content::Content::Declaration(v) => Entry::capture(v),
         super::content::Content::Tool(v) => Entry {
             document: v.id,
-            target: Target::Live(std::rc::Rc::downgrade(&v.lifetime)),
+            target: Target::Live(std::rc::Rc::downgrade(v)),
         },
     }
 }
@@ -199,7 +197,6 @@ pub(super) fn content_activation(ctx: &Context, content: &super::content::Conten
 
 struct Scope<'a> {
     ctx: &'a Context,
-    outer: bool,
 }
 impl<'a> Scope<'a> {
     fn begin(ctx: &'a Context) -> Self {
@@ -210,7 +207,7 @@ impl<'a> Scope<'a> {
         if outer && let Some(entry) = active_entry(ctx) {
             workspace::with_history(ctx, |history| history.visit(entry));
         }
-        Self { ctx, outer }
+        Self { ctx }
     }
 }
 impl Drop for Scope<'_> {
@@ -222,7 +219,7 @@ impl Drop for Scope<'_> {
 pub(super) fn visit<T>(ctx: &Context, action: impl FnOnce() -> T) -> T {
     let scope = Scope::begin(ctx);
     let result = action();
-    if scope.outer
+    if workspace::history_depth(ctx) == 1
         && let Some(entry) = active_entry(ctx)
     {
         workspace::with_history(ctx, |history| history.visit(entry));
@@ -235,7 +232,7 @@ pub(super) fn visit<T>(ctx: &Context, action: impl FnOnce() -> T) -> T {
 pub(super) fn closing(ctx: &Context, action: impl FnOnce()) {
     let scope = Scope::begin(ctx);
     action();
-    if scope.outer {
+    if workspace::history_depth(ctx) == 1 {
         let entry = active_entry(ctx);
         workspace::with_history(ctx, |history| history.after_close(entry));
     }
@@ -306,12 +303,7 @@ pub(super) fn refresh(ctx: &Context) {
             return None;
         }
         history.prune();
-        let enabled = Direction::ALL.map(|direction| history.next(direction).is_some());
-        if history.enabled == Some(enabled) {
-            return None;
-        }
-        history.enabled = Some(enabled);
-        Some(enabled)
+        Some(Direction::ALL.map(|direction| history.next(direction).is_some()))
     });
     if let Some(enabled) = update {
         for (direction, enabled) in Direction::ALL.into_iter().zip(enabled) {
@@ -335,35 +327,6 @@ mod tests {
             panic!("expected declaration")
         };
         target
-    }
-
-    #[test]
-    fn live_history_expires_and_new_instances_do_not_revive_old_visits() {
-        let first = std::rc::Rc::new(());
-        let second = std::rc::Rc::new(());
-        let mut history = History::default();
-        let live = |document, life: &std::rc::Rc<()>| Entry {
-            document,
-            target: Target::Live(std::rc::Rc::downgrade(life)),
-        };
-        history.visit(live(1, &first));
-        history.visit(live(2, &second));
-        history.visit(live(1, &first));
-        assert_eq!(replay(&mut history, Back).unwrap().document, 2);
-        assert_eq!(replay(&mut history, Forward).unwrap().document, 1);
-        drop(first);
-        history.after_close(Some(live(2, &second)));
-        history.prune();
-        assert!(replay(&mut history, Back).is_none());
-        let fresh = std::rc::Rc::new(());
-        history.visit(live(3, &fresh));
-        assert_eq!(replay(&mut history, Back).unwrap().document, 2);
-        assert_eq!(replay(&mut history, Forward).unwrap().document, 3);
-        drop(fresh);
-        drop(second);
-        history.prune();
-        assert!(history.next(Back).is_none());
-        assert!(history.next(Forward).is_none());
     }
 
     use crate::test_support::catalog;

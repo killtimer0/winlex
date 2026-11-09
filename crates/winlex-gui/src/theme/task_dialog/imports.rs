@@ -17,8 +17,6 @@ pub(super) type ColorFn =
     unsafe extern "system" fn(HTHEME, i32, i32, i32, *mut COLORREF) -> HRESULT;
 pub(super) type BackgroundFn =
     unsafe extern "system" fn(HTHEME, HDC, i32, i32, *const RECT, *const DTBGOPTS) -> HRESULT;
-static COLOR: AtomicUsize = AtomicUsize::new(0);
-static BACKGROUND: AtomicUsize = AtomicUsize::new(0);
 
 // Forwarding pointers can still be used by an in-flight callback after the last
 // slot has been restored. Keep one uxtheme loader reference for process lifetime.
@@ -43,10 +41,12 @@ fn exports() -> Option<(usize, usize)> {
 }
 
 pub(super) unsafe fn original_color() -> ColorFn {
-    unsafe { mem::transmute::<usize, ColorFn>(COLOR.load(Ordering::Acquire)) }
+    unsafe { mem::transmute::<usize, ColorFn>(exports().expect("installed theme hook exports").0) }
 }
 pub(super) unsafe fn original_background() -> BackgroundFn {
-    unsafe { mem::transmute::<usize, BackgroundFn>(BACKGROUND.load(Ordering::Acquire)) }
+    unsafe {
+        mem::transmute::<usize, BackgroundFn>(exports().expect("installed theme hook exports").1)
+    }
 }
 
 struct Patch {
@@ -161,12 +161,10 @@ impl Hooks {
                 self.restore();
                 return false;
             }
-            let Some((original_color, original_background)) = exports() else {
+            if exports().is_none() {
                 self.restore();
                 return false;
-            };
-            COLOR.store(original_color, Ordering::Release);
-            BACKGROUND.store(original_background, Ordering::Release);
+            }
             self.patches = slots
                 .into_iter()
                 .map(|(offset, function)| {

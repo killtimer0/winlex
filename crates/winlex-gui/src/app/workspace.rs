@@ -18,8 +18,8 @@ pub(super) struct Workspace {
     icons: crate::icons::DocumentIcons,
     history: history::History,
     maximized: bool,
+    // Document identities need uniqueness; activation stamps need ordering, not dense values.
     serial: u64,
-    tool_clock: u64,
 }
 impl Default for Workspace {
     fn default() -> Self {
@@ -31,7 +31,6 @@ impl Default for Workspace {
             history: history::History::default(),
             maximized: true,
             serial: 0,
-            tool_clock: 0,
         }
     }
 }
@@ -54,12 +53,6 @@ pub(super) fn document_icons(
     dpi: u32,
 ) -> anyhow::Result<Rc<crate::icons::WindowIcons>> {
     ctx.with_workspace_mut(|workspace| workspace.icons.get(icon, dpi))
-}
-pub(super) fn next_tool_clock(ctx: &Context) -> u64 {
-    ctx.with_workspace_mut(|workspace| {
-        workspace.tool_clock += 1;
-        workspace.tool_clock
-    })
 }
 pub(super) fn history_depth(ctx: &Context) -> usize {
     ctx.with_workspace(|workspace| workspace.history.depth())
@@ -143,11 +136,8 @@ fn close_now(ctx: &Context, hwnd: HWND) {
         }
     }
 }
-pub(super) fn preview_document(ctx: &Context) -> Option<HWND> {
-    views(ctx)
-        .into_iter()
-        .find(|d| d.preview.get())
-        .map(|d| d.hwnd)
+pub(super) fn preview_document(ctx: &Context) -> Option<Rc<MetadataView>> {
+    views(ctx).into_iter().find(|d| d.preview.get())
 }
 pub(super) fn pin_document(ctx: &Context, hwnd: HWND) {
     let changed = view(ctx, hwnd).is_some_and(|doc| doc.preview.replace(false));
@@ -283,13 +273,7 @@ pub(super) fn set_arrangement(ctx: &Context, arrangement: Arrangement) {
 pub(super) fn set_maximized(ctx: &Context, maximized: bool) {
     ctx.with_workspace_mut(|workspace| workspace.maximized = maximized);
 }
-fn normal_placement(ctx: &Context, hwnd: HWND) -> anyhow::Result<Placement> {
-    Ok(Placement {
-        bounds: window_placement(hwnd, "Read document placement")?.rcNormalPosition,
-        dpi: ctx.dpi().window(hwnd),
-    })
-}
-pub(super) fn next_id(ctx: &Context) -> u64 {
+pub(super) fn next_serial(ctx: &Context) -> u64 {
     ctx.with_workspace_mut(|workspace| {
         workspace.serial += 1;
         workspace.serial
@@ -300,7 +284,7 @@ fn create_window(
     title: &str,
     create: Box<dyn FnOnce(HWND) -> anyhow::Result<Content>>,
     context: &str,
-) -> anyhow::Result<HWND> {
+) -> anyhow::Result<Content> {
     let (mdi, maximized) = ctx.with_workspace(|workspace| (workspace.mdi, workspace.maximized));
     let mut init = host::Init {
         create: Some(create),
@@ -324,8 +308,11 @@ fn create_window(
     if hwnd.is_null() {
         return Err(init.error.unwrap_or_else(|| error(context)));
     }
-    let placement = match normal_placement(ctx, hwnd) {
-        Ok(placement) => placement,
+    let placement = match window_placement(hwnd, "Read document placement") {
+        Ok(placement) => Placement {
+            bounds: placement.rcNormalPosition,
+            dpi: ctx.dpi().window(hwnd),
+        },
         Err(error) => {
             close_document(ctx, hwnd);
             return Err(error);
@@ -334,14 +321,14 @@ fn create_window(
     let content = content(ctx, hwnd).expect("created content");
     content.set_placement(placement);
     content.prepare();
-    Ok(hwnd)
+    Ok(content)
 }
 pub(super) fn create_document(
     ctx: &Context,
     title: &str,
     mut content: super::metadata::MetadataView,
 ) -> anyhow::Result<Rc<MetadataView>> {
-    let hwnd = create_window(
+    let content = create_window(
         ctx,
         title,
         Box::new(move |hwnd| {
@@ -350,7 +337,7 @@ pub(super) fn create_document(
         }),
         "Create MDI document",
     )?;
-    let doc = view(ctx, hwnd).expect("created document");
+    let doc = content.declaration().expect("created document");
     refresh_document_tabs(ctx);
     Ok(doc)
 }
@@ -384,14 +371,11 @@ pub(super) fn content(ctx: &Context, hwnd: HWND) -> Option<Content> {
 pub(super) fn content_by_id(ctx: &Context, id: u64) -> Option<Content> {
     ctx.with_workspace(|workspace| workspace.documents.iter().find(|d| d.id() == id).cloned())
 }
-pub(super) fn create_tool(
-    ctx: &Context,
-    descriptor: &'static super::tools::Descriptor,
-) -> anyhow::Result<HWND> {
-    let mut view = super::tools::ToolView::new(ctx, descriptor);
-    let hwnd = create_window(
+pub(super) fn create_tool(ctx: &Context) -> anyhow::Result<Rc<super::tools::ToolView>> {
+    let mut view = super::tools::ToolView::new(ctx);
+    let content = create_window(
         ctx,
-        &resources::text(descriptor.title),
+        &resources::text(crate::resources::IDS_ERROR_CODE_TOOL),
         Box::new(move |hwnd| {
             view.create(hwnd)?;
             Ok(Content::Tool(Rc::from(view)))
@@ -399,5 +383,5 @@ pub(super) fn create_tool(
         "Create tool window",
     )?;
     refresh_document_tabs(ctx);
-    Ok(hwnd)
+    Ok(content.tool().expect("created tool"))
 }

@@ -343,9 +343,7 @@ fn theme_switches_preserve_native_control_input_and_status_contracts() {
                 // only our fallback painters promise these palette/DC values.
                 // Native tab input/selection is exercised above, displayed
                 // colors by the GUI suite.
-                if control == tabs && prefer_native_tabs()
-                    || control == status && prefer_theme() && native_dark_theme()
-                {
+                if (control == tabs || control == status) && native_dark_theme() {
                     continue;
                 }
                 let font = GetCurrentObject(dc, OBJ_FONT as u32);
@@ -850,7 +848,7 @@ fn property_sheet_is_dark_before_page_initialization_and_first_display() {
             default_subclass(hwnd, message, w, l)
         }
     }
-    unsafe extern "system" fn callback(hwnd: HWND, message: u32, _: isize, _: usize) -> i32 {
+    unsafe extern "system" fn callback(hwnd: HWND, message: u32, _: isize) -> i32 {
         if message == PSCB_INITIALIZED {
             OBSERVATIONS.with(|current| unsafe {
                 if let Some(observations) = current.get().as_ref() {
@@ -941,7 +939,7 @@ fn property_sheet_is_dark_before_page_initialization_and_first_display() {
         }
         let mut header: PROPSHEETHEADERW_V2 = std::mem::zeroed();
         header.dwSize = std::mem::size_of::<PROPSHEETHEADERW_V2>() as u32;
-        header.dwFlags = PSH_PROPSHEETPAGE | PSH_NOAPPLYNOW | PSH_NOCONTEXTHELP | PSH_USECALLBACK;
+        header.dwFlags = PSH_PROPSHEETPAGE | PSH_NOAPPLYNOW | PSH_NOCONTEXTHELP;
         header.hInstance = instance();
         header.pszCaption = w!("Property sheet rendering contract");
         header.nPages = pages.len() as u32;
@@ -949,13 +947,8 @@ fn property_sheet_is_dark_before_page_initialization_and_first_display() {
         set_mode(2);
         let expected = color(COLOR_BTNFACE);
         OBSERVATIONS.with(|current| current.set(&observations));
-        let result = property_sheet::show(
-            &mut header,
-            Dpi { mode: Mode::System },
-            baseline,
-            0,
-            callback,
-        );
+        let result =
+            property_sheet::show(&mut header, Dpi { mode: Mode::System }, baseline, callback);
         OBSERVATIONS.with(|current| current.set(ptr::null()));
         SelectObject(dc, original);
         DeleteDC(dc);

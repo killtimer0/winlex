@@ -154,7 +154,7 @@ impl Info {
             .catalog
             .declaration(entity.id, Some(binding.architecture))?
             .documentation_url();
-        let (label, target) = online_target(documentation.as_deref(), &entity.full_name);
+        let (label, target) = online_target(documentation, &entity.full_name);
         set_text(self.online, &resources::text(label));
         let filename: Vec<u16> = binding.catalog.sources()[entity.id.source_id]
             .path
@@ -369,7 +369,7 @@ impl Drop for Info {
         self.clear_accessibility();
     }
 }
-fn online_target(documentation: Option<&str>, name: &str) -> (u16, String) {
+fn online_target(documentation: Option<String>, name: &str) -> (u16, String) {
     if let Some(url) = documentation.filter(|url| {
         let Some(rest) = url
             .get(..8)
@@ -388,7 +388,7 @@ fn online_target(documentation: Option<&str>, name: &str) -> (u16, String) {
                 .chars()
                 .any(|ch| ch.is_control() || ch.is_whitespace() || matches!(ch, '\\' | '"' | '\''))
     }) {
-        return (IDS_OFFICIAL_DOCUMENTATION, url.to_owned());
+        return (IDS_OFFICIAL_DOCUMENTATION, url);
     }
     let mut url = String::from("https://www.google.com/search?q=");
     for byte in name.bytes() {
@@ -441,7 +441,7 @@ mod tests {
     fn online_targets_use_https_documentation_or_encoded_search() {
         let url = "https://learn.microsoft.com/windows/win32/api/test?a=1&b=2#member";
         assert_eq!(
-            online_target(Some(url), "ignored"),
+            online_target(Some(url.into()), "ignored"),
             (IDS_OFFICIAL_DOCUMENTATION, url.into())
         );
         for invalid in [
@@ -457,7 +457,7 @@ mod tests {
             Some("https://user@example.com"),
         ] {
             assert_eq!(
-                online_target(invalid, "N.A&B 中"),
+                online_target(invalid.map(str::to_owned), "N.A&B 中"),
                 (
                     IDS_ONLINE_SEARCH,
                     "https://www.google.com/search?q=N.A%26B%20%E4%B8%AD".into()

@@ -40,10 +40,6 @@ impl WindowsVersion {
         })
     }
 
-    pub fn at_least(self, minimum: Self) -> bool {
-        self >= minimum
-    }
-
     pub fn build(self) -> u32 {
         self.build
     }
@@ -71,8 +67,7 @@ mod tests {
                     major,
                     minor,
                     build
-                }
-                .at_least(WindowsVersion::DARK_MODE),
+                } >= WindowsVersion::DARK_MODE,
                 supported
             );
         }

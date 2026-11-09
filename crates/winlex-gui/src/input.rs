@@ -37,7 +37,7 @@ pub fn choose(
     pattern: &str,
     multiple: bool,
 ) -> anyhow::Result<Vec<PathBuf>> {
-    if version.at_least(WindowsVersion::VISTA) {
+    if version >= WindowsVersion::VISTA {
         modern_choose(owner, title, label, pattern, multiple).context("Select files")
     } else {
         legacy_choose(owner, title, label, pattern, multiple)
@@ -101,19 +101,18 @@ fn selected_paths(buffer: &[u16], multiple: bool) -> Vec<PathBuf> {
         let length = buffer.iter().position(|c| *c == 0).unwrap_or(buffer.len());
         return vec![PathBuf::from(OsString::from_wide(&buffer[..length]))];
     }
-    let parts: Vec<_> = buffer
+    let mut parts = buffer
         .split(|c| *c == 0)
         .take_while(|s| !s.is_empty())
-        .map(OsString::from_wide)
-        .collect();
-    match parts.as_slice() {
-        [] => Vec::new(),
-        [path] => vec![PathBuf::from(path)],
-        [directory, names @ ..] => names
-            .iter()
-            .map(|name| PathBuf::from(directory).join(name))
-            .collect(),
+        .map(OsString::from_wide);
+    let Some(directory) = parts.next().map(PathBuf::from) else {
+        return Vec::new();
+    };
+    let mut paths: Vec<_> = parts.map(|name| directory.join(name)).collect();
+    if paths.is_empty() {
+        paths.push(directory);
     }
+    paths
 }
 
 fn modern_choose(
@@ -233,7 +232,14 @@ mod tests {
             let mut selected = wide(&directory);
             selected.extend(&filename);
             selected.extend([0, 0]);
-            assert_eq!(selected_paths(&selected, true), [path]);
+            assert_eq!(selected_paths(&selected, true), std::slice::from_ref(&path));
+            selected.pop();
+            selected.extend(wide("second 😀.winmd"));
+            selected.push(0);
+            assert_eq!(
+                selected_paths(&selected, true),
+                [path, PathBuf::from(&directory).join("second 😀.winmd")]
+            );
         }
         assert!(selected_paths(&[0, 0], true).is_empty());
         assert_eq!(selected_paths(&[0, 0], false), [PathBuf::new()]);

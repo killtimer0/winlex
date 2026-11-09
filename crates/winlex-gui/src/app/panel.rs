@@ -24,7 +24,7 @@ const SEARCH_MODES: &[(u16, SearchMode, u16)] = &[
 ];
 
 pub(super) fn search_mode(ctx: &Context) -> SearchMode {
-    SEARCH_MODES[search(ctx).mode.get()].1
+    SEARCH_MODES[sidebar::search(ctx).mode.get()].1
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -72,9 +72,6 @@ pub(super) struct Search {
     pub composing: Cell<bool>,
     deadline: Cell<Option<std::time::Instant>>,
 }
-pub(super) fn search(ctx: &Context) -> Rc<Search> {
-    sidebar::search(ctx).expect("search panel")
-}
 const SEARCH_TIMER: usize = 1;
 fn search_tool(input: HWND, label: u16) -> TTTOOLINFOW {
     TTTOOLINFOW {
@@ -87,7 +84,7 @@ fn search_tool(input: HWND, label: u16) -> TTTOOLINFOW {
     }
 }
 pub(super) fn cancel_debounce(ctx: &Context) -> (HWND, bool) {
-    let search = search(ctx);
+    let search = sidebar::search(ctx);
     search.deadline.set(None);
     unsafe {
         KillTimer(search.input, SEARCH_TIMER);
@@ -98,7 +95,7 @@ pub(super) fn debounce(ctx: &Context, input: HWND) -> anyhow::Result<()> {
     if unsafe { SetTimer(input, SEARCH_TIMER, 200, None) } == 0 {
         return Err(error("Search debounce"));
     }
-    search(ctx).deadline.set(Some(
+    sidebar::search(ctx).deadline.set(Some(
         std::time::Instant::now() + std::time::Duration::from_millis(200),
     ));
     Ok(())
@@ -199,10 +196,9 @@ pub(super) fn create(ctx: &Context, frame: HWND) -> anyhow::Result<([Rc<Panel>; 
         super::tools::row,
         super::tools::row_text,
         Some(Box::new(move |row, double| {
-            if double {
+            if double && row == 0 {
                 super::tools::open(
                     unsafe { &*state },
-                    row,
                     unsafe { GetKeyState(VK_CONTROL as i32) } < 0,
                 );
             }
@@ -329,7 +325,7 @@ pub(super) fn command(ctx: &Context, w: usize, control: HWND) -> bool {
     if !control.is_null() && sidebar::owner(ctx, control).is_none() {
         return false;
     }
-    search(ctx).command(ctx, id, (w >> 16) as u32) || sources::command(ctx, id)
+    sidebar::search(ctx).command(ctx, id, (w >> 16) as u32) || sources::command(ctx, id)
 }
 unsafe extern "system" fn edit_proc(
     h: HWND,
@@ -344,7 +340,7 @@ unsafe extern "system" fn edit_proc(
             return default_subclass(h, msg, w, l);
         };
         if msg == WM_TIMER && w == SEARCH_TIMER {
-            if search(ctx)
+            if sidebar::search(ctx)
                 .deadline
                 .get()
                 .is_some_and(|deadline| std::time::Instant::now() >= deadline)
@@ -354,12 +350,12 @@ unsafe extern "system" fn edit_proc(
             return 0;
         }
         if msg == WM_IME_STARTCOMPOSITION {
-            search(ctx).composing.set(true);
+            sidebar::search(ctx).composing.set(true);
             catalog::input_changed(ctx);
         }
         let result = default_subclass(h, msg, w, l);
         if msg == WM_IME_ENDCOMPOSITION {
-            search(ctx).composing.set(false);
+            sidebar::search(ctx).composing.set(false);
             catalog::input_changed(ctx);
         }
         if msg == WM_NCDESTROY {

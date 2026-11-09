@@ -4,7 +4,7 @@ import win32con
 import win32gui
 
 from support import native as n
-from test_context import find_popup
+from test_context import dismiss, find_popup, popup, popup_window
 from test_result_menu import choose, result
 from test_tools import activate, body, choose_scope, query, tool, tools
 
@@ -45,3 +45,22 @@ def test_tool_action_creates_instance_without_replacing_metadata_document(launch
                  else None, "error code tool created")
     n.wait(lambda: "0x80004005" in body(doc), "signed HRESULT queried", 30)
     assert original in app.documents()
+
+
+def test_tool_action_captures_code_before_search_refresh(launch, settings):
+    app = launch([settings[1]])
+    result(app, "ERROR_ACCESS_DENIED")
+    _, ids = popup(app, app.results, keyboard=True)
+    assert 100 in ids
+    dismiss(app.results)
+    assert not tools(app), "cancelling an action must not create a tool"
+    _, ids = popup(app, app.results, keyboard=True)
+    value = n.c.create_unicode_buffer('WinlexNoSuchSymbolActionSnapshot')
+    assert n.send(app.search, win32con.WM_SETTEXT, 0, n.c.addressof(value))
+    n.wait(lambda: app.count() == 0, "source results cleared while menu is open")
+    assert popup_window(app.process.pid), "search refresh must leave the menu open"
+    choose(app, ids, 100)
+    doc = n.wait(lambda: app.active_document() if app.active_document() in tools(app)
+                 else None, "captured action opens tool")
+    assert n.window_text(n.get_item(doc, 1810)) == "0x00000005"
+    n.wait(lambda: "0x00000005" in body(doc), "captured code queried after row disappeared", 30)

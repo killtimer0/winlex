@@ -60,17 +60,16 @@ fn show(ctx: &Context) -> anyhow::Result<()> {
     }
     let mut header: PROPSHEETHEADERW_V2 = unsafe { std::mem::zeroed() };
     header.dwSize = size_of::<PROPSHEETHEADERW_V2>() as u32;
-    header.dwFlags = PSH_PROPSHEETPAGE | PSH_NOCONTEXTHELP | PSH_USECALLBACK;
+    header.dwFlags = PSH_PROPSHEETPAGE | PSH_NOCONTEXTHELP;
     header.hwndParent = ctx.frame();
     header.hInstance = instance();
     header.pszCaption = resources::wide_text(IDS_SETTINGS).as_ptr();
     header.nPages = pages.len() as u32;
     header.Anonymous3.ppsp = pages.as_mut_ptr();
-    property_sheet::show(&mut header, ctx.dpi(), baseline, 0, sheet_callback)?;
-    Ok(())
+    property_sheet::show(&mut header, ctx.dpi(), baseline, sheet_callback)
 }
 
-unsafe extern "system" fn sheet_callback(hwnd: HWND, message: u32, _l: isize, _data: usize) -> i32 {
+unsafe extern "system" fn sheet_callback(hwnd: HWND, message: u32, _l: isize) -> i32 {
     unsafe {
         if message == PSCB_INITIALIZED {
             set_text(GetDlgItem(hwnd, IDOK), &resources::text(IDS_SETTINGS_OK));

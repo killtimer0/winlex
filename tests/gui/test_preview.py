@@ -37,6 +37,21 @@ def body(app, doc):
     return n.get_item(doc, 1203)
 
 
+def test_open_without_selected_result_preserves_existing_document(launch, settings):
+    app = launch([settings[1]])
+    app.query("CreateFileW")
+    doc = app.open_row()
+    n.wait(lambda: "CreateFileW(" in app.content(doc), "declaration", 45)
+    original = app.content(doc)
+    app.row(app.selected_row()).GetSelectionItemPattern().RemoveFromSelection()
+    assert app.selected_row() == -1
+    for command in (1049, 1050):
+        app.command(command)
+        assert app.documents() == [doc]
+        assert app.active_document() == doc
+        assert app.content(doc) == original
+
+
 @pytest.mark.parametrize("gesture", [pytest.param("click", marks=pytest.mark.interactive), "space"])
 def test_preview_replacement_preserves_architecture_and_focus(launch, settings, gesture, pointer):
     app = launch([settings[1]])

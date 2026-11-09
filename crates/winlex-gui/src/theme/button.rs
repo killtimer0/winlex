@@ -9,7 +9,7 @@
 
 use super::{
     Role,
-    animation::{animation, stop_animation},
+    animation::{animation, client_animation_enabled, stop_animation},
 };
 use crate::native::*;
 use std::{cell::Cell, mem, ptr, rc::Rc};
@@ -220,16 +220,7 @@ fn paint_button(hwnd: HWND, dc: HDC, button: &Button, kind: Kind, animate: bool)
         if !button.alive.get() {
             return;
         }
-        let mut effects = 0i32;
-        let animate = animate
-            && button.buffered
-            && SystemParametersInfoW(
-                SPI_GETCLIENTAREAANIMATION,
-                0,
-                (&mut effects as *mut i32).cast(),
-                0,
-            ) != 0
-            && effects != 0;
+        let animate = animate && button.buffered && client_animation_enabled();
         if !animate {
             stop_animation(hwnd);
             render_button(hwnd, dc, button, theme, part, state);
@@ -350,14 +341,6 @@ impl Drop for Font {
     }
 }
 
-fn caption(hwnd: HWND) -> Vec<u16> {
-    unsafe {
-        let mut text = vec![0; GetWindowTextLengthW(hwnd).max(0) as usize + 1];
-        GetWindowTextW(hwnd, text.as_mut_ptr(), text.len() as i32);
-        text
-    }
-}
-
 fn text_options(hwnd: HWND) -> DTTOPTS {
     DTTOPTS {
         dwSize: mem::size_of::<DTTOPTS>() as u32,
@@ -403,7 +386,7 @@ fn render_button(hwnd: HWND, dc: HDC, button: &Button, theme: HTHEME, part: i32,
             flags |= DT_HIDEPREFIX;
         }
         let rect = client(hwnd);
-        let text = caption(hwnd);
+        let text = text_wide(hwnd);
         let mut size = mem::zeroed::<SIZE>();
         GetThemePartSize(theme, dc, part, state, ptr::null(), TS_DRAW, &mut size);
         let mut text_rect = rect;
@@ -534,7 +517,7 @@ fn paint_group(hwnd: HWND, dc: HDC, button: &Button) {
         if !button.alive.get() {
             return;
         }
-        let text = caption(hwnd);
+        let text = text_wide(hwnd);
         let length = text.iter().position(|&c| c == 0).unwrap_or(text.len());
         let centered =
             GetWindowLongPtrW(hwnd, GWL_STYLE) as u32 & BS_CENTER as u32 == BS_CENTER as u32;

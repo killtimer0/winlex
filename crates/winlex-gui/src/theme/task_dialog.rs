@@ -234,7 +234,7 @@ unsafe extern "system" fn theme_background(
 }
 
 /// Shell integration is limited to native classes and titlebar attributes.
-pub(super) fn apply(hwnd: HWND) {
+pub(crate) fn apply(hwnd: HWND) {
     install_titlebar(hwnd, true);
 }
 
@@ -291,7 +291,7 @@ fn refresh(hwnd: HWND, shell: bool, policy: bool) {
 
 /// Call on TDN_DIALOG_CONSTRUCTED, TDN_CREATED and TDN_NAVIGATED with a live guard.
 /// Failed hook installation leaves the entire client native, not partially dark.
-pub(super) fn apply_native(hwnd: HWND) {
+pub(crate) fn apply_native(hwnd: HWND) {
     if hwnd.is_null() || !super::supported() || unsafe { IsWindow(hwnd) } == 0 {
         return;
     }

@@ -8,11 +8,8 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use super::animation::{animation, stop_animation};
-use super::{
-    Role, brush_role, color_role, is_dark, native_dark_theme, prefer_native_tabs, prefer_theme,
-    windows11,
-};
+use super::animation::{animation, client_animation_enabled, stop_animation};
+use super::{Buffer, Role, brush_role, color_role, is_dark, native_dark_theme, windows11};
 use crate::native::*;
 use std::{
     cell::{Cell, RefCell},
@@ -85,17 +82,7 @@ impl ControlData {
     }
 
     fn animates(&self) -> bool {
-        let mut enabled = 0i32;
-        self.animated
-            && unsafe {
-                SystemParametersInfoW(
-                    SPI_GETCLIENTAREAANIMATION,
-                    0,
-                    (&mut enabled as *mut i32).cast(),
-                    0,
-                ) != 0
-            }
-            && enabled != 0
+        self.animated && client_animation_enabled()
     }
 }
 
@@ -122,54 +109,6 @@ impl Drop for SpinResources {
     fn drop(&mut self) {
         if self.0.get() != 0 {
             unsafe { CloseThemeData(self.0.get()) };
-        }
-    }
-}
-
-// DmlibSubclass.h::BufferData: retain a compatible surface until its size changes.
-struct Buffer {
-    dc: HDC,
-    bitmap: HBITMAP,
-    old_bitmap: HGDIOBJ,
-    width: i32,
-    height: i32,
-}
-
-impl Buffer {
-    unsafe fn new(target: HDC, width: i32, height: i32) -> Option<Self> {
-        unsafe {
-            let dc = CreateCompatibleDC(target);
-            if dc.is_null() {
-                return None;
-            }
-            let bitmap = CreateCompatibleBitmap(target, width, height);
-            if bitmap.is_null() {
-                DeleteDC(dc);
-                return None;
-            }
-            let old_bitmap = SelectObject(dc, bitmap);
-            if old_bitmap.is_null() || old_bitmap as isize == -1 {
-                DeleteObject(bitmap);
-                DeleteDC(dc);
-                return None;
-            }
-            Some(Self {
-                dc,
-                bitmap,
-                old_bitmap,
-                width,
-                height,
-            })
-        }
-    }
-}
-
-impl Drop for Buffer {
-    fn drop(&mut self) {
-        unsafe {
-            SelectObject(self.dc, self.old_bitmap);
-            DeleteObject(self.bitmap);
-            DeleteDC(self.dc);
         }
     }
 }
@@ -226,7 +165,7 @@ pub(super) fn install(hwnd: HWND, class: &str) {
     } else {
         return;
     };
-    if !matches!(kind, Control::Tab) || !prefer_native_tabs() {
+    if !matches!(kind, Control::Tab) || !native_dark_theme() {
         install_one(hwnd, kind);
     }
     if matches!(kind, Control::Tab) {
@@ -266,12 +205,12 @@ fn custom(hwnd: HWND, kind: Control) -> bool {
     is_dark()
         && match kind {
             Control::Tab => unsafe {
-                !prefer_native_tabs()
+                !native_dark_theme()
                     && GetWindowLongW(hwnd, GWL_STYLE) as u32
                         & (TCS_VERTICAL | TCS_BOTTOM | TCS_BUTTONS | TCS_OWNERDRAWFIXED)
                         == 0
             },
-            Control::Status => !(prefer_theme() && native_dark_theme()),
+            Control::Status => !native_dark_theme(),
             Control::Overflow => true,
         }
 }
@@ -311,7 +250,7 @@ unsafe extern "system" fn subclass(
             state.stop(hwnd);
         }
         if matches!(kind, Control::Tab)
-            && !prefer_native_tabs()
+            && !native_dark_theme()
             && msg == WM_PARENTNOTIFY
             && w as u16 as u32 == WM_CREATE
         {
@@ -993,10 +932,10 @@ unsafe fn render_overflow(hwnd: HWND, dc: HDC, theme: HTHEME, states: [i32; 2]) 
         let area = client(hwnd);
         FillRect(dc, &area, brush_role(Role::Dialog));
         font(hwnd, dc);
-        let preferred = prefer_theme();
+        let native = windows11();
         #[cfg(test)]
-        let preferred = preferred && !tests::CUSTOM_OVERFLOW.with(Cell::get);
-        if theme != 0 && windows11() && preferred {
+        let native = native && !tests::CUSTOM_OVERFLOW.with(Cell::get);
+        if theme != 0 && native {
             // renderUpDown uses the previous-arrow state for both themed parts.
             for (half, rect) in overflow_rects(hwnd).into_iter().enumerate() {
                 DrawThemeBackground(
@@ -1976,12 +1915,12 @@ mod tests {
             let mut data = 0;
             assert_eq!(
                 GetWindowSubclass(overflow, Some(subclass), SUBCLASS, &mut data) != 0,
-                !prefer_native_tabs(),
+                !native_dark_theme(),
                 "only fallback tabs install a dynamic overflow painter"
             );
             assert_eq!(
                 GetWindowSubclass(tab, Some(subclass), SUBCLASS, &mut data) != 0,
-                !prefer_native_tabs(),
+                !native_dark_theme(),
                 "native dark tabs must not install an overflow detector"
             );
             let selection = send(tab, TCM_GETCURSEL, 0, 0);

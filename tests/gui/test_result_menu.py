@@ -60,7 +60,7 @@ def choose(app, ids, command):
 
 
 @pytest.mark.parametrize("query,condition,expected", [
-    ("ERROR_ACCESS_DENIED", False, {1, 2, 3, 4, 5}),
+    ("ERROR_ACCESS_DENIED", False, {1, 2, 3, 4, 5, 100}),
     ("CreateFileW", False, {1, 2, 3}),
     ('guid = "0000000c-0000-0000-c000-000000000046"', True, {1, 2, 3, 4}),
 ], ids=["integer", "method", "guid"])
@@ -78,7 +78,7 @@ def test_result_menu_actions_available_by_result_kind(launch, settings, query, c
     _, ids = popup(app, app.results, keyboard=True)
     try:
         assert expected <= set(ids)
-        for command in [4, 5]:
+        for command in [4, 5, 100]:
             if command not in expected:
                 assert command not in ids
     finally:

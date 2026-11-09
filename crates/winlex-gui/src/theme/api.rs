@@ -47,7 +47,7 @@ thread_local! {
 impl Apis {
     fn load() -> Option<Self> {
         let version = WindowsVersion::query().ok()?;
-        if !version.at_least(WindowsVersion::DARK_MODE) {
+        if version < WindowsVersion::DARK_MODE {
             return None;
         }
         unsafe {
@@ -108,14 +108,14 @@ fn supports_dark_theme(build: u32, revision: u32) -> bool {
     build > 26200 || matches!(build, 26100 | 26200) && revision >= 6899
 }
 
-pub(super) fn supported() -> bool {
+pub(crate) fn supported() -> bool {
     APIS.with(|apis| apis.is_some())
 }
 
 pub(super) fn windows11() -> bool {
     APIS.with(|apis| {
         apis.as_ref()
-            .is_some_and(|a| a.version.at_least(WindowsVersion::WINDOWS_11))
+            .is_some_and(|a| a.version >= WindowsVersion::WINDOWS_11)
     })
 }
 
