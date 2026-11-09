@@ -79,6 +79,8 @@ class InputState:
         self.path = Path(path) if path is not None else Path(root) / "input.json"
         self.path.parent.mkdir(parents=True, exist_ok=True)
         raw_foreground = win32gui.GetForegroundWindow()
+        if raw_foreground and not win32gui.IsWindow(raw_foreground):
+            raw_foreground = 0
         foreground = get_ancestor(raw_foreground, GA_ROOT) if raw_foreground else 0
         assert not raw_foreground or foreground, "Cannot resolve foreground root"
         # Recovery releases only inputs explicitly recorded before delivery.

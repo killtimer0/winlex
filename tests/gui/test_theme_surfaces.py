@@ -16,6 +16,7 @@ from support import native as n
 from support.diagnostics import capture, screenshot
 from support.input_state import InputState, foreground as acquire_foreground
 from test_context import popup_window
+from test_result_menu import select_result
 from test_tooltips import infotip
 from test_theme import THEME_SUPPORTED
 from test_tools import visual_state
@@ -194,7 +195,7 @@ def test_dark_list_native_selection_hover_and_focus(launch, profile, settings, s
         if sources:
             app.command(1021)
         control = app.sources if sources else app.results
-        app.select(0, control)
+        select_result(app, 0, control)
         app.focus(control)
         n.wait(lambda: app.focused() == control, 'native list focus')
         move(app.status, (8, 3))

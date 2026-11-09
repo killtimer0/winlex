@@ -10,6 +10,8 @@ import pytest
 import uiautomation as auto
 from support import messages
 from support import native as n
+from support.input_state import InputState, foreground
+from support.session import ThreadInfo
 
 
 def popup(app, editor, location=-1, keyboard=False, mouse=False, protocol_mouse=False):
@@ -52,6 +54,13 @@ def find_popup(app):
     window = n.wait(lambda: popup_window(app.process.pid), "context menu", 10)
     menu = n.send(window, messages.MN_GETHMENU)
     assert menu, "context menu handle"
+    info = ThreadInfo()
+    info.size = n.c.sizeof(info)
+    thread = n.get_pid(app.frame, None)
+    get_info = n.api(n.user, "GetGUIThreadInfo", n.w.BOOL, n.w.DWORD,
+                     n.c.POINTER(ThreadInfo))
+    n.wait(lambda: get_info(thread, n.c.byref(info)) and info.menu != 0,
+           "context menu tracking", 10)
     count = n.api(n.user, "GetMenuItemCount", n.c.c_int, n.w.HMENU)(menu)
     assert count >= 0, "context menu item count"
     get_id = n.api(n.user, "GetMenuItemID", n.w.UINT, n.w.HMENU, n.c.c_int)
@@ -69,10 +78,21 @@ def wait_closed(editor):
     n.wait(lambda: not popup_window(pid.value), "context menu closed")
 
 
+def menu_key(window, key):
+    win32gui.PostMessage(window, win32con.WM_KEYDOWN, key, 0)
+    if win32gui.IsWindow(window):
+        win32gui.PostMessage(window, win32con.WM_KEYUP, key, 0)
+
 
 def selection_packed(editor):
     selection = n.rich_edit_document(editor).Selection
     return (selection.End << 16) | selection.Start
+
+
+def select_native(editor, first, last):
+    n.send(editor, win32con.EM_SETSEL, first, last)
+    expected = (last << 16) | first
+    n.wait(lambda: n.send(editor, win32con.EM_GETSEL) == expected, "native editor selection")
 
 
 def select_text(editor, first, last):
@@ -115,7 +135,8 @@ def test_readonly_result_context_input_preserves_selection(launch, settings, kin
         editor = n.get_item(doc, 1203)
     app.focus(editor)
     select_text(editor, 2, 8)
-    selection = selection_packed(editor)
+    # TOM calls are rejected while the native popup runs its modal loop.
+    selection = n.send(editor, win32con.EM_GETSEL)
     first = n.send(editor, win32con.EM_GETFIRSTVISIBLELINE)
     if gesture == 'mouse':
         popup(app, editor, character_point(app, editor, 4), protocol_mouse=True)
@@ -126,7 +147,7 @@ def test_readonly_result_context_input_preserves_selection(launch, settings, kin
         auto.SendKeys('{Shift}{F10}')
         find_popup(app)
     try:
-        assert selection_packed(editor) == selection
+        assert n.send(editor, win32con.EM_GETSEL) == selection
         assert n.send(editor, win32con.EM_GETFIRSTVISIBLELINE) == first
     finally:
         dismiss(editor)
@@ -279,21 +300,25 @@ def test_numeric_copy_formats(launch, settings):
     n.wait(lambda: "24 bytes" in app.content(doc), "layout", 45)
     editor = n.get_item(doc, 1203)
     index = app.content(doc).replace("\r\n", "\r").index("24 bytes")
-    for down, expected in ((0, "24"), (1, "0x18"), (2, "24 bytes"), (3, "24")):
-        wait_clipboard_available()
-        sequence = clipboard.GetClipboardSequenceNumber()
-        select_text(editor, index, index + 2)
-        popup(app, editor)
-        # A fresh popup has no highlight; Down selects the first item.
-        for _ in range(down + 1):
-            auto.SendKeys("{Down}")
-        auto.SendKeys("{Enter}")
-        wait_closed(editor)
-        n.send(editor, win32con.WM_NULL)
+    with InputState() as inputs, foreground(app, inputs):
+        for down, expected in ((0, "24"), (1, "0x18"), (2, "24 bytes"), (3, "24")):
+            wait_clipboard_available()
+            sequence = clipboard.GetClipboardSequenceNumber()
+            select_native(editor, index, index + 2)
+            popup(app, editor)
+            window = popup_window(app.process.pid)
+            assert window, "context menu window"
+            # A menu opened through a posted WM_CONTEXTMENU may not own global
+            # keyboard input; drive its tracking loop directly.
+            for _ in range(down + 1):
+                menu_key(window, win32con.VK_DOWN)
+            menu_key(window, win32con.VK_RETURN)
+            wait_closed(editor)
+            n.send(editor, win32con.WM_NULL)
 
-        n.wait(lambda: clipboard.GetClipboardSequenceNumber() != sequence, "clipboard changed")
-        assert clipboard_text() == expected
-        assert selection_packed(editor) == ((index + 2) << 16) | index
+            n.wait(lambda: clipboard.GetClipboardSequenceNumber() != sequence, "clipboard changed")
+            assert clipboard_text() == expected
+            assert n.send(editor, win32con.EM_GETSEL) == ((index + 2) << 16) | index
 
 
 def test_numeric_context_covers_labels_units_and_constant_annotations(launch, settings):
@@ -415,8 +440,10 @@ def test_copy_wrapped_declaration_keeps_original_line_breaks(launch, settings):
     sequence = clipboard.GetClipboardSequenceNumber()
     _, items = popup(app, editor)
     assert items == [2074]
-    auto.SendKeys("{Down}")
-    auto.SendKeys("{Enter}")
+    window = popup_window(app.process.pid)
+    assert window, "context menu window"
+    menu_key(window, win32con.VK_DOWN)
+    menu_key(window, win32con.VK_RETURN)
     wait_closed(editor)
     n.send(editor, win32con.WM_NULL)
     n.wait(lambda: clipboard.GetClipboardSequenceNumber() != sequence, "declaration copied")
@@ -457,8 +484,10 @@ finally:
         n.wait(lambda: ready.exists() or holder.poll() is not None, "clipboard holder")
         assert ready.exists(), "clipboard holder exited before acquiring the clipboard"
         popup(app, editor)
-        auto.SendKeys("{Down}")
-        auto.SendKeys("{Enter}")
+        window = popup_window(app.process.pid)
+        assert window, "context menu window"
+        menu_key(window, win32con.VK_DOWN)
+        menu_key(window, win32con.VK_RETURN)
         wait_closed(editor)
         n.send(editor, win32con.WM_NULL)
         assert "Open clipboard" in app.status_text()
@@ -468,8 +497,10 @@ finally:
     assert clipboard_text() == "contention sentinel"
     sequence = clipboard.GetClipboardSequenceNumber()
     popup(app, editor)
-    auto.SendKeys("{Down}")
-    auto.SendKeys("{Enter}")
+    window = popup_window(app.process.pid)
+    assert window, "context menu window"
+    menu_key(window, win32con.VK_DOWN)
+    menu_key(window, win32con.VK_RETURN)
     wait_closed(editor)
     n.send(editor, win32con.WM_NULL)
     n.wait(lambda: clipboard.GetClipboardSequenceNumber() != sequence, "copy after contention")

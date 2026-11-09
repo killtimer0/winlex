@@ -14,7 +14,8 @@ from support.session import select_combo
 from test_context import clipboard_text, dismiss, popup, popup_window, wait_clipboard_available, wait_closed
 
 
-def select_result(app, row):
+def select_result(app, row, control=None):
+    view = app.results if control is None else control
     process = win32api.OpenProcess(win32con.PROCESS_VM_OPERATION | win32con.PROCESS_VM_WRITE,
                                   False, app.process.pid)
     memory = None
@@ -26,12 +27,12 @@ def select_result(app, row):
         struct.pack_into('<IIIII', item, 0, 0, 0, 0, 0, state)
         buffer = n.c.create_string_buffer(bytes(item))
         assert n.write_process_memory(int(process), memory, buffer, len(item), None)
-        n.send(app.results, LVM_SETITEMSTATE, -1, memory)
+        n.send(view, LVM_SETITEMSTATE, -1, memory)
         struct.pack_into('<I', item, 12, state)
         buffer = n.c.create_string_buffer(bytes(item))
         assert n.write_process_memory(int(process), memory, buffer, len(item), None)
-        assert n.send(app.results, LVM_SETITEMSTATE, row, memory)
-        assert app.selected_row() == row
+        assert n.send(view, LVM_SETITEMSTATE, row, memory)
+        assert app.selected_row(view) == row
     finally:
         try:
             if memory is not None:

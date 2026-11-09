@@ -7,6 +7,7 @@ from contextlib import ExitStack
 
 from support import native as n
 from support.input_state import InputState, foreground
+from test_result_menu import select_result
 
 
 @pytest.fixture
@@ -137,7 +138,7 @@ def test_arrow_keys_only_move_the_selection(launch, settings):
     label = app.tab_labels()[0]
 
     app.focus(app.results)
-    app.select(0)
+    select_result(app, 0)
     first = app.selected_row()
     win32gui.PostMessage(app.results, win32con.WM_KEYDOWN, win32con.VK_DOWN, 1)
     win32gui.PostMessage(app.results, win32con.WM_KEYUP, win32con.VK_DOWN, -1073741823)

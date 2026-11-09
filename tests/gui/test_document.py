@@ -271,7 +271,11 @@ def test_document_source_and_responsive_reading_layout(launch, settings):
 def test_constant_summary_pseudocode_and_information_copy(launch, settings, copy):
     import json
     import subprocess
-    from test_context import find_popup, wait_closed, wait_clipboard_available, clipboard_text
+    from test_context import (
+        clipboard_text, find_popup, menu_key, popup_window, wait_closed,
+        wait_clipboard_available,
+    )
+    from support.input_state import InputState, foreground
     import win32clipboard as clipboard
 
     path = settings[2] / "来源&😀.winmd"
@@ -302,29 +306,34 @@ def test_constant_summary_pseudocode_and_information_copy(launch, settings, copy
     button = n.get_item(doc, 1206)
     expected = [str(path), entity_id, "ERROR_ACCESS_DENIED",
                 "Windows.Win32.Foundation.WIN32_ERROR.ERROR_ACCESS_DENIED", path.name]
-    for index, value in enumerate(expected):
-        app.focus(button)
-        assert app.focused() == button
-        wait_clipboard_available()
+    with InputState() as inputs, foreground(app, inputs):
+        for index, value in enumerate(expected):
+            app.focus(button)
+            assert app.focused() == button
+            wait_clipboard_available()
+            sequence = clipboard.GetClipboardSequenceNumber()
+            auto.ControlFromHandle(button).Click()
+            find_popup(app)
+            window = popup_window(app.process.pid)
+            assert window, "information menu window"
+            for _ in range(index + 1):
+                menu_key(window, win32con.VK_DOWN)
+            menu_key(window, win32con.VK_RETURN)
+            wait_closed(button)
+            n.send(doc, win32con.WM_NULL)
+            n.wait(lambda: clipboard.GetClipboardSequenceNumber() != sequence, "information copied")
+            assert clipboard_text() == value
+            assert app.focused() == button
         sequence = clipboard.GetClipboardSequenceNumber()
-        auto.SendKeys("{Space}")
+        auto.ControlFromHandle(button).Click()
         find_popup(app)
-        for _ in range(index + 1):
-            auto.SendKeys("{Down}")
-        auto.SendKeys("{Enter}")
+        window = popup_window(app.process.pid)
+        assert window, "information menu window"
+        menu_key(window, win32con.VK_ESCAPE)
         wait_closed(button)
         n.send(doc, win32con.WM_NULL)
-        n.wait(lambda: clipboard.GetClipboardSequenceNumber() != sequence, "information copied")
-        assert clipboard_text() == value
+        assert clipboard.GetClipboardSequenceNumber() == sequence
         assert app.focused() == button
-    sequence = clipboard.GetClipboardSequenceNumber()
-    auto.ControlFromHandle(button).Click()
-    find_popup(app)
-    auto.SendKeys("{Escape}")
-    wait_closed(button)
-    n.send(doc, win32con.WM_NULL)
-    assert clipboard.GetClipboardSequenceNumber() == sequence
-    assert app.focused() == button
 
 
 def test_tiny_maximized_document_clips_summary_without_control_overlap(launch, settings):

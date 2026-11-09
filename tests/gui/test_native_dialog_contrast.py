@@ -18,7 +18,8 @@ from test_system_dialogs import (
 )
 from test_theme import dark_background, modern_theme
 from test_theme_compatibility import (
-    HCF_AVAILABLE, HCF_HIGHCONTRASTON, high_contrast, system_color, temporary_high_contrast,
+    HCF_AVAILABLE, HCF_HIGHCONTRASTON, high_contrast, restored_high_contrast, system_color,
+    temporary_high_contrast,
 )
 from test_theme_surfaces import colors
 
@@ -153,7 +154,7 @@ def test_task_dialog_stays_open_across_high_contrast(launch, profile, settings, 
             assert_readable_native_client(dialog)
             inputs.key(win32con.VK_ESCAPE)
             assert_prompt_contract(app, dialog)
-        assert high_contrast() == snapshot
+        assert restored_high_contrast(high_contrast(), snapshot)
         assert_prompt_contract(app, dialog)
         surfaces = settled_surfaces(lambda: task_surfaces(dialog),
                                     lambda value: dark_colors(value) and task_text_readable(value),
@@ -219,7 +220,7 @@ def test_file_picker_stays_open_across_high_contrast(launch, profile, settings, 
             surfaces = settled_surfaces(lambda: picker_surfaces(dialog, folders[1][1]), native_colors,
                                         'native navigation retains high contrast')
             assert_native_contrast(surfaces)
-        assert high_contrast() == snapshot
+        assert restored_high_contrast(high_contrast(), snapshot)
         assert n.is_window(dialog) and native_dialog(app) == dialog
         assert_modal(app, dialog)
         surfaces = settled_surfaces(lambda: picker_surfaces(dialog, folders[1][1]), dark_colors,

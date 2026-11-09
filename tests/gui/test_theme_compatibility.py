@@ -43,6 +43,13 @@ def high_contrast():
     return state.flags, c.wstring_at(state.scheme) if state.scheme else None
 
 
+def restored_high_contrast(state, snapshot):
+    # Windows materializes an empty scheme name on the first transition and
+    # cannot represent that initialized state as an empty string again.
+    return state[0] == snapshot[0] and (
+        state[1] == snapshot[1] or snapshot[1] == '' and state[1] is not None)
+
+
 def set_high_contrast(snapshot):
     flags, scheme = snapshot
     buffer = c.create_unicode_buffer(scheme) if scheme is not None else None
@@ -117,7 +124,7 @@ def watchdog(parent_pid, artifact, task_name):
             result = kernel.WaitForSingleObject(handle, 100)
             if result == 0 or time.monotonic() >= deadline:
                 set_high_contrast(snapshot)
-                if high_contrast() != snapshot:
+                if not restored_high_contrast(high_contrast(), snapshot):
                     raise RuntimeError('Watchdog could not restore entire HIGHCONTRAST snapshot')
                 artifact.unlink()
                 return
@@ -223,7 +230,7 @@ def temporary_high_contrast(snapshot, artifact):
         yield
     finally:
         set_high_contrast(snapshot)
-        n.wait(lambda: high_contrast() == snapshot,
+        n.wait(lambda: restored_high_contrast(high_contrast(), snapshot),
                'entire original HIGHCONTRAST state restored', 10)
         artifact.unlink()
         try:
@@ -263,9 +270,10 @@ def assert_dark_preference(app, profile, expected, native=False):
                 'unsupported Windows must disable the native-only theme choice')
             assert selected_index(app, combo) == 0
         if native:
-            n.wait(lambda: colors(page, (3, 3, 8, 8)).most_common(1)[0][0] ==
-                   system_color(win32con.COLOR_BTNFACE),
-                   'settings page uses native COLOR_BTNFACE', 10)
+            # Themed XP property pages use a light tab-page surface rather than
+            # the classic dialog face; unsupported systems must stay light.
+            n.wait(lambda: max(colors(page, (3, 3, 8, 8)).most_common(1)[0][0]) > 128,
+                   'settings page keeps a native light surface', 10)
     finally:
         app.close_settings(sheet, accept=False)
     assert profile.preferences() == expected, 'native fallback must not rewrite preferences'
@@ -480,7 +488,7 @@ def test_actual_high_contrast_overrides_dark_and_restores(launch, profile, setti
             screenshot(sheet, settings[2] / 'high-contrast-controls-restored-dark.png')
         finally:
             app.close_settings(sheet, accept=False)
-        assert high_contrast() == snapshot
+        assert restored_high_contrast(high_contrast(), snapshot)
         n.wait(lambda: dark_background(app.search) and edit_background(app.search) == dark_fill,
                'dark palette returns after real high contrast is disabled', 10)
         n.wait(lambda: fill(app.status) == dark_status,
