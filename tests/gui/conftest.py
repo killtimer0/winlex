@@ -98,7 +98,8 @@ def pytest_runtest_makereport(item, call):
     if report.when == "call":
         item.test_failed = report.failed
         if report.failed:
-            (output / (item.name + "-failure.txt")).write_text(report.longreprtext, encoding="utf-8")
+            captured = "".join("\n\n%s\n%s" % section for section in report.sections)
+            (output / (item.name + "-failure.txt")).write_text(report.longreprtext + captured, encoding="utf-8")
 
 
 @pytest.fixture(scope="session")
