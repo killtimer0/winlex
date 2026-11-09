@@ -119,7 +119,10 @@ def assemble(inputs, output, configuration="Dist", commit=None):
             (delivery / name).write_bytes(contents)
         record.write_sums(delivery, "SHA256SUMS")
         shutil.move(str(delivery), str(output))
-    print(f"Verified three-architecture delivery: {output}")
+    try:
+        print(f"Verified three-architecture delivery: {output}")
+    except UnicodeEncodeError:
+        print(f"Verified three-architecture delivery: {str(output)!a}")
 
 
 def main():

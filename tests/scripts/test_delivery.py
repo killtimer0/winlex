@@ -1,5 +1,7 @@
 """Delivery integrity contracts independent of installed cross-compilers."""
 import importlib
+import contextlib
+import io
 import json
 import os
 from pathlib import Path
@@ -104,6 +106,32 @@ class DeliveryContracts(unittest.TestCase):
         path.write_bytes(before)
         self.change("winlex-x64-licenses.zip", lambda files: files.pop("licenses/VC-LTL-LICENSE"))
         self.assert_refused("Missing required license")
+
+    def test_delivery_with_cp1252_output(self):
+        for invocation in ("direct", "subprocess"):
+            with self.subTest(invocation=invocation):
+                output = self.root / invocation
+                if invocation == "direct":
+                    with io.TextIOWrapper(io.BytesIO(), encoding="cp1252", errors="strict") as stream:
+                        with contextlib.redirect_stdout(stream):
+                            delivery.assemble(self.inputs, output, "Debug", "revision")
+                        stream.flush()
+                        log = stream.buffer.getvalue()
+                else:
+                    result = subprocess.run([
+                        sys.executable, str(ROOT / "scripts/delivery.py"), "assemble",
+                        "--inputs", str(self.inputs), "--output", str(output),
+                        "--configuration", "Debug", "--commit", "revision",
+                    ], capture_output=True,
+                        env={**os.environ, "PYTHONIOENCODING": "cp1252:strict"})
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    log = result.stdout
+                self.assertTrue(log.strip())
+                log.decode("cp1252", errors="strict")
+                for line in (output / "SHA256SUMS").read_text().splitlines():
+                    digest, name = line.split("  ", 1)
+                    self.assertEqual(delivery.digest((output / name).read_bytes()), digest)
+                delivery.record.verify_contents(output / "licenses.zip")
 
     def test_conflicting_licenses_refuse_delivery(self):
         self.change("winlex-arm64-licenses.zip", lambda files: files.update({
