@@ -4,6 +4,7 @@ from ctypes import wintypes as w
 import json
 from pathlib import Path
 import subprocess
+import time
 
 from commctrl import LVM_GETITEMCOUNT, LVM_GETNEXTITEM, LVM_GETTOPINDEX, LVNI_SELECTED
 import uiautomation as uia
@@ -168,9 +169,30 @@ class Session:
                 result.append(text.value)
             return result
         expansion = pattern(combo, uia.PatternId.ExpandCollapsePattern)
-        expansion.Expand(waitTime=0)
+        status = None
+
+        def diagnostics():
+            try:
+                hwnd = combo.NativeWindowHandle
+                return {"hwnd": hwnd, "expand_status": status,
+                        "native_count": n.send(hwnd, win32con.CB_GETCOUNT),
+                        "dropped": n.send(hwnd, win32con.CB_GETDROPPEDSTATE),
+                        "uia_state": expansion.ExpandCollapseState}
+            except Exception as error:
+                return {"diagnostic_error": repr(error)}
+
         try:
-            return [x.Name for x, _ in uia.WalkControl(combo) if x.ControlType == uia.ControlType.ListItemControl]
+            # The library wrapper suppresses COM exceptions; keep them as evidence.
+            status = expansion.pattern.Expand()
+            time.sleep(0)
+            result = [x.Name for x, _ in uia.WalkControl(combo)
+                      if x.ControlType == uia.ControlType.ListItemControl]
+            assert status == 0, "Combo expansion failed: status=%r" % status
+            if not result:
+                print("Empty UIA combo options:", diagnostics(), flush=True)
+            return result
+        except Exception as error:
+            raise AssertionError("Combo enumeration failed: %r" % diagnostics()) from error
         finally:
             expansion.Collapse(waitTime=0)
 
