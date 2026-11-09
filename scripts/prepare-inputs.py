@@ -41,17 +41,16 @@ def check(path, expected):
         raise ValueError(f"SHA256 mismatch: {path}: {actual} != {expected}")
 
 
-def download(url, destination, sha256=None):
+def download(url, destination, sha256):
     destination.parent.mkdir(parents=True, exist_ok=True)
     if not destination.exists():
         partial = destination.with_suffix(destination.suffix + ".partial")
         print(f"Downloading {url}", flush=True)
         with urllib.request.urlopen(url, timeout=120) as source, partial.open("wb") as out:
             shutil.copyfileobj(source, out)
-        if sha256:
-            check(partial, sha256)
+        check(partial, sha256)
         partial.replace(destination)
-    elif sha256:
+    else:
         check(destination, sha256)
     return destination
 

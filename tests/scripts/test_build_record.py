@@ -8,6 +8,7 @@ import struct
 import subprocess
 import tempfile
 import unittest
+import warnings
 import zipfile
 from unittest.mock import patch
 
@@ -48,6 +49,28 @@ def pe_image(policy, dlls, kind=3, delay=False):
 
 
 class BuildRecordContracts(unittest.TestCase):
+    def test_archive_member_names_must_be_unique_on_windows(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / "tmp") as folder:
+            path = Path(folder) / "members.zip"
+            for names, accepted in [(("a.txt", "b.txt"), True),
+                                    (("same.txt", "same.txt"), False),
+                                    (("Readme.txt", "README.TXT"), False)]:
+                with self.subTest(names=names):
+                    payload = b"material"
+                    digest = hashlib.sha256(payload).hexdigest()
+                    with warnings.catch_warnings():
+                        warnings.filterwarnings("ignore", message="Duplicate name:", category=UserWarning)
+                        with zipfile.ZipFile(path, "w") as archive:
+                            for name in names:
+                                archive.writestr(name, payload)
+                            archive.writestr("SHA256SUMS.txt", "".join(
+                                f"{digest}  {name}\n" for name in dict.fromkeys(names)))
+                    if accepted:
+                        self.assertEqual(record.verify_contents(path), dict.fromkeys(names, payload))
+                    else:
+                        with self.assertRaises(ValueError):
+                            record.verify_contents(path)
+
     def test_archive_literal_paths_old_timestamps_and_existing_output(self):
         with tempfile.TemporaryDirectory(prefix="打包 [contract] ", dir=ROOT / "tmp") as folder:
             directory = Path(folder)
@@ -71,8 +94,7 @@ class BuildRecordContracts(unittest.TestCase):
             for delay in (False, True):
                 for kind in (2, 3):
                     with self.subTest(arch=arch, delay=delay, kind=kind):
-                        imports = record.verify_pe(pe_image(policy, [policy["crt"], "KERNEL32.dll"], kind, delay), policy, kind)
-                        self.assertIn(policy["crt"], imports)
+                        record.verify_pe(pe_image(policy, [policy["crt"], "KERNEL32.dll"], kind, delay), policy, kind)
 
     def test_pe_rejects_wrong_machine_subsystem_and_runtime(self):
         policy = POLICIES["arm64"]

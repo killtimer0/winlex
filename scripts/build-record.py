@@ -87,7 +87,6 @@ def verify_pe(data, policy, subsystem):
     for dll in imports:
         runtime = dll.startswith(("vcruntime", "msvcp", "concrt", "msvcr", "ucrtbase"))
         check(not runtime or dll == policy["crt"], f"Unexpected CRT import: {dll}")
-    return sorted(imports)
 
 
 def verify_records(paths, architecture, configuration):
@@ -110,8 +109,7 @@ def verify_records(paths, architecture, configuration):
 def verify_contents(path, *, check_binary_paths=False):
     with zipfile.ZipFile(path) as archive:
         names = [info.filename for info in archive.infolist() if not info.is_dir()]
-        check(len(names) == len(set(names)), "Duplicate archive member")
-        check(len(names) == len({name.casefold() for name in names}), "Case-conflicting archive member")
+        check(len(names) == len({name.casefold() for name in names}), "Duplicate or case-conflicting archive member")
         check(all(name and not name.startswith(("/", "\\")) and "\\" not in name
                   and ":" not in name and all(part not in ("", ".", "..") for part in name.split("/"))
                   for name in names), "Unsafe archive member")
@@ -144,6 +142,13 @@ def verify_archive(path, records):
               f"Archive executable mismatch: {name}")
 
 
+def write_sums(directory, name="SHA256SUMS.txt"):
+    files = sorted(path for path in directory.rglob("*") if path.is_file() and path != directory / name)
+    (directory / name).write_text("".join(
+        f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.relative_to(directory).as_posix()}\n" for path in files),
+        encoding="utf-8")
+
+
 def create_archive(stage, path):
     with zipfile.ZipFile(path, "x", compression=zipfile.ZIP_DEFLATED, strict_timestamps=False) as archive:
         for member in sorted(stage.rglob("*")):
@@ -164,6 +169,7 @@ def main():
         if not args.archive or args.records:
             parser.error("--stage requires --archive and validated records on stdin, without --records")
         records = json.load(sys.stdin)
+        write_sums(args.stage)
         create_archive(args.stage, args.archive)
         verify_archive(args.archive, records)
         print("PASS archive contents and checksums")

@@ -79,11 +79,6 @@ try {
     $records | ConvertTo-Json -Depth 10 | & python "$PSScriptRoot/delivery.py" licenses `
         --stage $licenseStage --output $licenseZip --architecture $Architecture
     if ($LASTEXITCODE -ne 0) { throw 'License archive validation failed.' }
-    $manifest = Get-ChildItem -LiteralPath $programStage -File -Recurse | Sort-Object FullName | ForEach-Object {
-        $relative = $_.FullName.Substring($programStage.Length + 1).Replace('\', '/')
-        "$( (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() )  $relative"
-    }
-    [IO.File]::WriteAllLines((Join-Path $programStage 'SHA256SUMS.txt'), [string[]]$manifest, [Text.UTF8Encoding]::new($false))
     $records | ConvertTo-Json -Depth 10 | & python "$PSScriptRoot/build-record.py" --archive $zip --stage $programStage
     if ($LASTEXITCODE -ne 0) { throw 'Archive validation failed.' }
     $hash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()

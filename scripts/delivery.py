@@ -26,13 +26,6 @@ def digest(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def write_sums(directory, name="SHA256SUMS.txt"):
-    files = sorted(path for path in directory.rglob("*") if path.is_file() and path != directory / name)
-    (directory / name).write_text("".join(
-        f"{digest(path.read_bytes())}  {path.relative_to(directory).as_posix()}\n" for path in files),
-        encoding="utf-8")
-
-
 def verify_licenses(files):
     record.check(REQUIRED_LICENSES <= files.keys(), "Missing required license material")
     record.check(any(name.startswith("licenses/crates/") for name in files), "Missing Cargo license material")
@@ -61,7 +54,7 @@ def license_bundle(stage, output, records, architecture):
     (stage / "builds").mkdir()
     (stage / "builds" / f"{architecture}.json").write_text(
         json.dumps(provenance, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    write_sums(stage)
+    record.write_sums(stage)
     record.create_archive(stage, output)
     record.verify_contents(output)
 
@@ -117,14 +110,14 @@ def assemble(inputs, output, configuration="Dist", commit=None):
             path = stage / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(contents)
-        write_sums(stage)
+        record.write_sums(stage)
         delivery = work / "delivery"
         delivery.mkdir()
         record.create_archive(stage, delivery / "licenses.zip")
         record.verify_contents(delivery / "licenses.zip")
         for name, contents in programs.items():
             (delivery / name).write_bytes(contents)
-        write_sums(delivery, "SHA256SUMS")
+        record.write_sums(delivery, "SHA256SUMS")
         shutil.move(str(delivery), str(output))
     print(f"Verified three-architecture delivery: {output}")
 
