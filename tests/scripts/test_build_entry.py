@@ -82,8 +82,11 @@ function cargo {{ {cargo_body} }}
             for name in ("winlex", "winlex-gui"):
                 path = directory / (name + ".exe")
                 path.write_bytes(b"artifact fixture")
+                pdb = directory / (name.replace("-", "_") + ".pdb")
+                pdb.write_bytes(b"symbol fixture")
                 messages.append({"reason": "compiler-artifact", "package_id": "fixture",
-                                 "target": {"name": name, "kind": ["bin"]}, "executable": str(path)})
+                                 "target": {"name": name, "kind": ["bin"]}, "executable": str(path),
+                                 "filenames": [str(path), str(pdb)]})
             output = ("\n".join(json.dumps(message, ensure_ascii=False) for message in messages) + "\n").encode("utf-8")
             body = f'& python -c "import sys;sys.stdout.buffer.write(bytes({list(output)}))"; $global:LASTEXITCODE=0'
             script = f"""
