@@ -89,18 +89,7 @@ impl Merger {
     /// Returns an error when the output is missing, an input cannot be read, or the metadata
     /// cannot be merged.
     pub fn merge(&self) -> Result<(), Error> {
-        if self.output.as_os_str().is_empty() {
-            return Err(Error::new("output is required"));
-        }
-
-        let name = self
-            .output
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .ok_or_else(|| {
-                Error::new(format!("invalid output path `{}`", self.output.display()))
-            })?;
-
+        let name = output_name(&self.output)?;
         let files = read_inputs(&self.input)?;
         let index = reader::Index::new(files);
 
@@ -222,6 +211,16 @@ impl Merger {
     }
 }
 
+fn output_name(output: &Path) -> Result<&str, Error> {
+    if output.as_os_str().is_empty() {
+        return Err(Error::new("output is required"));
+    }
+    output
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| Error::new(format!("invalid output path `{}`", output.display())))
+}
+
 fn read_inputs(inputs: &[PathBuf]) -> Result<Vec<reader::File>, Error> {
     let mut result = vec![];
 
@@ -312,6 +311,44 @@ fn write_type_with_signature(
         write_field(file, field, None);
     }
 
+    let generics = write_type_metadata(file, def, type_def, arch_override);
+
+    let is_winrt_class = def.category() == reader::TypeCategory::Class
+        && def.flags().contains(TypeAttributes::WindowsRuntime);
+
+    if !is_winrt_class {
+        for method in def.methods() {
+            write_method_with_signature(
+                file,
+                method,
+                &generics,
+                None,
+                signature_override.filter(|_| method.name() == "Invoke"),
+            );
+        }
+    }
+
+    if let Some(class_layout) = def.class_layout() {
+        file.ClassLayout(
+            type_def,
+            class_layout.packing_size(),
+            class_layout.class_size(),
+        );
+    }
+
+    for inner_def in index.nested(def) {
+        debug_assert!(inner_def.namespace().is_empty());
+        debug_assert!(inner_def.flags().is_nested());
+        write_type(file, index, inner_def, Some(type_def), arch_override);
+    }
+}
+
+fn write_type_metadata(
+    file: &mut writer::File,
+    def: reader::TypeDef,
+    type_def: writer::TypeDef,
+    arch_override: Option<i32>,
+) -> Vec<Type> {
     let generics: Vec<_> = def
         .generic_params()
         .map(|param| Type::Generic(param.name().to_string(), param.sequence()))
@@ -342,34 +379,7 @@ fn write_type_with_signature(
         );
     }
 
-    let is_winrt_class = def.category() == reader::TypeCategory::Class
-        && def.flags().contains(TypeAttributes::WindowsRuntime);
-
-    if !is_winrt_class {
-        for method in def.methods() {
-            write_method_with_signature(
-                file,
-                method,
-                &generics,
-                None,
-                signature_override.filter(|_| method.name() == "Invoke"),
-            );
-        }
-    }
-
-    if let Some(class_layout) = def.class_layout() {
-        file.ClassLayout(
-            type_def,
-            class_layout.packing_size(),
-            class_layout.class_size(),
-        );
-    }
-
-    for inner_def in index.nested(def) {
-        debug_assert!(inner_def.namespace().is_empty());
-        debug_assert!(inner_def.flags().is_nested());
-        write_type(file, index, inner_def, Some(type_def), arch_override);
-    }
+    generics
 }
 
 fn write_field(file: &mut writer::File, field: reader::Field, arch_override: Option<i32>) {
@@ -811,28 +821,7 @@ fn write_type_arch_merged(
         .unwrap_or_default();
     let type_def = file.TypeDef(def.namespace(), def.name(), extends, def.flags());
 
-    let generics: Vec<_> = def
-        .generic_params()
-        .map(|p| Type::Generic(p.name().to_string(), p.sequence()))
-        .collect();
-
-    write_attributes_with_arch(file, writer::HasAttribute::TypeDef(type_def), def, Some(0));
-    for map in def.interface_impls() {
-        let interface_impl = file.InterfaceImpl(type_def, &map.interface(&generics));
-        write_attributes(
-            file,
-            writer::HasAttribute::InterfaceImpl(interface_impl),
-            map,
-        );
-    }
-    for generic in def.generic_params() {
-        file.GenericParam(
-            generic.name(),
-            writer::TypeOrMethodDef::TypeDef(type_def),
-            generic.sequence(),
-            generic.flags(),
-        );
-    }
+    let generics = write_type_metadata(file, def, type_def, Some(0));
 
     // Include constant values in the key so divergent constants survive.
     let mut fields: BTreeMap<String, (reader::Field, i32)> = BTreeMap::new();

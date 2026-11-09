@@ -25,10 +25,7 @@ impl Comparison {
 
 pub(super) enum NumberQuery {
     Integer(crate::number::IntegerLiteral),
-    Float {
-        narrow: Option<f32>,
-        wide: Option<f64>,
-    },
+    Float { narrow: Option<f32>, wide: f64 },
 }
 impl NumberQuery {
     pub fn compile(text: &str) -> Result<Self> {
@@ -42,7 +39,7 @@ impl NumberQuery {
         if let Some(value) = special {
             return Ok(Self::Float {
                 narrow: Some(value as f32),
-                wide: Some(value),
+                wide: value,
             });
         }
         let body = match text.as_bytes().first() {
@@ -67,8 +64,10 @@ impl NumberQuery {
             .parse::<f32>()
             .ok()
             .filter(|v| v.is_finite() && (!nonzero || *v != 0.0));
-        let wide = Some(wide).filter(|v| v.is_finite() && (!nonzero || *v != 0.0));
-        ensure!(narrow.is_some() || wide.is_some(), "float out of range");
+        ensure!(
+            wide.is_finite() && (!nonzero || wide != 0.0),
+            "float out of range"
+        );
         Ok(Self::Float { narrow, wide })
     }
     pub fn matches(
@@ -85,7 +84,7 @@ impl NumberQuery {
             })
     }
     pub fn is_nan(&self) -> bool {
-        matches!(self, Self::Float { wide: Some(value), .. } if value.is_nan())
+        matches!(self, Self::Float { wide, .. } if wide.is_nan())
     }
     pub fn validate_comparison(&self, op: Comparison) -> Result<()> {
         ensure!(
@@ -108,7 +107,7 @@ impl NumberQuery {
             Self::Float { narrow, wide } => {
                 let pair = match value {
                     Value::F32(value) => narrow.map(|bound| (*value as f64, bound as f64)),
-                    Value::F64(value) => wide.map(|bound| (*value, bound)),
+                    Value::F64(value) => Some((*value, *wide)),
                     _ => None,
                 };
                 pair.is_some_and(|(value, bound)| {

@@ -220,3 +220,35 @@ fn vtable_construction_keeps_native_and_runtime_rejections() {
         }
     }
 }
+
+#[test]
+fn native_vtables_reject_cycles_and_multiple_bases() {
+    for (edges, expected) in [
+        (&[("A", "A")][..], "interface cycle"),
+        (&[("A", "B"), ("B", "A")][..], "interface cycle"),
+        (
+            &[("A", "B"), ("A", "C")][..],
+            "multiple interface bases unsupported",
+        ),
+    ] {
+        let mut file = writer::File::new("InvalidNativeBases");
+        for name in ["A", "B", "C"] {
+            let ty = file.TypeDef(
+                "Fixture",
+                name,
+                writer::TypeDefOrRef::default(),
+                TypeAttributes::Public | TypeAttributes::Interface | TypeAttributes::Abstract,
+            );
+            for &(_, base) in edges.iter().filter(|(derived, _)| *derived == name) {
+                file.InterfaceImpl(ty, &Type::ClassName(TypeName::named("Fixture", base)));
+            }
+        }
+        let db = catalog("InvalidNativeBases", file);
+        for arch in Architecture::ALL {
+            assert_eq!(
+                db.vtable(id(&db, "A"), arch).err().unwrap().to_string(),
+                expected
+            );
+        }
+    }
+}

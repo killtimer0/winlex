@@ -38,19 +38,10 @@ impl File {
 
         file.records.Assembly.push(rec::Assembly {
             Name: file.strings.insert(name),
-            HashAlgId: 0x00008004,
-            MajorVersion: 0xFF,
-            MinorVersion: 0xFF,
-            BuildNumber: 0xFF,
-            RevisionNumber: 0xFF,
-            Flags: AssemblyFlags::WindowsRuntime,
-            ..Default::default()
         });
 
         file.records.Module.push(rec::Module {
             Name: file.strings.insert(name),
-            Mvid: 1,
-            ..Default::default()
         });
 
         // Some parsers require the `mscorlib` reference implied by "System" types.
@@ -243,7 +234,6 @@ impl File {
         let signature = self.MethodDefSig(signature);
 
         MethodDef(self.records.MethodDef.push_pos(rec::MethodDef {
-            RVA: 0,
             ImplFlags: impl_flags,
             Flags: flags,
             Name: self.strings.insert(name),

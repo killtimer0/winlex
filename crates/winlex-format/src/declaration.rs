@@ -1,5 +1,5 @@
 //! Compact C/IDL-like reading view; not a compilable header or an ABI definition.
-use super::normalized_integer;
+use super::{const_annotation, normalized_integer};
 use std::fmt::Write;
 use winlex_core::windows_metadata::reader::*;
 use winlex_core::windows_metadata::*;
@@ -461,16 +461,6 @@ fn method(
     ));
     writeln!(out, ";")?;
     Ok(())
-}
-
-fn const_annotation<'a>(owner: impl HasAttributes<'a>) -> &'static str {
-    if owner.attributes().any(|a| {
-        a.namespace() == "Windows.Win32.Foundation.Metadata" && a.name() == "ConstAttribute"
-    }) {
-        "[const] "
-    } else {
-        ""
-    }
 }
 
 fn append(

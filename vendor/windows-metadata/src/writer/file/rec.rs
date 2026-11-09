@@ -69,17 +69,8 @@ pub struct MethodSemantics {
     pub Association: HasSemantics,
 }
 
-#[derive(Default)]
 pub struct Assembly {
-    pub HashAlgId: u32,
-    pub MajorVersion: u16,
-    pub MinorVersion: u16,
-    pub BuildNumber: u16,
-    pub RevisionNumber: u16,
-    pub Flags: AssemblyFlags,
-    pub PublicKey: u32,
     pub Name: StringId,
-    pub Culture: u32,
 }
 
 #[derive(Copy, Clone)]
@@ -104,8 +95,6 @@ pub struct AssemblyRef {
     pub Flags: AssemblyFlags,
     pub PublicKeyOrToken: BlobId,
     pub Name: StringId,
-    pub Culture: u32,
-    pub HashValue: u32,
 }
 
 pub struct ClassLayout {
@@ -133,7 +122,6 @@ pub struct FieldLayout {
 }
 
 pub struct MethodDef {
-    pub RVA: u32,
     pub ImplFlags: MethodImplAttributes,
     pub Flags: MethodAttributes,
     pub Name: StringId,
@@ -141,13 +129,8 @@ pub struct MethodDef {
     pub ParamList: u32,
 }
 
-#[derive(Default)]
 pub struct Module {
-    pub Generation: u16,
     pub Name: StringId,
-    pub Mvid: u32,
-    pub EncId: u32,
-    pub EncBaseId: u32,
 }
 
 #[derive(Copy, Clone)]
@@ -343,11 +326,11 @@ impl Records {
         // Each table's rows.
 
         for r in &self.Module {
-            buffer.write_u16(r.Generation);
+            buffer.write_u16(0); // Generation
             buffer.write_u32(r.Name.0);
-            buffer.write_u32(r.Mvid);
-            buffer.write_u32(r.EncId);
-            buffer.write_u32(r.EncBaseId);
+            buffer.write_u32(1); // Mvid
+            buffer.write_u32(0); // EncId
+            buffer.write_u32(0); // EncBaseId
         }
 
         for r in &self.TypeRef {
@@ -372,7 +355,7 @@ impl Records {
         }
 
         for r in &self.MethodDef {
-            buffer.write_u32(r.RVA);
+            buffer.write_u32(0); // RVA: metadata-only methods have no body.
             buffer.write_u16(r.ImplFlags.0);
             buffer.write_u16(r.Flags.0);
             buffer.write_u32(r.Name.0);
@@ -465,15 +448,15 @@ impl Records {
         }
 
         for r in &self.Assembly {
-            buffer.write_u32(r.HashAlgId);
-            buffer.write_u16(r.MajorVersion);
-            buffer.write_u16(r.MinorVersion);
-            buffer.write_u16(r.BuildNumber);
-            buffer.write_u16(r.RevisionNumber);
-            buffer.write_u32(r.Flags.0);
-            buffer.write_u32(r.PublicKey);
+            buffer.write_u32(0x00008004); // HashAlgId
+            buffer.write_u16(0xFF); // MajorVersion
+            buffer.write_u16(0xFF); // MinorVersion
+            buffer.write_u16(0xFF); // BuildNumber
+            buffer.write_u16(0xFF); // RevisionNumber
+            buffer.write_u32(AssemblyFlags::WindowsRuntime.0);
+            buffer.write_u32(0); // PublicKey
             buffer.write_u32(r.Name.0);
-            buffer.write_u32(r.Culture);
+            buffer.write_u32(0); // Culture
         }
 
         for r in &self.AssemblyRef {
@@ -484,8 +467,8 @@ impl Records {
             buffer.write_u32(r.Flags.0);
             buffer.write_u32(r.PublicKeyOrToken.0);
             buffer.write_u32(r.Name.0);
-            buffer.write_u32(r.Culture);
-            buffer.write_u32(r.HashValue);
+            buffer.write_u32(0); // Culture
+            buffer.write_u32(0); // HashValue
         }
 
         for r in &self.NestedClass {
@@ -501,32 +484,5 @@ impl Records {
         }
 
         buffer.into_stream()
-    }
-}
-
-// A coded index must fit the largest table selected by its tag.
-fn coded_index_size(tables: &[usize]) -> usize {
-    fn small(row_count: usize, bits: u8) -> bool {
-        (row_count as u64) < (1u64 << (16 - bits))
-    }
-
-    fn bits_needed(value: usize) -> u8 {
-        let mut value = value - 1;
-        let mut bits: u8 = 1;
-        while {
-            value >>= 1;
-            value != 0
-        } {
-            bits += 1;
-        }
-        bits
-    }
-
-    let bits_needed = bits_needed(tables.len());
-
-    if tables.iter().all(|table| small(*table, bits_needed)) {
-        2
-    } else {
-        4
     }
 }

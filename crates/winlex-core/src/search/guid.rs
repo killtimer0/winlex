@@ -24,17 +24,12 @@ impl GuidQuery {
             let mut separators = Vec::new();
             for byte in text.bytes() {
                 if byte == b'-' {
-                    ensure!(
-                        !fragment.is_empty() && separators.last() != Some(&fragment.len()),
-                        "invalid GUID separators"
-                    );
                     separators.push(fragment.len());
                 } else {
                     ensure!(byte.is_ascii_hexdigit(), "invalid GUID fragment");
                     fragment.push((byte as char).to_ascii_lowercase());
                 }
             }
-            ensure!(!text.ends_with('-'), "invalid GUID separators");
             if !separators.is_empty() {
                 ensure!(
                     fragment.len() <= 32
@@ -57,12 +52,11 @@ impl GuidQuery {
         Ok(Self { fragment })
     }
     fn bytes(text: &str) -> Result<String> {
-        let mut tokens = Vec::new();
         for group in text.split(',') {
             ensure!(!group.trim().is_empty(), "empty GUID byte");
-            tokens.extend(group.split_ascii_whitespace());
         }
-        let hexadecimal = tokens.iter().any(|token| {
+        let tokens = text.split(',').flat_map(str::split_ascii_whitespace);
+        let hexadecimal = tokens.clone().any(|token| {
             super::hex_digits(token).is_none()
                 && token
                     .bytes()
@@ -91,12 +85,8 @@ impl GuidQuery {
         }
         Ok(fragment)
     }
-    pub fn matches(&self, guid: &str) -> Option<super::MatchQuality> {
-        let text: String = guid
-            .chars()
-            .filter(|&c| c != '-')
-            .map(|c| c.to_ascii_lowercase())
-            .collect();
+    pub fn matches(&self, canonical_guid: &str) -> Option<super::MatchQuality> {
+        let text: String = canonical_guid.chars().filter(|&c| c != '-').collect();
         text.contains(&self.fragment)
             .then_some(if self.fragment.len() == 32 {
                 super::MatchQuality::GuidExact
@@ -134,6 +124,26 @@ mod tests {
         );
         for text in ["", "{}", "{1234", "12--34", "12-", "123456789-abc", "gg"] {
             assert!(GuidQuery::compile(text).is_err(), "{text}");
+        }
+    }
+    #[test]
+    fn grouped_fragments_reject_boundary_and_repeated_separators() {
+        let guid = "12345678-9abc-def0-1234-56789abcdef0";
+        let digits: Vec<_> = guid.char_indices().filter(|(_, c)| *c != '-').collect();
+        for start in 0..digits.len() {
+            for end in start..digits.len() {
+                let fragment = &guid[digits[start].0..=digits[end].0];
+                assert!(GuidQuery::compile(fragment).is_ok(), "{fragment}");
+                for invalid in [
+                    format!("-{fragment}"),
+                    format!("{fragment}-"),
+                    fragment.replace('-', "--"),
+                ] {
+                    if invalid != fragment {
+                        assert!(GuidQuery::compile(&invalid).is_err(), "{invalid}");
+                    }
+                }
+            }
         }
     }
     #[test]

@@ -108,10 +108,7 @@ impl File {
                 b"#GUID" | b"#US" => {}
                 rest => panic!("{rest:?}"),
             }
-            let mut padding = 4 - stream_name.len() % 4;
-            if padding == 0 {
-                padding = 4;
-            }
+            let padding = 4 - stream_name.len() % 4;
             view += 8 + stream_name.len() + padding;
         }
 
@@ -784,30 +781,3 @@ struct METADATA_HEADER {
 }
 
 const METADATA_SIGNATURE: u32 = 0x424A_5342;
-
-// A coded index must fit the largest table selected by its tag.
-fn coded_index_size(tables: &[usize]) -> usize {
-    fn small(row_count: usize, bits: u8) -> bool {
-        (row_count as u64) < (1u64 << (16 - bits))
-    }
-
-    fn bits_needed(value: usize) -> u8 {
-        let mut value = value - 1;
-        let mut bits: u8 = 1;
-        while {
-            value >>= 1;
-            value != 0
-        } {
-            bits += 1;
-        }
-        bits
-    }
-
-    let bits_needed = bits_needed(tables.len());
-
-    if tables.iter().all(|table| small(*table, bits_needed)) {
-        2
-    } else {
-        4
-    }
-}

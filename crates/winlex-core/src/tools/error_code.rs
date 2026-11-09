@@ -265,14 +265,10 @@ fn message(code: u32, language: u16, source: Source) -> Message {
 }
 
 /// Loads resources for this call only; no handle is retained after return.
-pub fn module_languages(path: &Path) -> Result<Vec<u16>, Failure> {
-    platform::module_languages(path)
-}
+pub use platform::module_languages;
 
 /// Unsorted, deduplicated language IDs; presentation supplies interface-language priority.
-pub fn system_languages() -> Vec<u16> {
-    platform::system_languages()
-}
+pub use platform::system_languages;
 
 #[cfg(windows)]
 mod platform;
@@ -311,6 +307,19 @@ mod tests {
         assert_eq!((nt.severity, nt.facility, nt.code), (3, 0, 5));
         let hr = encoding(0x80070005, Scheme::HResult).unwrap();
         assert_eq!((hr.severity, hr.facility, hr.code), (1, 7, 5));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn module_language_paths_reject_nul_before_loading() {
+        for path in [
+            "module\0.dll",
+            "C:\\module\0.dll",
+            "\\\\?\\C:\\module\0.dll",
+        ] {
+            let failure = module_languages(Path::new(path)).unwrap_err();
+            assert_eq!(failure.operation, "module_path");
+        }
     }
 
     #[cfg(windows)]

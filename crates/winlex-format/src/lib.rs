@@ -5,6 +5,16 @@ use winlex_core::metadata::key;
 use winlex_core::windows_metadata::{reader::*, *};
 use winlex_core::{Architecture, Catalog, Declaration, EntityId, Result, guid, integer};
 
+pub fn const_annotation<'a>(owner: impl HasAttributes<'a>) -> &'static str {
+    if owner.attributes().any(|a| {
+        a.namespace() == "Windows.Win32.Foundation.Metadata" && a.name() == "ConstAttribute"
+    }) {
+        "[const] "
+    } else {
+        ""
+    }
+}
+
 pub fn constant(value: &Value) -> String {
     if let Some(value) = integer(value) {
         return value.to_string();
@@ -327,7 +337,7 @@ pub fn describe(c: &Catalog, id: EntityId, arch: Option<Architecture>) -> Result
                 "parameters": s.types.iter().zip(ps.params()).enumerate().map(|(i, (t, p))| {
                     json!({
                         "sequence": i + 1,
-                        "name": p.map(|p| p.name().to_owned()),
+                        "name": p.as_ref().map(|p| p.name()),
                         "type": signature(t),
                         "flags": p.map(|p| p.flags().0),
                         "direction": p.map(|p| format!("{:?}", p.direction())),

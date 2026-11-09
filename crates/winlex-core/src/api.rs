@@ -191,7 +191,7 @@ impl<'a> Declaration<'a> {
                 .value()
                 .into_iter()
                 .find_map(|(_, value)| match value {
-                    Value::Utf8(url) => Some(url.to_string()),
+                    Value::Utf8(url) => Some(url),
                     _ => None,
                 })
         }
@@ -593,7 +593,6 @@ impl Search<'_> {
             let mut evidence = Vec::new();
             let quality = match &mut self.matcher {
                 Matcher::Exact(query) => {
-                    let full = self.catalog.full_name(&row);
                     let equal = |text: &str| {
                         if self.options.case_sensitive {
                             text == query
@@ -603,7 +602,7 @@ impl Search<'_> {
                     };
                     if equal(row.name()) {
                         Some(MatchQuality::NameExact(MatchField::Name))
-                    } else if equal(&full) {
+                    } else if equal(&self.catalog.full_name(&row)) {
                         Some(MatchQuality::NameExact(MatchField::FullName))
                     } else {
                         None

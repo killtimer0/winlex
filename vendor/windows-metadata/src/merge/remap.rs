@@ -77,18 +77,7 @@ impl Remapper {
     }
 
     pub fn remap(&self) -> Result<(), Error> {
-        if self.output.as_os_str().is_empty() {
-            return Err(Error::new("output is required"));
-        }
-
-        let name = self
-            .output
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .ok_or_else(|| {
-                Error::new(format!("invalid output path `{}`", self.output.display()))
-            })?;
-
+        let name = output_name(&self.output)?;
         let files = read_inputs(&self.input)?;
         let index = reader::Index::new(files);
         let mut file = writer::File::new(name);
@@ -250,25 +239,7 @@ impl Remapper {
 
     fn write_method(&self, file: &mut writer::File, method: reader::MethodDef, generics: &[Type]) {
         let signature = self.remap_signature(&method.signature(generics));
-        let method_def = file.MethodDef(
-            method.name(),
-            &signature,
-            method.flags(),
-            method.impl_flags(),
-        );
-        for param_def in method.params() {
-            let param = file.Param(param_def.name(), param_def.sequence(), param_def.flags());
-            write_attributes(file, writer::HasAttribute::Param(param), param_def);
-        }
-        write_attributes(file, writer::HasAttribute::MethodDef(method_def), method);
-        if let Some(impl_map) = method.impl_map() {
-            file.ImplMap(
-                method_def,
-                impl_map.flags(),
-                impl_map.import_name(),
-                impl_map.import_scope().name(),
-            );
-        }
+        write_method_with_signature(file, method, generics, None, Some(&signature));
     }
 
     /// Splits flat `Apis` containers while preserving each TypeDef's contiguous member range.

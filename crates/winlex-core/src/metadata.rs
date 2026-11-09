@@ -353,7 +353,6 @@ impl Db {
                 for m in t.methods().filter(|m| supports(*m, bit)) {
                     slots.push(method_slot(t, m)?);
                 }
-                active.remove(&crate::metadata::key(t, 2));
                 Ok(())
             }
             visit(self, t, bit, &mut active, &mut slots)?;

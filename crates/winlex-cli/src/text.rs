@@ -3,20 +3,10 @@ use super::{Page, Query};
 use std::fmt::Write;
 use winlex_core::windows_metadata::{reader::*, *};
 use winlex_core::{Architecture, Catalog, Declaration, EntityId, Result, guid, metadata::key};
-use winlex_format::{attribute_value as value, layout_kind, member_ids};
+use winlex_format::{attribute_value as value, const_annotation, layout_kind, member_ids};
 
 fn ty(t: &Type) -> String {
     qualified_ty(t, false)
-}
-
-fn const_annotation<'a>(owner: impl HasAttributes<'a>) -> &'static str {
-    if owner.attributes().any(|a| {
-        a.namespace() == "Windows.Win32.Foundation.Metadata" && a.name() == "ConstAttribute"
-    }) {
-        "[const] "
-    } else {
-        ""
-    }
 }
 
 fn qualified_ty(t: &Type, is_const: bool) -> String {
@@ -200,7 +190,7 @@ fn declaration(
                     out,
                     "{pad}  [{}] {}: {}{} ({})",
                     i + 1,
-                    p.map(|p| p.name().to_owned()).unwrap_or_default(),
+                    p.as_ref().map(|p| p.name()).unwrap_or_default(),
                     p.map(const_annotation).unwrap_or_default(),
                     ty(t),
                     p.map(|p| format!("{:?}", p.direction()))

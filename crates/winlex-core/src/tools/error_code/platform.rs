@@ -38,13 +38,6 @@ impl Module {
             detail: e.to_string(),
         })?;
         let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
-        if wide.contains(&0) {
-            return Err(Failure {
-                operation: "module_path".into(),
-                os_code: None,
-                detail: "module path contains NUL".into(),
-            });
-        }
         if !wide.starts_with(&[92, 92, 63, 92]) {
             if wide.starts_with(&[92, 92]) {
                 wide.splice(..2, [92, 92, 63, 92, 85, 78, 67, 92]);
@@ -112,12 +105,9 @@ pub fn lookup(code: u32, language: u16, source: &Source) -> Result<(String, Opti
     if length == 0 {
         return Err(failure("FormatMessageW"));
     }
-    Ok((
-        String::from_utf16_lossy(&buffer[..length as usize])
-            .trim_end()
-            .to_owned(),
-        (language != 0).then_some(language),
-    ))
+    let mut text = String::from_utf16_lossy(&buffer[..length as usize]);
+    text.truncate(text.trim_end().len());
+    Ok((text, (language != 0).then_some(language)))
 }
 
 fn system_path(name: &str) -> Result<PathBuf, Failure> {
@@ -206,9 +196,9 @@ struct Table {
     languages: Vec<u16>,
 }
 
-fn language_order(requested: u16, preferred: &[u16], available: &[u16]) -> Vec<u16> {
+fn eligible_languages(requested: u16, preferred: &[u16], available: &[u16]) -> Vec<u16> {
     if requested != 0 {
-        return vec![requested];
+        return Vec::from_iter(available.contains(&requested).then_some(requested));
     }
     let mut order = Vec::new();
     for &language in preferred.iter().chain(available) {
@@ -239,16 +229,14 @@ fn module_message(
         unsafe { GetSystemDefaultLangID() },
         0x409,
     ];
-    let order = language_order(language, &preferred, &available);
-    let mut has_language = false;
-    for selected in order {
+    let order = eligible_languages(language, &preferred, &available);
+    for &selected in &order {
         for table in &tables {
             // FindResourceExW itself can fall back, including for language zero.
             // Enumerated availability makes each request exact before calling it.
             if !table.languages.contains(&selected) {
                 continue;
             }
-            has_language = true;
             let resource = unsafe {
                 FindResourceExW(
                     module.0,
@@ -274,12 +262,13 @@ fn module_message(
             }
             let bytes = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), size) };
             if let Some((text, unicode)) = message_entry(bytes, code)? {
-                let text = decode_entry(text, unicode)?;
-                return Ok((text.trim_end().to_owned(), Some(selected)));
+                let mut text = decode_entry(text, unicode)?;
+                text.truncate(text.trim_end().len());
+                return Ok((text, Some(selected)));
             }
         }
     }
-    Err(resource_error(if has_language { 317 } else { 1815 }))
+    Err(resource_error(if order.is_empty() { 1815 } else { 317 }))
 }
 
 fn read_u32(bytes: &[u8], offset: usize) -> Result<u32, Failure> {
@@ -330,14 +319,15 @@ fn message_entry(bytes: &[u8], code: u32) -> Result<Option<(&[u8], bool)>, Failu
 
 fn decode_entry(bytes: &[u8], unicode: bool) -> Result<String, Failure> {
     if unicode {
-        let words: Vec<u16> = bytes
+        let words = bytes
             .as_chunks::<2>()
             .0
             .iter()
             .map(|b| u16::from_le_bytes([b[0], b[1]]))
-            .take_while(|&word| word != 0)
-            .collect();
-        return Ok(String::from_utf16_lossy(&words));
+            .take_while(|&word| word != 0);
+        return Ok(char::decode_utf16(words)
+            .map(|c| c.unwrap_or(char::REPLACEMENT_CHARACTER))
+            .collect());
     }
     let bytes = &bytes[..bytes
         .iter()
@@ -573,10 +563,11 @@ mod tests {
         let preferred = [0, 0x411, 0x804, 0x407, 0x409];
         let available = [0x40c, 0x409, 0x804, 0x804, 0];
         assert_eq!(
-            language_order(0, &preferred, &available),
+            eligible_languages(0, &preferred, &available),
             [0, 0x804, 0x409, 0x40c]
         );
-        assert_eq!(language_order(0x411, &preferred, &available), [0x411]);
-        assert!(language_order(0, &preferred, &[]).is_empty());
+        assert!(eligible_languages(0x411, &preferred, &available).is_empty());
+        assert_eq!(eligible_languages(0x409, &preferred, &available), [0x409]);
+        assert!(eligible_languages(0, &preferred, &[]).is_empty());
     }
 }

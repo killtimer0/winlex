@@ -237,10 +237,8 @@ pub fn run(
         }
     };
     let q = o.query.as_deref().unwrap_or("");
-    let selector = o
-        .source
-        .as_ref()
-        .map_or_else(|| q.to_owned(), |s| format!("{s}::{q}"));
+    let selector = o.source.as_ref().map(|s| format!("{s}::{q}"));
+    let selector = selector.as_deref().unwrap_or(q);
     let result: winlex_core::Result<Query> = (|| {
         Ok(match o.command {
             Command::Summary => Query::Summary,
@@ -261,15 +259,15 @@ pub fn run(
                 let result = page(matches.into_iter().map(Ok), o.offset, o.limit)?;
                 Query::Matches(result)
             }
-            Command::Show => Query::Show(select(&db, &selector, o.arch, false)?),
+            Command::Show => Query::Show(select(&db, selector, o.arch, false)?),
             Command::Layout => {
-                Query::Layout(db.layout(select(&db, &selector, o.arch, true)?, o.arch.unwrap())?)
+                Query::Layout(db.layout(select(&db, selector, o.arch, true)?, o.arch.unwrap())?)
             }
             Command::Vtable => {
-                Query::Vtable(db.vtable(select(&db, &selector, o.arch, true)?, o.arch.unwrap())?)
+                Query::Vtable(db.vtable(select(&db, selector, o.arch, true)?, o.arch.unwrap())?)
             }
             Command::References => {
-                let target = select(&db, &selector, o.arch, true)?;
+                let target = select(&db, selector, o.arch, true)?;
                 let arch = o.arch.unwrap();
                 let mut results = db.references(target, arch, None)?;
                 let page = page(results.by_ref(), o.offset, o.limit)?;

@@ -62,10 +62,7 @@ impl IntegerLiteral {
 }
 
 pub(crate) fn parse_unsigned(digits: &str, radix: u32) -> Result<u64> {
-    ensure!(
-        !digits.is_empty() && digits.bytes().all(|b| (b as char).is_digit(radix)),
-        "invalid unsigned integer"
-    );
+    ensure!(!digits.starts_with('+'), "invalid unsigned integer");
     Ok(u64::from_str_radix(digits, radix)?)
 }
 

@@ -8,6 +8,19 @@ mod snapshot_tests {
     use std::sync::Arc;
     use windows_metadata::{FieldAttributes, Type, TypeAttributes, reader, writer};
 
+    #[test]
+    fn public_key_tokens_preserve_raw_tokens_and_hash_full_keys() {
+        for full in [false, true] {
+            assert_eq!(super::key_token(&[], full), "");
+        }
+        assert_eq!(super::key_token(&[0, 1, 0xab, 0xff], false), "0001abff");
+        assert_eq!(super::key_token(&[1, 2, 3], true), "cfdf4fa87937761d");
+        assert_eq!(
+            super::key_token(&(0..=255).collect::<Vec<u8>>(), true),
+            "c8df57a46e58d132"
+        );
+    }
+
     fn layout_bits(db: &crate::Catalog, id: crate::EntityId, arch: crate::Architecture) -> u64 {
         db.layout(id, arch).unwrap().size_bits
     }
@@ -213,15 +226,13 @@ pub struct AssemblyIdentity {
 }
 
 fn key_token(bytes: &[u8], full: bool) -> String {
-    let bytes = if full && !bytes.is_empty() {
-        Sha1::digest(bytes)[12..]
+    if full && !bytes.is_empty() {
+        return Sha1::digest(bytes)[12..]
             .iter()
             .rev()
-            .copied()
-            .collect::<Vec<_>>()
-    } else {
-        bytes.to_vec()
-    };
+            .map(|b| format!("{b:02x}"))
+            .collect();
+    }
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
