@@ -53,7 +53,7 @@ pub enum Scheme {
 pub enum Source {
     System,
     NtDll,
-    Msvcrt,
+    Crt,
     Module(#[serde(serialize_with = "serialize_path")] PathBuf),
 }
 
@@ -199,7 +199,7 @@ pub fn query(request: &Request) -> crate::Result<QueryResult> {
     for &scheme in schemes {
         let source = match scheme {
             Scheme::NtStatus => Source::NtDll,
-            Scheme::Errno => Source::Msvcrt,
+            Scheme::Errno => Source::Crt,
             Scheme::Module => match &request.scope {
                 Scope::Module(p) => Source::Module(p.clone()),
                 _ => unreachable!(),

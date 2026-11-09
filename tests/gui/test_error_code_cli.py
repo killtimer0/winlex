@@ -64,11 +64,11 @@ def test_error_code_cli_errno_is_explicit_english_and_runtime_scoped(settings):
         assert candidate['scheme'] == 'errno'
         assert candidate['encoding'] is None and not candidate['related']
         message = candidate['message']
-        assert message['source']['kind'] == 'msvcrt'
+        assert message['source']['kind'] == 'crt'
         assert message['status'] == 'found' and message['text'] == 'No such file or directory'
         assert message['actual_language'] == 0x409
     assert query(settings, 0, '--scope', 'errno')['result']['candidates'][0]['message']['text'] == 'No error'
-    for value in (15, 100, -1, 2147483648):
+    for value in (15, 2147483647, -1, 2147483648):
         message = query(settings, value, '--scope', 'errno')['result']['candidates'][0]['message']
         assert message['status'] == 'not_found' and message['text'] is None
         assert message['failure'] is None
@@ -76,12 +76,12 @@ def test_error_code_cli_errno_is_explicit_english_and_runtime_scoped(settings):
     assert message['status'] == 'language_not_found' and message['text'] is None
     auto = query(settings, 2)['result']
     assert all(c['scheme'] != 'errno' for c in auto['candidates'])
-    assert all(m['source']['kind'] != 'msvcrt' for m in auto['attempts'])
+    assert all(m['source']['kind'] != 'crt' for m in auto['attempts'])
     query(settings, 2, '--scope', 'errno', '--module', 'ignored.dll', expected=2)
     text = subprocess.run([str(settings[0].with_name('winlex.exe')), 'error-code', '2',
                            '--scope', 'errno'], capture_output=True, timeout=30)
     assert text.returncode == 0
-    assert b'msvcrt.dll' in text.stdout and b'No such file or directory' in text.stdout
+    assert b'Microsoft CRT errno' in text.stdout and b'No such file or directory' in text.stdout
 
 
 def test_error_code_cli_missing_and_invalid_are_distinct(settings):

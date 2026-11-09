@@ -899,7 +899,7 @@ fn render_message(lines: &mut Vec<String>, message: &Message) {
     let source = match &message.source {
         Source::System => resources::text(IDS_ERROR_CODE_SYSTEM),
         Source::NtDll => resources::text(IDS_ERROR_CODE_NTDLL),
-        Source::Msvcrt => resources::text(IDS_ERROR_CODE_MSVCRT),
+        Source::Crt => resources::text(IDS_ERROR_CODE_CRT),
         Source::Module(path) => path.display().to_string(),
     };
     lines.push(format!(

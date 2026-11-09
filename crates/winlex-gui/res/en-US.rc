@@ -32,7 +32,7 @@ BEGIN
     IDS_ERROR_CODE_HRESULT "HRESULT"
     IDS_ERROR_CODE_NTSTATUS "NTSTATUS"
     IDS_ERROR_CODE_ERRNO "CRT errno"
-    IDS_ERROR_CODE_MSVCRT "Microsoft CRT errno (system msvcrt.dll; English only)"
+    IDS_ERROR_CODE_CRT "Microsoft CRT errno (English only)"
     IDS_ERROR_CODE_CUSTOM "Custom module"
     IDS_ERROR_CODE_AUTO_LANGUAGE "Automatic (0x0000)"
     IDS_ERROR_CODE_SYSTEM_LANGUAGE "System selection; actual language unknown"

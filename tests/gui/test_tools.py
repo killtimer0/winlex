@@ -217,7 +217,7 @@ def test_tool_errno_language_and_scope_switches_are_explicit(launch, settings, u
     assert not n.is_visible(n.get_item(doc, 1813))
     result = query(app, doc, "2")
     errno_label = resource_text(settings[0], 2339, ui_language.langid)
-    assert errno_label in result and 'msvcrt.dll' in result
+    assert errno_label in result and resource_text(settings[0], 2340, ui_language.langid) in result
     assert 'No such file or directory' in result
     missing = query(app, doc, "15")
     assert resource_text(settings[0], 2324, ui_language.langid) in missing

@@ -20,7 +20,7 @@ accepted; a leading zero means octal (010 = 8). LANGID is unsigned 16-bit.
 Module queries use full message IDs, preserve templates and never fall back to
 system resources. Module results report the selected resource language; system
 queries cannot report their automatic language choice.
-CRT errno queries use the system msvcrt.dll, not UCRT or POSIX error tables.
+CRT errno queries use the linked Microsoft CRT's error table.
 Messages are English (0x0409); other explicit languages return no language match.
 Automatic scope does not query CRT errno.
 ";
@@ -174,8 +174,8 @@ fn render_message(text: &mut String, message: &Message) {
         "Source: {:?}; message ID: 0x{:08X} ({})",
         message.source, message.code, message.code
     );
-    if message.source == error_code::Source::Msvcrt {
-        text.push_str("Microsoft CRT errno (system msvcrt.dll); English messages only.\n");
+    if message.source == error_code::Source::Crt {
+        text.push_str("Microsoft CRT errno; English messages only.\n");
     }
     if message.status == MessageStatus::Found {
         match message.actual_language {

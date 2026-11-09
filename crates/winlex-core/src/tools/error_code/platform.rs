@@ -13,8 +13,8 @@ use windows_sys::Win32::{
             FORMAT_MESSAGE_FROM_SYSTEM, FORMAT_MESSAGE_IGNORE_INSERTS, FormatMessageW,
         },
         LibraryLoader::{
-            EnumResourceLanguagesW, EnumResourceNamesW, FindResourceExW, GetProcAddress,
-            LOAD_LIBRARY_AS_DATAFILE, LoadLibraryExW, LoadResource, LockResource, SizeofResource,
+            EnumResourceLanguagesW, EnumResourceNamesW, FindResourceExW, LOAD_LIBRARY_AS_DATAFILE,
+            LoadLibraryExW, LoadResource, LockResource, SizeofResource,
         },
     },
 };
@@ -82,7 +82,7 @@ pub fn lookup(code: u32, language: u16, source: &Source) -> Result<(String, Opti
     let module = match source {
         Source::System => None,
         Source::NtDll => Some(Module::open(&system_path("ntdll.dll")?)?),
-        Source::Msvcrt => return crt_message(code, language),
+        Source::Crt => return crt_message(code, language),
         Source::Module(path) => Some(Module::open(path)?),
     };
     if let Some(module) = module {
@@ -127,21 +127,11 @@ fn crt_message(code: u32, language: u16) -> Result<(String, Option<u16>), Failur
         return Err(resource_error(1815));
     }
     let code = i32::try_from(code).map_err(|_| resource_error(317))?;
-    let path: Vec<u16> = system_path("msvcrt.dll")?
-        .as_os_str()
-        .encode_wide()
-        .chain(Some(0))
-        .collect();
-    let module = unsafe { LoadLibraryExW(path.as_ptr(), ptr::null_mut(), 0) };
-    if module.is_null() {
-        return Err(failure("LoadLibraryExW(msvcrt.dll)"));
+    unsafe extern "C" {
+        fn _wcserror(code: i32) -> *mut u16;
     }
-    let module = Module(module);
-    let address = unsafe { GetProcAddress(module.0, c"_wcserror".as_ptr().cast()) }
-        .ok_or_else(|| failure("GetProcAddress(_wcserror)"))?;
-    let wcserror: unsafe extern "C" fn(i32) -> *const u16 = unsafe { std::mem::transmute(address) };
     let copy = |value| -> Result<String, Failure> {
-        let text = unsafe { wcserror(value) };
+        let text = unsafe { _wcserror(value) };
         if text.is_null() {
             return Err(Failure {
                 operation: "_wcserror".into(),

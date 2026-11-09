@@ -61,7 +61,7 @@ winlex error-code 0x20000001 --module .\messages.dll --lang auto
 ```
 
 - `--scope` 可选 `auto`（默认）、`win32`、`hresult`、`ntstatus`、`errno`。自动模式分别查询 Win32、HRESULT 和 NTSTATUS，不查询 CRT errno。
-- `errno` 查询系统 `msvcrt.dll` 的 Microsoft CRT 消息。消息固定为英文；`--lang auto`、`0` 或 `0x409` 均可，其他 LANGID 返回语言未找到。
+- `errno` 查询链接的 Microsoft CRT 错误表（x86／x64 为 MSVCRT，ARM64 为 UCRT），JSON 来源标识为 `crt`。消息固定为英文；`--lang auto`、`0` 或 `0x409` 均可，其他 LANGID 返回语言未找到。
 - `--module PATH` 指定单个 EXE、DLL 或 MUI 的消息表，与预设 `--scope` 互斥；使用完整消息 ID，不回退到系统消息表。
 - `--lang auto|LANGID`（也可写 `--language`）选择消息语言。除上述 CRT errno 外，`auto` 或 `0` 使用 Windows 的语言选择规则；非零 LANGID 严格请求对应语言。
 - 代码接受 -2147483648 至 4294967295，支持正负号、0x／0o／0b 前缀；前导零为八进制，例如 `010` 为 8。LANGID 为无符号 16 位值。不接受符号名称或浮点数。
