@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import struct
 import subprocess
+import sys
 import tempfile
 import unittest
 import warnings
@@ -14,6 +15,7 @@ from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "scripts"))
 spec = importlib.util.spec_from_file_location("build_record", ROOT / "scripts/build-record.py")
 record = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(record)
@@ -45,10 +47,39 @@ def pe_image(policy, dlls, kind=3, delay=False):
             struct.pack_into("<I", data, 0x200 + index * stride + 12, 0x1100 + index * 64)
         name = dll.encode("ascii") + b"\0"
         data[0x300 + index * 64:0x300 + index * 64 + len(name)] = name
+    struct.pack_into("<II", data, directories + 6 * 8, 0x1400, 28)
+    struct.pack_into("<IIII", data, 0x600 + 12, 2, 24, 0x1440, 0x640)
+    data[0x640:0x658] = b"RSDS" + bytes([kind]) * 16 + struct.pack("<I", 1)
+    return bytes(data)
+
+
+def pdb_image(kind=3):
+    # MSF 7: superblock, free map, directory block map, directory, info stream.
+    data = bytearray(5 * 512)
+    data[:32] = b"Microsoft C/C++ MSF 7.00\r\n\x1aDS\0\0\0"
+    struct.pack_into("<6I", data, 32, 512, 1, 5, 16, 0, 2)
+    struct.pack_into("<I", data, 1024, 3)
+    struct.pack_into("<4I", data, 1536, 2, 0, 28, 4)
+    struct.pack_into("<III", data, 2048, 20000404, 0, 1)
+    data[2060:2076] = bytes([kind]) * 16
     return bytes(data)
 
 
 class BuildRecordContracts(unittest.TestCase):
+    def test_symbols_require_matching_guid_and_age(self):
+        for arch, policy in POLICIES.items():
+            with self.subTest(arch=arch):
+                executable = pe_image(policy, [policy["crt"]])
+                record.symbols.verify(executable, pdb_image())
+                with self.assertRaisesRegex(ValueError, "identity mismatch"):
+                    record.symbols.verify(executable, pdb_image(2))
+                changed = bytearray(pdb_image())
+                struct.pack_into("<I", changed, 2056, 2)
+                with self.assertRaisesRegex(ValueError, "identity mismatch"):
+                    record.symbols.verify(executable, changed)
+        with self.assertRaisesRegex(ValueError, "Unsupported PDB"):
+            record.symbols.pdb_identity(b"not a PDB")
+
     def test_archive_member_names_must_be_unique_on_windows(self):
         with tempfile.TemporaryDirectory(dir=ROOT / "tmp") as folder:
             path = Path(folder) / "members.zip"
@@ -152,11 +183,14 @@ class BuildRecordContracts(unittest.TestCase):
                 executable = directory / name
                 data = pe_image(policy, [policy["crt"]], kind)
                 executable.write_bytes(data)
+                pdb = executable.with_suffix(".pdb")
+                pdb.write_bytes(pdb_image(kind))
                 path = directory / (name + ".build.json")
                 path.write_text(json.dumps({
                     "schema_version": 2, "policy": policy, "configuration": "Debug",
                     "executable": str(executable),
                     "executable_sha256": hashlib.sha256(data).hexdigest(),
+                    "pdb": str(pdb), "pdb_sha256": hashlib.sha256(pdb.read_bytes()).hexdigest(),
                 }), encoding="utf-8")
                 paths.append(path)
             validated = record.verify_records(paths, "arm64", "Debug")

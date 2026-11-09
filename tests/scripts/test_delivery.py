@@ -11,7 +11,7 @@ import tempfile
 import unittest
 import zipfile
 
-from test_build_record import pe_image
+from test_build_record import pe_image, pdb_image
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -34,6 +34,8 @@ class DeliveryContracts(unittest.TestCase):
             programs.update({name: b"retained notice" for name in delivery.NOTICES})
             self.archive(self.inputs / f"winlex-{arch}.zip", programs)
             self.program_checksum(arch)
+            symbols = {"winlex.pdb": pdb_image(), "winlex_gui.pdb": pdb_image(2)}
+            self.archive(self.inputs / f"winlex-{arch}-symbols.zip", symbols)
             materials = {name: b"retained notice" for name in delivery.REQUIRED_LICENSES}
             materials.update({"licenses/crates/shared/LICENSE": b"common license",
                               "licenses/rust/licenses/MIT.txt": b"Rust license",
@@ -45,6 +47,8 @@ class DeliveryContracts(unittest.TestCase):
                             "executable_sha256": delivery.digest(programs[name])}
                            for name in ("winlex.exe", "winlex-gui.exe")],
             }
+            for build, name in zip(provenance["builds"], symbols):
+                build.update(pdb_name=name, pdb_sha256=delivery.digest(symbols[name]))
             materials[f"builds/{arch}.json"] = json.dumps(provenance).encode()
             self.archive(self.inputs / f"winlex-{arch}-licenses.zip", materials)
 
@@ -82,7 +86,8 @@ class DeliveryContracts(unittest.TestCase):
         ], capture_output=True, text=True, encoding="utf-8", errors="replace")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual({path.name for path in self.output.iterdir()}, {
-            "winlex-x86.zip", "winlex-x64.zip", "winlex-arm64.zip", "licenses.zip", "SHA256SUMS"})
+            "winlex-x86.zip", "winlex-x64.zip", "winlex-arm64.zip", "licenses.zip", "SHA256SUMS",
+            "winlex-x86-symbols.zip", "winlex-x64-symbols.zip", "winlex-arm64-symbols.zip"})
         files = delivery.record.verify_contents(self.output / "licenses.zip")
         for arch in self.policies:
             self.assertEqual(files[f"licenses/crates/{arch}/LICENSE"], arch.encode())
@@ -137,6 +142,25 @@ class DeliveryContracts(unittest.TestCase):
         self.change("winlex-arm64-licenses.zip", lambda files: files.update({
             "licenses/crates/shared/LICENSE": b"different license"}))
         self.assert_refused("Conflicting license material")
+
+    def test_missing_or_mismatched_symbols_refuse_delivery(self):
+        path = self.inputs / "winlex-x86-symbols.zip"
+        original = path.read_bytes()
+        path.unlink()
+        with self.assertRaises(FileNotFoundError):
+            self.assemble()
+        self.assertFalse(self.output.exists())
+        path.write_bytes(original)
+        self.change(path.name, lambda files: files.update({"winlex.pdb": pdb_image(2)}))
+        self.assert_refused("PDB hash mismatch")
+
+        def change_identity(files):
+            provenance = json.loads(files["builds/x86.json"])
+            provenance["builds"][0]["pdb_sha256"] = delivery.digest(pdb_image(2))
+            files["builds/x86.json"] = json.dumps(provenance).encode()
+
+        self.change("winlex-x86-licenses.zip", change_identity)
+        self.assert_refused("Executable/PDB identity mismatch")
 
     def test_corrupt_program_and_license_checksums_refuse_delivery(self):
         path = self.inputs / "winlex-arm64.zip"

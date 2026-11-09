@@ -8,6 +8,7 @@ import subprocess
 import struct
 import sys
 import zipfile
+import symbols
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -103,10 +104,14 @@ def verify_records(paths, architecture, configuration):
         check(path.name == name and hashlib.sha256(data).hexdigest() == record["executable_sha256"],
               "Executable name or hash mismatch")
         verify_pe(data, policy, kind)
+        check("pdb" in record and "pdb_sha256" in record, "Missing PDB build record; rebuild")
+        pdb = Path(record["pdb"]).read_bytes()
+        check(hashlib.sha256(pdb).hexdigest() == record["pdb_sha256"], "PDB hash mismatch")
+        symbols.verify(data, pdb)
     return records
 
 
-def verify_contents(path, *, check_binary_paths=False):
+def verify_contents(path, *, check_binary_paths=False, symbol_archive=False):
     with zipfile.ZipFile(path) as archive:
         names = [info.filename for info in archive.infolist() if not info.is_dir()]
         check(len(names) == len({name.casefold() for name in names}), "Duplicate or case-conflicting archive member")
@@ -114,7 +119,10 @@ def verify_contents(path, *, check_binary_paths=False):
                   and ":" not in name and all(part not in ("", ".", "..") for part in name.split("/"))
                   for name in names), "Unsafe archive member")
         check(not any(name.lower().endswith((".dll", ".winmd", ".build.json")) for name in names),
-              "Unexpected runtime, metadata or build record in archive")
+               "Unexpected runtime, metadata or build record in archive")
+        if symbol_archive:
+            check(set(names) == {"winlex.pdb", "winlex_gui.pdb", "SHA256SUMS.txt"},
+                  "Unexpected symbol archive contents")
         sums = {}
         for line in archive.read("SHA256SUMS.txt").decode("utf-8").splitlines():
             digest, name = line.split("  ", 1)
@@ -124,7 +132,7 @@ def verify_contents(path, *, check_binary_paths=False):
         for name, digest in sums.items():
             data = archive.read(name)
             check(hashlib.sha256(data).hexdigest() == digest, f"Archive hash mismatch: {name}")
-            if not name.lower().endswith(".exe") or check_binary_paths:
+            if not symbol_archive and (not name.lower().endswith(".exe") or check_binary_paths):
                 for prefix in (str(ROOT), os.environ.get("USERPROFILE", "")):
                     if prefix:
                         for spelling in {prefix, prefix.replace("\\", "/")}:
@@ -168,7 +176,7 @@ def main():
     if args.stage:
         if not args.archive or args.records:
             parser.error("--stage requires --archive and validated records on stdin, without --records")
-        records = json.load(sys.stdin)
+        records = json.load(sys.stdin.buffer)
         write_sums(args.stage)
         create_archive(args.stage, args.archive)
         verify_archive(args.archive, records)

@@ -90,7 +90,8 @@ $oldConsoleEncoding = [Console]::OutputEncoding
 try {
     [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
     if ($oldFlags -or $oldRustFlags) { throw 'Clear existing RUSTFLAGS/CARGO_ENCODED_RUSTFLAGS before this build.' }
-    $flags = @('-C','target-feature=+crt-static','-C',"linker=$linker")
+    $flags = @('-C','target-feature=+crt-static','-C',"linker=$linker", '-C', 'link-arg=/PDBALTPATH:%_PDB%')
+    if ($Configuration -eq 'Release') { $flags += @('-C', 'debuginfo=1') }
     if ($Configuration -eq 'Dist') {
         $sysroot = & rustc --print sysroot
         if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $sysroot)) { throw 'Rust sysroot was not found.' }
@@ -118,6 +119,7 @@ try {
     if ($Configuration -eq 'Dist') { $arguments += @('--profile', 'dist') }
     if ($TargetDir) { $arguments += @('--target-dir', $TargetDir) }
     $executables = @{}
+    $symbols = @{}
     & cargo @arguments | ForEach-Object {
         $message = $_ | ConvertFrom-Json
         if ($message.reason -eq 'compiler-message' -and $message.message.rendered) {
@@ -126,6 +128,7 @@ try {
         if ($message.reason -eq 'compiler-artifact' -and $message.executable -and
             $message.target.kind -contains 'bin' -and $message.target.name -in @('winlex', 'winlex-gui')) {
             $executables[$message.target.name] = $message.executable
+            $symbols[$message.target.name] = @($message.filenames | Where-Object { [IO.Path]::GetExtension($_) -eq '.pdb' })
         }
     }
     if ($LASTEXITCODE -ne 0) { throw "Build failed ($LASTEXITCODE)" }
@@ -151,6 +154,10 @@ try {
             $report.thunks_object = $object
             $report.thunks_sha256 = $checkedInputs.thunks_sha256
         }
+        $pdb = $symbols[$binary]
+        if ($pdb.Count -ne 1 -or -not (Test-Path -LiteralPath $pdb[0])) { throw "Expected one PDB for $binary" }
+        $report.pdb = $pdb[0]
+        $report.pdb_sha256 = (Get-FileHash -LiteralPath $pdb[0] -Algorithm SHA256).Hash.ToLowerInvariant()
         $report.vc_ltl_root = $ltlRoot
         $report.vc_ltl_libraries = $checkedInputs.vc_ltl_libraries
         $report | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath "$exe.build.json" -Encoding utf8

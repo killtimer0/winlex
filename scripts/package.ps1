@@ -20,7 +20,8 @@ $output = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPat
 New-Item -ItemType Directory -Force -Path $output | Out-Null
 $zip = Join-Path $output "winlex-$Architecture.zip"
 $licenseZip = Join-Path $output "winlex-$Architecture-licenses.zip"
-foreach ($path in @($zip, "$zip.sha256", $licenseZip)) {
+$symbolZip = Join-Path $output "winlex-$Architecture-symbols.zip"
+foreach ($path in @($zip, "$zip.sha256", $licenseZip, $symbolZip)) {
     if (Test-Path -LiteralPath $path) { throw "Output already exists: $path" }
 }
 $tmp = Join-Path $root 'tmp'
@@ -81,12 +82,14 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'License archive validation failed.' }
     $records | ConvertTo-Json -Depth 10 | & python "$PSScriptRoot/build-record.py" --archive $zip --stage $programStage
     if ($LASTEXITCODE -ne 0) { throw 'Archive validation failed.' }
+    $records | ConvertTo-Json -Depth 10 | & python "$PSScriptRoot/delivery.py" symbols --output $symbolZip
+    if ($LASTEXITCODE -ne 0) { throw 'Symbol archive validation failed.' }
     $hash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
     [IO.File]::WriteAllText("$zip.sha256", "$hash  $([IO.Path]::GetFileName($zip))`n", [Text.UTF8Encoding]::new($false))
     Write-Host "Packaged $zip"
     Write-Host "Collected $licenseZip (merge all architectures with scripts/delivery.py)"
 } catch {
-    foreach ($path in @($zip, "$zip.sha256", $licenseZip)) {
+    foreach ($path in @($zip, "$zip.sha256", $licenseZip, $symbolZip)) {
         if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
     }
     throw

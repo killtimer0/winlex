@@ -7,9 +7,11 @@
 1. 将源码及工作流上传到用户自己的 GitHub 仓库。首次使用时，工作流须位于默认分支并启用 Actions。
 2. 打开 Actions → **Build distribution artifacts** → **Run workflow**，选择分支并确认。
 3. 运行结束后，在该次运行的 Artifacts 中获取 `winlex-delivery`。带 `intermediate` 的 artifact 是按架构汇总前的中间材料，不是完整交付集合。
-4. 最终集合包含 `winlex-x86.zip`、`winlex-x64.zip`、`winlex-arm64.zip`、公共 `licenses.zip` 和统一的 `SHA256SUMS`。
+4. 最终集合包含三个架构的 `winlex-ARCH.zip` 程序包、`winlex-ARCH-symbols.zip` 符号包、公共 `licenses.zip` 和统一的 `SHA256SUMS`，共八个文件。
 
 下载对应架构的程序包和同版本 `licenses.zip`，解压到同一目录，使第三方声明中的相对链接可用；再分发须同时提供匹配材料并履行适用的源码提供义务。
+
+调试或分析崩溃转储时另行下载对应架构的符号包，其中包含 `winlex.pdb`、`winlex_gui.pdb` 和包内校验清单。符号取自原始构建，按 EXE/PDB 的 GUID 和 Age 校验匹配；不能用重新构建的 PDB 替代。PDB 保留调试信息，可能包含构建机路径，程序和许可包仍执行本机路径检查。
 
 可用 `sha256sum --check SHA256SUMS` 检查下载的全部 ZIP；Windows 可通过 `Get-FileHash -Algorithm SHA256` 与清单逐项比对。元数据须另外下载，程序包不包含 WinMD。GitHub 自动生成的 Source code 压缩包不是可执行程序包。
 
@@ -34,7 +36,7 @@ rustup component add rust-docs
 Get-FileHash ./tmp/packages/winlex-x64.zip -Algorithm SHA256
 ```
 
-每次打包还生成 `winlex-ARCH-licenses.zip` 中间许可证包和程序 ZIP 的 `.sha256`。对三个架构分别执行构建和打包后，汇总到一个尚不存在的输出目录：
+每次打包还生成 `winlex-ARCH-symbols.zip`、`winlex-ARCH-licenses.zip` 中间许可证包和程序 ZIP 的 `.sha256`。对三个架构分别执行构建和打包后，汇总到一个尚不存在的输出目录：
 
 ```powershell
 uv run --locked python scripts/delivery.py assemble --inputs ./tmp/packages --output ./artifacts/delivery

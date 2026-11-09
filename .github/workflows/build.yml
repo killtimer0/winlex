@@ -140,6 +140,7 @@ jobs:
             artifacts/winlex-${{ matrix.arch }}.zip
             artifacts/winlex-${{ matrix.arch }}.zip.sha256
             artifacts/winlex-${{ matrix.arch }}-licenses.zip
+            artifacts/winlex-${{ matrix.arch }}-symbols.zip
           if-no-files-found: error
 
   delivery:
@@ -195,32 +196,20 @@ jobs:
 
           ### 下载
           - 按系统架构选择 `winlex-x86.zip`、`winlex-x64.zip` 或 `winlex-arm64.zip`，每包均包含 CLI 和 GUI。
-          - 同时下载本版本的 `licenses.zip`，解压到程序目录；再分发须附带匹配的许可材料，并履行对应源码提供义务。
+          - 同时下载本版本的 `licenses.zip`，解压到程序目录。
           - 下载 `SHA256SUMS` 核验 ZIP 文件。
+          - 调试或分析崩溃转储时，另行下载对应架构的 `winlex-<arch>-symbols.zip`。
           - 元数据从 [winmd-collection Releases](https://github.com/killtimer0/winmd-collection/releases) 另行下载；程序包不包含 `.winmd`。
-          - GitHub 自动提供的 Source code 压缩包不是可执行程序包，也不能据此认定完整对应源码义务已满足。
-
-          ### 公开分发前
-          - 最低系统要求见本 tag 的 `inputs/targets.json`，构建和验证限制见 `docs/build.md`、`docs/release.md`。
-          - 交叉构建和 SDK ABI 检查不代表已通过 XP 或 ARM64 实机验证。
-          - VC-LTL 对象级授权及 GPL 组合分发条件仍待确认；本 Release 保持草稿，公开前须完成许可及对应源码审核。
           EOF
           python3 - <<'PY'
-          import json
           import os
           from pathlib import Path
           from urllib.parse import quote
-          from zipfile import ZipFile
 
           base = f"https://github.com/{os.environ['GH_REPO']}/blob/{quote(os.environ['TAG'], safe='')}"
           with Path('release-notes.md').open('a', encoding='utf-8') as notes:
-              notes.write('\n### 目标系统版本\n\n| 架构 | 最低 Windows 版本号 |\n|---|---|\n')
-              with ZipFile('artifacts/licenses.zip') as archive:
-                  for arch in ('x86', 'x64', 'arm64'):
-                      policy = json.loads(archive.read(f'builds/{arch}.json'))['builds'][0]['policy']
-                      notes.write(f"| {arch} | {policy['minimum_windows']} |\n")
-              notes.write(f'\n[构建与兼容说明]({base}/docs/build.md) · [交付与审核说明]({base}/docs/release.md)\n')
+              notes.write(f'\n[构建与兼容说明]({base}/docs/build.md)\n')
           PY
           options=(--draft --verify-tag --title "$TAG" --notes-file release-notes.md)
           if [[ "$TAG" == *-* ]]; then options+=(--prerelease); fi
-          gh release create "$TAG" "${options[@]}" artifacts/winlex-{x86,x64,arm64}.zip artifacts/licenses.zip artifacts/SHA256SUMS
+          gh release create "$TAG" "${options[@]}" artifacts/winlex-{x86,x64,arm64}.zip artifacts/winlex-{x86,x64,arm64}-symbols.zip artifacts/licenses.zip artifacts/SHA256SUMS

@@ -8,6 +8,7 @@ default-run = "winlex"
 
 [profile.dist]
 inherits = "release"
+debug = 1
 opt-level = "z"
 lto = true
 codegen-units = 1

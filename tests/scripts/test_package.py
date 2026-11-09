@@ -63,6 +63,9 @@ class PackageContracts(unittest.TestCase):
                     executable = source / Path(record["executable"]).name
                     shutil.copyfile(record["executable"], executable)
                     record["executable"] = str(executable)
+                    pdb = source / Path(record["pdb"]).name
+                    shutil.copyfile(record["pdb"], pdb)
+                    record["pdb"] = str(pdb)
                     destination = source / path.name
                     destination.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
                     records.append(destination)
@@ -97,6 +100,12 @@ class PackageContracts(unittest.TestCase):
                     with ZipFile(archive) as z:
                         self.assertEqual(hashlib.sha256(z.read(name)).hexdigest(),
                                           json.loads(record.read_text(encoding="utf-8-sig"))["executable_sha256"].lower())
+                with ZipFile(out / f"winlex-{arch}-symbols.zip") as z:
+                    self.assertEqual(set(z.namelist()), {"winlex.pdb", "winlex_gui.pdb", "SHA256SUMS.txt"})
+                    for path in records:
+                        build = json.loads(path.read_text(encoding="utf-8"))
+                        self.assertEqual(hashlib.sha256(z.read(Path(build["pdb"]).name)).hexdigest(),
+                                         build["pdb_sha256"])
                 with ZipFile(out / f"winlex-{arch}-licenses.zip") as z:
                     self.assertTrue({"LICENSE", "THIRD-PARTY-NOTICES.md", "SHA256SUMS.txt",
                                      "licenses/YY-Thunks-LICENSE", "licenses/VC-LTL-LICENSE",
@@ -117,6 +126,7 @@ class PackageContracts(unittest.TestCase):
             ("policy", {**original["policy"], "target": "unsupported-target"}, "target or configuration mismatch"),
             ("configuration", "Dist", "target or configuration mismatch"),
             ("executable_sha256", "0" * 64, "name or hash mismatch"),
+            ("pdb_sha256", "0" * 64, "PDB hash mismatch"),
             ("schema_version", 0, "Unsupported build record"),
             ("policy", {**original["policy"], "minimum_windows": "different"}, "policy mismatch"),
         ):
@@ -128,7 +138,7 @@ class PackageContracts(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn(message, result.stdout + result.stderr)
                 self.assertFalse((out / f"winlex-{arch}.zip").exists())
-        for suffix in (".zip", ".zip.sha256", "-licenses.zip"):
+        for suffix in (".zip", ".zip.sha256", "-licenses.zip", "-symbols.zip"):
             with self.subTest(existing=suffix):
                 out = self.directory / ("existing-" + suffix.replace(".", "-"))
                 out.mkdir()
