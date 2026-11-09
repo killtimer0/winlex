@@ -10,6 +10,9 @@ from test_context import select_text, selection_packed
 def window_state(hwnd, state):
     pattern = auto.ControlFromHandle(hwnd).GetPattern(auto.PatternId.WindowPattern)
     assert pattern.SetWindowVisualState(state, waitTime=0)
+    n.wait(lambda: (bool(n.is_zoomed(hwnd)), bool(win32gui.IsIconic(hwnd))) == (
+        state == auto.WindowVisualState.Maximized, state == auto.WindowVisualState.Minimized),
+        "requested native window state")
 
 
 def resize(hwnd, width, height):
@@ -165,7 +168,7 @@ def test_document_minimum_limits_normal_not_maximized_windows(launch, settings):
             if state == auto.WindowVisualState.Maximized and n.is_zoomed(doc):
                 continue
             window_state(doc, state)
-            if n.is_zoomed(doc):
+            if state == auto.WindowVisualState.Maximized:
                 # MDI layout can finish after the synchronous system command returns.
                 stable_since = None
                 def aligned():
