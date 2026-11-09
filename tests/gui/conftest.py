@@ -103,7 +103,32 @@ def pytest_runtest_makereport(item, call):
 
 
 @pytest.fixture(scope="session")
-def settings(request):
+def automation_client():
+    # CUIAutomation8 (Windows 8+) lets the client avoid implicit foreground
+    # requests when interacting with controls on an isolated desktop.
+    if sys.getwindowsversion() < (6, 2):
+        yield
+        return
+    import comtypes.client
+    import uiautomation.uiautomation as implementation
+
+    client = implementation._AutomationClient.instance()
+    core = client.UIAutomationCore
+    modern = comtypes.client.CreateObject(core.CUIAutomation8, interface=core.IUIAutomation2)
+    modern.AutoSetFocus = False
+    assert not modern.AutoSetFocus
+    automation = modern.QueryInterface(core.IUIAutomation)
+    walker = automation.RawViewWalker
+    previous = client.IUIAutomation, client.ViewWalker
+    client.IUIAutomation, client.ViewWalker = automation, walker
+    try:
+        yield
+    finally:
+        client.IUIAutomation, client.ViewWalker = previous
+
+
+@pytest.fixture(scope="session")
+def settings(request, automation_client):
     if hasattr(n.user, "SetThreadDpiAwarenessContext"):
         n.api(n.user, "SetThreadDpiAwarenessContext", n.c.c_void_p, n.c.c_void_p)(n.c.c_void_p(-4))
     option = request.config.getoption
