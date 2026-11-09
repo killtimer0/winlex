@@ -36,6 +36,14 @@ pub(super) enum PanelId {
 }
 pub(super) const SEARCH_PANEL: PanelId = PanelId::Search;
 pub(super) const SOURCES_PANEL: PanelId = PanelId::Sources;
+pub(super) fn update_actions(ctx: &Context, id: PanelId) {
+    match id {
+        PanelId::Search => {}
+        PanelId::Sources => sources::update_actions(ctx),
+        PanelId::Tools => super::tools::update_actions(ctx),
+    }
+}
+
 pub(super) fn status(ctx: &Context, id: PanelId) -> String {
     match id {
         PanelId::Search => catalog::search_status(ctx),
@@ -184,7 +192,7 @@ pub(super) fn create(ctx: &Context, frame: HWND) -> anyhow::Result<([Rc<Panel>; 
             )
         }?);
     }
-    sources::update_actions(ctx);
+    update_actions(ctx, PanelId::Sources);
     let sources_panel = Rc::new(Panel {
         id: PanelId::Sources,
         controls,
@@ -214,6 +222,7 @@ pub(super) fn create(ctx: &Context, frame: HWND) -> anyhow::Result<([Rc<Panel>; 
             TOOL_NEW,
         )
     }?];
+    update_actions(ctx, PanelId::Tools);
     Ok((
         [
             search_panel,

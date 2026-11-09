@@ -77,6 +77,25 @@ def query(app, doc, value):
                     and body(doc) else None, "tool explicit query", 30)
 
 
+def test_tool_new_button_tracks_selection(launch):
+    app = launch()
+    app.command(1800)
+    panel = app.tool_list
+    button = n.get_item(app.frame, 1802)
+    assert app.selected_row(panel) == -1
+    assert not win32gui.IsWindowEnabled(button)
+    app.select(0, panel)
+    assert win32gui.IsWindowEnabled(button)
+    invoke(button)
+    n.wait(lambda: app.active_document() in tools(app), "new tool opened")
+    item = app.row(0, panel).GetSelectionItemPattern()
+    assert item.RemoveFromSelection(waitTime=0)
+    assert app.selected_row(panel) == -1
+    assert not win32gui.IsWindowEnabled(button)
+    app.select(0, panel)
+    assert win32gui.IsWindowEnabled(button)
+
+
 def test_tool_completion_is_dispatched_inside_modal_dialog(launch):
     from test_search_help import open_help
 

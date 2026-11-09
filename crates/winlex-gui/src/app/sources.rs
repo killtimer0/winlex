@@ -303,7 +303,7 @@ pub(super) fn refresh(ctx: &Context) {
     super::sidebar::panel(ctx, super::panel::SOURCES_PANEL)
         .list
         .refresh_tooltip();
-    update_actions(ctx);
+    super::panel::update_actions(ctx, super::panel::PanelId::Sources);
 }
 
 pub(super) fn context_menu(ctx: &Context, hwnd: HWND, location: isize) -> anyhow::Result<()> {

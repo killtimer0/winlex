@@ -37,6 +37,15 @@ pub(super) fn list(ctx: &Context) -> HWND {
 pub(super) fn refresh(ctx: &Context) {
     let list = list(ctx);
     crate::list::State::capture(list).apply(list, 1);
+    super::panel::update_actions(ctx, super::panel::PanelId::Tools);
+}
+pub(super) fn update_actions(ctx: &Context) {
+    unsafe {
+        EnableWindow(
+            GetDlgItem(ctx.frame(), TOOL_NEW as i32),
+            i32::from(crate::list::selected(list(ctx)) == Some(0)),
+        );
+    }
 }
 pub(super) fn selected(ctx: &Context, new: bool) {
     if crate::list::selected(list(ctx)) == Some(0) {

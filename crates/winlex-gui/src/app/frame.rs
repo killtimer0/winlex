@@ -175,8 +175,8 @@ pub(super) unsafe extern "system" fn frame_proc(hwnd: HWND, msg: u32, w: usize, 
                     if hdr.code == NM_SETFOCUS {
                         status::status_context(ctx, status::StatusContext::Panel(panel.id));
                     }
-                    if hdr.idFrom == SOURCE_LIST as usize && hdr.code == LVN_ITEMCHANGED {
-                        sources::update_actions(ctx);
+                    if hdr.hwndFrom == panel.list.hwnd && hdr.code == LVN_ITEMCHANGED {
+                        panel::update_actions(ctx, panel.id);
                         return 0;
                     }
                     if let Some(result) = panel.list.notify(l) {
