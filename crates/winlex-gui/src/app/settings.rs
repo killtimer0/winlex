@@ -34,10 +34,61 @@ impl Theme {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum SearchEngine {
+    Google,
+    Bing,
+    Baidu,
+}
+pub(super) const SEARCH_ENGINES: &[(SearchEngine, &str, u16, &str)] = &[
+    (
+        SearchEngine::Google,
+        "google",
+        crate::resources::IDS_SEARCH_GOOGLE,
+        "https://www.google.com/search?q=",
+    ),
+    (
+        SearchEngine::Bing,
+        "bing",
+        crate::resources::IDS_SEARCH_BING,
+        "https://www.bing.com/search?q=",
+    ),
+    (
+        SearchEngine::Baidu,
+        "baidu",
+        crate::resources::IDS_SEARCH_BAIDU,
+        "https://www.baidu.com/s?wd=",
+    ),
+];
+impl SearchEngine {
+    fn name(self) -> &'static str {
+        SEARCH_ENGINES[self as usize].1
+    }
+    fn from_name(name: &str) -> Option<Self> {
+        SEARCH_ENGINES
+            .iter()
+            .find(|(_, key, _, _)| *key == name)
+            .map(|&(value, _, _, _)| value)
+    }
+    pub(super) fn url(self, query: &str) -> String {
+        let mut url = String::from(SEARCH_ENGINES[self as usize].3);
+        for byte in query.bytes() {
+            if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+                url.push(byte as char);
+            } else {
+                use std::fmt::Write;
+                write!(url, "%{byte:02X}").unwrap();
+            }
+        }
+        url
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Preferences {
     pub language: Language,
     pub categories: u32,
     pub theme: Theme,
+    pub search_engine: SearchEngine,
 }
 impl Preferences {
     fn load(config: &Config) -> Self {
@@ -55,13 +106,18 @@ impl Preferences {
                 .and_then(|k| k.text("Theme"))
                 .and_then(|value| Theme::from_name(&value))
                 .unwrap_or_default(),
+            search_engine: key
+                .and_then(|k| k.text("SearchEngine"))
+                .and_then(|value| SearchEngine::from_name(&value))
+                .unwrap_or(SearchEngine::Google),
         }
     }
     fn save(self, config: &Config) -> anyhow::Result<()> {
         let key = config.write_key()?;
         key.set_text("Language", self.language.name())?;
         key.set_number("SearchCategories", self.categories)?;
-        key.set_text("Theme", self.theme.name())
+        key.set_text("Theme", self.theme.name())?;
+        key.set_text("SearchEngine", self.search_engine.name())
     }
 }
 
@@ -75,6 +131,30 @@ mod preference_tests {
             assert_eq!(Theme::from_name(value.name()), Some(value));
         }
         assert_eq!(Theme::from_name("unknown"), None);
+    }
+
+    #[test]
+    fn search_engine_options_round_trip_and_encode_queries() {
+        for &(value, _, _, _) in SEARCH_ENGINES {
+            assert_eq!(SearchEngine::from_name(value.name()), Some(value));
+        }
+        assert_eq!(SearchEngine::from_name("unknown"), None);
+        for (engine, expected) in [
+            (
+                SearchEngine::Google,
+                "https://www.google.com/search?q=N.A%26B%20%E4%B8%AD",
+            ),
+            (
+                SearchEngine::Bing,
+                "https://www.bing.com/search?q=N.A%26B%20%E4%B8%AD",
+            ),
+            (
+                SearchEngine::Baidu,
+                "https://www.baidu.com/s?wd=N.A%26B%20%E4%B8%AD",
+            ),
+        ] {
+            assert_eq!(engine.url("N.A&B 中"), expected);
+        }
     }
 }
 

@@ -45,7 +45,7 @@ pub(super) struct Info {
     online: HWND,
     line: HWND,
     heading: RefCell<Option<Font>>,
-    online_target: RefCell<Option<String>>,
+    online_target: RefCell<Option<(u16, String)>>,
     accessibility: RefCell<Option<IAccPropServices>>,
 }
 impl Info {
@@ -164,7 +164,7 @@ impl Info {
             .chain(Some(0))
             .collect();
         send(self.source, WM_SETTEXT, 0, filename.as_ptr() as isize);
-        self.online_target.replace(Some(target));
+        self.online_target.replace(Some((label, target)));
         Ok(())
     }
     pub fn prepare(&self, m: &layout::Metrics) -> anyhow::Result<()> {
@@ -298,11 +298,20 @@ impl Info {
         positions.push((self.line, layout::take_top(area, m.px(2))));
         layout::take_top(area, m.px(8));
     }
-    pub fn open_online(&self, owner: HWND) -> anyhow::Result<()> {
-        let Some(target) = self.online_target.borrow().clone() else {
+    pub fn open_online(
+        &self,
+        owner: HWND,
+        engine: crate::app::settings::SearchEngine,
+    ) -> anyhow::Result<()> {
+        let Some((label, target)) = self.online_target.borrow().clone() else {
             return Ok(());
         };
-        open_url(owner, &target)
+        let url = if label == IDS_ONLINE_SEARCH {
+            engine.url(&target)
+        } else {
+            target
+        };
+        open_url(owner, &url)
     }
     pub fn menu(
         &self,
@@ -390,16 +399,7 @@ fn online_target(documentation: Option<String>, name: &str) -> (u16, String) {
     }) {
         return (IDS_OFFICIAL_DOCUMENTATION, url);
     }
-    let mut url = String::from("https://www.google.com/search?q=");
-    for byte in name.bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
-            url.push(byte as char);
-        } else {
-            use std::fmt::Write;
-            write!(url, "%{byte:02X}").unwrap();
-        }
-    }
-    (IDS_ONLINE_SEARCH, url)
+    (IDS_ONLINE_SEARCH, name.into())
 }
 fn place_button(control: HWND, row: &mut RECT, size: SIZE, positions: &mut Vec<(HWND, RECT)>) {
     let rect = layout::center_vertical(layout::take_left(row, size.cx), size.cy);
@@ -438,7 +438,7 @@ mod tests {
         );
     }
     #[test]
-    fn online_targets_use_https_documentation_or_encoded_search() {
+    fn online_targets_use_https_documentation_or_search_query() {
         let url = "https://learn.microsoft.com/windows/win32/api/test?a=1&b=2#member";
         assert_eq!(
             online_target(Some(url.into()), "ignored"),
@@ -458,10 +458,7 @@ mod tests {
         ] {
             assert_eq!(
                 online_target(invalid.map(str::to_owned), "N.A&B 中"),
-                (
-                    IDS_ONLINE_SEARCH,
-                    "https://www.google.com/search?q=N.A%26B%20%E4%B8%AD".into()
-                )
+                (IDS_ONLINE_SEARCH, "N.A&B 中".into())
             );
         }
     }

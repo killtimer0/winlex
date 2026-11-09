@@ -88,6 +88,38 @@ def test_settings_cancel_and_page_state(launch, profile, ui_language):
     app.close_settings(sheet)
 
 
+def test_online_search_engine_apply_cancel_and_restart(launch, profile, settings, ui_language):
+    from test_metadata_guide import resource_text
+
+    app = launch()
+    sheet = app.settings()
+    page = app.settings_page(sheet, 1)
+    combo = n.get_item(page, 1302)
+    apply = auto.ControlFromHandle(n.get_item(sheet, 0x3021))
+    label = lambda resource: resource_text(settings[0], resource, ui_language.langid)
+    assert n.window_text(combo) == label(2390)
+    assert profile.get('SearchEngine') is None and not apply.IsEnabled
+    select_combo(combo, label(2391))
+    n.wait(lambda: apply.IsEnabled, 'search engine edit enables Apply')
+    select_combo(combo, label(2390))
+    n.wait(lambda: not apply.IsEnabled, 'reverted engine disables Apply')
+    select_combo(combo, label(2391))
+    invoke(apply)
+    n.wait(lambda: profile.get('SearchEngine') == 'bing' and not apply.IsEnabled,
+           'Apply saves search engine')
+    select_combo(combo, label(2392))
+    app.close_settings(sheet, accept=False)
+    assert profile.get('SearchEngine') == 'bing'
+    app.close()
+    app = launch()
+    sheet = app.settings()
+    combo = n.get_item(app.settings_page(sheet, 1), 1302)
+    assert n.window_text(combo) == label(2391)
+    select_combo(combo, label(2392))
+    app.close_settings(sheet)
+    assert profile.get('SearchEngine') == 'baidu'
+
+
 def test_menu_scopes(launch, settings):
     app = launch([settings[1]])
     menu = n.api(n.user, "GetMenu", n.w.HMENU, n.w.HWND)(app.frame)

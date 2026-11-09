@@ -559,7 +559,11 @@ impl MetadataView {
                 );
             }
             DOCUMENT_ONLINE if code == BN_CLICKED => {
-                super::status::report(self.ctx(), self.info.open_online(self.hwnd));
+                super::status::report(
+                    self.ctx(),
+                    self.info
+                        .open_online(self.hwnd, settings::preferences(self.ctx()).search_engine),
+                );
             }
             _ => return false,
         }
