@@ -616,6 +616,22 @@ fn syntax_enabled() -> bool {
 }
 
 fn apply_regions(hwnd: HWND, content: &Content) -> anyhow::Result<()> {
+    use windows::Win32::UI::Controls::RichEdit::ITextSelection2;
+
+    let ranges = content
+        .regions
+        .iter()
+        .filter(|region| matches!(region.kind, RegionKind::Reference(_)))
+        .map(|region| {
+            Ok(CHARRANGE {
+                cpMin: i32::try_from(region.range.start)?,
+                cpMax: i32::try_from(region.range.end)?,
+            })
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let Some(first) = ranges.first() else {
+        return Ok(());
+    };
     let modern = crate::theme::supported();
     let mut format = CHARFORMAT2W {
         Base: CHARFORMATW {
@@ -635,20 +651,47 @@ fn apply_regions(hwnd: HWND, content: &Content) -> anyhow::Result<()> {
         format.Base.dwMask |= CFM_COLOR | CFM_LINKPROTECTED;
         format.Base.dwEffects |= CFE_LINKPROTECTED;
     }
-    for region in &content.regions {
-        if matches!(region.kind, RegionKind::Reference(_)) {
-            let range = CHARRANGE {
-                cpMin: i32::try_from(region.range.start)?,
-                cpMax: i32::try_from(region.range.end)?,
-            };
-            send_ref(hwnd, EM_EXSETSEL, 0, &range);
-            ensure!(
-                send_ref(hwnd, EM_SETCHARFORMAT, SCF_SELECTION as usize, &format) != 0,
-                "Set declaration link failed"
-            );
+    let apply = || {
+        ensure!(
+            send_ref(hwnd, EM_SETCHARFORMAT, SCF_SELECTION as usize, &format) != 0,
+            "Set declaration link failed"
+        );
+        Ok(())
+    };
+    let mut ole = None::<IRichEditOle>;
+    send(hwnd, EM_GETOLEINTERFACE, 0, &mut ole as *mut _ as isize);
+    let selection = ole
+        .and_then(|ole| ole.cast::<ITextDocument>().ok())
+        .and_then(|document| unsafe { document.GetSelection().ok() })
+        .and_then(|selection| selection.cast::<ITextSelection2>().ok());
+    if let Some(selection) = selection {
+        // One native formatting operation avoids repeatedly updating every UIA
+        // text range while keeping the control's original hyperlink semantics.
+        let mut saved = CHARRANGE::default();
+        send_mut(hwnd, EM_EXGETSEL, 0, &mut saved);
+        let result = (|| unsafe {
+            selection.SetRange(first.cpMin, first.cpMax)?;
+            for range in &ranges[1..] {
+                selection.AddSubrange(range.cpMin, range.cpMax, 0)?;
+            }
+            apply()
+        })();
+        // SetRange also removes the temporary subranges, including on failure.
+        let restored = unsafe { selection.SetRange(saved.cpMin, saved.cpMax) };
+        result.and(restored.map_err(Into::into))
+    } else {
+        // RichEdit20 lacks TOM2. Balance only our own caret hide, so formatting
+        // neither steals focus nor makes an already hidden caret visible.
+        let hidden = unsafe { HideCaret(hwnd) } != 0;
+        let result = ranges.iter().try_for_each(|range| {
+            send_ref(hwnd, EM_EXSETSEL, 0, range);
+            apply()
+        });
+        if hidden {
+            unsafe { ShowCaret(hwnd) };
         }
+        result
     }
-    Ok(())
 }
 
 fn stream_in(hwnd: HWND, data: &[u8]) -> anyhow::Result<()> {
@@ -839,6 +882,107 @@ impl Drop for Editor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn many_disjoint_links_preserve_plain_gaps_and_single_selection() {
+        let mut rendered = Rendered::default();
+        let target = EntityId {
+            source_id: 0,
+            token: 0x02000001,
+        };
+        let mut position = 0;
+        for _ in 0..1084 {
+            rendered.text.push_str("😀 Target plain\n");
+            rendered.regions.push(Region {
+                range: position + 3..position + 9,
+                kind: RegionKind::Reference(target),
+            });
+            position += 16;
+        }
+        let content = Content::from(rendered);
+        for modern in [true, false] {
+            let fixture = if modern {
+                Editor::new(
+                    WS_POPUP | WS_VISIBLE,
+                    crate::layout::rect(-10000, -10000, 900, 600),
+                )
+            } else {
+                static LEGACY: OnceLock<Result<(), u32>> = OnceLock::new();
+                load_module(&LEGACY, "riched20.dll").unwrap();
+                let parent = unsafe {
+                    test_window(
+                        w!("STATIC"),
+                        std::ptr::null(),
+                        WS_POPUP | WS_VISIBLE,
+                        crate::layout::rect(-10000, -10000, 900, 600),
+                    )
+                };
+                let editor = unsafe {
+                    child(
+                        parent,
+                        w!("RichEdit20W"),
+                        &[0],
+                        WS_VISIBLE | ES_MULTILINE as u32 | ES_READONLY as u32 | WS_VSCROLL,
+                        1,
+                    )
+                }
+                .unwrap();
+                send(editor, EM_SETLIMITTEXT, 0x7ffffffe, 0);
+                Editor(parent, editor)
+            };
+            set_bounds(fixture.1, crate::layout::rect(0, 0, 750, 500)).unwrap();
+            focus(fixture.1);
+            set_content(fixture.1, &content).unwrap();
+            for mode in [1, 2] {
+                crate::theme::set_mode(mode);
+                fixture.select(3, 9);
+                send(fixture.1, EM_LINESCROLL, 0, 30);
+                let view = ViewState::capture(fixture.1);
+                recolor(fixture.1, &content).unwrap();
+                assert_eq!(ViewState::capture(fixture.1), view);
+                assert_eq!(unsafe { GetFocus() }, fixture.1);
+                assert_eq!(text(fixture.1).replace("\r\n", "\r"), content.text);
+                let mut selected = [0u16; 32];
+                assert_eq!(
+                    send(fixture.1, EM_GETSELTEXT, 0, selected.as_mut_ptr() as isize),
+                    6
+                );
+                assert_eq!(String::from_utf16(&selected[..6]).unwrap(), "Target");
+                for region in &content.regions {
+                    for (start, end, linked) in [
+                        (region.range.start, region.range.end, true),
+                        (region.range.start - 1, region.range.start, false),
+                        (region.range.end, region.range.end + 1, false),
+                    ] {
+                        fixture.select(start as i32, end as i32);
+                        let format = fixture.character_format().Base;
+                        assert_eq!(format.dwEffects.contains(CFE_LINK), linked);
+                        assert_eq!(format.dwEffects.contains(CFE_UNDERLINE), linked);
+                    }
+                }
+                // Subsequent ordinary formatting must affect only the requested
+                // selection, not any of the temporary disjoint link ranges.
+                fixture.select(10, 15);
+                let plain = CHARFORMATW {
+                    cbSize: size_of::<CHARFORMATW>() as u32,
+                    dwMask: CFM_UNDERLINE,
+                    ..Default::default()
+                };
+                send_ref(fixture.1, EM_SETCHARFORMAT, SCF_SELECTION as usize, &plain);
+                fixture.select(3, 9);
+                assert!(
+                    fixture
+                        .character_format()
+                        .Base
+                        .dwEffects
+                        .contains(CFE_UNDERLINE)
+                );
+                send(fixture.1, WM_CHAR, b'X' as usize, 0);
+                assert_eq!(text(fixture.1).replace("\r\n", "\r"), content.text);
+            }
+        }
+        crate::theme::set_mode(0);
+    }
 
     #[test]
     fn content_replacement_preserves_zoom_and_rendered_size() {
