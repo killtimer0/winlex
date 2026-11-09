@@ -552,11 +552,6 @@ impl View {
             },
             m.edit_height(self.module, dpi),
         ];
-        let combo_bounds = |r: RECT, height: i32| {
-            let mut r = layout::center_vertical(r, height);
-            r.bottom = r.top + height.max(m.row() * 9);
-            r
-        };
         let paired = area.right - area.left >= label_column * 2 + m.px(360);
         for (index, control) in [self.input, self.scope, self.language, self.module]
             .into_iter()
@@ -605,16 +600,9 @@ impl View {
                 let label = layout::take_left(&mut language, label_width);
                 positions.push((self.labels[2], layout::center_vertical(label, m.height)));
                 layout::take_left(&mut language, label_gap);
-                positions.push((self.language, combo_bounds(language, heights[2])));
+                positions.push((self.language, layout::center_vertical(language, heights[2])));
             }
-            positions.push((
-                control,
-                if index == 1 || index == 2 {
-                    combo_bounds(line, heights[index])
-                } else {
-                    layout::center_vertical(line, heights[index])
-                },
-            ));
+            positions.push((control, layout::center_vertical(line, heights[index])));
             layout::take_top(&mut area, gap);
             if wrap_browse {
                 let mut line = layout::take_top(&mut area, browse.cy);
@@ -656,6 +644,14 @@ impl View {
             super::super::bind(h, m.font);
         }
         let ctx = self.ctx();
+        // A tall ComboBox resize sets the dropdown height, but temporarily
+        // enlarges the control itself before its native procedure collapses it.
+        // Set that height with the font/DPI metrics, not on every layout pass.
+        for combo in [self.scope, self.language] {
+            let mut rect = bounds(combo, self.hwnd);
+            rect.bottom = rect.top + m.row() * 9;
+            ctx.checked(set_bounds(combo, rect));
+        }
         let (system_font, _) = ctx.font_for(ctx.dpi().system());
         ctx.checked(crate::rich_text::prepare(
             self.result,

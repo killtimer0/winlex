@@ -242,9 +242,13 @@ impl Panel {
     }
 }
 impl Search {
-    pub fn prepare(&self, m: &layout::Metrics) {
+    pub fn prepare(&self, m: &layout::Metrics) -> anyhow::Result<()> {
         bind(self.tooltip, m.font);
         send(self.tooltip, TTM_SETMAXTIPWIDTH, 0, m.px(480) as isize);
+        // Configure dropdown height with font/DPI changes, not routine layout.
+        let mut rect = bounds(self.selector, unsafe { GetParent(self.selector) });
+        rect.bottom = rect.top + m.row() * 6;
+        set_bounds(self.selector, rect)
     }
     pub fn layout(
         &self,
@@ -265,9 +269,15 @@ impl Search {
         let right = row.right;
         row.right = (right - width - m.px(4)).max(row.left);
         positions.push((self.input, row));
+        let selector = bounds(self.selector, unsafe { GetParent(self.selector) });
         positions.push((
             self.selector,
-            layout::rect(right - width, row.top, width, m.row() * 6),
+            layout::rect(
+                right - width,
+                row.top,
+                width,
+                selector.bottom - selector.top,
+            ),
         ));
         layout::take_top(area, m.px(4));
     }

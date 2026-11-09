@@ -180,6 +180,10 @@ impl Info {
         ] {
             super::super::bind(control, m.font);
         }
+        // Configure dropdown height with font/DPI changes, not routine layout.
+        let mut rect = bounds(self.architecture, unsafe { GetParent(self.architecture) });
+        rect.bottom = rect.top + m.row() * 6;
+        set_bounds(self.architecture, rect)?;
         let heading = Font::heading(m.dpi, m.font)?;
         super::super::bind(self.name, heading.handle.0);
         self.heading.replace(Some(heading));
@@ -272,15 +276,7 @@ impl Info {
             self.architecture,
             selector.bottom - selector.top >= combo_height,
         );
-        positions.push((
-            self.architecture,
-            layout::rect(
-                selector.left,
-                selector.top,
-                selector.right - selector.left,
-                m.row() * 6,
-            ),
-        ));
+        positions.push((self.architecture, selector));
         if wrap_button {
             row = layout::take_top(area, button.cy.max(online.cy));
             layout::take_top(area, m.px(4));

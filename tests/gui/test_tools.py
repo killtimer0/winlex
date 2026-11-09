@@ -272,6 +272,43 @@ def test_tool_compact_layout_and_narrow_fallback(launch):
                             or rect[3] <= other[1] or other[3] <= rect[1])
 
 
+def test_tool_resize_preserves_combo_dropdowns_and_selection(launch):
+    app = launch()
+    doc = tool(app)
+    visual_state(doc, auto.WindowVisualState.Normal)
+    combos = [n.get_item(doc, identifier) for identifier in (1811, 1812)]
+
+    def dropdown(combo):
+        rect = n.w.RECT()
+        assert n.send(combo, win32con.CB_GETDROPPEDCONTROLRECT, 0, n.c.addressof(rect))
+        return rect.right - rect.left, rect.bottom - rect.top
+
+    original = [dropdown(combo)[1] for combo in combos]
+    choices = [app.choices(combo) for combo in combos]
+    selected = [n.window_text(combo) for combo in combos]
+    with n.window_dpi_context(doc):
+        dpi = (n.api(n.user, 'GetDpiForWindow', n.w.UINT, n.w.HWND)(doc)
+               if hasattr(n.user, 'GetDpiForWindow') else 96)
+        for width, height in [(900, 560), (900, 600), (400, 600), (900, 560)]:
+            assert auto.ControlFromHandle(doc).GetTransformPattern().Resize(
+                round(width * dpi / 96), round(height * dpi / 96))
+            for index, combo in enumerate(combos):
+                left, top, right, bottom = n.rectangle(combo)
+                drop_width, drop_height = dropdown(combo)
+                assert drop_width == right - left
+                assert drop_height == original[index] and drop_height > bottom - top
+                assert n.window_text(combo) == selected[index]
+    for combo, options in zip(combos, choices):
+        assert app.choices(combo) == options
+        app.focus(combo)
+        expansion = auto.ControlFromHandle(combo).GetExpandCollapsePattern()
+        expansion.Expand(waitTime=0)
+        for key in (win32con.VK_HOME, win32con.VK_DOWN, win32con.VK_RETURN):
+            n.send(combo, win32con.WM_KEYDOWN, key)
+        n.wait(lambda: not n.send(combo, win32con.CB_GETDROPPEDSTATE)
+               and n.window_text(combo) == options[1], 'resized combo commits keyboard selection')
+
+
 def test_tool_input_tooltip_registration(launch, settings):
     from support.pe import is_64_bit
     from test_tooltips import registered_tip

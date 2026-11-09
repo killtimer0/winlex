@@ -198,7 +198,7 @@ pub(super) fn prepare(ctx: &Context) {
         panel.prepare(ctx, &m);
     }
     super::tools::refresh(ctx);
-    search(ctx).prepare(&m);
+    ctx.checked(search(ctx).prepare(&m));
 }
 fn update_images(ctx: &Context, toolbar: HWND, size: i32) {
     if let Some(images) = ctx.checked(Images::toolbar(
