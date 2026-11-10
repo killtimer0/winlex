@@ -106,10 +106,10 @@ impl Catalog {
             Type::I64 => "i8".into(),
             Type::U64 => "u8".into(),
             Type::ISize => bail!(
-                "isize is not a WinRT type argument; choose int32 or int64 for the required width"
+                "nint is not a WinRT type argument; choose int32 or int64 for the required width"
             ),
             Type::USize => bail!(
-                "usize is not a WinRT type argument; choose uint32 or uint64 for the required width"
+                "nuint is not a WinRT type argument; choose uint32 or uint64 for the required width"
             ),
             Type::F32 => "f4".into(),
             Type::F64 => "f8".into(),
@@ -496,7 +496,7 @@ mod tests {
         let catalog = vector_fixture();
         for arch in Architecture::ALL {
             let winrt = catalog.parse_target("IVector<int32>", arch).unwrap();
-            let regular = catalog.parse_target("Fixture.Box<usize>", arch).unwrap();
+            let regular = catalog.parse_target("Fixture.Box<nuint>", arch).unwrap();
             for expression in [
                 "int32",
                 "uint32",
@@ -511,10 +511,10 @@ mod tests {
                     .unwrap();
             }
             for expression in [
-                "isize",
-                "usize",
-                "IVector<usize>",
-                "IVector<IVector<isize>>",
+                "nint",
+                "nuint",
+                "IVector<nuint>",
+                "IVector<IVector<nint>>",
                 "int32[]",
                 "int8",
                 "Fixture.Box<int32>",
@@ -527,7 +527,7 @@ mod tests {
                     "{expression}"
                 );
             }
-            for expression in ["isize", "usize", "Fixture.Box<usize>"] {
+            for expression in ["nint", "nuint", "Fixture.Box<nuint>"] {
                 let argument = catalog
                     .parse_argument(regular.id, expression, arch)
                     .unwrap();

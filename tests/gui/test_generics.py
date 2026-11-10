@@ -279,7 +279,7 @@ def test_winrt_argument_errors_stay_in_form_and_focus_the_invalid_field(launch, 
     hwnd = dialog.NativeWindowHandle
     first, second = (win32gui.GetDlgItem(hwnd, identifier) for identifier in (1500, 1501))
     auto.ControlFromHandle(first).GetValuePattern().SetValue("string")
-    for expression in ("usize", "isize", "IVector<usize>", "IVector<IVector<isize>>", "int32[]"):
+    for expression in ("nuint", "nint", "IVector<nuint>", "IVector<IVector<nint>>", "int32[]"):
         auto.ControlFromHandle(second).GetValuePattern().SetValue(expression)
         n.send(hwnd, win32con.WM_COMMAND, 1231, win32gui.GetDlgItem(hwnd, 1231))
         assert n.is_window(hwnd)
@@ -302,15 +302,21 @@ def test_dotnet_generics_keep_native_sized_arguments_without_conversion(launch, 
     app.choose(definition, architecture)
     dialog = bind_dialog(app, definition)
     hwnd = dialog.NativeWindowHandle
-    for identifier, value in ((1500, "isize"), (1501, "usize")):
+    for identifier, value in ((1500, "nint"), (1501, "nuint")):
         auto.ControlFromHandle(win32gui.GetDlgItem(hwnd, identifier)).GetValuePattern().SetValue(value)
     menu_key(win32gui.GetDlgItem(hwnd, 1501), win32con.VK_RETURN)
-    instance = destination(app, definition, "Box<isize, usize>", architecture)
-    n.wait(lambda: "isize First;" in app.content(instance), "native signed argument preserved")
-    assert "usize Second;" in app.content(instance)
+    instance = destination(app, definition, "Box<nint, nuint>", architecture)
+    n.wait(lambda: "nint First;" in app.content(instance), "native signed argument preserved")
+    assert "nuint Second;" in app.content(instance)
+    dialog = bind_dialog(app, instance)
+    hwnd = dialog.NativeWindowHandle
+    assert n.window_text(n.get_item(hwnd, 1500)) == "nint"
+    assert n.window_text(n.get_item(hwnd, 1501)) == "nuint"
+    win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
+    n.wait(lambda: not n.is_window(hwnd), "native arguments prefilled")
     app.choose(instance, "x64" if architecture == "x86" else "x86")
-    n.wait(lambda: "isize First;" in app.content(instance), "native argument survives architecture switch")
-    assert "usize Second;" in app.content(instance)
+    n.wait(lambda: "nint First;" in app.content(instance), "native argument survives architecture switch")
+    assert "nuint Second;" in app.content(instance)
 
 
 def test_many_arguments_scroll_keyboard_and_dpi_keep_values(launch, generic_metadata, settings):
