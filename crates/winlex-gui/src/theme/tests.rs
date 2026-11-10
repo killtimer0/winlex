@@ -46,9 +46,7 @@ impl CommonControls {
         use std::os::windows::ffi::OsStrExt;
         let manifest = std::env::var_os("WINLEX_TEST_GUI_MANIFEST")
             .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| {
-                std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("res/gui.manifest")
-            });
+            .unwrap_or_else(|| std::path::PathBuf::from(env!("WINLEX_GUI_MANIFEST")));
         let source: Vec<_> = manifest.as_os_str().encode_wide().chain(Some(0)).collect();
         unsafe {
             let context = ActCtx {

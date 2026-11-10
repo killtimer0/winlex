@@ -109,9 +109,14 @@ def main():
         signature = version.index(struct.pack("<I", 0xFEEF04BD))
         fields = struct.unpack_from("<13I", version, signature)
         actual = [fields[2] >> 16, fields[2] & 0xFFFF, fields[3] >> 16, fields[3] & 0xFFFF]
-        package = (root / "Cargo.toml").read_text(encoding="utf-8").split("[package]", 1)[1].split("\n[", 1)[0]
+        package = (root / "Cargo.toml").read_text(encoding="utf-8")
+        package = package.split("[workspace.package]", 1)[1].split("\n[", 1)[0]
         expected = list(map(int, re.search(r'^version\s*=\s*"(\d+\.\d+\.\d+)"', package, re.M)[1].split("."))) + [0]
         assert actual == expected and fields[4:6] == fields[2:4]
+        identity = next(node for node in manifest.iter()
+                        if node.attrib.get("name") == "Winlex.Gui")
+        assert identity.attrib.get("version") == ".".join(map(str, expected)), (
+            "manifest version differs from Cargo.toml")
         args.artifacts.mkdir(parents=True, exist_ok=True)
         (args.artifacts / "resources.json").write_text(json.dumps({
             "exe": str(args.exe),

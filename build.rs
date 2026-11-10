@@ -2,6 +2,7 @@ use std::{env, fs, path::PathBuf};
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=Cargo.toml");
     println!("cargo:rerun-if-env-changed=WINLEX_YY_THUNKS_OBJ");
     println!("cargo:rerun-if-env-changed=WINLEX_VC_LTL_ROOT");
     let target = env::var("TARGET").expect("TARGET");
@@ -70,10 +71,26 @@ fn compile_gui_resources() {
         .map(|n| n.parse::<u16>().expect("numeric package version"))
         .collect();
     assert_eq!(numbers.len(), 3);
+    let template = fs::read_to_string(root.join("crates/winlex-gui/res/gui.manifest"))
+        .expect("GUI manifest template");
+    assert!(
+        template.contains("{{VERSION}}"),
+        "GUI manifest version placeholder"
+    );
+    let manifest = out.join("gui.manifest");
+    fs::write(
+        &manifest,
+        template.replace("{{VERSION}}", &format!("{version}.0")),
+    )
+    .expect("Write GUI manifest");
+    let manifest_path = manifest
+        .to_str()
+        .expect("GUI manifest path must be valid Unicode")
+        .replace('\\', "\\\\");
     fs::write(
         out.join("version.h"),
         format!(
-            "#define VERSION_NUMBER {},{},{},0\n#define VERSION_TEXT \"{version}.0\"\n",
+            "#define VERSION_NUMBER {},{},{},0\n#define VERSION_TEXT \"{version}.0\"\n#define MANIFEST_FILE \"{manifest_path}\"\n",
             numbers[0], numbers[1], numbers[2]
         ),
     )

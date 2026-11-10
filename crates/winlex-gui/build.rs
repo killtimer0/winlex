@@ -4,6 +4,27 @@ fn main() {
     // Use the SDK import library for the common-control subclass helpers.
     println!("cargo:rustc-link-lib=comctl32");
     println!("cargo:rerun-if-changed=res/resource.h");
+    println!("cargo:rerun-if-changed=Cargo.toml");
+    println!("cargo:rerun-if-changed=../../Cargo.toml");
+    println!("cargo:rerun-if-changed=res/gui.manifest");
+    let version = env::var("CARGO_PKG_VERSION").expect("package version");
+    let template = fs::read_to_string("res/gui.manifest").expect("GUI manifest template");
+    assert!(
+        template.contains("{{VERSION}}"),
+        "GUI manifest version placeholder"
+    );
+    let manifest = PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("gui.manifest");
+    fs::write(
+        &manifest,
+        template.replace("{{VERSION}}", &format!("{version}.0")),
+    )
+    .expect("Write GUI manifest");
+    println!(
+        "cargo:rustc-env=WINLEX_GUI_MANIFEST={}",
+        manifest
+            .to_str()
+            .expect("GUI manifest path must be valid Unicode")
+    );
     let header = fs::read_to_string("res/resource.h").expect("resource IDs");
     let mut rust = String::new();
     let mut strings = Vec::new();

@@ -21,6 +21,8 @@
 
 推送 `v*` tag 会运行同一条检查、三架构构建和汇总流程；仅 tag 推送成功后创建草稿 Release，含连字符的 tag 标记为 prerelease。手动运行只生成 artifacts，即使选择 tag 也不创建 Release。普通分支 push 和 PR 不触发此工作流。
 
+发布版本只在 `Cargo.toml` 的 `[workspace.package] version` 修改，并运行 `cargo update --workspace` 更新 `Cargo.lock`；tag 必须为 `v<version>`，预发布可追加 `-<suffix>`。CLI 版本输出、GUI 文件版本和嵌入的 manifest 都由该值生成。
+
 发布任务复用交付 artifact，并在上传前校验文件。已有同名 Release 时失败。生成的草稿可在 GitHub Releases 页面手动发布。
 
 ### 本地打包

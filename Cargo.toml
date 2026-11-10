@@ -1,6 +1,6 @@
 [package]
 name = "winlex"
-version = "0.1.0"
+version.workspace = true
 edition = "2024"
 license.workspace = true
 build = "build.rs"
@@ -32,6 +32,7 @@ winlex-gui = { path = "crates/winlex-gui" }
 serde_json.workspace = true
 
 [workspace.package]
+version = "0.1.0"
 license = "GPL-3.0-only"
 
 [workspace.dependencies]
