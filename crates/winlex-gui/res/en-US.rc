@@ -210,6 +210,7 @@ BEGIN
     IDS_KIND_MODULE "Module"
     IDS_KIND_FUNCTION "Function"
     IDS_KIND_METHOD "Method"
+    IDS_KIND_STATIC_METHOD "Static method"
     IDS_KIND_CONSTANT "Constant"
     IDS_KIND_FIELD "Field"
     IDS_KIND_PROPERTY "Property"
