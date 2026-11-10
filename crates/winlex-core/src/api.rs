@@ -255,6 +255,23 @@ impl<'a> Declaration<'a> {
             Self::Reference(_) => EntityCategory::TypeReference,
         }
     }
+    /// Presentation vocabulary for the entity's leaf kind, finer than the search category.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Type(t) if t.name() == "<Module>" => "module",
+            Self::Type(t) => match t.category() {
+                TypeCategory::Class => "class",
+                TypeCategory::Struct => "struct",
+                TypeCategory::Interface => "interface",
+                TypeCategory::Enum => "enum",
+                TypeCategory::Delegate => "delegate",
+                TypeCategory::Attribute => "attribute",
+            },
+            Self::Method(_) if self.is_function() => "function",
+            Self::Method(m) if m.flags().contains(MethodAttributes::Static) => "static_method",
+            _ => self.category().name(),
+        }
+    }
     /// Native import without a receiver: a static method with an ImplMap entry.
     fn is_function(&self) -> bool {
         match self {
@@ -395,21 +412,11 @@ impl Catalog {
     }
     /// Summarize an already resolved declaration and its ID from this Catalog.
     pub fn summarize(&self, id: EntityId, row: &Declaration<'_>) -> EntitySummary {
-        let kind = match row {
-            Declaration::Type(t) => {
-                if t.name() == "<Module>" {
-                    "module".into()
-                } else {
-                    format!("{:?}", t.category()).to_lowercase()
-                }
-            }
-            _ => row.category().name().into(),
-        };
         EntitySummary {
             id,
             name: row.name().into(),
             full_name: self.full_name(row),
-            kind,
+            kind: row.kind().into(),
             architecture_mask: row.architecture_mask(),
         }
     }

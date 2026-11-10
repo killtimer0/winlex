@@ -309,9 +309,12 @@ fn category_vocabulary_preserves_bits_summary_kinds_and_condition_parsing() {
             assert!(expected.contains(&selected.id));
         }
     }
-    for (name, spelling) in [("InstanceImport", "method"), ("StaticMethod", "method")] {
+    for (name, kind) in [
+        ("InstanceImport", "method"),
+        ("StaticMethod", "static_method"),
+    ] {
         let selected = hits(&db, name, SearchMode::Name).pop().unwrap();
-        assert_eq!(selected.kind, spelling);
+        assert_eq!(selected.kind, kind);
         assert_eq!(
             db.declaration(selected.id, None).unwrap().category(),
             EntityCategory::Method
