@@ -111,6 +111,21 @@ BEGIN
     CONTROL VERSION_TEXT, ABOUT_INFO, "SysLink", 0x50010000, 48, 12, 190, 96
     DEFPUSHBUTTON "OK", 1, 188, 116, 50, 14
 END
+IDD_GENERIC_BIND DIALOGEX 0, 0, 350, 136
+STYLE 0x80CC00C0
+CAPTION "Bind type arguments"
+FONT 8, "MS Shell Dlg"
+BEGIN
+    LTEXT "Enter one type per field, e.g. string, int32 or 0::Namespace.Type<int32>.", GENERIC_HINT, 10, 10, 330, 24
+    CONTROL "", GENERIC_FORM, "Static", 0x40000000, 10, 40, 314, 34
+    CONTROL "", GENERIC_ROW, "Static", 0x40000000, 10, 40, 314, 34
+    LTEXT "", GENERIC_LABEL_TEMPLATE, 10, 40, 314, 12, 0x00004000
+    EDITTEXT GENERIC_FIELD_TEMPLATE, 10, 54, 314, 14, 0x50010080
+    SCROLLBAR GENERIC_SCROLL, 328, 40, 12, 34, 0x50000001
+    LTEXT "", GENERIC_ERROR, 10, 80, 330, 26
+    DEFPUSHBUTTON "Open instance", GENERIC_APPLY, 218, 112, 70, 14
+    PUSHBUTTON "Cancel", 2, 294, 112, 46, 14
+END
 IDD_SEARCH_HELP DIALOGEX 0, 0, 350, 250
 STYLE 0x80CC00C0
 CAPTION "Search syntax"
@@ -210,6 +225,9 @@ BEGIN
     IDS_COPY_VALUE "Copy value with unit"
     IDS_COPY_SELECTION "Copy selected text"
     IDS_GO_TO_DECLARATION "Go to declaration\tCtrl+click"
+    IDS_VIEW_GENERIC_DEFINITION "View generic definition"
+    IDS_BIND_GENERIC "Type arguments..."
+    IDS_GENERIC_WINRT_ARGUMENT "Invalid WinRT type argument ""%1"""
     IDS_LOADED "Loaded"
     IDS_COPY_SOURCE_PATH "Copy full path"
     IDS_RELOADING "Reloading…"

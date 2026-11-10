@@ -129,18 +129,21 @@ fn vtable_json_preserves_provenance_and_architecture_sized_slots() {
                 name: "Interface".into(),
                 architecture,
                 windows_runtime,
+                instance: None,
                 slots: vec![
                     Slot {
                         method: "QueryInterface".into(),
                         declaring_type: "IUnknown".into(),
                         id: None,
                         declaring_type_id: None,
+                        abi: None,
                     },
                     Slot {
                         method: "Method".into(),
                         declaring_type: "Base".into(),
                         id: Some(FIELD),
                         declaring_type_id: Some(TYPE),
+                        abi: None,
                     },
                 ],
             };
@@ -163,6 +166,36 @@ fn vtable_json_preserves_provenance_and_architecture_sized_slots() {
                     json!("method slots only; metadata signatures are not lowered ABI signatures");
             }
             assert_eq!(winlex_format::vtable(&input), expected);
+            if windows_runtime {
+                input.instance = Some(winlex_core::InterfaceIdentity {
+                    iid: "fixture-iid".into(),
+                    signature: "fixture-signature".into(),
+                });
+                for abi in [
+                    Ok(winlex_core::AbiMethod {
+                        calling_convention: "platform",
+                        return_type: "HRESULT",
+                        parameters: vec![],
+                    }),
+                    Err("unsupported fixture type".into()),
+                ] {
+                    let mut method = json!({ "id": FIELD, "slot": 1, "offset_bytes": stride });
+                    match &abi {
+                        Ok(abi) => method["abi"] = json!(abi),
+                        Err(reason) => method["unsupported"] = json!(reason),
+                    }
+                    input.slots[1].abi = Some(abi);
+                    let actual = winlex_format::vtable(&input);
+                    assert_eq!(actual["slots"], expected["slots"]);
+                    assert_eq!(
+                        actual["instance"],
+                        json!({ "identity": {
+                        "iid": "fixture-iid", "signature": "fixture-signature"
+                    }, "methods": [method] })
+                    );
+                }
+                input.instance = None;
+            }
             input.slots.clear();
             expected["slots"] = json!([]);
             assert_eq!(winlex_format::vtable(&input), expected);

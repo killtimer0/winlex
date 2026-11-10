@@ -12,7 +12,7 @@ use windows::Win32::UI::Controls::RichEdit::{
     SCF_SELECTION, SES_EX_HANDLEFRIENDLYURL, SF_RTF,
 };
 use windows_core::Interface;
-use winlex_core::EntityId;
+use winlex_core::DeclarationTarget;
 use winlex_format::declaration::{Region, RegionKind, Rendered};
 
 mod rtf;
@@ -127,7 +127,7 @@ pub fn link_region<'a>(hwnd: HWND, content: &'a Content, link: &ENLINK) -> Optio
 
 enum ContextAction {
     Copy(String),
-    Navigate(EntityId),
+    Navigate(DeclarationTarget),
 }
 
 /// Capture context before TrackPopupMenu enters its nested message loop.
@@ -136,10 +136,10 @@ pub fn context_menu(
     location: isize,
     regions: &[Region],
     mouse_region: Option<&Region>,
-) -> anyhow::Result<Option<EntityId>> {
+) -> anyhow::Result<Option<DeclarationTarget>> {
     use crate::resources::{
         self, IDS_COPY_DECIMAL, IDS_COPY_HEX, IDS_COPY_SELECTION, IDS_COPY_VALUE,
-        IDS_GO_TO_DECLARATION,
+        IDS_GO_TO_DECLARATION, IDS_VIEW_GENERIC_DEFINITION,
     };
     let mut selection = CHARRANGE::default();
     send_mut(hwnd, EM_EXGETSEL, 0, &mut selection);
@@ -210,8 +210,14 @@ pub fn context_menu(
             RegionKind::Reference(target) => {
                 actions.push((
                     IDS_GO_TO_DECLARATION,
-                    Some(ContextAction::Navigate(*target)),
+                    Some(ContextAction::Navigate(target.clone())),
                 ));
+                if !target.arguments.is_empty() {
+                    actions.push((
+                        IDS_VIEW_GENERIC_DEFINITION,
+                        Some(ContextAction::Navigate(target.id.into())),
+                    ));
+                }
             }
         }
     }
@@ -237,7 +243,7 @@ pub fn context_menu(
         {
             match value {
                 ContextAction::Copy(value) => copy_text(hwnd, value)?,
-                ContextAction::Navigate(target) => return Ok(Some(*target)),
+                ContextAction::Navigate(target) => return Ok(Some(target.clone())),
             }
         }
     }
@@ -882,6 +888,7 @@ impl Drop for Editor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use winlex_core::EntityId;
 
     #[test]
     fn many_disjoint_links_preserve_plain_gaps_and_single_selection() {
@@ -895,7 +902,7 @@ mod tests {
             rendered.text.push_str("😀 Target plain\n");
             rendered.regions.push(Region {
                 range: position + 3..position + 9,
-                kind: RegionKind::Reference(target),
+                kind: RegionKind::Reference(target.into()),
             });
             position += 16;
         }
@@ -1181,10 +1188,13 @@ mod tests {
         let mut rendered = Rendered::from("Target");
         rendered.regions.push(Region {
             range: 0..6,
-            kind: RegionKind::Reference(EntityId {
-                source_id: 0,
-                token: 0x02000001,
-            }),
+            kind: RegionKind::Reference(
+                winlex_core::EntityId {
+                    source_id: 0,
+                    token: 0x02000001,
+                }
+                .into(),
+            ),
         });
         let content = Content::from(rendered);
         for mode in [2, 1, 2, 1] {
@@ -1235,7 +1245,7 @@ mod tests {
                 .into_iter()
                 .map(|range| Region {
                     range,
-                    kind: RegionKind::Reference(target),
+                    kind: RegionKind::Reference(target.into()),
                 })
                 .collect();
             let mut content = Content::from(rendered);

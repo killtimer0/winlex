@@ -101,7 +101,7 @@ fn dialog_rules_preserve_anchors_and_restore_geometry_after_dpi_round_trips() {
         hwnd,
         Dpi { mode: Mode::Pmv1 },
         SIZE { cx: 200, cy: 120 },
-        &[(1, SIZE_X | SIZE_Y), (2, MOVE_X | MOVE_Y)],
+        &[(1, SIZE_X | SIZE_Y), (2, MOVE_X | MOVE_Y), (3, FONT_ONLY)],
         &[],
         true,
     )
@@ -143,6 +143,20 @@ fn dialog_rules_preserve_anchors_and_restore_geometry_after_dpi_round_trips() {
         let size = layout.initial_size(dpi).unwrap();
         set_bounds(hwnd, crate::layout::rect(0, 0, size.cx, size.cy)).unwrap();
         layout.update_dpi(dpi).unwrap();
+        let manual = bounds(children[2], hwnd);
+        assert_eq!(
+            (manual.left, manual.top, manual.right, manual.bottom),
+            (
+                original[2].left,
+                original[2].top,
+                original[2].right,
+                original[2].bottom
+            )
+        );
+        assert_eq!(
+            send(children[2], WM_GETFONT, 0, 0),
+            send(children[0], WM_GETFONT, 0, 0)
+        );
     }
     for (&child, expected) in children.iter().zip(&original) {
         let actual = bounds(child, hwnd);

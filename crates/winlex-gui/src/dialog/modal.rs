@@ -13,6 +13,7 @@ struct Dialog<'a> {
     layout: RefCell<Option<Layout>>,
     callback: &'a dyn Fn(HWND, u32, usize, isize) -> anyhow::Result<()>,
     failure: RefCell<Option<anyhow::Error>>,
+    prepare: &'a dyn Fn(HWND, &mut SIZE) -> anyhow::Result<()>,
 }
 
 pub fn show(
@@ -20,6 +21,17 @@ pub fn show(
     dpi: Dpi,
     template: &[u8],
     rules: &[(i32, u32)],
+    callback: &dyn Fn(HWND, u32, usize, isize) -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    show_prepared(owner, dpi, template, rules, &|_, _| Ok(()), callback)
+}
+
+pub fn show_prepared(
+    owner: HWND,
+    dpi: Dpi,
+    template: &[u8],
+    rules: &[(i32, u32)],
+    prepare: &dyn Fn(HWND, &mut SIZE) -> anyhow::Result<()>,
     callback: &dyn Fn(HWND, u32, usize, isize) -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
     let state = Dialog {
@@ -30,6 +42,7 @@ pub fn show(
         layout: RefCell::new(None),
         callback,
         failure: RefCell::new(None),
+        prepare,
     };
     let _hook = CreationHook::new(dpi, owner)?;
     let result = unsafe {
@@ -53,10 +66,18 @@ impl Dialog<'_> {
         // Native positioning sends messages synchronously. Keep the shared slot empty
         // during layout so reentrant WM_SIZE cannot borrow or apply a half-updated layout.
         let mut layout = self.layout.take();
+        if message == WM_SIZE && layout.is_none() {
+            // DPI updates and preparation synchronously resize the window. Let
+            // the outer notification finish before callbacks arrange dynamic rows.
+            return Ok(false);
+        }
         let result = (|| {
             if message == WM_INITDIALOG {
+                let mut baseline = self.baseline;
+                (self.prepare)(hwnd, &mut baseline)?;
                 let mut initial =
                     Layout::capture(hwnd, self.dpi, self.baseline, self.rules, &[], true)?;
+                initial.rebase(baseline);
                 let target = self.dpi.window(hwnd);
                 initial.update_dpi(target)?;
                 let size = initial.initial_size(target)?;
@@ -121,7 +142,12 @@ unsafe extern "system" fn dialog_proc(hwnd: HWND, message: u32, w: usize, l: isi
         match state.process(hwnd, message, w, l) {
             Ok(handled) => {
                 if message == WM_INITDIALOG {
-                    focus(GetDlgItem(hwnd, IDOK));
+                    let button = GetDlgItem(hwnd, IDOK);
+                    focus(if button.is_null() {
+                        GetNextDlgTabItem(hwnd, ptr::null_mut(), 0)
+                    } else {
+                        button
+                    });
                     return 0;
                 }
                 isize::from(handled)

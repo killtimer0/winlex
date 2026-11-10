@@ -3,12 +3,16 @@ use super::{const_annotation, normalized_integer};
 use std::fmt::Write;
 use winlex_core::windows_metadata::reader::*;
 use winlex_core::windows_metadata::*;
-use winlex_core::{Architecture, Catalog, Declaration, EntityId, Result, guid, integer};
+use winlex_core::{
+    Architecture, Catalog, Declaration, DeclarationTarget, EntityId, EntitySummary, Result, guid,
+    integer,
+};
 
 struct Types<'a> {
     catalog: &'a Catalog,
     owner: EntityId,
     arch: Architecture,
+    qualified: bool,
 }
 
 impl Types<'_> {
@@ -62,10 +66,14 @@ impl Types<'_> {
                         };
                         let kind = self
                             .catalog
-                            .resolve_type(self.owner, n, self.arch)
+                            .resolve_target(self.owner, n, self.arch)
                             .map(RegionKind::Reference)
                             .unwrap_or(RegionKind::Type);
-                        let mut base = Rendered::from(head);
+                        let mut base = if self.qualified && !n.namespace.is_empty() {
+                            Rendered::from(format!("{}.{head}", n.namespace))
+                        } else {
+                            Rendered::from(head)
+                        };
                         base.regions.push(Region {
                             range: 0..base.position,
                             kind,
@@ -133,7 +141,7 @@ pub enum RegionKind {
     /// A signature type with no navigable definition in this catalog.
     Type,
     Number(NumberValue),
-    Reference(EntityId),
+    Reference(DeclarationTarget),
 }
 
 impl Region {
@@ -145,8 +153,8 @@ impl Region {
     }
 
     pub fn reference(&self) -> Option<EntityId> {
-        match self.kind {
-            RegionKind::Reference(id) => Some(id),
+        match &self.kind {
+            RegionKind::Reference(target) => Some(target.id),
             _ => None,
         }
     }
@@ -374,9 +382,70 @@ fn constant(
 }
 
 pub fn render(catalog: &Catalog, id: EntityId, arch: Architecture) -> Result<Rendered> {
+    render_target(catalog, &id.into(), arch)
+}
+
+pub fn render_target(
+    catalog: &Catalog,
+    target: &DeclarationTarget,
+    arch: Architecture,
+) -> Result<Rendered> {
+    let target = catalog.bind_target(target, arch)?;
     let mut out = Rendered::default();
-    append(&mut out, catalog, id, arch, "")?;
+    append(&mut out, catalog, &target, arch, "")?;
     Ok(out)
+}
+
+/// Presentation names keep the definition ID; arguments are separate query context.
+pub fn target_summary(
+    catalog: &Catalog,
+    target: &DeclarationTarget,
+    arch: Architecture,
+) -> Result<EntitySummary> {
+    let mut summary = catalog.entity(target.id)?;
+    if target.arguments.is_empty() {
+        return Ok(summary);
+    }
+    let arguments = |qualified| {
+        let types = Types {
+            catalog,
+            owner: target.id,
+            arch,
+            qualified,
+        };
+        Rendered::join(
+            target.arguments.iter().map(|ty| types.ty(ty, "".into())),
+            ", ",
+        )
+        .text
+    };
+    let instantiate = |name: &str, qualified| {
+        format!(
+            "{}<{}>",
+            name.split('`').next().unwrap_or(name),
+            arguments(qualified)
+        )
+    };
+    match catalog.declaration(target.id, Some(arch))? {
+        Declaration::Type(_) => {
+            let prefix = summary.full_name.strip_suffix(&summary.name).unwrap_or("");
+            summary.full_name = format!("{prefix}{}", instantiate(&summary.name, true));
+            summary.name = instantiate(&summary.name, false);
+        }
+        row => {
+            let Some(owner) = row.owner_id() else {
+                return Ok(summary);
+            };
+            let owner = catalog.entity(owner)?;
+            let prefix = owner.full_name.strip_suffix(&owner.name).unwrap_or("");
+            summary.full_name = format!(
+                "{prefix}{}.{}",
+                instantiate(&owner.name, true),
+                summary.name
+            );
+        }
+    }
+    Ok(summary)
 }
 
 fn generic_name<'a>(name: &str, params: impl Iterator<Item = GenericParam<'a>>) -> String {
@@ -398,10 +467,11 @@ fn method(
     out: &mut Rendered,
     types: &Types<'_>,
     m: MethodDef<'_>,
+    target: &DeclarationTarget,
     name: &str,
     pad: &str,
 ) -> Result<()> {
-    let signature = m.signature(&[]);
+    let signature = target.signature(m.signature(&[]))?;
     let params = m.params_by_sequence(signature.types.len())?;
     let mut parameters = signature
         .types
@@ -463,18 +533,57 @@ fn method(
     Ok(())
 }
 
+fn slot_comments(
+    out: &mut Rendered,
+    vtable: &winlex_core::Vtable,
+    member: EntityId,
+    arch: Architecture,
+    pad: &str,
+) -> std::fmt::Result {
+    for (index, slot) in vtable
+        .slots
+        .iter()
+        .enumerate()
+        .filter(|(_, slot)| slot.id == Some(member))
+    {
+        write!(out, "{pad}// ")?;
+        out.slot_position(index, arch, member)?;
+        writeln!(out)?;
+        if let Some(result) = &slot.abi {
+            if let Ok(abi) = result {
+                writeln!(
+                    out,
+                    "{pad}// scalar ABI ({}): {}({})",
+                    abi.calling_convention,
+                    abi.return_type,
+                    abi.parameters
+                        .iter()
+                        .map(|p| format!("[{}] {} {}", p.direction, p.ty, p.name))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )?;
+            } else if let Err(reason) = result {
+                writeln!(out, "{pad}// ABI unsupported: {reason}")?;
+            }
+        }
+    }
+    Ok(())
+}
+
 fn append(
     out: &mut Rendered,
     c: &Catalog,
-    id: EntityId,
+    target: &DeclarationTarget,
     arch: Architecture,
     pad: &str,
 ) -> Result<()> {
+    let id = target.id;
     let row = c.declaration(id, Some(arch))?;
     let types = Types {
         catalog: c,
         owner: id,
         arch,
+        qualified: false,
     };
     match row {
         Declaration::Type(t) => {
@@ -488,14 +597,31 @@ fn append(
             } else {
                 None
             };
-            let vtable = if category == Some(TypeCategory::Interface) {
-                out.context(pad, arch, "Vtable", c.vtable(id, arch), |out, vtable| {
-                    out.number("vtable: ", vtable.slots.len() as u64, Some("slots"), id)
-                })?
+            let vtable = if category == Some(TypeCategory::Interface)
+                || (category == Some(TypeCategory::Delegate)
+                    && t.flags().contains(TypeAttributes::WindowsRuntime))
+            {
+                out.context(
+                    pad,
+                    arch,
+                    "Vtable",
+                    c.vtable_target(target, arch),
+                    |out, vtable| {
+                        out.number("vtable: ", vtable.slots.len() as u64, Some("slots"), id)
+                    },
+                )?
             } else {
                 None
             };
-            if let Some(guid) = guid(t) {
+            if target.has_instance_identity(t) {
+                out.context(
+                    pad,
+                    arch,
+                    "Instance IID",
+                    c.interface_identity(target, arch),
+                    |out, identity| write!(out, "IID: {}", identity.iid),
+                )?;
+            } else if let Some(guid) = guid(t) {
                 writeln!(out, "{pad}// GUID: {guid}")?;
             }
             let keyword = match category {
@@ -508,23 +634,35 @@ fn append(
                 }
                 _ => "struct",
             };
-            let name = generic_name(t.name(), t.generic_params());
+            let name = if target.arguments.is_empty() {
+                generic_name(t.name(), t.generic_params())
+            } else {
+                target_summary(c, target, arch)?.name
+            };
             if category == Some(TypeCategory::Delegate)
                 && let Some(invoke) = t.methods().find(|m| m.name() == "Invoke")
             {
+                if let Some(vtable) = &vtable {
+                    slot_comments(
+                        out,
+                        vtable,
+                        winlex_core::metadata::key(invoke, 6),
+                        arch,
+                        pad,
+                    )?;
+                }
                 write!(out, "{pad}delegate ")?;
-                method(out, &types, invoke, &name, "")?;
+                method(out, &types, invoke, target, &name, "")?;
                 return Ok(());
             }
             let generics = t.generic_types();
             let mut bases = Vec::new();
             if let Some(base) = t.extends() {
-                bases.push(types.ty(&base.ty(&generics), "".into()));
+                bases.push(types.ty(&target.ty(&base.ty(&generics))?, "".into()));
             }
-            bases.extend(
-                t.interface_impls()
-                    .map(|i| types.ty(&i.interface(&generics), "".into())),
-            );
+            for interface in t.interface_impls() {
+                bases.push(types.ty(&target.ty(&interface.interface(&generics))?, "".into()));
+            }
             if category == Some(TypeCategory::Enum) {
                 bases = t
                     .underlying_type()
@@ -605,18 +743,9 @@ fn append(
                     }
                 }
                 if let Some(vtable) = &vtable {
-                    for (index, _) in vtable
-                        .slots
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, slot)| slot.id == Some(member))
-                    {
-                        write!(out, "{inner}// ")?;
-                        out.slot_position(index, arch, member)?;
-                        writeln!(out)?;
-                    }
+                    slot_comments(out, vtable, member, arch, &inner)?;
                 }
-                append(out, c, member, arch, &inner)?;
+                append(out, c, &target.with_id(member), arch, &inner)?;
             }
             writeln!(out, "{pad}}};")?;
         }
@@ -627,7 +756,7 @@ fn append(
                 writeln!(out)?;
             }
             write!(out, "{pad}{}", const_annotation(f))?;
-            out.fragment(types.ty(&f.ty(), f.name().into()));
+            out.fragment(types.ty(&target.ty(&f.ty())?, f.name().into()));
             if let Some(value) = f.constant() {
                 // ELEMENT_TYPE_CLASS represents a null reference constant.
                 if value.usize(0) == 0x12 {
@@ -665,18 +794,19 @@ fn append(
                 out,
                 &types,
                 m,
+                target,
                 &generic_name(m.name(), m.generic_params()),
                 pad,
             )?;
         }
         Declaration::Property(p) => {
             write!(out, "{pad}")?;
-            out.fragment(types.ty(&p.signature().return_type, p.name().into()));
+            out.fragment(types.ty(&target.ty(&p.signature().return_type)?, p.name().into()));
             writeln!(out, "; // property")?;
         }
         Declaration::Event(e) => {
             write!(out, "{pad}")?;
-            out.fragment(types.ty(&e.ty(), e.name().into()));
+            out.fragment(types.ty(&target.ty(&e.ty())?, e.name().into()));
             writeln!(out, "; // event")?;
         }
         Declaration::Reference(_) => {
@@ -692,7 +822,7 @@ fn append(
                     write!(out, "{}", c.entity(target)?.full_name)?;
                     out.regions.push(Region {
                         range: start..out.position,
-                        kind: RegionKind::Reference(target),
+                        kind: RegionKind::Reference(target.into()),
                     });
                     writeln!(out)?;
                 }
@@ -729,6 +859,7 @@ mod tests {
             catalog: &catalog,
             owner,
             arch: Architecture::X64,
+            qualified: false,
         };
         let t = Type::value_named("Fixture", "Record😀");
         for (ty, expected) in [
@@ -1048,7 +1179,7 @@ mod tests {
         let mut fragment = Rendered::from("😀Target");
         fragment.regions.push(Region {
             range: 2..8,
-            kind: RegionKind::Reference(entity()),
+            kind: RegionKind::Reference(entity().into()),
         });
         let mut out = Rendered::from("// 文😀\r\n");
         out.fragment(fragment.prefix("const ").suffix(" *value;\r\n"));

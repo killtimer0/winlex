@@ -86,6 +86,8 @@ pub const SIZE_X: u32 = 1;
 pub const SIZE_Y: u32 = 2;
 pub const MOVE_X: u32 = 4;
 pub const MOVE_Y: u32 = 8;
+/// Register a control for font scaling without managing its geometry.
+pub const FONT_ONLY: u32 = 16;
 
 // Non-client DPI scaling may already have changed the client area while
 // PMv1 template metrics still use system DPI. Read the baseline from
@@ -177,7 +179,8 @@ impl Layout {
                 anyhow::ensure!(
                     !child.is_null()
                         && !excluded.contains(&child)
-                        && flags & !(SIZE_X | SIZE_Y | MOVE_X | MOVE_Y) == 0
+                        && flags & !(SIZE_X | SIZE_Y | MOVE_X | MOVE_Y | FONT_ONLY) == 0
+                        && (flags & FONT_ONLY == 0 || flags == FONT_ONLY)
                         && (flags & (SIZE_X | MOVE_X)).count_ones() <= 1
                         && (flags & (SIZE_Y | MOVE_Y)).count_ones() <= 1,
                     "Invalid dialog layout rule {id}"
@@ -259,11 +262,36 @@ impl Layout {
         }
     }
 
+    /// Expand a prepared template using the same anchors as subsequent resizing.
+    pub fn rebase(&mut self, baseline: SIZE) {
+        let dx = baseline.cx - self.baseline.cx;
+        let dy = baseline.cy - self.baseline.cy;
+        for control in &mut self.controls {
+            for (flag, value, delta) in [
+                (MOVE_X, &mut control.units.left, dx),
+                (MOVE_Y, &mut control.units.top, dy),
+                (SIZE_X, &mut control.units.right, dx),
+                (SIZE_Y, &mut control.units.bottom, dy),
+            ] {
+                if control.flags & flag != 0 {
+                    *value += delta;
+                }
+            }
+        }
+        let extra = self.map(dx, dy, self.initial_dpi);
+        self.outer.cx += extra.cx;
+        self.outer.cy += extra.cy;
+        self.baseline = baseline;
+    }
+
     pub fn resize(&self, target: u32) -> anyhow::Result<()> {
         let client = client(self.window);
         let base = self.map(self.baseline.cx, self.baseline.cy, target);
         let mut positions = Vec::with_capacity(self.controls.len());
         for control in &self.controls {
+            if control.flags & FONT_ONLY != 0 {
+                continue;
+            }
             let r = control.units;
             let mut pos = self.map(r.left, r.top, target);
             let mut size = self.map(r.right, r.bottom, target);

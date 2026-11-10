@@ -3,7 +3,9 @@ pub mod declaration;
 use serde_json::{Value as Json, json};
 use winlex_core::metadata::key;
 use winlex_core::windows_metadata::{reader::*, *};
-use winlex_core::{Architecture, Catalog, Declaration, EntityId, Result, guid, integer};
+use winlex_core::{
+    Architecture, Catalog, Declaration, DeclarationTarget, EntityId, Result, guid, integer,
+};
 
 pub fn const_annotation<'a>(owner: impl HasAttributes<'a>) -> &'static str {
     if owner.attributes().any(|a| {
@@ -238,9 +240,37 @@ pub fn layout_kind(flags: TypeAttributes) -> &'static str {
     }
 }
 pub fn describe(c: &Catalog, id: EntityId, arch: Option<Architecture>) -> Result<Json> {
+    describe_target(c, &id.into(), arch)
+}
+
+/// Closed instances require an explicit architecture for dependency resolution.
+pub fn describe_target(
+    c: &Catalog,
+    target: &DeclarationTarget,
+    arch: Option<Architecture>,
+) -> Result<Json> {
+    let selected = if target.arguments.is_empty() {
+        arch.unwrap_or(Architecture::X64)
+    } else {
+        arch.ok_or_else(|| {
+            winlex_core::Error::msg("instance description requires an architecture")
+        })?
+    };
+    let target = if target.arguments.is_empty() {
+        target.clone()
+    } else {
+        c.bind_target(target, selected)?
+    };
+    let id = target.id;
     let row = c.declaration(id, arch)?;
-    let e = c.summarize(id, &row);
-    Ok(match row {
+    let identity = match &row {
+        Declaration::Type(t) if target.has_instance_identity(*t) => {
+            Some(c.interface_identity(&target, selected))
+        }
+        _ => None,
+    };
+    let e = declaration::target_summary(c, &target, selected)?;
+    let mut result = match row {
         Declaration::Type(t) => {
             let mut result = json!({
                 "entity": e,
@@ -254,37 +284,43 @@ pub fn describe(c: &Catalog, id: EntityId, arch: Option<Architecture>) -> Result
                 })),
                 "layout_kind": layout_kind(t.flags()),
                 "fields": member_ids(t.fields(), 4, arch)
-                    .map(|id| describe(c, id, arch))
+                    .map(|id| describe_target(c, &target.with_id(id), arch))
                     .collect::<Result<Vec<_>>>()?,
                 "methods": member_ids(t.methods(), 6, arch)
-                    .map(|id| describe(c, id, arch))
+                    .map(|id| describe_target(c, &target.with_id(id), arch))
                     .collect::<Result<Vec<_>>>()?,
                 "properties": member_ids(t.properties(), 0x17, arch)
-                    .map(|id| describe(c, id, arch))
+                    .map(|id| describe_target(c, &target.with_id(id), arch))
                     .collect::<Result<Vec<_>>>()?,
                 "events": member_ids(t.events(), 0x14, arch)
-                    .map(|id| describe(c, id, arch))
+                    .map(|id| describe_target(c, &target.with_id(id), arch))
                     .collect::<Result<Vec<_>>>()?,
             });
             result["interface_implementations"] = json!(
                 t.interface_impls()
                     .map(|i| {
-                        json!({
-                            "type": signature(&i.interface(&t.generic_types())),
+                        Ok(json!({
+                            "type": signature(&target.ty(&i.interface(&t.generic_types()))?),
                             "default": i.has_attribute("DefaultAttribute"),
                             "attributes": attributes(i),
-                        })
+                        }))
                     })
-                    .collect::<Vec<_>>()
+                    .collect::<Result<Vec<_>>>()?
             );
             result["base_type"] = t
                 .extends()
-                .map_or(Json::Null, |b| signature(&b.ty(&t.generic_types())));
+                .map(|b| {
+                    target
+                        .ty(&b.ty(&t.generic_types()))
+                        .map(|ty| signature(&ty))
+                })
+                .transpose()?
+                .unwrap_or(Json::Null);
             result["windows_runtime"] = json!(t.flags().contains(TypeAttributes::WindowsRuntime));
             result
         }
         Declaration::Property(p) => {
-            let s = p.signature();
+            let s = target.signature(p.signature())?;
             json!({
                 "entity": e,
                 "parent_id": key(p.parent(), 2),
@@ -300,7 +336,7 @@ pub fn describe(c: &Catalog, id: EntityId, arch: Option<Architecture>) -> Result
                 "entity": e,
                 "parent_id": key(r.parent(), 2),
                 "flags": r.flags(),
-                "type": signature(&r.ty()),
+                "type": signature(&target.ty(&r.ty())?),
                 "attributes": attributes(r),
                 "accessors": r.accessors().map(accessor).collect::<Vec<_>>(),
             })
@@ -309,7 +345,7 @@ pub fn describe(c: &Catalog, id: EntityId, arch: Option<Architecture>) -> Result
             json!({
                 "entity": e,
                 "parent_id": key(f.parent_row::<TypeDef>(4), 2),
-                "type": signature(&f.ty()),
+                "type": signature(&target.ty(&f.ty())?),
                 "declared_offset_bytes": f.explicit_offset(),
                 "bitfields": winlex_core::metadata::bitfields(f)?,
                 "value": f.constant().map(|v| value(&v.value())),
@@ -318,7 +354,7 @@ pub fn describe(c: &Catalog, id: EntityId, arch: Option<Architecture>) -> Result
             })
         }
         Declaration::Method(m) => {
-            let s = m.signature(&[]);
+            let s = target.signature(m.signature(&[]))?;
             let ps = m.params_by_sequence(s.types.len())?;
             json!({
                 "entity": e,
@@ -360,7 +396,19 @@ pub fn describe(c: &Catalog, id: EntityId, arch: Option<Architecture>) -> Result
                 },
             })
         }
-    })
+    };
+    if !target.arguments.is_empty() {
+        result["type_arguments"] =
+            json!(target.arguments.iter().map(signature).collect::<Vec<_>>());
+        match identity {
+            Some(Ok(identity)) => result["instance_identity"] = json!(identity),
+            Some(Err(error)) => {
+                result["instance_identity_error"] = json!(format!("{error:#}"));
+            }
+            None => {}
+        }
+    }
+    Ok(result)
 }
 pub fn layout(l: &winlex_core::Layout) -> Json {
     fn field(f: &winlex_core::FieldLayout) -> Json {
@@ -412,6 +460,24 @@ pub fn vtable(v: &winlex_core::Vtable) -> Json {
         result["abi"] = json!("winrt");
         result["scope"] =
             json!("method slots only; metadata signatures are not lowered ABI signatures");
+    }
+    if let Some(instance) = &v.instance {
+        result["instance"] = json!({
+            "identity": instance,
+            "methods": v.slots.iter().enumerate().filter_map(|(slot, entry)| {
+                let abi = entry.abi.as_ref()?;
+                let mut method = json!({ "id": entry.id?, "slot": slot,
+                    "offset_bytes": slot * v.architecture.pointer_bytes() });
+                match abi {
+                    Ok(abi) => method["abi"] = json!(abi),
+                    Err(reason) => method["unsupported"] = json!(reason),
+                }
+                Some(method)
+            }).collect::<Vec<_>>()
+        });
+        result["scope"] = json!(
+            "WinRT slots and scalar ABI; arrays and struct/runtime-class lowering are explicitly unsupported per method"
+        );
     }
     result
 }

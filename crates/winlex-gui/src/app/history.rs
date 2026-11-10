@@ -7,7 +7,7 @@ use super::{
 use crate::app::context::Context;
 use crate::{native::*, resources::*, rich_text::ViewState};
 use std::sync::{Arc, Weak};
-use winlex_core::{Architecture, Catalog, EntityId};
+use winlex_core::{Architecture, Catalog};
 
 const CAPACITY: usize = 100;
 
@@ -45,7 +45,7 @@ enum Target {
 #[derive(Clone)]
 struct DeclarationTarget {
     catalog: Weak<Catalog>,
-    entity: EntityId,
+    entity: winlex_core::DeclarationTarget,
     architecture: Architecture,
     position: ViewState,
 }
@@ -57,7 +57,7 @@ impl Entry {
             document: document.id,
             target: Target::Declaration(DeclarationTarget {
                 catalog: Arc::downgrade(&binding.catalog),
-                entity: binding.entity.id,
+                entity: binding.target,
                 architecture: binding.architecture,
                 position: document.position(),
             }),
@@ -244,7 +244,6 @@ pub(super) fn navigate(ctx: &Context, direction: Direction) {
     if workspace::history_depth(ctx) != 0 {
         return;
     }
-    let scope = Scope::begin(ctx);
     loop {
         let target = workspace::with_history(ctx, |history| {
             history.prune();
@@ -254,6 +253,7 @@ pub(super) fn navigate(ctx: &Context, direction: Direction) {
         let Some((index, entry)) = target else { break };
         if matches!(entry.target, Target::Live(_)) {
             if let Some(content) = workspace::content_by_id(ctx, entry.document) {
+                let _scope = Scope::begin(ctx);
                 workspace::show_document(ctx, content.hwnd());
                 content.focus();
                 workspace::with_history(ctx, |history| history.arrived(index, content.id()));
@@ -277,9 +277,9 @@ pub(super) fn navigate(ctx: &Context, direction: Direction) {
                 ArchitectureChoice::Exact(target.architecture),
             ),
         ) else {
-            workspace::with_history(ctx, |history| history.remove(index));
-            continue;
+            break;
         };
+        let _scope = Scope::begin(ctx);
         let hwnd =
             catalog::open_binding(ctx, binding, catalog::Open::Preview, Some(entry.document));
         if let Some(doc) = hwnd.and_then(|hwnd| workspace::view(ctx, hwnd)) {
@@ -289,7 +289,6 @@ pub(super) fn navigate(ctx: &Context, direction: Direction) {
         }
         break;
     }
-    drop(scope);
     refresh(ctx);
 }
 
@@ -335,10 +334,11 @@ mod tests {
             document: 1,
             target: Target::Declaration(DeclarationTarget {
                 catalog: Arc::downgrade(catalog),
-                entity: EntityId {
+                entity: winlex_core::EntityId {
                     source_id: 0,
                     token,
-                },
+                }
+                .into(),
                 architecture: Architecture::X86,
                 position: ViewState::default(),
             }),
@@ -354,7 +354,7 @@ mod tests {
     #[track_caller]
     fn assert_token(history: &mut History, direction: Direction, expected: Option<u32>) {
         assert_eq!(
-            replay(history, direction).map(|entry| declaration(&entry).entity.token),
+            replay(history, direction).map(|entry| declaration(&entry).entity.id.token),
             expected
         );
     }

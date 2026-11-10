@@ -13,15 +13,17 @@ use std::{
     sync::Arc,
 };
 use windows::Win32::UI::Controls::RichEdit::ENLINK;
-use winlex_core::{Architecture, Catalog, EntityId};
+use winlex_core::{Architecture, Catalog, DeclarationTarget};
 
 mod find;
+mod generic;
 mod info;
 
 #[derive(Clone)]
 pub(super) struct Binding {
     pub catalog: Arc<Catalog>,
     pub entity: Arc<winlex_core::EntitySummary>,
+    pub target: DeclarationTarget,
     pub architecture: Architecture,
 }
 pub(super) enum ArchitectureChoice {
@@ -34,10 +36,11 @@ pub(super) enum ArchitectureChoice {
 impl Binding {
     pub(super) fn resolve(
         catalog: Arc<Catalog>,
-        id: EntityId,
+        target: impl Into<DeclarationTarget>,
         choice: ArchitectureChoice,
     ) -> anyhow::Result<Self> {
-        let entity = catalog.entity(id)?;
+        let target = target.into();
+        let entity = catalog.entity(target.id)?;
         let mask = entity.architecture_mask;
         let architecture = match choice {
             ArchitectureChoice::Exact(arch) => arch.supports(mask).then_some(arch),
@@ -46,14 +49,17 @@ impl Binding {
                 .or_else(|| preferred_for(mask, preferred)),
         }
         .ok_or_else(|| anyhow::anyhow!(resources::text(IDS_UNSUPPORTED_ARCH)))?;
+        let target = catalog.bind_target(&target, architecture)?;
+        let entity = winlex_format::declaration::target_summary(&catalog, &target, architecture)?;
         Ok(Self {
             catalog,
             entity: Arc::new(entity),
+            target,
             architecture,
         })
     }
     pub(super) fn same_entity(&self, other: &Self) -> bool {
-        self.entity.id == other.entity.id && Arc::ptr_eq(&self.catalog, &other.catalog)
+        self.target == other.target && Arc::ptr_eq(&self.catalog, &other.catalog)
     }
     pub(super) fn same_location(&self, other: &Self) -> bool {
         self.same_entity(other) && self.architecture == other.architecture
@@ -71,7 +77,7 @@ struct State {
 struct Navigation {
     content: Rc<crate::rich_text::Content>,
     binding: Binding,
-    target: EntityId,
+    target: DeclarationTarget,
 }
 struct LinkPress {
     navigation: Navigation,
@@ -213,7 +219,7 @@ impl MetadataView {
         let job = Job::Describe {
             document: self.id,
             catalog: binding.catalog,
-            entity: binding.entity.id,
+            target: binding.target,
             arch: binding.architecture,
         };
         let body = match ctx.replace_job(previous, ticket, job) {
@@ -239,7 +245,7 @@ impl MetadataView {
         self.find.refresh(self.editor, false);
     }
     fn select_architecture(&self, code: u32) {
-        let mut binding = self.binding();
+        let binding = self.binding();
         let supported: Vec<_> = Architecture::supported(binding.entity.architecture_mask).collect();
         if code == CBN_SELENDCANCEL {
             if let Some(index) = supported
@@ -257,6 +263,22 @@ impl MetadataView {
         let Some(&arch) = supported.get(index as usize) else {
             return;
         };
+        let Some(resolved) = super::status::report(
+            self.ctx(),
+            Binding::resolve(
+                binding.catalog.clone(),
+                binding.target.clone(),
+                ArchitectureChoice::Exact(arch),
+            ),
+        ) else {
+            if let Some(index) = supported
+                .iter()
+                .position(|arch| *arch == binding.architecture)
+            {
+                send(self.info.architecture, CB_SETCURSEL, index, 0);
+            }
+            return;
+        };
         if supported.len() > 1 {
             super::status::report(
                 self.ctx(),
@@ -264,9 +286,8 @@ impl MetadataView {
             );
         }
         if arch != binding.architecture {
-            binding.architecture = arch;
             history::visit(self.ctx(), || {
-                self.rebind(binding);
+                self.rebind(resolved);
             });
         }
     }
@@ -386,7 +407,7 @@ impl MetadataView {
         let Some(region) = crate::rich_text::link_region(self.editor, &content, &link) else {
             return;
         };
-        let winlex_format::declaration::RegionKind::Reference(target) = region.kind else {
+        let winlex_format::declaration::RegionKind::Reference(target) = &region.kind else {
             return;
         };
         if link.msg == WM_RBUTTONUP {
@@ -396,6 +417,7 @@ impl MetadataView {
         }
         if link.msg == WM_LBUTTONDOWN {
             let range = region.range.clone();
+            let target = target.clone();
             self.state.borrow_mut().press = Some(LinkPress {
                 navigation: Navigation {
                     content,
@@ -452,24 +474,7 @@ impl MetadataView {
                 .filter(|request| state.contains(request))
         };
         let Some(navigation) = navigation else { return };
-        let Some(binding) = super::status::report(
-            self.ctx(),
-            Binding::resolve(
-                navigation.binding.catalog,
-                navigation.target,
-                ArchitectureChoice::Exact(navigation.binding.architecture),
-            ),
-        ) else {
-            return;
-        };
-        history::visit(self.ctx(), || {
-            if let Some(hwnd) =
-                catalog::open_binding(self.ctx(), binding, catalog::Open::Preview, None)
-                && let Some(document) = workspace::view(self.ctx(), hwnd)
-            {
-                document.focus();
-            }
-        });
+        self.open_target(navigation.binding, navigation.target);
     }
     pub(super) fn create(&mut self, hwnd: HWND) -> anyhow::Result<()> {
         self.hwnd = hwnd;
@@ -552,11 +557,30 @@ impl MetadataView {
         }
         match id {
             SELECT_ARCH => self.select_architecture(code),
-            DOCUMENT_MORE if code == BN_CLICKED => {
-                super::status::report(
+            DOCUMENT_GENERIC if code == BN_CLICKED => {
+                let binding = self.binding();
+                if let Some(Some(target)) = super::status::report(
                     self.ctx(),
-                    self.info.menu(self.ctx(), self.hwnd, &self.binding()),
+                    generic::show(self.ctx(), self.hwnd, &binding),
+                ) && self.is_live()
+                    && self.binding().same_location(&binding)
+                {
+                    self.open_target(binding, target);
+                }
+            }
+            DOCUMENT_MORE if code == BN_CLICKED => {
+                let binding = self.binding();
+                let open_definition = super::status::report(
+                    self.ctx(),
+                    self.info.menu(self.ctx(), self.hwnd, &binding),
                 );
+                if open_definition == Some(true)
+                    && self.is_live()
+                    && self.binding().same_location(&binding)
+                {
+                    let target = binding.target.id.into();
+                    self.open_target(binding, target);
+                }
             }
             DOCUMENT_ONLINE if code == BN_CLICKED => {
                 super::status::report(
@@ -585,6 +609,27 @@ impl MetadataView {
     }
     pub(super) fn selection_changed(&self) {
         self.find.count(self.editor, false);
+    }
+
+    fn open_target(&self, binding: Binding, target: DeclarationTarget) {
+        let Some(definition) = super::status::report(
+            self.ctx(),
+            Binding::resolve(
+                binding.catalog,
+                target,
+                ArchitectureChoice::Exact(binding.architecture),
+            ),
+        ) else {
+            return;
+        };
+        history::visit(self.ctx(), || {
+            if let Some(hwnd) =
+                catalog::open_binding(self.ctx(), definition, catalog::Open::Preview, None)
+                && let Some(document) = workspace::view(self.ctx(), hwnd)
+            {
+                document.focus();
+            }
+        });
     }
 }
 pub(super) fn link_modifiers(keys: usize) -> bool {

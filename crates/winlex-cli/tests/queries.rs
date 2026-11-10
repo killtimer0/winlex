@@ -25,6 +25,20 @@ fn catalog() -> &'static Catalog {
 include!("support/invoke.rs");
 
 #[test]
+fn instance_commands_require_an_explicit_architecture_before_loading_inputs() {
+    for command in ["show", "iid", "vtable"] {
+        let (code, out, _) = invoke(
+            ["missing.winmd", command, "IVector<int32>", "--json"]
+                .into_iter()
+                .map(Into::into),
+        );
+        assert_eq!(code, 2, "{command}: {out}");
+        let result: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(result["error"]["code"], "invalid_arguments");
+    }
+}
+
+#[test]
 fn search_mode_flags_are_exclusive_and_only_apply_to_search() {
     for arguments in [
         vec!["search", "1", "--name", "--value"],

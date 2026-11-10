@@ -7,6 +7,33 @@ use windows_metadata::{reader::*, *};
 #[cfg(test)]
 mod tests;
 
+#[derive(Debug)]
+pub(crate) struct UnavailableArchitecture;
+impl std::fmt::Display for UnavailableArchitecture {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("type reference unavailable on architecture")
+    }
+}
+impl std::error::Error for UnavailableArchitecture {}
+
+fn available_types<'a>(
+    types: impl Iterator<Item = TypeDef<'a>>,
+    arch: i32,
+) -> Result<Vec<TypeDef<'a>>> {
+    let mut found = Vec::new();
+    let mut present = false;
+    for ty in types {
+        present = true;
+        if supports(ty, arch) {
+            found.push(ty);
+        }
+    }
+    if present && found.is_empty() {
+        return Err(UnavailableArchitecture.into());
+    }
+    Ok(found)
+}
+
 pub struct Db {
     pub inputs: Vec<crate::SourceData>,
     pub index: Index,
@@ -149,10 +176,9 @@ impl Db {
             };
             if tok >> 24 == 2 {
                 let t: TypeDef = self.row(reference, 2)?;
-                ensure!(
-                    supports(t, arch),
-                    "TypeDef reference unavailable on architecture"
-                );
+                if !supports(t, arch) {
+                    return Err(UnavailableArchitecture.into());
+                }
                 return Ok(t);
             }
             ensure!(tok >> 24 == 1, "unhandled signature reference token");
@@ -168,11 +194,8 @@ impl Db {
                 )?;
                 let pn = TypeDefOrRef::TypeRef(parent).type_name();
                 let p = self.resolve_inner(&pn, owner, arch, depth + 1)?;
-                let found: Vec<_> = self
-                    .index
-                    .nested(p)
-                    .filter(|t| t.name() == n.name && supports(*t, arch))
-                    .collect();
+                let found =
+                    available_types(self.index.nested(p).filter(|t| t.name() == n.name), arch)?;
                 ensure!(found.len() == 1, "ambiguous nested reference");
                 return Ok(found[0]);
             }
@@ -193,19 +216,19 @@ impl Db {
                     // WinRT identity is the fully qualified type name, not CLR assembly
                     // version identity. Only WinRT definitions participate. Multiple
                     // loaded metadata sets remain ambiguous rather than first-wins.
-                    let found: Vec<_> = self
-                        .index
-                        .get(&n.namespace, n.name.split('`').next().unwrap())
-                        .filter(|t| {
-                            t.name() == n.name
-                                && t.flags().contains(TypeAttributes::WindowsRuntime)
-                                && supports(*t, arch)
-                                && self.sources[t.to_row().file]
-                                    .assembly
-                                    .as_ref()
-                                    .is_some_and(|a| a.content_type == 0x200)
-                        })
-                        .collect();
+                    let found = available_types(
+                        self.index
+                            .get(&n.namespace, n.name.split('`').next().unwrap())
+                            .filter(|t| {
+                                t.name() == n.name
+                                    && t.flags().contains(TypeAttributes::WindowsRuntime)
+                                    && self.sources[t.to_row().file]
+                                        .assembly
+                                        .as_ref()
+                                        .is_some_and(|a| a.content_type == 0x200)
+                            }),
+                        arch,
+                    )?;
                     ensure!(
                         found.len() == 1,
                         "WinRT type {}.{} has {} matching definitions; load its metadata dependency or remove overlapping sources",
@@ -237,38 +260,43 @@ impl Db {
                 );
             }
         }
-        let found: Vec<_> = if n.identity.is_none() && n.namespace.is_empty() {
-            self.index
-                .nested(owner)
-                .filter(|t| t.name() == n.name && supports(*t, arch))
-                .collect()
+        let found = if n.identity.is_none() && n.namespace.is_empty() {
+            available_types(
+                self.index.nested(owner).filter(|t| t.name() == n.name),
+                arch,
+            )?
         } else if n.namespace.is_empty() {
             let nested: HashSet<_> = self
                 .index
                 .rows::<NestedClass>(target_file)
                 .map(|r| r.usize(0) - 1)
                 .collect();
-            self.index
-                .rows::<TypeDef>(target_file)
-                .filter(|t| {
-                    t.namespace().is_empty()
-                        && t.name() == n.name
-                        && !nested.contains(&t.pos())
-                        && supports(*t, arch)
-                })
-                .collect()
+            available_types(
+                self.index.rows::<TypeDef>(target_file).filter(|t| {
+                    t.namespace().is_empty() && t.name() == n.name && !nested.contains(&t.pos())
+                }),
+                arch,
+            )?
         } else {
-            self.index
-                .get(&n.namespace, n.name.split('`').next().unwrap())
-                .filter(|t| {
-                    t.name() == n.name && t.to_row().file == target_file && supports(*t, arch)
-                })
-                .collect()
+            available_types(
+                self.index
+                    .get(&n.namespace, n.name.split('`').next().unwrap())
+                    .filter(|t| t.name() == n.name && t.to_row().file == target_file),
+                arch,
+            )?
         };
         ensure!(found.len() == 1, "unresolved/ambiguous type {n:?}");
         Ok(found[0])
     }
     pub(crate) fn vtable_key(&self, key: EntityId, arch: Architecture) -> Result<Vtable> {
+        self.vtable_bound(&key.into(), arch)
+    }
+    pub(crate) fn vtable_bound(
+        &self,
+        target: &crate::DeclarationTarget,
+        arch: Architecture,
+    ) -> Result<Vtable> {
+        let key = target.id;
         let bit = arch.bit();
         let t: TypeDef = self.row(key, 2)?;
         ensure!(supports(t, bit), "interface unavailable on architecture");
@@ -277,7 +305,7 @@ impl Db {
         let windows_runtime = t.flags().contains(TypeAttributes::WindowsRuntime);
         if windows_runtime {
             ensure!(
-                t.generic_params().next().is_none(),
+                t.generic_params().len() == target.arguments.len(),
                 "open generic WinRT vtable ABI is not supported"
             );
             let delegate = t.category() == TypeCategory::Delegate;
@@ -304,6 +332,7 @@ impl Db {
                         declaring_type: declaring_type.into(),
                         id: None,
                         declaring_type_id: None,
+                        abi: None,
                     });
                 }
             }
@@ -363,6 +392,7 @@ impl Db {
             architecture: arch,
             windows_runtime,
             slots,
+            instance: None,
         })
     }
 }
@@ -376,5 +406,6 @@ fn method_slot(t: TypeDef<'_>, m: MethodDef<'_>) -> Result<Slot> {
         declaring_type: t.name().into(),
         id: Some(key(m, 6)),
         declaring_type_id: Some(key(t, 2)),
+        abi: None,
     })
 }

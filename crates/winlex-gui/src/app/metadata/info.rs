@@ -6,7 +6,12 @@ use crate::{
     native::*,
     resources::{self, *},
 };
-use std::{cell::RefCell, ffi::OsStr, os::windows::ffi::OsStrExt, ptr};
+use std::{
+    cell::{Cell, RefCell},
+    ffi::OsStr,
+    os::windows::ffi::OsStrExt,
+    ptr,
+};
 use windows::{
     Win32::{
         Foundation::HWND as ComHwnd,
@@ -41,6 +46,8 @@ pub(super) struct Info {
     source: HWND,
     architecture_label: HWND,
     pub architecture: HWND,
+    generic: HWND,
+    generic_visible: Cell<bool>,
     more: HWND,
     online: HWND,
     line: HWND,
@@ -80,6 +87,7 @@ impl Info {
             )
         }?;
         for (control, label, id) in [
+            (&mut self.generic, IDS_BIND_GENERIC, DOCUMENT_GENERIC),
             (&mut self.more, IDS_DOCUMENT_MORE, DOCUMENT_MORE),
             (&mut self.online, IDS_ONLINE_SEARCH, DOCUMENT_ONLINE),
         ] {
@@ -138,6 +146,14 @@ impl Info {
         }
     }
     pub fn fill(&self, binding: &Binding) -> anyhow::Result<()> {
+        self.generic_visible.set(false);
+        show(self.generic, false);
+        let generic = !binding
+            .catalog
+            .type_parameter_names(binding.target.id, binding.architecture)?
+            .is_empty();
+        self.generic_visible.set(generic);
+        show(self.generic, generic);
         let entity = &binding.entity;
         let context = binding.catalog.entity_context(entity.id)?;
         let scope = match context.owner {
@@ -175,6 +191,7 @@ impl Info {
             self.source,
             self.architecture_label,
             self.architecture,
+            self.generic,
             self.more,
             self.online,
         ] {
@@ -212,15 +229,23 @@ impl Info {
     pub fn layout(&self, area: &mut RECT, m: &layout::Metrics, positions: &mut Vec<(HWND, RECT)>) {
         let button = m.button_size(self.more);
         let online = m.button_size(self.online);
+        let generic = m.button_size(self.generic);
         let combo = bounds(self.architecture, ptr::null_mut());
         let combo_height = combo.bottom - combo.top;
         let label_width = m.text_width(resources::wide_text(IDS_ARCHITECTURE)) + m.px(8);
-        let actions_width = label_width + m.px(70 + 8) + button.cx + m.px(8) + online.cx;
+        let generic_visible = self.generic_visible.get();
+        let mut actions_width = label_width + m.px(70 + 8) + button.cx + m.px(8) + online.cx;
+        if generic_visible {
+            actions_width += generic.cx + m.px(8);
+        }
         let wrap_button = actions_width > area.right - area.left;
         let row_height = m.height.max(combo_height).max(if wrap_button {
             0
         } else {
-            button.cy.max(online.cy)
+            button
+                .cy
+                .max(online.cy)
+                .max(if generic_visible { generic.cy } else { 0 })
         });
         let heading_height = self
             .heading
@@ -277,6 +302,15 @@ impl Info {
             selector.bottom - selector.top >= combo_height,
         );
         positions.push((self.architecture, selector));
+        if generic_visible {
+            if row.right - row.left < m.px(8) + generic.cx {
+                row = layout::take_top(area, generic.cy);
+                layout::take_top(area, m.px(4));
+            } else {
+                layout::take_left(&mut row, m.px(8));
+            }
+            place_button(self.generic, &mut row, generic, positions);
+        }
         if wrap_button {
             row = layout::take_top(area, button.cy.max(online.cy));
             layout::take_top(area, m.px(4));
@@ -314,12 +348,20 @@ impl Info {
         ctx: &crate::app::context::Context,
         owner: HWND,
         binding: &Binding,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<bool> {
         let entity = &binding.entity;
         let path = &binding.catalog.sources()[entity.id.source_id].path;
         let copies = copies(entity, path);
         unsafe {
             let menu = Popup::new()?;
+            if !binding.target.arguments.is_empty() {
+                menu.item(
+                    IDS_VIEW_GENERIC_DEFINITION,
+                    resources::wide_text(IDS_VIEW_GENERIC_DEFINITION),
+                    true,
+                )?;
+                menu.separator()?;
+            }
             let m = ctx.metrics(owner);
             with_window_font(owner, m.font, |dc| {
                 if dc.is_null() {
@@ -360,13 +402,16 @@ impl Info {
                     y: button.bottom,
                 },
             );
+            if IsWindow(owner) != 0 && selected == IDS_VIEW_GENERIC_DEFINITION {
+                return Ok(true);
+            }
             if IsWindow(owner) != 0
                 && let Some((_, value)) = copies.iter().find(|(id, _)| *id == selected)
             {
                 copy_unicode(owner, value)?;
             }
         }
-        Ok(())
+        Ok(false)
     }
 }
 impl Drop for Info {

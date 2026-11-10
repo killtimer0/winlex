@@ -10,7 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 use winlex_core::{
-    Architecture, Catalog, EntityId, SearchMatch, SearchOptions, SearchStep, SourceData,
+    Architecture, Catalog, DeclarationTarget, SearchMatch, SearchOptions, SearchStep, SourceData,
 };
 
 const SEARCH_BATCH_INTERVAL: Duration = Duration::from_millis(100);
@@ -41,7 +41,7 @@ pub enum Job {
     Describe {
         document: u64,
         catalog: Arc<Catalog>,
-        entity: EntityId,
+        target: DeclarationTarget,
         arch: Architecture,
     },
     Tool {
@@ -109,13 +109,14 @@ pub fn run(job: Job, ticket: &Ticket, publish: &dyn Fn(Completion) -> anyhow::Re
         }
         Job::Describe {
             catalog,
-            entity,
+            target,
             arch,
             document,
         } => Completion::Description {
             id,
             document,
-            result: winlex_format::declaration::render(&catalog, entity, arch).map(Into::into),
+            result: winlex_format::declaration::render_target(&catalog, &target, arch)
+                .map(Into::into),
         },
         Job::Tool { document, job } => Completion::Tool {
             id,
@@ -190,6 +191,7 @@ mod tests {
         cell::{Cell, RefCell},
         collections::VecDeque,
     };
+    use winlex_core::EntityId;
 
     #[test]
     fn tool_completion_keeps_document_ticket_and_input_identity() {
@@ -437,7 +439,7 @@ mod tests {
             Job::Describe {
                 document: 42,
                 catalog: catalog.clone(),
-                entity,
+                target: entity.into(),
                 arch: Architecture::X64,
             },
         );
@@ -458,10 +460,11 @@ mod tests {
             Job::Describe {
                 document: 43,
                 catalog,
-                entity: EntityId {
+                target: EntityId {
                     source_id: 0,
                     token: 0,
-                },
+                }
+                .into(),
                 arch: Architecture::X64,
             },
         );

@@ -2,7 +2,9 @@
 use super::{Page, Query};
 use std::fmt::Write;
 use winlex_core::windows_metadata::{reader::*, *};
-use winlex_core::{Architecture, Catalog, Declaration, EntityId, Result, guid, metadata::key};
+use winlex_core::{
+    Architecture, Catalog, Declaration, DeclarationTarget, EntityId, Result, guid, metadata::key,
+};
 use winlex_format::{attribute_value as value, const_annotation, layout_kind, member_ids};
 
 fn ty(t: &Type) -> String {
@@ -105,18 +107,31 @@ fn bits(out: &mut String, pad: &str, fields: &[winlex_core::Bitfield], offset: u
 fn declaration(
     out: &mut String,
     c: &Catalog,
-    id: EntityId,
+    target: &DeclarationTarget,
     arch: Option<Architecture>,
     depth: usize,
 ) -> Result<()> {
+    let id = target.id;
     let row = c.declaration(id, arch)?;
-    let e = c.summarize(id, &row);
+    let e =
+        winlex_format::declaration::target_summary(c, target, arch.unwrap_or(Architecture::X64))?;
     let pad = "  ".repeat(depth);
     writeln!(out, "{pad}{} {} {}", e.id, e.kind, e.full_name)?;
     match row {
         Declaration::Type(t) => {
             if let Some(g) = guid(t) {
-                writeln!(out, "{pad}  GUID: {g}")?;
+                let label = if target.arguments.is_empty() {
+                    "GUID"
+                } else {
+                    "definition GUID"
+                };
+                writeln!(out, "{pad}  {label}: {g}")?;
+            }
+            if target.has_instance_identity(t) {
+                match c.interface_identity(target, arch.expect("instance architecture")) {
+                    Ok(identity) => writeln!(out, "{pad}  IID: {}", identity.iid)?,
+                    Err(error) => writeln!(out, "{pad}  IID unavailable: {error:#}")?,
+                }
             }
             write!(out, "{pad}  layout: {}", layout_kind(t.flags()))?;
             if let Some(l) = t.class_layout() {
@@ -129,14 +144,18 @@ fn declaration(
             }
             writeln!(out)?;
             if let Some(b) = t.extends() {
-                writeln!(out, "{pad}  extends: {}", ty(&b.ty(&t.generic_types())))?;
+                writeln!(
+                    out,
+                    "{pad}  extends: {}",
+                    ty(&target.ty(&b.ty(&t.generic_types()))?)
+                )?;
             }
             attributes(out, &pad, t)?;
             for i in t.interface_impls() {
                 writeln!(
                     out,
                     "{pad}  interface: {}{}",
-                    ty(&i.interface(&t.generic_types())),
+                    ty(&target.ty(&i.interface(&t.generic_types()))?),
                     if i.has_attribute("DefaultAttribute") {
                         " [default]"
                     } else {
@@ -149,12 +168,17 @@ fn declaration(
                 .chain(member_ids(t.events(), 0x14, arch))
                 .chain(member_ids(t.methods(), 6, arch));
             for id in ids {
-                declaration(out, c, id, arch, depth + 1)?;
+                declaration(out, c, &target.with_id(id), arch, depth + 1)?;
             }
         }
         Declaration::Field(f) => {
             bits(out, &pad, &winlex_core::metadata::bitfields(f)?, 0)?;
-            writeln!(out, "{pad}  type: {}{}", const_annotation(f), ty(&f.ty()))?;
+            writeln!(
+                out,
+                "{pad}  type: {}{}",
+                const_annotation(f),
+                ty(&target.ty(&f.ty())?)
+            )?;
             if let Some(offset) = f.explicit_offset() {
                 writeln!(out, "{pad}  declared offset: {offset} bytes")?;
             }
@@ -167,7 +191,7 @@ fn declaration(
             attributes(out, &pad, f)?;
         }
         Declaration::Method(m) => {
-            let s = m.signature(&[]);
+            let s = target.signature(m.signature(&[]))?;
             let ps = m.params_by_sequence(s.types.len())?;
             writeln!(
                 out,
@@ -200,12 +224,16 @@ fn declaration(
             attributes(out, &pad, m)?;
         }
         Declaration::Property(p) => {
-            writeln!(out, "{pad}  type: {}", ty(&p.signature().return_type))?;
+            writeln!(
+                out,
+                "{pad}  type: {}",
+                ty(&target.ty(&p.signature().return_type)?)
+            )?;
             accessors(out, &pad, p.accessors())?;
             attributes(out, &pad, p)?;
         }
         Declaration::Event(e) => {
-            writeln!(out, "{pad}  type: {}", ty(&e.ty()))?;
+            writeln!(out, "{pad}  type: {}", ty(&target.ty(&e.ty())?))?;
             accessors(out, &pad, e.accessors())?;
             attributes(out, &pad, e)?;
         }
@@ -276,7 +304,14 @@ pub(super) fn render(q: &Query, c: &Catalog, arch: Option<Architecture>) -> Resu
             writeln!(out, "References to {id} (unresolved uses: {unresolved})")?;
             page(&mut out, p)?;
         }
-        Query::Show(id) => declaration(&mut out, c, *id, arch, 0)?,
+        Query::Show(target) => declaration(&mut out, c, target, arch, 0)?,
+        Query::Iid(identity) => {
+            writeln!(
+                out,
+                "IID: {}\nSignature: {}",
+                identity.iid, identity.signature
+            )?;
+        }
         Query::Layout(l) => {
             writeln!(
                 out,
@@ -300,6 +335,31 @@ pub(super) fn render(q: &Query, c: &Catalog, arch: Option<Architecture>) -> Resu
                         .unwrap_or_else(|| "[implicit ABI]".into()),
                     i * v.architecture.pointer_bytes()
                 )?;
+            }
+            if let Some(instance) = &v.instance {
+                writeln!(
+                    out,
+                    "IID: {}\nSignature: {}",
+                    instance.iid, instance.signature
+                )?;
+                for (slot, method) in v.slots.iter().enumerate() {
+                    if let Some(Ok(abi)) = &method.abi {
+                        writeln!(
+                            out,
+                            "  slot {} scalar ABI ({}): {}({})",
+                            slot,
+                            abi.calling_convention,
+                            abi.return_type,
+                            abi.parameters
+                                .iter()
+                                .map(|p| format!("[{}] {} {}", p.direction, p.ty, p.name))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        )?;
+                    } else if let Some(Err(reason)) = &method.abi {
+                        writeln!(out, "  slot {slot} ABI unsupported: {reason}")?;
+                    }
+                }
             }
         }
     }

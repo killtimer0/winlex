@@ -43,6 +43,8 @@ pub struct Slot {
     pub declaring_type: String,
     pub id: Option<EntityId>,
     pub declaring_type_id: Option<EntityId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub abi: Option<std::result::Result<crate::AbiMethod, String>>,
 }
 #[derive(Debug, serde::Serialize)]
 pub struct Vtable {
@@ -51,4 +53,6 @@ pub struct Vtable {
     pub architecture: Architecture,
     pub windows_runtime: bool,
     pub slots: Vec<Slot>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instance: Option<crate::InterfaceIdentity>,
 }

@@ -15,12 +15,13 @@ Commands:
   show NAME|ID            Declaration, members and typed references
   layout TYPE             Compute size/alignment/offsets (bits)
   vtable INTERFACE        Compute inherited method slots
+  iid INTERFACE           WinRT interface/delegate instance IID
   references TYPE         Reverse type uses across loaded sources
   error-code CODE         Query Windows messages (no input file required)
 
 Options:
   --source SOURCE         Zero-based input index or unique assembly name
-  --arch x86|x64|arm64     Required for layout/vtable/references
+  --arch x86|x64|arm64     Required for layout/vtable/iid/references and instances
   --json                  Versioned machine-readable output
   --name                  Exact name or trailing '.'/'+' scope search
   --value                 Integer bits or target-type floating equality
@@ -32,6 +33,8 @@ Options:
 Input files precede the command. Use .\search for a file named search.
 Tools: winlex error-code --help
 Declaration selectors accept SOURCE::NAME or SOURCE::0xTOKEN.
+Closed types use NAME<ARG,...>, for example 'Windows.Foundation.Collections.IVector<int32>'.
+Instance show and iid require --arch. Arguments may be nested or SOURCE:: qualified.
 Bare tokens require a single input source. Names can be namespace-qualified.
 Source indices follow input order and belong to this catalog only.
 Search modes and --where are mutually exclusive.
@@ -58,6 +61,7 @@ enum Command {
     Show,
     Layout,
     Vtable,
+    Iid,
     References,
 }
 impl Command {
@@ -67,6 +71,7 @@ impl Command {
         (Self::Show, "show"),
         (Self::Layout, "layout"),
         (Self::Vtable, "vtable"),
+        (Self::Iid, "iid"),
         (Self::References, "references"),
     ];
 
@@ -164,13 +169,22 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
     }
     if matches!(
         command,
-        Command::Layout | Command::Vtable | Command::References
+        Command::Layout | Command::Vtable | Command::References | Command::Iid
     ) && arch.is_none()
     {
         return Err(format!("{name} requires --arch"));
     }
+    if command == Command::Show
+        && arch.is_none()
+        && positional.get(1).is_some_and(|q| q.contains('<'))
+    {
+        return Err("instance show requires --arch".into());
+    }
     if source.is_some()
-        && (command == Command::Summary || positional.get(1).is_some_and(|q| q.contains("::")))
+        && (command == Command::Summary
+            || positional
+                .get(1)
+                .is_some_and(|q| q.split('<').next().is_some_and(|root| root.contains("::"))))
     {
         return Err(
             "--source applies to queries; do not combine it with SOURCE:: selectors".into(),
@@ -247,7 +261,7 @@ pub fn run(
                     source: o
                         .source
                         .as_deref()
-                        .map(|s| source_index(&db, s))
+                        .map(|s| db.source_index(s))
                         .transpose()?,
                     mode: o.mode,
                     architecture: o.arch,
@@ -259,13 +273,18 @@ pub fn run(
                 let result = page(matches.into_iter().map(Ok), o.offset, o.limit)?;
                 Query::Matches(result)
             }
-            Command::Show => Query::Show(select(&db, selector, o.arch, false)?),
+            Command::Show => Query::Show(select_target(&db, selector, o.arch, false)?),
             Command::Layout => {
                 Query::Layout(db.layout(select(&db, selector, o.arch, true)?, o.arch.unwrap())?)
             }
-            Command::Vtable => {
-                Query::Vtable(db.vtable(select(&db, selector, o.arch, true)?, o.arch.unwrap())?)
-            }
+            Command::Vtable => Query::Vtable(db.vtable_target(
+                &select_target(&db, selector, o.arch, true)?,
+                o.arch.unwrap(),
+            )?),
+            Command::Iid => Query::Iid(db.interface_identity(
+                &select_target(&db, selector, o.arch, true)?,
+                o.arch.unwrap(),
+            )?),
             Command::References => {
                 let target = select(&db, selector, o.arch, true)?;
                 let arch = o.arch.unwrap();
@@ -335,7 +354,8 @@ struct Page {
 enum Query {
     Summary,
     Matches(Page),
-    Show(winlex_core::EntityId),
+    Show(winlex_core::DeclarationTarget),
+    Iid(winlex_core::InterfaceIdentity),
     Layout(winlex_core::Layout),
     Vtable(winlex_core::Vtable),
     References(winlex_core::EntityId, Page, usize),
@@ -345,7 +365,8 @@ impl Query {
         Ok(match self {
             Self::Summary => winlex_format::summary(db),
             Self::Matches(p) => serde_json::to_value(p)?,
-            Self::Show(id) => winlex_format::describe(db, *id, arch)?,
+            Self::Show(target) => winlex_format::describe_target(db, target, arch)?,
+            Self::Iid(identity) => serde_json::to_value(identity)?,
             Self::Layout(l) => winlex_format::layout(l),
             Self::Vtable(v) => winlex_format::vtable(v),
             Self::References(id, p, unresolved) => serde_json::json!({
@@ -379,79 +400,31 @@ fn page(
         matches,
     })
 }
-fn source_index(db: &Catalog, s: &str) -> winlex_core::Result<usize> {
-    if let Ok(index) = s.parse::<usize>() {
-        return if index < db.sources().len() {
-            Ok(index)
-        } else {
-            Err(winlex_core::Error::msg("source index out of range"))
-        };
-    }
-    let found: Vec<_> = db
-        .sources()
-        .iter()
-        .filter(|source| source.assembly.as_ref().is_some_and(|a| a.name == s))
-        .collect();
-    if found.len() != 1 {
-        return Err(winlex_core::Error::msg(format!(
-            "source selector {s:?} matches {} files; use a source index",
-            found.len()
-        )));
-    }
-    Ok(found[0].id)
-}
 /// Resolve the CLI's source/name/token syntax to a catalog-local identity.
+fn select_target(
+    db: &Catalog,
+    expression: &str,
+    arch: Option<Architecture>,
+    types_only: bool,
+) -> winlex_core::Result<winlex_core::DeclarationTarget> {
+    if expression.contains('<') {
+        db.parse_target(
+            expression,
+            arch.ok_or_else(|| winlex_core::Error::msg("instance query requires --arch"))?,
+        )
+    } else {
+        Ok(select(db, expression, arch, types_only)?.into())
+    }
+}
+
+/// Resolve a definition selector (instances use the shared closed-type parser).
 pub fn select(
     db: &Catalog,
     s: &str,
     arch: Option<Architecture>,
     types_only: bool,
 ) -> winlex_core::Result<winlex_core::EntityId> {
-    let (source, name) = if let Some((source, name)) = s.split_once("::") {
-        (Some(source_index(db, source)?), name)
-    } else {
-        (None, s)
-    };
-    if let Some(token) = name.strip_prefix("0x") {
-        if source.is_none() && db.sources().len() != 1 {
-            return Err(winlex_core::Error::msg(
-                "token requires SOURCE::TOKEN with multiple sources",
-            ));
-        }
-        let id = winlex_core::EntityId {
-            source_id: source.unwrap_or(0),
-            token: u32::from_str_radix(token, 16)?,
-        };
-        let row = db.declaration(id, arch)?;
-        if types_only && !matches!(row, winlex_core::Declaration::Type(_)) {
-            return Err(winlex_core::Error::msg("expected a type"));
-        }
-        return Ok(id);
-    }
-    let mut matches = db.search_exact(
-        name,
-        SearchOptions {
-            source,
-            case_sensitive: true,
-            architecture: arch,
-            categories: Some(if types_only {
-                winlex_core::EntityCategory::Type as u32
-            } else {
-                winlex_core::EntityCategory::ALL
-                    & !(winlex_core::EntityCategory::TypeReference as u32)
-            }),
-            ..Default::default()
-        },
-    )?;
-    let first = matches.next().transpose()?;
-    let second = matches.next().transpose()?;
-    match (first, second) {
-        (Some(item), None) => Ok(item.id),
-        (_, second) => Err(winlex_core::Error::msg(format!(
-            "expected one entity, found {}; specify --arch, a qualified name or token",
-            if second.is_some() { "2 or more" } else { "0" }
-        ))),
-    }
+    db.select_entity(s, arch, types_only)
 }
 fn error(
     out: &mut dyn Write,

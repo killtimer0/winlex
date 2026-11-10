@@ -22,6 +22,7 @@ winlex Windows.Win32.winmd Windows.Wdk.winmd show Windows.Wdk.winmd::NtCancelIoF
 | `show NAME或ID` | 类型、成员或类型引用详情 |
 | `layout TYPE --arch ARCH` | 大小、对齐、字段和位域偏移 |
 | `vtable TYPE --arch ARCH` | COM、WinRT 接口及委托的方法槽位 |
+| `iid TYPE --arch ARCH` | WinRT 接口或委托的 IID，支持闭合泛型实例 |
 | `references TYPE --arch ARCH` | 字段、方法、属性、事件签名及接口要求中的反向引用 |
 | `error-code CODE` | 独立查询错误码或模块消息，不加载 WinMD |
 
@@ -45,10 +46,27 @@ winlex Windows.Win32.winmd Windows.Wdk.winmd show Windows.Wdk.winmd::NtCancelIoF
 
 存在多个候选时，使用架构、限定名或 token 消除歧义。限定名形如 `Namespace.Type.Field`，嵌套类型形如 `Namespace.Outer+Inner`。
 选择声明时支持 `SOURCE::NAME` 和 `SOURCE::0xTOKEN`，SOURCE 可用来源编号或唯一程序集名称（包括名称中的 `.winmd` 后缀）。裸 token 仅允许单来源。来源编号取决于本次输入顺序，token 仅标识所属文件中的记录。
-`--source SOURCE` 在搜索时过滤来源，在 show/layout/vtable/references 时限定目标来源，不能与 `SOURCE::` 同用；反向引用仍查找所有已加载来源。独立来源中的同名声明不会自动合并。
+`--source SOURCE` 在搜索时过滤来源，在 show/layout/vtable/iid/references 时限定目标来源，不能与目标根部的 `SOURCE::` 同用；实参可单独指定来源。反向引用仍查找所有已加载来源。独立来源中的同名声明不会自动合并。
 跨文件引用所需的依赖须显式加载；非 WinRT 引用要求程序集身份匹配。
 
 受支持核心程序集中的基础引用无需额外加载 CLR 程序集，身份范围与上下文语义见 [foundation.rs](../vendor/windows-metadata/src/reader/foundation.rs)。`System.Guid` 的原生大小为 16 字节、对齐 4 字节，加载 CLR 参考程序集不会改变该 ABI。
+
+## 泛型实例
+
+`show`、`iid`、`vtable` 接受 `类型<实参,...>`，实例查询需指定 `--arch`。类型名区分大小写；泛型名称可省略元数据中的反引号参数数量后缀。
+
+```powershell
+winlex Windows.winmd show 'Windows.Foundation.Collections.IVector<int32>' --arch x64
+winlex Windows.winmd iid 'Windows.Foundation.Collections.IVector<int32>' --arch x64
+winlex Windows.winmd vtable 'Windows.Foundation.Collections.IMap<string, object>' --arch x86 --json
+```
+
+实参支持闭合命名类型、嵌套实例，以及 `bool`、`char`、`uint8`、`int16`、`uint16`、`int32`、`uint32`、`int64`、`uint64`、`isize`、`usize`、`float32`、`float64`、`string`、`object`、`guid`。同名类型须使用限定名或来源（如 `0::Namespace.Type`）。`[]` 数组、`int8` 和 `isize`／`usize` 可用于声明浏览，但不能作为 WinRT IID 的实参。
+
+`iid` 返回实例 IID 和规范 WinRT 类型签名；实例 `show --json` 保留真实定义 ID，在 `type_arguments` 中单独列出实参。CLI 搜索仍查找元数据定义，不构造实例。
+
+泛型 WinRT `vtable` 返回隐式基接口槽位、方法索引和目标架构下的字节偏移。实例结果另含 IID 与逐方法的标量 ABI：返回 `HRESULT`，元数据返回值变为最后一个 `[out, retval]` 参数，字符串使用 `HSTRING`，接口／委托指针按 IID 标识。x86 使用 `stdcall`，x64／ARM64 使用平台调用约定。
+这是参数层面的 ABI 阅读视图，不描述寄存器分配或完整可编译声明。数组、结构体、运行时类及开放／方法泛型的 ABI 展开不支持；不支持的方法仍保留槽位，并给出原因，不输出猜测的 ABI。泛型值类型布局及 CLR 约束检查不支持。
 
 ## 错误码查询
 

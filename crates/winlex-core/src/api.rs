@@ -214,7 +214,7 @@ impl<'a> Declaration<'a> {
             Self::Reference(r) => r.name(),
         }
     }
-    fn owner(&self) -> Option<TypeDef<'a>> {
+    pub(crate) fn owner(&self) -> Option<TypeDef<'a>> {
         Some(match self {
             Self::Type(r) => *r,
             Self::Field(r) => r.parent_row(4),
@@ -223,6 +223,11 @@ impl<'a> Declaration<'a> {
             Self::Event(r) => r.parent(),
             Self::Reference(_) => return None,
         })
+    }
+
+    /// Catalog-local ID of the containing type; type references have no owner.
+    pub fn owner_id(&self) -> Option<EntityId> {
+        self.owner().map(|row| crate::metadata::key(row, 2))
     }
     pub fn architecture_mask(&self) -> i32 {
         let member = match self {
@@ -456,6 +461,18 @@ impl Catalog {
     }
     pub fn vtable(&self, id: EntityId, arch: Architecture) -> Result<Vtable> {
         self.db.vtable_key(id, arch)
+    }
+    pub(crate) fn bound_vtable(
+        &self,
+        target: &crate::DeclarationTarget,
+        arch: Architecture,
+    ) -> Result<Vtable> {
+        self.db.vtable_bound(target, arch)
+    }
+    pub(crate) fn is_guid_type(&self, name: &windows_metadata::TypeName) -> bool {
+        name.generics.is_empty()
+            && ((name.identity.is_none() && name.namespace == "System" && name.name == "Guid")
+                || self.db.index.foundation_type(name) == Some(FoundationType::Guid))
     }
     pub fn search<'a>(&'a self, query: &str, options: SearchOptions<'a>) -> Result<Search<'a>> {
         ensure!(!query.is_empty(), "empty search query");
@@ -761,11 +778,17 @@ mod tests {
         file.set_reference(reader::Index::new(vec![
             reader::File::new_shared(original.bytes.clone()).unwrap(),
         ]));
-        file.TypeDef(
+        let owner = file.TypeDef(
             "Fixture",
             "Owner",
             writer::TypeDefOrRef::default(),
             TypeAttributes::Public,
+        );
+        file.GenericParam(
+            "T",
+            writer::TypeOrMethodDef::TypeDef(owner),
+            0,
+            GenericParamAttributes(0),
         );
         file.Field(
             "Member",
@@ -804,8 +827,39 @@ mod tests {
                     .resolve_type(member(catalog), &field_name(catalog), Architecture::X64)
                     .is_err()
             );
+            let mut name = field_name(catalog);
+            name.generics.clear();
+            let target = crate::DeclarationTarget {
+                id: crate::test_support::type_id(catalog, "Owner"),
+                arguments: vec![Type::ValueName(name)],
+            };
+            assert_eq!(
+                catalog.bind_target(&target, Architecture::X64).unwrap(),
+                target
+            );
         }
         for (catalog, expected) in [(&old, Type::I32), (&current, Type::I64)] {
+            let mut argument = field_name(catalog);
+            argument.generics.clear();
+            let unbound = crate::DeclarationTarget {
+                id: crate::test_support::type_id(catalog, "Owner"),
+                arguments: vec![Type::ValueName(argument)],
+            };
+            let bound = catalog.bind_target(&unbound, Architecture::X64).unwrap();
+            assert!(
+                catalog.bind_target(&unbound, Architecture::X86).is_err(),
+                "TypeRef must not hide an architecture failure"
+            );
+            assert!(
+                catalog.bind_target(&bound, Architecture::X86).is_err(),
+                "canonical TypeDef must reject the same architecture"
+            );
+            assert_eq!(
+                catalog
+                    .parse_argument(bound.id, "1::Fixture.Widget", Architecture::X64)
+                    .unwrap(),
+                bound.arguments[0]
+            );
             let target = catalog
                 .resolve_type(member(catalog), &field_name(catalog), Architecture::X64)
                 .unwrap();
