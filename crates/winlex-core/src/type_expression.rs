@@ -22,6 +22,18 @@ const PRIMITIVES: &[(&str, Type)] = &[
     ("object", Type::Object),
 ];
 
+/// Canonical user-facing spelling shared by parsing, prefill and declaration output.
+/// `void` is display-only and never a valid type argument.
+pub fn primitive_name(ty: &Type) -> Option<&'static str> {
+    if matches!(ty, Type::Void) {
+        return Some("void");
+    }
+    PRIMITIVES
+        .iter()
+        .find(|(_, primitive)| primitive == ty)
+        .map(|(name, _)| *name)
+}
+
 impl Catalog {
     fn parse_closed(&self, expression: &str, arch: Architecture, trailing: &str) -> Result<Type> {
         let mut parser = Parser {
@@ -219,6 +231,31 @@ mod tests {
     use super::*;
     use crate::test_support::{catalog, type_id};
     use windows_metadata::{writer, *};
+
+    #[test]
+    fn primitive_names_are_shared_with_the_expression_vocabulary() {
+        for (name, ty) in [
+            ("bool", Type::Bool),
+            ("char", Type::Char),
+            ("int8", Type::I8),
+            ("uint8", Type::U8),
+            ("int16", Type::I16),
+            ("uint16", Type::U16),
+            ("int32", Type::I32),
+            ("uint32", Type::U32),
+            ("int64", Type::I64),
+            ("uint64", Type::U64),
+            ("nint", Type::ISize),
+            ("nuint", Type::USize),
+            ("float32", Type::F32),
+            ("float64", Type::F64),
+            ("string", Type::String),
+            ("object", Type::Object),
+            ("void", Type::Void),
+        ] {
+            assert_eq!(primitive_name(&ty), Some(name));
+        }
+    }
 
     #[test]
     fn closed_expressions_preserve_nested_source_identity_and_reject_open_or_trailing_input() {

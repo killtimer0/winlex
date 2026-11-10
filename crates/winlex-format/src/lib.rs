@@ -5,6 +5,7 @@ use winlex_core::metadata::key;
 use winlex_core::windows_metadata::{reader::*, *};
 use winlex_core::{
     Architecture, Catalog, Declaration, DeclarationTarget, EntityId, Result, guid, integer,
+    primitive_name,
 };
 
 pub fn const_annotation<'a>(owner: impl HasAttributes<'a>) -> &'static str {
@@ -82,7 +83,7 @@ pub fn attribute_value(v: &Value) -> String {
         return format!("{}.{}({})", n.namespace, n.name, attribute_value(v));
     }
     if let Some((decimal, hex, _)) = integer_text(v) {
-        return format!("{decimal} ({hex}, {:?})", v.ty());
+        return format!("{decimal} ({hex}, {})", type_name(&v.ty()));
     }
     format!("{v:?}")
 }
@@ -98,7 +99,7 @@ fn value(v: &Value) -> Json {
     if let Some((decimal, hex, bits)) = integer_text(v) {
         return json!({
             "kind": "integer",
-            "type": format!("{:?}", v.ty()),
+            "type": type_name(&v.ty()),
             "decimal": decimal,
             "hex": hex,
             "bits": bits,
@@ -111,12 +112,12 @@ fn value(v: &Value) -> Json {
         }),
         Value::F32(x) => json!({
             "kind": "float",
-            "type": "F32",
+            "type": type_name(&v.ty()),
             "value": x.to_string(),
         }),
         Value::F64(x) => json!({
             "kind": "float",
-            "type": "F64",
+            "type": type_name(&v.ty()),
             "value": x.to_string(),
         }),
         Value::Utf8(x) | Value::Utf16(x) => json!({
@@ -147,6 +148,9 @@ fn attributes<'a>(r: impl HasAttributes<'a>) -> Json {
             })
             .collect::<Vec<_>>()
     )
+}
+fn type_name(t: &Type) -> String {
+    primitive_name(t).map_or_else(|| format!("{t:?}"), str::to_owned)
 }
 fn signature(t: &Type) -> Json {
     match t {
@@ -202,7 +206,7 @@ fn signature(t: &Type) -> Json {
         }),
         other => json!({
             "kind": "primitive",
-            "name": format!("{other:?}"),
+            "name": type_name(other),
         }),
     }
 }
@@ -519,6 +523,16 @@ mod tests {
     }
 
     #[test]
+    fn primitive_names_are_shared_by_json_text_and_attribute_annotations() {
+        assert_eq!(signature(&Type::I32)["name"].as_str(), Some("int32"));
+        assert_eq!(signature(&Type::ISize)["name"].as_str(), Some("nint"));
+        assert_eq!(signature(&Type::Void)["name"].as_str(), Some("void"));
+        assert_eq!(value(&Value::ISize(-1))["type"].as_str(), Some("nint"));
+        assert_eq!(value(&Value::F32(1.0))["type"].as_str(), Some("float32"));
+        assert_eq!(attribute_value(&Value::I32(1)), "1 (0x00000001, int32)");
+    }
+
+    #[test]
     fn integer_projections_preserve_signed_values_and_storage_widths() {
         for (input, decimal, hex, bits) in [
             (Value::I8(-1), "-1", "0xff", 8),
@@ -549,7 +563,7 @@ mod tests {
             assert_eq!(constant(&input), decimal);
             assert_eq!(
                 attribute_value(&input),
-                format!("{decimal} ({hex}, {:?})", input.ty())
+                format!("{decimal} ({hex}, {})", type_name(&input.ty()))
             );
         }
     }

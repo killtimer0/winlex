@@ -61,7 +61,7 @@ winlex Windows.winmd iid 'Windows.Foundation.Collections.IVector<int32>' --arch 
 winlex Windows.winmd vtable 'Windows.Foundation.Collections.IMap<string, object>' --arch x86 --json
 ```
 
-实参支持闭合命名类型、嵌套实例，以及 `bool`、`char`、`uint8`、`int16`、`uint16`、`int32`、`uint32`、`int64`、`uint64`、`nint`、`nuint`、`float32`、`float64`、`string`、`object`、`guid`。同名类型须使用限定名或来源（如 `0::Namespace.Type`）。`[]` 数组、`int8` 和 `nint`／`nuint` 可用于声明浏览，但不能作为 WinRT IID 的实参。
+实参支持闭合命名类型、嵌套实例，以及 `bool`、`char`、`uint8`、`int16`、`uint16`、`int32`、`uint32`、`int64`、`uint64`、`nint`、`nuint`、`float32`、`float64`、`string`、`object`、`guid`。同名类型须使用限定名或来源（如 `0::Namespace.Type`）。`[]` 数组、`int8` 和 `nint`／`nuint` 可用于声明浏览，但不能作为 WinRT IID 的实参。这些基元名称同时用于声明正文、成员类型行、JSON 的 `type`／`name` 和常量标注；`void` 只出现在返回类型中。
 
 `iid` 返回实例 IID 和规范 WinRT 类型签名；实例 `show --json` 保留真实定义 ID，在 `type_arguments` 中单独列出实参。CLI 搜索仍查找元数据定义，不构造实例。
 

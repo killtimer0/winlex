@@ -80,7 +80,7 @@ def main():
             assert identity["iid"] == iid, (expression, identity, iid)
         bound = query(files, "show", "Windows.Foundation.Collections.IVector<int32>")
         get_at = next(m for m in bound["methods"] if m["entity"]["name"] == "GetAt")
-        assert get_at["return_type"]["name"] == "I32"
+        assert get_at["return_type"]["name"] == "int32"
         table = query(files, "vtable", "Windows.Foundation.Collections.IVector<int32>")
         assert table["slots"][6]["method"] == "GetAt"
         assert table["slots"][6]["byte_offset"] == 48

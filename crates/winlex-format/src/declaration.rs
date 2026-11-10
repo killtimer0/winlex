@@ -5,7 +5,7 @@ use winlex_core::windows_metadata::reader::*;
 use winlex_core::windows_metadata::*;
 use winlex_core::{
     Architecture, Catalog, Declaration, DeclarationTarget, EntityId, EntitySummary, Result, guid,
-    integer,
+    integer, primitive_name,
 };
 
 struct Types<'a> {
@@ -89,24 +89,8 @@ impl Types<'_> {
                         base
                     }
                     Type::Generic(n, _) | Type::MethodGeneric(n, _) => n.to_string().into(),
-                    Type::Void => "void".into(),
-                    Type::Bool => "bool".into(),
-                    Type::I8 => "int8".into(),
-                    Type::U8 => "uint8".into(),
-                    Type::I16 => "int16".into(),
-                    Type::U16 => "uint16".into(),
-                    Type::I32 => "int32".into(),
-                    Type::U32 => "uint32".into(),
-                    Type::I64 => "int64".into(),
-                    Type::U64 => "uint64".into(),
-                    Type::F32 => "float32".into(),
-                    Type::F64 => "float64".into(),
-                    Type::ISize => "nint".into(),
-                    Type::USize => "nuint".into(),
-                    Type::Char => "char".into(),
-                    Type::String => "string".into(),
-                    Type::Object => "object".into(),
-                    other => format!("{other:?}").into(),
+                    other => primitive_name(other)
+                        .map_or_else(|| format!("{other:?}").into(), Into::into),
                 };
                 if base.regions.is_empty() && !base.text.is_empty() {
                     base.regions.push(Region {

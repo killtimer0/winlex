@@ -18,6 +18,7 @@ pub use search::{
     QueryError, QueryErrorKind, SearchMatch,
 };
 pub use source::{AssemblyIdentity, EntityId, Source, SourceData};
+pub use type_expression::primitive_name;
 pub use winrt::{AbiMethod, AbiParameter, InterfaceIdentity};
 // Low-level adapters for independent metadata verification.
 mod layout;

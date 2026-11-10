@@ -339,7 +339,7 @@ fn declaration_to_callback_reference_is_navigable() {
         .iter()
         .find(|m| m["entity"]["name"] == "Invoke")
         .unwrap();
-    assert_eq!(invoke["return_type"]["name"], "USize");
+    assert_eq!(invoke["return_type"]["name"], "nuint");
     assert_eq!(invoke["parameters"].as_array().unwrap().len(), 4);
     assert!(
         callback["attributes"]

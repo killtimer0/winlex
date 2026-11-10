@@ -4,6 +4,7 @@ use std::fmt::Write;
 use winlex_core::windows_metadata::{reader::*, *};
 use winlex_core::{
     Architecture, Catalog, Declaration, DeclarationTarget, EntityId, Result, guid, metadata::key,
+    primitive_name,
 };
 use winlex_format::{attribute_value as value, const_annotation, layout_kind, member_ids};
 
@@ -57,7 +58,7 @@ fn qualified_ty(t: &Type, is_const: bool) -> String {
         Type::Array(t) => format!("{}[]", ty(t)),
         Type::RefMut(t) => format!("{}&", ty(t)),
         Type::RefConst(t) => format!("const {}", ty(t)),
-        t => format!("{t:?}"),
+        t => primitive_name(t).map_or_else(|| format!("{t:?}"), str::to_owned),
     };
     if is_const {
         format!("const {rendered}")
@@ -373,24 +374,38 @@ mod tests {
     #[test]
     fn pointer_qualifiers_follow_the_c_pointee_level() {
         for (t, expected) in [
-            (Type::PtrMut(Box::new(Type::I32), 1), "I32*"),
-            (Type::PtrConst(Box::new(Type::I32), 1), "const I32*"),
+            (Type::PtrMut(Box::new(Type::I32), 1), "int32*"),
+            (Type::PtrConst(Box::new(Type::I32), 1), "const int32*"),
             // const int **, int *const *, and const int *const * are distinct C types.
             (
                 Type::PtrMut(Box::new(Type::PtrConst(Box::new(Type::I32), 1)), 1),
-                "const I32**",
+                "const int32**",
             ),
             (
                 Type::PtrConst(Box::new(Type::PtrMut(Box::new(Type::I32), 1)), 1),
-                "I32*const *",
+                "int32*const *",
             ),
-            (Type::PtrConst(Box::new(Type::I32), 2), "const I32*const *"),
+            (
+                Type::PtrConst(Box::new(Type::I32), 2),
+                "const int32*const *",
+            ),
             (
                 Type::ArrayFixed(Box::new(Type::PtrConst(Box::new(Type::I32), 1)), 3),
-                "const I32*[3]",
+                "const int32*[3]",
             ),
-            (Type::RefMut(Box::new(Type::I32)), "I32&"),
-            (Type::RefConst(Box::new(Type::I32)), "const I32"),
+            (Type::RefMut(Box::new(Type::I32)), "int32&"),
+            (Type::RefConst(Box::new(Type::I32)), "const int32"),
+        ] {
+            assert_eq!(ty(&t), expected);
+        }
+    }
+
+    #[test]
+    fn primitive_text_uses_the_shared_expression_names() {
+        for (t, expected) in [
+            (Type::ISize, "nint"),
+            (Type::USize, "nuint"),
+            (Type::Void, "void"),
         ] {
             assert_eq!(ty(&t), expected);
         }

@@ -86,15 +86,15 @@ fn instance_links_keep_arguments_across_members_and_nested_navigation() {
     assert!(winlex_format::describe_target(&catalog, &target, None).is_err());
     let json = winlex_format::describe_target(&catalog, &target, Some(arch)).unwrap();
     assert_eq!(json["entity"]["name"], "Box<int32>");
-    assert_eq!(json["fields"][0]["type"]["name"], "I32");
-    assert_eq!(json["properties"][0]["type"]["name"], "I32");
+    assert_eq!(json["fields"][0]["type"]["name"], "int32");
+    assert_eq!(json["properties"][0]["type"]["name"], "int32");
     assert_eq!(
         json["interface_implementations"][0]["type"]["arguments"][0]["name"],
-        "I32"
+        "int32"
     );
     assert_eq!(
         json["methods"][0]["return_type"]["arguments"][0]["arguments"][0]["name"],
-        "I32"
+        "int32"
     );
     let nested = instance
         .regions
