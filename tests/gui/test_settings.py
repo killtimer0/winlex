@@ -152,7 +152,7 @@ def test_settings_keyboard_and_close(launch, profile, action):
     app = launch()
     sheet = app.settings()
     page = mask(app, sheet, 0)
-    first, second = n.get_item(page, 1310), n.get_item(page, 1311)
+    first, second = n.get_item(page, 1310), n.get_item(page, 1317)
     app.focus(first)
     n.wait(lambda: app.focused() == first, "settings initial keyboard focus")
     win32gui.PostMessage(first, win32con.WM_KEYDOWN, win32con.VK_TAB, 1)
