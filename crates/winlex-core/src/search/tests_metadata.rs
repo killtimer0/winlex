@@ -222,9 +222,52 @@ fn category_vocabulary_preserves_bits_summary_kinds_and_condition_parsing() {
     file.PropertyMap(interface, property);
     let event = file.Event("Event", &Type::class_named("Fixture", "Delegate"));
     file.EventMap(interface, event);
+    file.TypeDef(
+        "Fixture",
+        "Apis",
+        writer::TypeDefOrRef::default(),
+        TypeAttributes::Public,
+    );
+    let function = file.MethodDef(
+        "Function",
+        &Signature {
+            flags: MethodCallAttributes::default(),
+            return_type: Type::Void,
+            types: vec![],
+        },
+        MethodAttributes::Public | MethodAttributes::Static | MethodAttributes::PInvokeImpl,
+        MethodImplAttributes::default(),
+    );
+    file.ImplMap(function, PInvokeAttributes(0x100), "Function", "native.dll");
+    let instance = file.MethodDef(
+        "InstanceImport",
+        &Signature {
+            flags: MethodCallAttributes::default(),
+            return_type: Type::Void,
+            types: vec![],
+        },
+        MethodAttributes::Public | MethodAttributes::PInvokeImpl,
+        MethodImplAttributes::default(),
+    );
+    file.ImplMap(
+        instance,
+        PInvokeAttributes(0x100),
+        "InstanceImport",
+        "native.dll",
+    );
+    file.MethodDef(
+        "StaticMethod",
+        &Signature {
+            flags: MethodCallAttributes::default(),
+            return_type: Type::Void,
+            types: vec![],
+        },
+        MethodAttributes::Public | MethodAttributes::Static,
+        MethodImplAttributes::default(),
+    );
     let db = catalog("Categories", file);
-    assert_eq!(EntityCategory::ALL, 127);
-    assert_eq!(EntityCategory::DEFAULT, 7);
+    assert_eq!(EntityCategory::ALL, 255);
+    assert_eq!(EntityCategory::DEFAULT, 135);
     for (name, category, bit, spelling) in [
         ("Interface", EntityCategory::Type, 1, "type"),
         ("Method", EntityCategory::Method, 2, "method"),
@@ -238,6 +281,7 @@ fn category_vocabulary_preserves_bits_summary_kinds_and_condition_parsing() {
             64,
             "type_reference",
         ),
+        ("Function", EntityCategory::Function, 128, "function"),
     ] {
         assert_eq!(category as u32, bit);
         let selected = hits(&db, name, SearchMode::Name).pop().unwrap();
@@ -264,6 +308,14 @@ fn category_vocabulary_preserves_bits_summary_kinds_and_condition_parsing() {
             assert_eq!(found.iter().map(|hit| hit.id).collect::<Vec<_>>(), expected);
             assert!(expected.contains(&selected.id));
         }
+    }
+    for (name, spelling) in [("InstanceImport", "method"), ("StaticMethod", "method")] {
+        let selected = hits(&db, name, SearchMode::Name).pop().unwrap();
+        assert_eq!(selected.kind, spelling);
+        assert_eq!(
+            db.declaration(selected.id, None).unwrap().category(),
+            EntityCategory::Method
+        );
     }
     for name in [
         "<Module>",

@@ -68,7 +68,7 @@ def test_language_option_round_trip(launch, profile, ui_language, name):
     assert label in choices
     select_combo(control, label)
     app.close_settings(sheet)
-    assert profile.preferences() == (name, 7, "system")
+    assert profile.preferences() == (name, 135, "system")
     sheet = app.settings()
     general = app.settings_page(sheet, 0)
     control = n.get_item(general, 1300)
@@ -81,7 +81,7 @@ def test_language_option_round_trip(launch, profile, ui_language, name):
 
 
 @pytest.mark.parametrize("theme,index,categories", [
-    ("system", 0, 0), ("light", 1, 7), ("dark", 2, 127),
+    ("system", 0, 0), ("light", 1, 7), ("dark", 2, 255),
 ])
 def test_preferences_survive_restart(launch, profile, theme, index, categories):
     profile.set("Language", winreg.REG_SZ, "zh-CN")
@@ -109,7 +109,7 @@ def test_preferences_survive_restart(launch, profile, theme, index, categories):
     assert auto.ControlFromHandle(control).GetValuePattern().Value == restored.choices(control)[index if win32gui.IsWindowEnabled(control) else 0]
     search = restored.settings_page(sheet, 1)
     assert sum(auto.ControlFromHandle(n.get_item(search, 1310 + bit)).GetTogglePattern().ToggleState << bit
-               for bit in range(7)) == categories
+               for bit in range(8)) == categories
     restored.close_settings(sheet)
     assert profile.preferences() == expected
 
@@ -118,9 +118,9 @@ def test_preferences_survive_restart(launch, profile, theme, index, categories):
     ("Language", None, None, ("auto", 15, 2)),
     ("Language", winreg.REG_SZ, "other", ("auto", 15, 2)),
     ("Language", winreg.REG_DWORD, 1, ("auto", 15, 2)),
-    ("SearchCategories", None, None, ("zh-CN", 7, 2)),
-    ("SearchCategories", winreg.REG_DWORD, 128, ("zh-CN", 7, 2)),
-    ("SearchCategories", winreg.REG_SZ, "15", ("zh-CN", 7, 2)),
+    ("SearchCategories", None, None, ("zh-CN", 135, 2)),
+    ("SearchCategories", winreg.REG_DWORD, 256, ("zh-CN", 135, 2)),
+    ("SearchCategories", winreg.REG_SZ, "15", ("zh-CN", 135, 2)),
     ("Theme", None, None, ("zh-CN", 15, 0)),
     ("Theme", winreg.REG_SZ, "other", ("zh-CN", 15, 0)),
     ("Theme", winreg.REG_DWORD, 2, ("zh-CN", 15, 0)),
@@ -146,6 +146,6 @@ def test_invalid_preferences_fall_back_independently(launch, profile, name, kind
     assert auto.ControlFromHandle(control).GetValuePattern().Value == app.choices(control)[expected[2] if win32gui.IsWindowEnabled(control) else 0]
     search = app.settings_page(sheet, 1)
     assert sum(auto.ControlFromHandle(n.get_item(search, 1310 + bit)).GetTogglePattern().ToggleState << bit
-               for bit in range(7)) == expected[1]
+               for bit in range(8)) == expected[1]
     app.close_settings(sheet, accept=False)
     assert profile.preferences() == original

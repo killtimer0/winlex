@@ -99,13 +99,16 @@ pub enum EntityCategory {
     Property = 16,
     Event = 32,
     TypeReference = 64,
+    Function = 128,
 }
 impl EntityCategory {
-    pub const ALL: u32 = 127;
-    pub const DEFAULT: u32 = Self::Type as u32 | Self::Method as u32 | Self::Constant as u32;
+    pub const ALL: u32 = 255;
+    pub const DEFAULT: u32 =
+        Self::Type as u32 | Self::Method as u32 | Self::Constant as u32 | Self::Function as u32;
 
     pub(crate) const NAMES: &[(Self, &str)] = &[
         (Self::Type, "type"),
+        (Self::Function, "function"),
         (Self::Method, "method"),
         (Self::Constant, "constant"),
         (Self::Field, "field"),
@@ -243,12 +246,22 @@ impl<'a> Declaration<'a> {
     pub fn category(&self) -> EntityCategory {
         match self {
             Self::Type(_) => EntityCategory::Type,
+            Self::Method(_) if self.is_function() => EntityCategory::Function,
             Self::Method(_) => EntityCategory::Method,
             Self::Field(f) if f.constant().is_some() => EntityCategory::Constant,
             Self::Field(_) => EntityCategory::Field,
             Self::Property(_) => EntityCategory::Property,
             Self::Event(_) => EntityCategory::Event,
             Self::Reference(_) => EntityCategory::TypeReference,
+        }
+    }
+    /// Native import without a receiver: a static method with an ImplMap entry.
+    fn is_function(&self) -> bool {
+        match self {
+            Self::Method(m) => {
+                m.flags().contains(MethodAttributes::Static) && m.impl_map().is_some()
+            }
+            _ => false,
         }
     }
 }

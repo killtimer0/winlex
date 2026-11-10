@@ -102,7 +102,7 @@ winlex Windows.Win32.winmd search --where 'value = nan or value = inf'
 | `value` | 数字 `=`、`<`、`<=`、`>`、`>=`；字符串 `=`、`contains`、`starts_with` |
 | `guid` | `=` 完整 GUID；`contains` GUID 片段或字节列表，值需加引号 |
 | `namespace` | `=` 精确命名空间；`within` 包含当前及子命名空间 |
-| `category` | `=` 配合 `"type"`、`"method"`、`"constant"`、`"field"`、`"property"`、`"event"`、`"type_reference"` |
+| `category` | `=` 配合 `"type"`、`"function"`、`"method"`、`"constant"`、`"field"`、`"property"`、`"event"`、`"type_reference"` |
 | `source` | `= 0` 等从零开始的输入编号 |
 | `architecture` | `= "x86"`、`= "x64"`、`= "arm64"`，表示适用于该架构，包含共有定义 |
 
@@ -134,6 +134,7 @@ winlex Windows.Win32.winmd search --where 'value = nan or value = inf'
 - 搜索条目的 `evidence` 提供命中字段和 Unicode 字符索引；`indices: null` 表示整个值。条件错误提供 UTF-8 字节范围 `span` 和是否尚未完整输入的 `incomplete`。
 - 布局、vtable 和反向引用结果使用 `architecture` 字段，值为 `x86`、`x64` 或 `arm64`。
 - `sources` 提供来源编号、路径、程序集身份和依赖。实体 ID 为 `{"source_id":0,"token":33554433}`，token 使用数值表示。
+- 实体 `kind` 区分函数和方法：无 receiver 且带 ImplMap 导入记录的静态方法为 `function`，其余方法为 `method`。`category = "function"` 与 `category = "method"` 互斥。
 - 类型签名保留具名引用的 `reference_id`，解析后的 TypeRef 提供 `target_id`；可转换为 `SOURCE::0xTOKEN` 继续查询。
 - TypeRef 的 `resolution` 区分已加载的实际定义 `target_id`、由读取器直接解释的内建语义 `builtin`／`semantics` 和未解决依赖 `unresolved`。
 - 布局单位为 bit，偏移相对直接包含它的聚合；位域另提供相对底层字段的偏移。

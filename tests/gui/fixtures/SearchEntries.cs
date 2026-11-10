@@ -11,4 +11,6 @@ public class EntryType {
 public class Apis {
     public const int EntryConstant = 18;
     public static void EntryMethod() {}
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", EntryPoint = "GetCurrentProcessId")]
+    public static extern uint EntryFunction();
 }

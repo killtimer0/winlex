@@ -35,6 +35,7 @@ fn search_categories_partition_results_without_name_conventions() {
         16,
         32,
         64,
+        128,
         EntityCategory::DEFAULT,
         EntityCategory::ALL,
     ] {
@@ -65,7 +66,7 @@ fn index_keeps_types_and_members_uniformly() {
         ),
         (
             "Windows.Win32.Storage.FileSystem.Apis.CreateFileW",
-            EntityCategory::Method,
+            EntityCategory::Function,
         ),
         ("Windows.Win32.Foundation.POINT.x", EntityCategory::Field),
     ] {

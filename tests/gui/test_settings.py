@@ -14,7 +14,7 @@ from support.languages import LANGUAGES
 
 def mask(app, sheet, value):
     page = app.settings_page(sheet, 1)
-    for index in range(7):
+    for index in range(8):
         checkbox = auto.ControlFromHandle(n.get_item(page, 1310 + index))
         if checkbox.GetTogglePattern().ToggleState != (value >> index) & 1:
             checkbox.GetTogglePattern().Toggle()
@@ -24,7 +24,7 @@ def mask(app, sheet, value):
 def checked(app, sheet):
     page = app.settings_page(sheet, 1)
     return sum(auto.ControlFromHandle(n.get_item(page, 1310 + index)).GetTogglePattern().ToggleState << index
-               for index in range(7))
+               for index in range(8))
 
 
 def test_settings_apply_tracks_saved_values(launch, profile, ui_language):
@@ -57,7 +57,7 @@ def test_settings_apply_tracks_saved_values(launch, profile, ui_language):
     n.wait(lambda: apply.IsEnabled, "new edit after Apply")
     mask(app, sheet, 0)
     n.wait(lambda: not apply.IsEnabled, "revert to most recently applied value")
-    mask(app, sheet, 127)
+    mask(app, sheet, 255)
     app.close_settings(sheet, accept=False)
     assert profile.preferences() == (alternative.name, 0, original[2])
     sheet = app.settings()
@@ -73,18 +73,18 @@ def test_settings_cancel_and_page_state(launch, profile, ui_language):
     sheet = app.settings()
     enabled = n.api(n.user, "IsWindowEnabled", n.w.BOOL, n.w.HWND)
     assert not enabled(app.frame)
-    assert checked(app, sheet) == 7
-    mask(app, sheet, 127)
+    assert checked(app, sheet) == 135
+    mask(app, sheet, 255)
     general = app.settings_page(sheet, 0)
     control = n.get_item(general, 1300)
     alternative = next(option for option in LANGUAGES if option != ui_language)
     select_combo(control, alternative.label)
-    assert checked(app, sheet) == 127
+    assert checked(app, sheet) == 255
     app.close_settings(sheet, accept=False)
     assert enabled(app.frame)
     assert profile.preferences() == original
     sheet = app.settings()
-    assert checked(app, sheet) == 7
+    assert checked(app, sheet) == 135
     app.close_settings(sheet)
 
 
@@ -198,7 +198,7 @@ def test_settings_refresh_preserves_document(launch, profile, settings, action):
         app.close_settings(sheet, accept=False)
 
 
-@pytest.mark.parametrize("value", [0, 1, 2, 4, 8, 16, 32, 64, 127])
+@pytest.mark.parametrize("value", [0, 1, 2, 4, 8, 16, 32, 64, 128, 255])
 def test_search_category_visibility(launch, profile, settings, value):
     language = profile.get("Language")
     fixture = Path(settings[1]).with_name("SearchEntries.dll")
@@ -213,7 +213,8 @@ def test_search_category_visibility(launch, profile, settings, value):
     kinds = {row.Name.splitlines()[1].split(" · ")[0] for row in app.rows()}
     expected = set()
     for bit, names in [(1, {"class", "module"}), (2, {"method"}), (4, {"constant"}),
-                       (8, {"field"}), (16, {"property"}), (32, {"event"}), (64, {"type_reference"})]:
+                       (8, {"field"}), (16, {"property"}), (32, {"event"}),
+                       (64, {"type_reference"}), (128, {"function"})]:
         if value & bit:
             expected.update(names)
     assert kinds == expected
@@ -226,7 +227,7 @@ def test_search_category_visibility(launch, profile, settings, value):
     sheet = app.settings()
     assert checked(app, sheet) == value
     app.close_settings(sheet, accept=False)
-    if value in (0, 127):
+    if value in (0, 255):
         app.close()
         restored = launch([fixture])
         sheet = restored.settings()
@@ -255,7 +256,7 @@ def test_settings_save_failure_preserves_state(launch, profile, button):
     assert auto.ControlFromHandle(n.get_item(sheet, 0x3021)).IsEnabled
     app.close_settings(sheet, accept=False)
     sheet = app.settings()
-    assert checked(app, sheet) == 7
+    assert checked(app, sheet) == 135
     app.close_settings(sheet, accept=False)
 
 

@@ -123,6 +123,7 @@ const KINDS: &[(&str, Icon, u16)] = &[
     ("delegate", Icon::Method, IDS_KIND_DELEGATE),
     ("attribute", Icon::Class, IDS_KIND_ATTRIBUTE),
     ("module", Icon::Misc, IDS_KIND_MODULE),
+    ("function", Icon::Method, IDS_KIND_FUNCTION),
     ("method", Icon::Method, IDS_KIND_METHOD),
     ("constant", Icon::Constant, IDS_KIND_CONSTANT),
     ("field", Icon::Field, IDS_KIND_FIELD),

@@ -12,6 +12,7 @@ pub(super) const PAGE: Page = Page {
 
 const FILTERS: &[(u16, EntityCategory)] = &[
     (FILTER_TYPE, EntityCategory::Type),
+    (FILTER_FUNCTION, EntityCategory::Function),
     (FILTER_METHOD, EntityCategory::Method),
     (FILTER_CONSTANT, EntityCategory::Constant),
     (FILTER_FIELD, EntityCategory::Field),

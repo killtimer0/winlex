@@ -14,7 +14,7 @@ class ConfigProfile:
             (Path(ledger) / (self.root.rsplit("\\", 1)[-1] + ".profile")).write_text(self.root, encoding="utf-8")
         self.set("Version", winreg.REG_DWORD, 1)
         self.set("Language", winreg.REG_SZ, language)
-        self.set("SearchCategories", winreg.REG_DWORD, 7)
+        self.set("SearchCategories", winreg.REG_DWORD, 135)
         self.set("Theme", winreg.REG_SZ, "system")
 
     def set(self, name, kind, value):

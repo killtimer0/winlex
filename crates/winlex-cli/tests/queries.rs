@@ -353,7 +353,7 @@ fn declaration_to_callback_reference_is_navigable() {
 #[test]
 fn api_has_import_and_parameter_semantics() {
     let d = show_x64("CreateFileW");
-    assert_eq!(d["entity"]["kind"], "method");
+    assert_eq!(d["entity"]["kind"], "function");
     assert_eq!(
         d["import"]["dll"].as_str().unwrap().to_lowercase(),
         "kernel32.dll"
