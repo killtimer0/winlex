@@ -265,6 +265,38 @@ fn category_vocabulary_preserves_bits_summary_kinds_and_condition_parsing() {
         MethodAttributes::Public | MethodAttributes::Static,
         MethodImplAttributes::default(),
     );
+    file.MethodDef(
+        "InlineFunction",
+        &Signature {
+            flags: MethodCallAttributes::default(),
+            return_type: Type::Void,
+            types: vec![],
+        },
+        MethodAttributes::Public | MethodAttributes::Static,
+        MethodImplAttributes::Native
+            | MethodImplAttributes::Unmanaged
+            | MethodImplAttributes::ForwardRef,
+    );
+    file.MethodDef(
+        "RuntimeStatic",
+        &Signature {
+            flags: MethodCallAttributes::default(),
+            return_type: Type::Void,
+            types: vec![],
+        },
+        MethodAttributes::Public | MethodAttributes::Static,
+        MethodImplAttributes::Runtime,
+    );
+    file.MethodDef(
+        "WinRtStatic",
+        &Signature {
+            flags: MethodCallAttributes::default(),
+            return_type: Type::Void,
+            types: vec![],
+        },
+        MethodAttributes::Public | MethodAttributes::Static,
+        MethodImplAttributes::Runtime | MethodImplAttributes::InternalCall,
+    );
     let db = catalog("Categories", file);
     assert_eq!(EntityCategory::ALL, 255);
     assert_eq!(EntityCategory::DEFAULT, 135);
@@ -309,15 +341,18 @@ fn category_vocabulary_preserves_bits_summary_kinds_and_condition_parsing() {
             assert!(expected.contains(&selected.id));
         }
     }
-    for (name, kind) in [
-        ("InstanceImport", "method"),
-        ("StaticMethod", "static_method"),
+    for (name, category, kind) in [
+        ("InstanceImport", EntityCategory::Method, "method"),
+        ("StaticMethod", EntityCategory::Method, "static_method"),
+        ("InlineFunction", EntityCategory::Function, "function"),
+        ("RuntimeStatic", EntityCategory::Method, "static_method"),
+        ("WinRtStatic", EntityCategory::Method, "static_method"),
     ] {
         let selected = hits(&db, name, SearchMode::Name).pop().unwrap();
         assert_eq!(selected.kind, kind);
         assert_eq!(
             db.declaration(selected.id, None).unwrap().category(),
-            EntityCategory::Method
+            category
         );
     }
     for name in [

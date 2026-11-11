@@ -134,7 +134,7 @@ winlex Windows.Win32.winmd search --where 'value = nan or value = inf'
 - 搜索条目的 `evidence` 提供命中字段和 Unicode 字符索引；`indices: null` 表示整个值。条件错误提供 UTF-8 字节范围 `span` 和是否尚未完整输入的 `incomplete`。
 - 布局、vtable 和反向引用结果使用 `architecture` 字段，值为 `x86`、`x64` 或 `arm64`。
 - `sources` 提供来源编号、路径、程序集身份和依赖。实体 ID 为 `{"source_id":0,"token":33554433}`，token 使用数值表示。
-- 实体 `kind` 区分三种方法形态：带 ImplMap 的静态方法为 `function`，其余静态方法为 `static_method`，实例方法为 `method`。`category` 仍只有 `function` 与 `method` 两个过滤位，`category = "method"` 同时包含 `static_method`。
+- 实体 `kind` 区分三种方法形态：静态方法带 ImplMap，或实现标志为 Native|Unmanaged 的内联声明，为 `function`；其余静态方法为 `static_method`；实例方法为 `method`。内联声明没有导入记录，`show --json` 的 `import` 为 `null`。`category` 仍只有 `function` 与 `method` 两个过滤位，`category = "method"` 同时包含 `static_method`。
 - 类型签名保留具名引用的 `reference_id`，解析后的 TypeRef 提供 `target_id`；可转换为 `SOURCE::0xTOKEN` 继续查询。
 - TypeRef 的 `resolution` 区分已加载的实际定义 `target_id`、由读取器直接解释的内建语义 `builtin`／`semantics` 和未解决依赖 `unresolved`。
 - 布局单位为 bit，偏移相对直接包含它的聚合；位域另提供相对底层字段的偏移。

@@ -69,8 +69,13 @@ impl MethodAttributes {
 
 flags!(MethodImplAttributes, u16);
 impl MethodImplAttributes {
+    /// Code type value; not an independent flag. Compare the whole code type mask.
+    pub const Native: Self = Self(0x1);
     pub const Runtime: Self = Self(0x3);
+    pub const Unmanaged: Self = Self(0x4);
+    pub const ForwardRef: Self = Self(0x10);
     pub const PreserveSig: Self = Self(0x80);
+    pub const InternalCall: Self = Self(0x1000);
 }
 
 // These are not really ECMA-335 attributes but instead the flags found in the method signature.

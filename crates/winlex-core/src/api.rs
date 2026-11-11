@@ -272,11 +272,16 @@ impl<'a> Declaration<'a> {
             _ => self.category().name(),
         }
     }
-    /// Native import without a receiver: a static method with an ImplMap entry.
+    /// Free-function declaration: a static method with either an import record or a native
+    /// unmanaged implementation.
     fn is_function(&self) -> bool {
         match self {
             Self::Method(m) => {
-                m.flags().contains(MethodAttributes::Static) && m.impl_map().is_some()
+                m.flags().contains(MethodAttributes::Static)
+                    && (m.impl_map().is_some()
+                        || m.impl_flags().contains(
+                            MethodImplAttributes::Native | MethodImplAttributes::Unmanaged,
+                        ))
             }
             _ => false,
         }
