@@ -250,7 +250,7 @@ pub(super) fn list(ctx: &Context) -> HWND {
 }
 pub(super) fn refresh(ctx: &Context) {
     let list = list(ctx);
-    crate::list::State::capture(list).apply(list, 1);
+    crate::list::State::capture(list).apply(list, TOOLS.len());
     super::panel::update_actions(ctx, super::panel::PanelId::Tools);
 }
 pub(super) fn update_actions(ctx: &Context) {
