@@ -204,11 +204,16 @@ unsafe fn run_windows(
                 continue;
             }
             let doc = active(ctx);
-            if !doc.is_null()
-                && (msg.hwnd == doc || IsChild(doc, msg.hwnd) != 0)
-                && IsDialogMessageW(doc, &msg) != 0
-            {
-                continue;
+            if !doc.is_null() && (msg.hwnd == doc || IsChild(doc, msg.hwnd) != 0) {
+                // The document is an MDI child, not a dialog. IsDialogMessage turns
+                // Esc into a close request only for some focused controls, so drop
+                // it here to keep navigation and Enter handling without that split.
+                if msg.message == WM_KEYDOWN && msg.wParam == VK_ESCAPE as usize {
+                    continue;
+                }
+                if IsDialogMessageW(doc, &msg) != 0 {
+                    continue;
+                }
             }
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
