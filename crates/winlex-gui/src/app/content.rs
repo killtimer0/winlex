@@ -1,5 +1,6 @@
 //! Common MDI content identity and capabilities, independent of tool business.
-use super::{metadata::MetadataView, tools::ToolView};
+use super::metadata::MetadataView;
+use super::tools::ToolView;
 use crate::{layout::Placement, native::*};
 use std::rc::Rc;
 
@@ -38,31 +39,49 @@ impl Content {
         }
     }
     pub fn id(&self) -> u64 {
-        forward!(self, v, v.id)
+        match self {
+            Self::Declaration(v) => v.id,
+            Self::Tool(v) => v.id(),
+        }
     }
     pub fn hwnd(&self) -> HWND {
-        forward!(self, v, v.hwnd)
+        match self {
+            Self::Declaration(v) => v.hwnd,
+            Self::Tool(v) => v.hwnd(),
+        }
     }
     pub fn title(&self) -> String {
         match self {
             Self::Declaration(v) => v.title(),
-            Self::Tool(v) => text(v.hwnd),
+            Self::Tool(v) => text(v.hwnd()),
         }
     }
     pub fn preview(&self) -> bool {
         matches!(self, Self::Declaration(v) if v.preview.get())
     }
     pub fn is_live(&self) -> bool {
-        forward!(self, v, v.live.get())
+        match self {
+            Self::Declaration(v) => v.live.get(),
+            Self::Tool(v) => v.is_live(),
+        }
     }
     pub fn mark_closed(&self) {
-        forward!(self, v, v.live.set(false))
+        match self {
+            Self::Declaration(v) => v.live.set(false),
+            Self::Tool(v) => v.mark_closed(),
+        }
     }
     pub fn placement(&self) -> Option<Placement> {
-        forward!(self, v, v.placement.get())
+        match self {
+            Self::Declaration(v) => v.placement.get(),
+            Self::Tool(v) => v.placement(),
+        }
     }
-    pub fn set_placement(&self, p: Placement) {
-        forward!(self, v, v.placement.set(Some(p)))
+    pub fn set_placement(&self, placement: Placement) {
+        match self {
+            Self::Declaration(v) => v.placement.set(Some(placement)),
+            Self::Tool(v) => v.set_placement(placement),
+        }
     }
     pub fn focus(&self) {
         forward!(self, v, v.focus())
@@ -83,10 +102,7 @@ impl Content {
         }
     }
     pub fn destroy(&self) {
-        match self {
-            Self::Declaration(v) => v.destroy(),
-            Self::Tool(v) => v.destroy(),
-        }
+        forward!(self, v, v.destroy())
     }
     pub fn activated(&self) {
         if let Self::Tool(v) = self {
@@ -98,12 +114,12 @@ impl Content {
             Self::Declaration(v) => {
                 let b = v.binding();
                 format!(
-                    "{} · {:08X}",
+                    "{} �� {:08X}",
                     b.catalog.sources()[b.entity.id.source_id].path.display(),
                     b.entity.id.token
                 )
             }
-            Self::Tool(_) => crate::resources::text(crate::resources::IDS_ERROR_CODE_DESCRIPTION),
+            Self::Tool(v) => v.description(),
         }
     }
 }

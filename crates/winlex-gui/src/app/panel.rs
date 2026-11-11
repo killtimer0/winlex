@@ -204,9 +204,10 @@ pub(super) fn create(ctx: &Context, frame: HWND) -> anyhow::Result<([Rc<Panel>; 
         super::tools::row,
         super::tools::row_text,
         Some(Box::new(move |row, double| {
-            if double && row == 0 {
-                super::tools::open(
+            if double {
+                super::tools::open_row(
                     unsafe { &*state },
+                    row,
                     unsafe { GetKeyState(VK_CONTROL as i32) } < 0,
                 );
             }

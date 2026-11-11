@@ -371,14 +371,20 @@ pub(super) fn content(ctx: &Context, hwnd: HWND) -> Option<Content> {
 pub(super) fn content_by_id(ctx: &Context, id: u64) -> Option<Content> {
     ctx.with_workspace(|workspace| workspace.documents.iter().find(|d| d.id() == id).cloned())
 }
-pub(super) fn create_tool(ctx: &Context) -> anyhow::Result<Rc<super::tools::ToolView>> {
-    let mut view = super::tools::ToolView::new(ctx);
+pub(super) fn create_tool(
+    ctx: &Context,
+    kind: super::tools::Kind,
+) -> anyhow::Result<Rc<super::tools::ToolView>> {
+    let state = ctx as *const Context;
     let content = create_window(
         ctx,
-        &resources::text(crate::resources::IDS_ERROR_CODE_TOOL),
+        &resources::text(kind.descriptor().title),
         Box::new(move |hwnd| {
-            view.create(hwnd)?;
-            Ok(Content::Tool(Rc::from(view)))
+            // The factory runs synchronously inside CreateMDIWindowW.
+            let ctx = unsafe { &*state };
+            Ok(Content::Tool(Rc::new(super::tools::instantiate(
+                ctx, kind, hwnd,
+            )?)))
         }),
         "Create tool window",
     )?;

@@ -480,10 +480,8 @@ pub(super) fn context_menu(ctx: &Context, hwnd: HWND, location: isize) -> anyhow
             }
         }
         100 => {
-            if let Some(code) = code
-                && let Some(view) = super::tools::open(ctx, false)
-            {
-                view.search_code(code);
+            if let Some(code) = code {
+                super::tools::open_with(ctx, super::tools::Request::ErrorCode(code));
             }
         }
         _ => {}

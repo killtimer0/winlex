@@ -173,7 +173,7 @@ fn capture_content(content: &super::content::Content) -> Entry {
     match content {
         super::content::Content::Declaration(v) => Entry::capture(v),
         super::content::Content::Tool(v) => Entry {
-            document: v.id,
+            document: v.id(),
             target: Target::Live(std::rc::Rc::downgrade(v)),
         },
     }
