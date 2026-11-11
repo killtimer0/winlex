@@ -606,7 +606,8 @@ impl<'a> Reader<'a> {
             (Attribute::TreatAs, "TreatAs"),
             (Attribute::AutoConvertTo, "AutoConvertTo"),
         ] {
-            if let Some(field) = self.named_field(&path, name, attribute) {
+            let subkey = format!("{path}\\{name}");
+            if let Some(field) = self.field(&subkey, attribute) {
                 fields.push(field);
             }
         }
@@ -623,15 +624,18 @@ impl<'a> Reader<'a> {
             return None;
         }
         let mut fields = Vec::new();
+        if let Some(field) = self.field(&path, Attribute::Description) {
+            fields.push(field);
+        }
         for (attribute, name) in [
-            (Attribute::Description, ""),
             (Attribute::ProxyStubClsid32, "ProxyStubClsid32"),
             (Attribute::NumMethods, "NumMethods"),
             (Attribute::BaseInterface, "BaseInterface"),
             (Attribute::AsynchronousInterface, "AsynchronousInterface"),
             (Attribute::TypeLib, "TypeLib"),
         ] {
-            if let Some(field) = self.named_field(&path, name, attribute) {
+            let subkey = format!("{path}\\{name}");
+            if let Some(field) = self.field(&subkey, attribute) {
                 fields.push(field);
             }
         }
@@ -647,6 +651,10 @@ impl<'a> Reader<'a> {
         if self.locations(&path).is_empty() {
             return None;
         }
+        let fields: Vec<Field> = self
+            .field(&path, Attribute::Description)
+            .into_iter()
+            .collect();
         let mut children = Vec::new();
         for version in self.subkeys(&path) {
             if version.eq_ignore_ascii_case("FLAGS") || version.eq_ignore_ascii_case("HELPDIR") {
@@ -657,10 +665,11 @@ impl<'a> Reader<'a> {
                 continue;
             }
             let mut fields = Vec::new();
-            if let Some(field) = self.named_field(&version_path, "FLAGS", Attribute::Flags) {
+            if let Some(field) = self.field(&format!("{version_path}\\FLAGS"), Attribute::Flags) {
                 fields.push(field);
             }
-            if let Some(field) = self.named_field(&version_path, "HELPDIR", Attribute::HelpDir) {
+            if let Some(field) = self.field(&format!("{version_path}\\HELPDIR"), Attribute::HelpDir)
+            {
                 fields.push(field);
             }
             let mut locales = Vec::new();
@@ -722,7 +731,7 @@ impl<'a> Reader<'a> {
         Some(Group {
             kind: GroupKind::TypeLib,
             identity: Some(guid.to_string()),
-            fields: Vec::new(),
+            fields,
             children,
         })
     }
@@ -732,8 +741,10 @@ impl<'a> Reader<'a> {
             return None;
         }
         let mut fields = Vec::new();
+        if let Some(field) = self.field(&path, Attribute::Description) {
+            fields.push(field);
+        }
         for (attribute, name) in [
-            (Attribute::Description, ""),
             (Attribute::DllSurrogate, "DllSurrogate"),
             (Attribute::LocalService, "LocalService"),
             (Attribute::RunAs, "RunAs"),
@@ -757,12 +768,12 @@ impl<'a> Reader<'a> {
             return Vec::new();
         }
         let mut fields = Vec::new();
-        for (attribute, name) in [
-            (Attribute::Description, ""),
-            (Attribute::Clsid, "CLSID"),
-            (Attribute::CurVer, "CurVer"),
-        ] {
-            if let Some(field) = self.named_field(&path, name, attribute) {
+        if let Some(field) = self.field(&path, Attribute::Description) {
+            fields.push(field);
+        }
+        for (attribute, name) in [(Attribute::Clsid, "CLSID"), (Attribute::CurVer, "CurVer")] {
+            let subkey = format!("{path}\\{name}");
+            if let Some(field) = self.field(&subkey, attribute) {
                 fields.push(field);
             }
         }
@@ -1004,18 +1015,45 @@ mod tests {
         let source = Snapshot::default()
             .key(Root::Machine, View::X86, path)
             .value(Root::Machine, View::X86, path, "", "Example object")
-            .value(Root::Machine, View::X86, path, "CLSID", CLSID)
+            .subkey(Root::Machine, View::X86, path, "CLSID")
+            .value(
+                Root::Machine,
+                View::X86,
+                &format!("{path}\\CLSID"),
+                "",
+                CLSID,
+            )
             .key(Root::Machine, View::X86, &class)
             .value(Root::Machine, View::X86, &class, "", "Example class")
-            .value(Root::Machine, View::X86, &class, "TypeLib", LIBID)
+            .subkey(Root::Machine, View::X86, &class, "TypeLib")
+            .value(
+                Root::Machine,
+                View::X86,
+                &format!("{class}\\TypeLib"),
+                "",
+                LIBID,
+            )
             .key(Root::Machine, View::X86, &typelib)
+            .value(
+                Root::Machine,
+                View::X86,
+                &typelib,
+                "",
+                "Example type library",
+            )
             .subkey(Root::Machine, View::X86, &typelib, "1.0")
             .key(Root::Machine, View::X86, &format!("{typelib}\\1.0"))
-            .value(
+            .subkey(
                 Root::Machine,
                 View::X86,
                 &format!("{typelib}\\1.0"),
                 "FLAGS",
+            )
+            .value(
+                Root::Machine,
+                View::X86,
+                &format!("{typelib}\\1.0\\FLAGS"),
+                "",
                 "3",
             )
             .subkey(Root::Machine, View::X86, &format!("{typelib}\\1.0"), "0")
@@ -1068,12 +1106,20 @@ mod tests {
         let source = Snapshot::default()
             .key(Root::Machine, View::X86, &interface)
             .value(Root::Machine, View::X86, &interface, "", "IExample")
-            .value(Root::Machine, View::X86, &interface, "NumMethods", "3")
+            .subkey(Root::Machine, View::X86, &interface, "NumMethods")
             .value(
                 Root::Machine,
                 View::X86,
-                &interface,
-                "ProxyStubClsid32",
+                &format!("{interface}\\NumMethods"),
+                "",
+                "3",
+            )
+            .subkey(Root::Machine, View::X86, &interface, "ProxyStubClsid32")
+            .value(
+                Root::Machine,
+                View::X86,
+                &format!("{interface}\\ProxyStubClsid32"),
+                "",
                 CLSID,
             )
             .key(Root::Machine, View::X86, &appid)
