@@ -4,6 +4,7 @@ mod app;
 mod config;
 mod dialog;
 mod dpi;
+mod hidden;
 mod icons;
 mod input;
 mod layout;
@@ -23,6 +24,11 @@ mod worker;
 
 pub fn run(args: impl Iterator<Item = std::ffi::OsString>) -> anyhow::Result<()> {
     use anyhow::{Context, bail};
+    let args: Vec<_> = args.collect();
+    if hidden::requested(&args) {
+        hidden::run(&args);
+        return Ok(());
+    }
     let mode = match std::env::var("WINLEX_DPI") {
         Ok(value) => value.parse()?,
         Err(std::env::VarError::NotPresent) => dpi::Mode::Auto,

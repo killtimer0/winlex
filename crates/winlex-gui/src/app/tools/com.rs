@@ -12,11 +12,12 @@ use std::{
 use winlex_core::tools::com::{
     self, Field, Group, GroupKind, Report, Request, ResolvedKind, TargetKind, View as RegistryView,
     Views, Warning,
-    typelib::{self, Convention, Direction, MemberKind, TypeKind, TypeLibrary},
+    activation::Instance,
+    typelib::{self, Convention, Direction, MemberKind, TypeInfo, TypeKind, TypeLibrary},
 };
 use winlex_format::declaration::{Region, Rendered, SymbolRole};
 
-use crate::tasks::tools::{Completion as ToolCompletion, Job as ToolJob};
+use crate::tasks::tools::{ActivationError, Completion as ToolCompletion, Job as ToolJob};
 
 const KINDS: &[(u16, TargetKind)] = &[
     (IDS_COM_KIND_AUTO, TargetKind::Auto),
@@ -44,6 +45,7 @@ pub(in crate::app) struct View {
     registry_view: HWND,
     query: HWND,
     type_lib: HWND,
+    activate: HWND,
     copy: HWND,
     result: HWND,
     labels: Vec<HWND>,
@@ -55,6 +57,8 @@ pub(in crate::app) struct View {
     type_libraries: RefCell<Vec<TypeLibrary>>,
     type_lib_errors: RefCell<Vec<String>>,
     type_lib_ticket: Cell<Option<u64>>,
+    activated: RefCell<Option<Result<Instance, String>>>,
+    activate_ticket: Cell<Option<u64>>,
 }
 
 impl View {
@@ -75,6 +79,7 @@ impl View {
             registry_view: std::ptr::null_mut(),
             query: std::ptr::null_mut(),
             type_lib: std::ptr::null_mut(),
+            activate: std::ptr::null_mut(),
             copy: std::ptr::null_mut(),
             result: std::ptr::null_mut(),
             labels: vec![],
@@ -86,6 +91,8 @@ impl View {
             type_libraries: RefCell::new(Vec::new()),
             type_lib_errors: RefCell::new(Vec::new()),
             type_lib_ticket: Cell::new(None),
+            activated: RefCell::new(None),
+            activate_ticket: Cell::new(None),
         }
     }
     fn update_icons(&self) {
@@ -162,6 +169,7 @@ impl View {
                 BS_DEFPUSHBUTTON as u32,
             ),
             (&mut self.type_lib, COM_TYPELIB, IDS_COM_TYPELIB, 0),
+            (&mut self.activate, COM_ACTIVATE, IDS_COM_ACTIVATE, 0),
             (&mut self.copy, COM_COPY_ALL, IDS_COM_COPY_ALL, 0),
         ] {
             *control = unsafe {
@@ -184,7 +192,10 @@ impl View {
             )
         }?);
         self.result = crate::rich_text::create(hwnd, COM_RESULT)?;
-        unsafe { EnableWindow(self.type_lib, 0) };
+        unsafe {
+            EnableWindow(self.type_lib, 0);
+            EnableWindow(self.activate, 0);
+        }
         send(self.input, EM_SETLIMITTEXT, 4096, 0);
         self.setting.set(false);
         Ok(())
@@ -196,8 +207,12 @@ impl View {
         if let Some(id) = self.type_lib_ticket.take() {
             self.ctx().cancel_job(id);
         }
+        if let Some(id) = self.activate_ticket.take() {
+            self.ctx().cancel_job(id);
+        }
         self.type_libraries.borrow_mut().clear();
         self.type_lib_errors.borrow_mut().clear();
+        self.activated.replace(None);
         if target.is_empty() {
             self.report.replace(None);
             let empty = resources::text(IDS_COM_EMPTY);
@@ -237,6 +252,9 @@ impl View {
         for library in self.type_libraries.borrow().iter() {
             render_type_library(&mut output.body, library, &labels);
         }
+        if let Some(activated) = self.activated.borrow().as_ref() {
+            render_activation(&mut output.body, activated, &labels);
+        }
         output.copy = output.body.text.trim_end().to_owned();
         let status = resources::format(
             IDS_COM_STATUS,
@@ -254,13 +272,18 @@ impl View {
         self.update_actions();
     }
     fn update_actions(&self) {
-        let has_library = self
-            .report
-            .borrow()
+        let report = self.report.borrow();
+        let has_library = report
             .as_ref()
             .is_some_and(|report| !type_library_references(report).is_empty());
-        let enabled = has_library && self.type_lib_ticket.get().is_none();
-        unsafe { EnableWindow(self.type_lib, if enabled { 1 } else { 0 }) };
+        let has_class = report.as_ref().and_then(first_class).is_some();
+        drop(report);
+        let libraries = has_library && self.type_lib_ticket.get().is_none();
+        let activate = has_class && self.activate_ticket.get().is_none();
+        unsafe {
+            EnableWindow(self.type_lib, if libraries { 1 } else { 0 });
+            EnableWindow(self.activate, if activate { 1 } else { 0 });
+        }
     }
     fn read_type_libraries(&self) {
         let report = self.report.borrow();
@@ -292,10 +315,56 @@ impl View {
             Err(error) => self.set_status(&format!("{error:#}")),
         }
     }
-    pub(in crate::app) fn complete(&self, id: u64, completion: ToolCompletion) {
-        let ToolCompletion::TypeLibraries { results } = completion else {
+    fn activate(&self) {
+        let report = self.report.borrow();
+        let Some(guid) = report.as_ref().and_then(first_class) else {
+            drop(report);
+            self.set_status(&resources::text(IDS_COM_ACTIVATE_EMPTY));
             return;
         };
+        drop(report);
+        let question = resources::format(IDS_COM_ACTIVATE_CONFIRM, &[&guid.to_string()]);
+        match crate::app::status::report(
+            self.ctx(),
+            crate::message::confirm(self.hwnd, &resources::text(IDS_APP_TITLE), &question),
+        ) {
+            Some(true) => {}
+            Some(false) => return,
+            None => return,
+        }
+        let ctx = self.ctx();
+        let ticket = crate::app::catalog::next_ticket(ctx);
+        let id = ticket.id;
+        let previous = self.activate_ticket.take();
+        match ctx.replace_job(
+            previous,
+            ticket,
+            crate::tasks::Job::Tool {
+                document: self.id,
+                job: ToolJob::Activate { guid },
+            },
+        ) {
+            Ok(()) => {
+                self.activate_ticket.set(Some(id));
+                self.activated.replace(None);
+                self.set_status(&resources::text(IDS_COM_ACTIVATE_RUNNING));
+                self.present();
+            }
+            Err(error) => self.set_status(&format!("{error:#}")),
+        }
+    }
+    pub(in crate::app) fn complete(&self, id: u64, completion: ToolCompletion) {
+        match completion {
+            ToolCompletion::TypeLibraries { results } => self.type_libraries_complete(id, results),
+            ToolCompletion::Activate { result } => self.activate_complete(id, result),
+            _ => {}
+        }
+    }
+    fn type_libraries_complete(
+        &self,
+        id: u64,
+        results: Vec<crate::tasks::tools::TypeLibraryResult>,
+    ) {
         if self.type_lib_ticket.get() != Some(id) {
             return;
         }
@@ -325,8 +394,26 @@ impl View {
         drop(libraries);
         self.present();
     }
+    fn activate_complete(&self, id: u64, result: Result<Instance, ActivationError>) {
+        if self.activate_ticket.get() != Some(id) {
+            return;
+        }
+        self.activate_ticket.set(None);
+        let result = result.map_err(|error| match error {
+            ActivationError::TimedOut(seconds) => {
+                resources::format(IDS_COM_ACTIVATE_TIMEOUT, &[&seconds.to_string()])
+            }
+            ActivationError::Failed(reason) => {
+                resources::format(IDS_COM_ACTIVATE_FAILED, &[&reason])
+            }
+        });
+        self.activated.replace(Some(result));
+        self.present();
+    }
     pub(in crate::app) fn worker_stopped(&self) {
-        if self.type_lib_ticket.take().is_some() {
+        let libraries = self.type_lib_ticket.take().is_some();
+        let activate = self.activate_ticket.take().is_some();
+        if libraries || activate {
             self.set_status(&resources::text(IDS_WORKER_STOPPED));
             self.update_actions();
         }
@@ -390,7 +477,7 @@ impl View {
         }
         m.buttons(
             &mut area,
-            [self.query, self.type_lib, self.copy],
+            [self.query, self.type_lib, self.activate, self.copy],
             &mut positions,
         );
         layout::take_top(&mut area, m.px(4));
@@ -415,6 +502,7 @@ impl View {
             self.registry_view,
             self.query,
             self.type_lib,
+            self.activate,
             self.copy,
         ]) {
             super::super::bind(h, m.font);
@@ -467,6 +555,7 @@ impl View {
                 match id {
                     COM_QUERY if code == BN_CLICKED => self.execute(),
                     COM_TYPELIB if code == BN_CLICKED => self.read_type_libraries(),
+                    COM_ACTIVATE if code == BN_CLICKED => self.activate(),
                     COM_COPY_ALL if code == BN_CLICKED => {
                         let copy_text: Vec<u16> = self.plain.borrow().encode_utf16().collect();
                         if let Err(error) = copy_unicode(self.hwnd, &copy_text) {
@@ -491,6 +580,9 @@ impl View {
     }
     pub fn destroy(&self) {
         if let Some(id) = self.type_lib_ticket.take() {
+            self.ctx().cancel_job(id);
+        }
+        if let Some(id) = self.activate_ticket.take() {
             self.ctx().cancel_job(id);
         }
     }
@@ -562,6 +654,13 @@ struct Labels {
     implements: String,
     optional: String,
     retval: String,
+    instance: String,
+    dispatch: String,
+    dispatch_none: String,
+    inspectable: String,
+    runtime_class: String,
+    interfaces: String,
+    activate_none: String,
 }
 
 impl Labels {
@@ -604,6 +703,13 @@ impl Labels {
             implements: resources::text(IDS_COM_IMPLEMENTS),
             optional: resources::text(IDS_COM_OPTIONAL),
             retval: resources::text(IDS_COM_RETVAL),
+            instance: resources::text(IDS_COM_INSTANCE),
+            dispatch: resources::text(IDS_COM_DISPATCH),
+            dispatch_none: resources::text(IDS_COM_DISPATCH_NONE),
+            inspectable: resources::text(IDS_COM_INSPECTABLE),
+            runtime_class: resources::text(IDS_COM_RUNTIME_CLASS),
+            interfaces: resources::text(IDS_COM_INTERFACES),
+            activate_none: resources::text(IDS_COM_ACTIVATE_NONE),
         }
     }
     fn group(&self, kind: GroupKind) -> &str {
@@ -735,84 +841,160 @@ fn render_type_library(body: &mut Rendered, library: &TypeLibrary, labels: &Labe
     }
     body.text.push('\n');
     for info in &library.types {
-        body.text.push_str("  ");
-        body.text.push_str(labels.type_kind(info.kind));
+        render_type_info(body, info, 1, labels);
+    }
+}
+
+fn render_type_info(body: &mut Rendered, info: &TypeInfo, depth: usize, labels: &Labels) {
+    let indent = "  ".repeat(depth);
+    let member = "  ".repeat(depth + 1);
+    let detail = "  ".repeat(depth + 2);
+    body.text.push_str(&indent);
+    body.text.push_str(labels.type_kind(info.kind));
+    body.text.push(' ');
+    push_symbol(body, &info.name, SymbolRole::Type);
+    if let Some(guid) = &info.guid {
         body.text.push(' ');
-        push_symbol(body, &info.name, SymbolRole::Type);
-        if let Some(guid) = &info.guid {
+        body.text.push_str(guid);
+    }
+    body.text.push('\n');
+    for implemented in &info.implemented {
+        body.text.push_str(&member);
+        body.text.push_str(&labels.implements);
+        body.text.push(' ');
+        push_symbol(body, &implemented.name, SymbolRole::Type);
+        if let Some(guid) = &implemented.guid {
             body.text.push(' ');
             body.text.push_str(guid);
         }
+        let mut flags = Vec::new();
+        if implemented.source {
+            flags.push("source");
+        }
+        if implemented.default {
+            flags.push("default");
+        }
+        if implemented.restricted {
+            flags.push("restricted");
+        }
+        if implemented.default_vtable {
+            flags.push("defaultvtable");
+        }
+        if !flags.is_empty() {
+            body.text.push_str(" [");
+            body.text.push_str(&flags.join(", "));
+            body.text.push(']');
+        }
         body.text.push('\n');
-        for implemented in &info.implemented {
-            body.text.push_str("    ");
-            body.text.push_str(&labels.implements);
-            body.text.push(' ');
-            push_symbol(body, &implemented.name, SymbolRole::Type);
-            if let Some(guid) = &implemented.guid {
-                body.text.push(' ');
-                body.text.push_str(guid);
-            }
-            let mut flags = Vec::new();
-            if implemented.source {
-                flags.push("source");
-            }
-            if implemented.default {
-                flags.push("default");
-            }
-            if implemented.restricted {
-                flags.push("restricted");
-            }
-            if implemented.default_vtable {
-                flags.push("defaultvtable");
-            }
-            if !flags.is_empty() {
-                body.text.push_str(" [");
-                body.text.push_str(&flags.join(", "));
-                body.text.push(']');
-            }
-            body.text.push('\n');
+    }
+    for function in &info.functions {
+        body.text.push_str(&member);
+        push_symbol(body, &function.name, SymbolRole::Method);
+        body.text.push_str(" (");
+        body.text.push_str(labels.member(function.member));
+        if function.convention != Convention::Unknown {
+            body.text.push_str(", ");
+            body.text.push_str(convention_name(function.convention));
         }
-        for function in &info.functions {
-            body.text.push_str("    ");
-            push_symbol(body, &function.name, SymbolRole::Method);
-            body.text.push_str(" (");
-            body.text.push_str(labels.member(function.member));
-            if function.convention != Convention::Unknown {
+        body.text.push_str(") -> ");
+        body.text.push_str(&function.returns);
+        body.text.push('\n');
+        for parameter in &function.parameters {
+            body.text.push_str(&detail);
+            body.text.push('[');
+            body.text.push_str(labels.direction(parameter.direction));
+            if parameter.optional {
                 body.text.push_str(", ");
-                body.text.push_str(convention_name(function.convention));
+                body.text.push_str(&labels.optional);
             }
-            body.text.push_str(") -> ");
-            body.text.push_str(&function.returns);
-            body.text.push('\n');
-            for parameter in &function.parameters {
-                body.text.push_str("      [");
-                body.text.push_str(labels.direction(parameter.direction));
-                if parameter.optional {
-                    body.text.push_str(", ");
-                    body.text.push_str(&labels.optional);
-                }
-                if parameter.return_value {
-                    body.text.push_str(", ");
-                    body.text.push_str(&labels.retval);
-                }
-                body.text.push_str("] ");
-                body.text.push_str(&parameter.ty);
-                if !parameter.name.is_empty() {
-                    body.text.push(' ');
-                    body.text.push_str(&parameter.name);
-                }
-                body.text.push('\n');
+            if parameter.return_value {
+                body.text.push_str(", ");
+                body.text.push_str(&labels.retval);
             }
-        }
-        for variable in &info.variables {
-            body.text.push_str("    ");
-            push_symbol(body, &variable.name, SymbolRole::Member);
-            body.text.push_str(" : ");
-            body.text.push_str(&variable.ty);
+            body.text.push_str("] ");
+            body.text.push_str(&parameter.ty);
+            if !parameter.name.is_empty() {
+                body.text.push(' ');
+                body.text.push_str(&parameter.name);
+            }
             body.text.push('\n');
         }
     }
+    for variable in &info.variables {
+        body.text.push_str(&member);
+        push_symbol(body, &variable.name, SymbolRole::Member);
+        body.text.push_str(" : ");
+        body.text.push_str(&variable.ty);
+        body.text.push('\n');
+    }
+}
+
+fn render_activation(body: &mut Rendered, result: &Result<Instance, String>, labels: &Labels) {
+    body.text.push('\n');
+    let instance = match result {
+        Ok(instance) => instance,
+        Err(message) => {
+            body.text.push_str(message);
+            body.text.push('\n');
+            return;
+        }
+    };
+    body.text.push_str(&labels.instance);
+    body.text.push(' ');
+    push_symbol(body, &instance.clsid, SymbolRole::Type);
+    body.text.push('\n');
+    let mut shown = false;
+    if let Some(dispatch) = &instance.dispatch {
+        shown = true;
+        body.text.push_str("  ");
+        body.text.push_str(&labels.dispatch);
+        body.text.push('\n');
+        match &dispatch.type_info {
+            Some(info) => render_type_info(body, info, 2, labels),
+            None => {
+                body.text.push_str("    ");
+                body.text.push_str(&labels.dispatch_none);
+                body.text.push('\n');
+            }
+        }
+    }
+    if let Some(inspectable) = &instance.inspectable {
+        shown = true;
+        body.text.push_str("  ");
+        body.text.push_str(&labels.inspectable);
+        body.text.push('\n');
+        if let Some(class) = &inspectable.runtime_class {
+            body.text.push_str("    ");
+            body.text.push_str(&labels.runtime_class);
+            body.text.push(' ');
+            push_symbol(body, class, SymbolRole::Type);
+            body.text.push('\n');
+        }
+        if !inspectable.interfaces.is_empty() {
+            body.text.push_str("    ");
+            body.text.push_str(&labels.interfaces);
+            body.text.push('\n');
+            for iid in &inspectable.interfaces {
+                body.text.push_str("      ");
+                push_symbol(body, iid, SymbolRole::Type);
+                body.text.push('\n');
+            }
+        }
+    }
+    if !shown {
+        body.text.push_str("  ");
+        body.text.push_str(&labels.activate_none);
+        body.text.push('\n');
+    }
+}
+
+fn first_class(report: &Report) -> Option<com::Guid> {
+    report
+        .groups
+        .iter()
+        .find(|group| group.kind == GroupKind::Class)
+        .and_then(|group| group.identity.as_deref())
+        .and_then(com::Guid::parse)
 }
 
 fn push_symbol(body: &mut Rendered, value: &str, role: SymbolRole) {
@@ -933,6 +1115,7 @@ fn render_field(body: &mut Rendered, field: &Field, depth: usize, labels: &Label
 mod tests {
     use super::*;
     use winlex_core::tools::com::Attribute;
+    use winlex_core::tools::com::activation;
 
     fn labels() -> Labels {
         Labels {
@@ -973,6 +1156,13 @@ mod tests {
             implements: "Implements".into(),
             optional: "optional".into(),
             retval: "retval".into(),
+            instance: "Instance".into(),
+            dispatch: "IDispatch".into(),
+            dispatch_none: "No type information is exposed.".into(),
+            inspectable: "IInspectable".into(),
+            runtime_class: "Runtime class".into(),
+            interfaces: "Interfaces".into(),
+            activate_none: "The object exposes neither IDispatch nor IInspectable.".into(),
         }
     }
 
@@ -1162,5 +1352,64 @@ mod tests {
         assert_eq!(references.len(), 2);
         assert_eq!(references[0].1, 2);
         assert_eq!(references[1].1, 1);
+    }
+
+    #[test]
+    fn activation_is_appended_with_dispatch_and_inspectable() {
+        let instance = Instance {
+            clsid: "{00000000-0000-0000-0000-000000000001}".into(),
+            dispatch: Some(activation::DispatchInfo {
+                type_info: Some(typelib::TypeInfo {
+                    name: "IFoo".into(),
+                    kind: TypeKind::Dispatch,
+                    ..typelib::TypeInfo::default()
+                }),
+            }),
+            inspectable: Some(activation::InspectableInfo {
+                runtime_class: Some("Windows.Foo".into()),
+                interfaces: vec!["{AAAAAAAA-0000-0000-0000-000000000000}".into()],
+            }),
+        };
+        let mut body = Rendered::default();
+        render_activation(&mut body, &Ok(instance), &labels());
+        assert!(body.text.starts_with("\nInstance {"));
+        assert!(body.text.contains("\n  IDispatch\n"));
+        assert!(body.text.contains("\n    Dispatch interface IFoo"));
+        assert!(body.text.contains("\n  IInspectable\n"));
+        assert!(body.text.contains("\n    Runtime class Windows.Foo"));
+        assert!(body.text.contains("\n    Interfaces\n"));
+        assert!(
+            body.text
+                .contains("\n      {AAAAAAAA-0000-0000-0000-000000000000}")
+        );
+    }
+
+    #[test]
+    fn activation_failure_is_reported_inline() {
+        let mut body = Rendered::default();
+        render_activation(&mut body, &Err("Activation failed: boom".into()), &labels());
+        assert_eq!(body.text, "\nActivation failed: boom\n");
+    }
+
+    #[test]
+    fn only_class_groups_can_be_activated() {
+        let mut report = Report {
+            input: "Example.Object".into(),
+            kind: None,
+            normalized: None,
+            groups: vec![Group {
+                kind: GroupKind::Interface,
+                identity: Some("{00000000-0000-0000-0000-000000000001}".into()),
+                fields: vec![],
+                children: vec![],
+            }],
+            warnings: vec![],
+        };
+        assert!(first_class(&report).is_none());
+        report.groups[0].kind = GroupKind::Class;
+        assert_eq!(
+            first_class(&report).map(|guid| guid.to_string()),
+            Some("{00000000-0000-0000-0000-000000000001}".into())
+        );
     }
 }

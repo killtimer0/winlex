@@ -2,6 +2,7 @@
 use serde::Serialize;
 use std::{cell::RefCell, fmt};
 
+pub mod activation;
 pub mod registry;
 pub mod typelib;
 

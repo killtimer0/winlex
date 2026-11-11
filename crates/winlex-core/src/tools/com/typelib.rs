@@ -1,6 +1,6 @@
 //! Read-only expansion of registered type libraries through `ITypeLib`.
 use super::Guid;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{ffi::c_void, fmt, ptr};
 use windows_sys::Win32::Foundation::{SysFreeString, SysStringLen, TYPE_E_LIBNOTREGISTERED};
 use windows_sys::Win32::System::Com::{
@@ -24,7 +24,7 @@ use windows_sys::Win32::System::Variant::{
 use windows_sys::core::{BSTR, GUID, HRESULT};
 
 /// A type library loaded from the registration of one LIBID and version.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TypeLibrary {
     pub guid: String,
     pub major: u16,
@@ -35,7 +35,7 @@ pub struct TypeLibrary {
     pub types: Vec<TypeInfo>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TypeInfo {
     pub name: String,
     pub kind: TypeKind,
@@ -46,7 +46,7 @@ pub struct TypeInfo {
     pub variables: Vec<Variable>,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TypeKind {
     Enum,
@@ -61,7 +61,7 @@ pub enum TypeKind {
     Unknown,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Implemented {
     pub name: String,
     pub guid: Option<String>,
@@ -71,7 +71,7 @@ pub struct Implemented {
     pub default_vtable: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Function {
     pub name: String,
     pub memid: i32,
@@ -81,7 +81,7 @@ pub struct Function {
     pub parameters: Vec<Parameter>,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MemberKind {
     #[default]
@@ -92,7 +92,7 @@ pub enum MemberKind {
     Unknown,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Convention {
     #[default]
@@ -106,7 +106,7 @@ pub enum Convention {
     FpFastcall,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Parameter {
     pub name: String,
     pub ty: String,
@@ -115,7 +115,7 @@ pub struct Parameter {
     pub return_value: bool,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Direction {
     #[default]
@@ -125,7 +125,7 @@ pub enum Direction {
     Unknown,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Variable {
     pub name: String,
     pub memid: i32,
@@ -133,7 +133,7 @@ pub struct Variable {
     pub kind: VariableKind,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VariableKind {
     #[default]
@@ -196,7 +196,7 @@ pub fn load(guid: Guid, major: u16, minor: u16, lcid: u32) -> Result<TypeLibrary
     })
 }
 
-fn native_guid(guid: Guid) -> GUID {
+pub(super) fn native_guid(guid: Guid) -> GUID {
     let bytes = guid.0;
     GUID {
         data1: u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
@@ -208,7 +208,7 @@ fn native_guid(guid: Guid) -> GUID {
     }
 }
 
-fn guid_text(guid: &GUID) -> Option<String> {
+pub(super) fn guid_text(guid: &GUID) -> Option<String> {
     if guid.data1 == 0
         && guid.data2 == 0
         && guid.data3 == 0
@@ -587,6 +587,14 @@ impl Drop for RawTypeInfo {
     fn drop(&mut self) {
         unsafe { (self.vtable().release)(self.0) };
     }
+}
+
+/// Expands a type info pointer and takes ownership of its reference.
+pub(super) fn expand_type_info(raw: *mut c_void) -> Option<TypeInfo> {
+    if raw.is_null() {
+        return None;
+    }
+    Some(RawTypeInfo(raw).expand())
 }
 
 struct Attr {
