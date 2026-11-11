@@ -149,7 +149,14 @@ fn render_field(out: &mut String, field: &Field, depth: usize) {
     let indent = "  ".repeat(depth);
     let name = attribute_name(field.attribute);
     let padded = " ".repeat(name.len());
-    let annotate = field.values.len() > 1;
+    // Identical values from both hives stay unannotated; a user-only
+    // registration is worth marking because machine registrations are typical.
+    let annotate = field.values.len() > 1
+        || field
+            .values
+            .iter()
+            .flat_map(|value| &value.sources)
+            .all(|source| source.origin == com::Origin::User);
     for (index, value) in field.values.iter().enumerate() {
         let label = if index == 0 { name } else { &padded };
         let _ = write!(out, "{indent}{label}: ");

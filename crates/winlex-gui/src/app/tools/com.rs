@@ -1085,7 +1085,14 @@ fn render_field(body: &mut Rendered, field: &Field, depth: usize, labels: &Label
     let indent = "  ".repeat(depth);
     let name = field.attribute.name();
     let pad = " ".repeat(name.len());
-    let annotate = field.values.len() > 1;
+    // Identical values from both hives stay unannotated; a user-only
+    // registration is worth marking because machine registrations are typical.
+    let annotate = field.values.len() > 1
+        || field
+            .values
+            .iter()
+            .flat_map(|value| &value.sources)
+            .all(|source| source.origin == com::Origin::User);
     for (index, value) in field.values.iter().enumerate() {
         body.text.push_str(&indent);
         body.text.push_str(if index == 0 { name } else { &pad });
