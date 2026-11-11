@@ -19,6 +19,7 @@ Commands:
   references TYPE         Reverse type uses across loaded sources
   error-code CODE         Query Windows messages (no input file required)
   demangle SYMBOL...      Undecorate Visual C++ and Itanium symbols
+  com TARGET              Resolve COM/WinRT registrations from this system
 
 Options:
   --source SOURCE         Zero-based input index or unique assembly name
@@ -32,7 +33,7 @@ Options:
   --help, --version       No input required
 
 Input files precede the command. Use .\search for a file named search.
-Tools: winlex error-code --help, winlex demangle --help
+Tools: winlex error-code --help, winlex demangle --help, winlex com --help
 Declaration selectors accept SOURCE::NAME or SOURCE::0xTOKEN.
 Closed types use NAME<ARG,...>, for example 'Windows.Foundation.Collections.IVector<int32>'.
 Instance show and iid require --arch. Arguments may be nested or SOURCE:: qualified.

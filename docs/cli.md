@@ -105,6 +105,25 @@ winlex demangle --file .\exports.txt --json
 - `spans` 使用 UTF-16 偏移标注可着色名称区域；当前只标注函数／成员名与限定名，未识别的片段不着色。
 - 任一符号还原失败时退出 3；参数错误退出 2；输出失败退出 4。
 
+## COM / WinRT 注册查询
+
+```powershell
+winlex com "Shell.Application"
+winlex com "{00021401-0000-0000-C000-000000000046}"
+winlex com "{00020400-0000-0000-C000-000000000046}" --view 32
+winlex com "MyLib.MyClass" --kind progid --json
+```
+
+- 只读取本机注册表，与已加载元数据无关；不需要输入文件。
+- `--kind` 可选 `auto`（默认）、`progid`、`guid`。自动模式先按 GUID 解析，再按 ProgID 识别；无法判断时报错。
+- `--view` 默认 `both`，同时查询 32 位与 64 位注册表视图；`auto` 使用当前进程视图。系统不支持的视图会给出警告。
+- 同时读取机器级（HKLM）与用户级（HKCU）注册表。相同值只显示一次；不同视图或来源的值分行显示，并标注 `x86 machine`、`x64 user` 等来源。
+- GUID 会依次检查 CLSID、Interface、TypeLib、AppID，多处命中时全部列出；ProgID 会解析其 CLSID 并继续展开被引用的类型库和 AppID。
+- 文本输出按输入／目标 → ProgID → CLSID → Interface → TypeLib → AppID → 警告排列；类型库按版本和语言分组。
+- `REG_EXPAND_SZ` 按当前进程环境变量展开。
+- `--json` 输出版本化结构，包含 `kind`、`normalized`、`groups`（`kind`、`identity`、`fields`、`children`）和 `warnings`；字段值带 `sources`（`view`、`origin`）。
+- 无法识别输入时退出 3；参数错误退出 2；输出失败退出 4。
+
 ## 条件表达式
 
 ```powershell

@@ -298,6 +298,34 @@ fn error_code_json_uses_the_same_schema_without_metadata() {
 }
 
 #[test]
+fn com_tools_do_not_require_metadata() {
+    let (code, out, err) = invoke(
+        ["com", "{00000000-0000-0000-0000-000000000000}", "--json"]
+            .into_iter()
+            .map(Into::into),
+    );
+    assert_eq!(code, 0, "{out}");
+    assert!(err.is_empty());
+    let response: Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(response["schema"], "winlex-cli-1");
+    assert_eq!(response["command"], "com");
+    assert_eq!(response["ok"], true);
+    assert!(response["result"]["groups"].is_array());
+    assert_eq!(response["result"]["kind"], "guid");
+
+    let (code, out, err) = invoke(
+        ["com", "not a target", "--json"]
+            .into_iter()
+            .map(Into::into),
+    );
+    assert_eq!(code, 3);
+    assert!(err.is_empty());
+    let response: Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(response["ok"], false);
+    assert_eq!(response["result"]["kind"], Value::Null);
+}
+
+#[test]
 fn demangle_tools_do_not_require_metadata() {
     let (code, out, err) = invoke(
         ["demangle", "?foo@@YAHH@Z", "_Z3fooi", "--json"]
