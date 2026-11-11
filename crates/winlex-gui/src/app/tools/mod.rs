@@ -10,11 +10,13 @@ use crate::{
 };
 use std::rc::Rc;
 
+mod demangle;
 mod error_code;
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub(super) enum Kind {
     ErrorCode,
+    Demangle,
 }
 
 pub(super) struct Descriptor {
@@ -24,12 +26,20 @@ pub(super) struct Descriptor {
     pub icon: Icon,
 }
 
-pub(super) const TOOLS: &[Descriptor] = &[Descriptor {
-    kind: Kind::ErrorCode,
-    title: IDS_ERROR_CODE_TOOL,
-    description: IDS_ERROR_CODE_DESCRIPTION,
-    icon: Icon::Constant,
-}];
+pub(super) const TOOLS: &[Descriptor] = &[
+    Descriptor {
+        kind: Kind::ErrorCode,
+        title: IDS_ERROR_CODE_TOOL,
+        description: IDS_ERROR_CODE_DESCRIPTION,
+        icon: Icon::Constant,
+    },
+    Descriptor {
+        kind: Kind::Demangle,
+        title: IDS_DEMANGLE_TOOL,
+        description: IDS_DEMANGLE_DESCRIPTION,
+        icon: Icon::Method,
+    },
+];
 
 impl Kind {
     pub fn descriptor(self) -> &'static Descriptor {
@@ -66,18 +76,21 @@ pub(super) fn actions(value: Option<&crate::app::result_value::ResultValue>) -> 
         .iter()
         .filter_map(|descriptor| match descriptor.kind {
             Kind::ErrorCode => error_code::action(value),
+            Kind::Demangle => None,
         })
         .collect()
 }
 
 pub(super) enum ToolView {
     ErrorCode(Rc<error_code::View>),
+    Demangle(Rc<demangle::View>),
 }
 
 macro_rules! forward {
     ($this:ident, $view:ident, $value:expr) => {
         match $this {
             Self::ErrorCode($view) => $value,
+            Self::Demangle($view) => $value,
         }
     };
 }
@@ -86,6 +99,7 @@ impl ToolView {
     pub fn kind(&self) -> Kind {
         match self {
             Self::ErrorCode(_) => Kind::ErrorCode,
+            Self::Demangle(_) => Kind::Demangle,
         }
     }
     pub fn id(&self) -> u64 {
@@ -137,10 +151,14 @@ impl ToolView {
         forward!(self, view, view.activated())
     }
     pub fn complete(&self, id: u64, completion: crate::tasks::tools::Completion) {
-        forward!(self, view, view.complete(id, completion))
+        if let Self::ErrorCode(view) = self {
+            view.complete(id, completion);
+        }
     }
     pub fn worker_stopped(&self) {
-        forward!(self, view, view.worker_stopped())
+        if let Self::ErrorCode(view) = self {
+            view.worker_stopped();
+        }
     }
     pub fn description(&self) -> String {
         resources::text(self.kind().descriptor().description)
@@ -148,6 +166,9 @@ impl ToolView {
     pub fn apply(&self, request: &Request) {
         match (self, request) {
             (Self::ErrorCode(view), Request::ErrorCode(code)) => view.search_code(*code),
+            (Self::Demangle(_), Request::ErrorCode(_)) => {
+                debug_assert!(false, "tool request kind mismatch");
+            }
         }
     }
 }
@@ -158,6 +179,11 @@ pub(super) fn instantiate(ctx: &Context, kind: Kind, hwnd: HWND) -> anyhow::Resu
             let mut view = error_code::View::new(ctx);
             view.create(hwnd)?;
             ToolView::ErrorCode(Rc::new(view))
+        }
+        Kind::Demangle => {
+            let mut view = demangle::View::new(ctx);
+            view.create(hwnd)?;
+            ToolView::Demangle(Rc::new(view))
         }
     };
     Ok(view)
