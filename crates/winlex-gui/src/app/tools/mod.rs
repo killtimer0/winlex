@@ -10,6 +10,7 @@ use crate::{
 };
 use std::rc::Rc;
 
+mod com;
 mod demangle;
 mod error_code;
 
@@ -17,6 +18,7 @@ mod error_code;
 pub(super) enum Kind {
     ErrorCode,
     Demangle,
+    Com,
 }
 
 pub(super) struct Descriptor {
@@ -39,6 +41,12 @@ pub(super) const TOOLS: &[Descriptor] = &[
         description: IDS_DEMANGLE_DESCRIPTION,
         icon: Icon::Method,
     },
+    Descriptor {
+        kind: Kind::Com,
+        title: IDS_COM_TOOL,
+        description: IDS_COM_DESCRIPTION,
+        icon: Icon::Interface,
+    },
 ];
 
 impl Kind {
@@ -54,12 +62,14 @@ impl Kind {
 #[derive(Clone)]
 pub(super) enum Request {
     ErrorCode(u32),
+    Com { text: String },
 }
 
 impl Request {
     fn kind(&self) -> Kind {
         match self {
             Self::ErrorCode(_) => Kind::ErrorCode,
+            Self::Com { .. } => Kind::Com,
         }
     }
 }
@@ -77,6 +87,7 @@ pub(super) fn actions(value: Option<&crate::app::result_value::ResultValue>) -> 
         .filter_map(|descriptor| match descriptor.kind {
             Kind::ErrorCode => error_code::action(value),
             Kind::Demangle => None,
+            Kind::Com => com::action(value),
         })
         .collect()
 }
@@ -84,6 +95,7 @@ pub(super) fn actions(value: Option<&crate::app::result_value::ResultValue>) -> 
 pub(super) enum ToolView {
     ErrorCode(Rc<error_code::View>),
     Demangle(Rc<demangle::View>),
+    Com(Rc<com::View>),
 }
 
 macro_rules! forward {
@@ -91,6 +103,7 @@ macro_rules! forward {
         match $this {
             Self::ErrorCode($view) => $value,
             Self::Demangle($view) => $value,
+            Self::Com($view) => $value,
         }
     };
 }
@@ -100,6 +113,7 @@ impl ToolView {
         match self {
             Self::ErrorCode(_) => Kind::ErrorCode,
             Self::Demangle(_) => Kind::Demangle,
+            Self::Com(_) => Kind::Com,
         }
     }
     pub fn id(&self) -> u64 {
@@ -166,9 +180,8 @@ impl ToolView {
     pub fn apply(&self, request: &Request) {
         match (self, request) {
             (Self::ErrorCode(view), Request::ErrorCode(code)) => view.search_code(*code),
-            (Self::Demangle(_), Request::ErrorCode(_)) => {
-                debug_assert!(false, "tool request kind mismatch");
-            }
+            (Self::Com(view), Request::Com { text: target }) => view.search(target),
+            _ => debug_assert!(false, "tool request kind mismatch"),
         }
     }
 }
@@ -184,6 +197,11 @@ pub(super) fn instantiate(ctx: &Context, kind: Kind, hwnd: HWND) -> anyhow::Resu
             let mut view = demangle::View::new(ctx);
             view.create(hwnd)?;
             ToolView::Demangle(Rc::new(view))
+        }
+        Kind::Com => {
+            let mut view = com::View::new(ctx);
+            view.create(hwnd)?;
+            ToolView::Com(Rc::new(view))
         }
     };
     Ok(view)
@@ -339,6 +357,7 @@ mod tests {
         assert_eq!(acts[0].label, IDS_ERROR_CODE_SEARCH);
         match &acts[0].request {
             Request::ErrorCode(code) => assert_eq!(*code, 5),
+            Request::Com { .. } => panic!("unexpected COM action"),
         }
         let string_value = ResultValue {
             text: "Windows".into(),
@@ -346,5 +365,17 @@ mod tests {
             integer: None,
         };
         assert!(actions(Some(&string_value)).is_empty());
+        let guid = ResultValue {
+            text: "{00000000-0000-0000-0000-000000000001}".into(),
+            hexadecimal: None,
+            integer: None,
+        };
+        let acts = actions(Some(&guid));
+        assert_eq!(acts.len(), 1);
+        assert_eq!(acts[0].label, IDS_COM_SEARCH);
+        match &acts[0].request {
+            Request::Com { text: target } => assert_eq!(target, &guid.text),
+            Request::ErrorCode(_) => panic!("unexpected error-code action"),
+        }
     }
 }

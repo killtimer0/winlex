@@ -183,37 +183,7 @@ fn group_kind_name(kind: GroupKind) -> &'static str {
 }
 
 fn attribute_name(attribute: Attribute) -> &'static str {
-    match attribute {
-        Attribute::Description => "Description",
-        Attribute::InprocServer32 => "InprocServer32",
-        Attribute::LocalServer32 => "LocalServer32",
-        Attribute::InprocHandler32 => "InprocHandler32",
-        Attribute::InprocHandler => "InprocHandler",
-        Attribute::ThreadingModel => "ThreadingModel",
-        Attribute::ProgId => "ProgID",
-        Attribute::VersionIndependentProgId => "VersionIndependentProgID",
-        Attribute::AppId => "AppID",
-        Attribute::TypeLib => "TypeLib",
-        Attribute::TypeLibVersion => "TypeLibVersion",
-        Attribute::TreatAs => "TreatAs",
-        Attribute::AutoConvertTo => "AutoConvertTo",
-        Attribute::Insertable => "Insertable",
-        Attribute::NotInsertable => "NotInsertable",
-        Attribute::ProxyStubClsid32 => "ProxyStubClsid32",
-        Attribute::NumMethods => "NumMethods",
-        Attribute::BaseInterface => "BaseInterface",
-        Attribute::AsynchronousInterface => "AsynchronousInterface",
-        Attribute::Flags => "Flags",
-        Attribute::HelpDir => "HelpDir",
-        Attribute::HelpFile => "HelpFile",
-        Attribute::DllSurrogate => "DllSurrogate",
-        Attribute::LocalService => "LocalService",
-        Attribute::RunAs => "RunAs",
-        Attribute::AuthenticationLevel => "AuthenticationLevel",
-        Attribute::ServiceParameters => "ServiceParameters",
-        Attribute::Clsid => "CLSID",
-        Attribute::CurVer => "CurVer",
-    }
+    attribute.name()
 }
 
 fn view_name(view: com::View) -> &'static str {

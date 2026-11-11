@@ -149,6 +149,43 @@ pub enum Attribute {
     CurVer,
 }
 
+impl Attribute {
+    /// Registry value name or a stable English label for CLI output.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Description => "Description",
+            Self::InprocServer32 => "InprocServer32",
+            Self::LocalServer32 => "LocalServer32",
+            Self::InprocHandler32 => "InprocHandler32",
+            Self::InprocHandler => "InprocHandler",
+            Self::ThreadingModel => "ThreadingModel",
+            Self::ProgId => "ProgID",
+            Self::VersionIndependentProgId => "VersionIndependentProgID",
+            Self::AppId => "AppID",
+            Self::TypeLib => "TypeLib",
+            Self::TypeLibVersion => "TypeLibVersion",
+            Self::TreatAs => "TreatAs",
+            Self::AutoConvertTo => "AutoConvertTo",
+            Self::Insertable => "Insertable",
+            Self::NotInsertable => "NotInsertable",
+            Self::ProxyStubClsid32 => "ProxyStubClsid32",
+            Self::NumMethods => "NumMethods",
+            Self::BaseInterface => "BaseInterface",
+            Self::AsynchronousInterface => "AsynchronousInterface",
+            Self::Flags => "Flags",
+            Self::HelpDir => "HelpDir",
+            Self::HelpFile => "HelpFile",
+            Self::DllSurrogate => "DllSurrogate",
+            Self::LocalService => "LocalService",
+            Self::RunAs => "RunAs",
+            Self::AuthenticationLevel => "AuthenticationLevel",
+            Self::ServiceParameters => "ServiceParameters",
+            Self::Clsid => "CLSID",
+            Self::CurVer => "CurVer",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Field {
     pub attribute: Attribute,
