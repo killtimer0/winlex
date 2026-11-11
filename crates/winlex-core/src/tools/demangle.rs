@@ -272,7 +272,9 @@ impl cpp_demangle::DemangleWrite for NameWriter {
         match node {
             cpp_demangle::DemangleNodeType::NestedName => {
                 self.nested_depth = self.nested_depth.saturating_sub(1);
-                if self.nested_depth == 0 {
+                if self.nested_depth == 0 && self.nested_end.is_none() {
+                    // Only the symbol's own qualified name; later top-level
+                    // nested names belong to parameter or return types.
                     self.nested_end = Some(self.utf16);
                 }
             }
@@ -343,6 +345,19 @@ mod tests {
         let vtable = demangle("??_7Foo@@6B@", Abi::Msvc).expect("vftable");
         assert_eq!(vtable.kind, SymbolKind::Special);
         assert!(!vtable.spans.is_empty());
+    }
+
+    #[test]
+    fn itanium_span_stops_before_parameter_types() {
+        let result = demangle("_ZN3Foo3barEN5space3BazE", Abi::Auto).expect("itanium symbol");
+        assert!(result.text.starts_with("Foo::bar("), "{}", result.text);
+        assert_eq!(span_text(&result), ["Foo::bar"]);
+        let result = demangle(
+            "_ZN3Foo3barENSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE",
+            Abi::Auto,
+        )
+        .expect("itanium symbol with template parameter");
+        assert_eq!(span_text(&result), ["Foo::bar"]);
     }
 
     #[test]
