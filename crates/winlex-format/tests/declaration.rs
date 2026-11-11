@@ -874,6 +874,62 @@ fn enum_members_and_individual_constants_share_annotations() {
 }
 
 #[test]
+fn fastcall_functions_annotate_x86_registers_and_stack_slots() {
+    use winlex_core::windows_metadata::{writer, *};
+    let mut file = writer::File::new("NativeAbiFast");
+    let base = file.TypeRef("System", "Object");
+    file.TypeDef(
+        "Fixture",
+        "Apis",
+        writer::TypeDefOrRef::TypeRef(base),
+        TypeAttributes::Public,
+    );
+    let method = file.MethodDef(
+        "Mix",
+        &Signature {
+            flags: MethodCallAttributes::default(),
+            return_type: Type::Void,
+            types: vec![Type::I32, Type::F32, Type::F64, Type::I32],
+        },
+        MethodAttributes::Public | MethodAttributes::Static,
+        MethodImplAttributes::Native | MethodImplAttributes::Unmanaged,
+    );
+    for (index, name) in ["a", "b", "c", "d"].iter().enumerate() {
+        file.Param(name, index as u16 + 1, ParamAttributes::In);
+    }
+    let attribute = file.TypeRef("Winlex.Metadata", "NativeCallingConventionAttribute");
+    let constructor = file.MemberRef(
+        ".ctor",
+        &Signature {
+            flags: MethodCallAttributes::HASTHIS,
+            return_type: Type::Void,
+            types: vec![Type::String],
+        },
+        writer::MemberRefParent::TypeRef(attribute),
+    );
+    file.Attribute(
+        writer::HasAttribute::MethodDef(method),
+        writer::AttributeType::MemberRef(constructor),
+        &[(String::new(), Value::Utf8("fastcall".into()))],
+    );
+
+    let catalog = Catalog::from_inputs([source("native-abi-fast", file.into_stream())]).unwrap();
+    let entity = first_match(catalog.search(
+        "Mix",
+        SearchOptions {
+            mode: SearchMode::Name,
+            ..Default::default()
+        },
+    ));
+    assert_eq!(
+        winlex_format::declaration::render(&catalog, entity.id, Architecture::X86)
+            .unwrap()
+            .text,
+        "void Mix(\n    [in] int32 a, // ecx\n    [in] float32 b, // [esp+4]\n    [in] float64 c, // [esp+8]\n    [in] int32 d // edx\n);\n"
+    );
+}
+
+#[test]
 fn native_callables_annotate_parameters_and_hidden_returns() {
     use winlex_core::windows_metadata::{writer, *};
     let mut file = writer::File::new("NativeAbi");

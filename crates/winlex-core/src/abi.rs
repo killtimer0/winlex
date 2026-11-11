@@ -110,7 +110,7 @@ impl Catalog {
             Role::Delegate => self.delegate_convention(owner)?,
         };
         ensure!(
-            !matches!(convention, Convention::Thiscall | Convention::Fastcall),
+            !(arch == Architecture::X86 && matches!(convention, Convention::Thiscall)),
             "unsupported calling convention"
         );
 
@@ -127,7 +127,7 @@ impl Catalog {
         let mut abi = match arch {
             Architecture::X64 => x64(&parameters, result.as_ref(), role, variadic),
             Architecture::Arm64 => arm64(&parameters, result.as_ref(), role, variadic),
-            Architecture::X86 => x86(&parameters, result.as_ref(), role),
+            Architecture::X86 => x86(&parameters, result.as_ref(), role, convention, variadic),
         };
         if variadic {
             // The rendered signature always appends an ellipsis after the named parameters.
@@ -806,7 +806,16 @@ fn align_up(value: u64, alignment: u64) -> u64 {
     value.div_ceil(alignment) * alignment
 }
 
-fn x86(parameters: &[Class], result: Option<&Class>, role: Role) -> NativeAbi {
+fn x86(
+    parameters: &[Class],
+    result: Option<&Class>,
+    role: Role,
+    convention: Convention,
+    variadic: bool,
+) -> NativeAbi {
+    // MSVC ignores `__fastcall` on variadic functions and passes every argument on the stack.
+    let fast = convention == Convention::Fastcall && !variadic;
+    let mut registers = ["ecx", "edx"].into_iter();
     let mut offset = 4u64;
     let mut this = None;
     if role == Role::ComMethod {
@@ -834,6 +843,16 @@ fn x86(parameters: &[Class], result: Option<&Class>, role: Role) -> NativeAbi {
     };
     let mut locations = Vec::with_capacity(parameters.len());
     for class in parameters {
+        // Registers take integer scalars of at most four bytes; floating-point
+        // values and aggregates stay on the stack and do not consume a register.
+        if fast
+            && let Class::Int { bytes } = class
+            && *bytes <= 4
+            && let Some(register) = registers.next()
+        {
+            locations.push(Some(register.to_owned()));
+            continue;
+        }
         let location = format!("[esp+{offset}]");
         offset += match class {
             Class::Int { bytes } => (*bytes).max(4),
@@ -952,7 +971,13 @@ mod tests {
         file.ImplMap(method, convention, name, "fixture.dll");
     }
 
-    fn add_callback(file: &mut writer::File, name: &str, returns: Type, parameters: &[Type]) {
+    fn add_callback(
+        file: &mut writer::File,
+        name: &str,
+        returns: Type,
+        parameters: &[Type],
+        convention: i32,
+    ) {
         let base = file.TypeRef("System", "MulticastDelegate");
         let callback = file.TypeDef(
             "Fixture",
@@ -986,7 +1011,7 @@ mod tests {
                 String::new(),
                 Value::EnumValue(
                     TypeName::named("System.Runtime.InteropServices", "CallingConvention"),
-                    Box::new(Value::I32(1)),
+                    Box::new(Value::I32(convention)),
                 ),
             )],
         );
@@ -996,6 +1021,7 @@ mod tests {
         let mut file = writer::File::new("NativeAbi");
 
         add_struct(&mut file, "S8", &[Type::I32, Type::I32]);
+        add_struct(&mut file, "S4", &[Type::I32]);
         add_struct(
             &mut file,
             "S16",
@@ -1074,12 +1100,26 @@ mod tests {
             );
         }
 
-        add_callback(&mut file, "Callback", named("S16"), &[Type::F32, Type::I32]);
+        add_callback(
+            &mut file,
+            "Callback",
+            named("S16"),
+            &[Type::F32, Type::I32],
+            1,
+        );
         add_callback(
             &mut file,
             "HfaCallback",
             named("F4"),
             &[named("F4"), Type::F32],
+            1,
+        );
+        add_callback(
+            &mut file,
+            "FastCallback",
+            Type::Void,
+            &[Type::I32, Type::I32],
+            5,
         );
 
         let base = file.TypeRef("System", "MulticastDelegate");
@@ -1135,6 +1175,55 @@ mod tests {
             &[Type::F32, Type::F64],
             MethodCallAttributes::VARARG,
             PInvokeAttributes::CallConvCdecl,
+        );
+        for (name, returns, parameters) in [
+            (
+                "FastInt",
+                Type::Void,
+                &[Type::I32, Type::I32, Type::I32][..],
+            ),
+            (
+                "FastFp",
+                Type::Void,
+                &[Type::I32, Type::F32, Type::F64, Type::I32][..],
+            ),
+            (
+                "Fast64",
+                Type::Void,
+                &[Type::I32, Type::I64, Type::I32, Type::I32][..],
+            ),
+            (
+                "FastAgg",
+                Type::Void,
+                &[named("S4"), Type::I32, Type::I32, Type::I32][..],
+            ),
+            (
+                "FastSmall",
+                Type::Void,
+                &[Type::I8, Type::I16, Type::I32, Type::I32][..],
+            ),
+            (
+                "FastRet",
+                named("S16"),
+                &[Type::I32, Type::I32, Type::I32][..],
+            ),
+        ] {
+            add_function(
+                &mut file,
+                name,
+                returns,
+                parameters,
+                MethodCallAttributes::default(),
+                PInvokeAttributes::CallConvFastcall,
+            );
+        }
+        add_function(
+            &mut file,
+            "FastVar",
+            Type::Void,
+            &[Type::I32, Type::I32],
+            MethodCallAttributes::VARARG,
+            PInvokeAttributes::CallConvFastcall,
         );
         add_function(
             &mut file,
@@ -1405,6 +1494,63 @@ mod tests {
             abi.parameters,
             [Some("[esp+4]".into()), Some("[esp+8]".into()), None]
         );
+    }
+
+    #[test]
+    fn fastcall_uses_ecx_and_edx_for_integer_scalars() {
+        let catalog = fixture();
+        for (name, expected) in [
+            ("Fixture.Apis.FastInt", &["ecx", "edx", "[esp+4]"][..]),
+            (
+                "Fixture.Apis.FastFp",
+                &["ecx", "[esp+4]", "[esp+8]", "edx"][..],
+            ),
+            (
+                "Fixture.Apis.Fast64",
+                &["ecx", "[esp+4]", "edx", "[esp+12]"][..],
+            ),
+            (
+                "Fixture.Apis.FastAgg",
+                &["[esp+4]", "ecx", "edx", "[esp+8]"][..],
+            ),
+            (
+                "Fixture.Apis.FastSmall",
+                &["ecx", "edx", "[esp+4]", "[esp+8]"][..],
+            ),
+        ] {
+            let abi = compute(&catalog, name, Architecture::X86);
+            assert_eq!(abi.parameters, locations(expected), "{name}");
+        }
+
+        let abi = compute(&catalog, "Fixture.Apis.FastRet", Architecture::X86);
+        assert_eq!(abi.return_buffer.as_deref(), Some("[esp+4]"));
+        assert_eq!(abi.parameters, locations(&["ecx", "edx", "[esp+8]"]));
+        assert_eq!(abi.return_location, None);
+
+        let abi = compute(&catalog, "Fixture.Apis.FastVar", Architecture::X86);
+        assert_eq!(
+            abi.parameters,
+            [Some("[esp+4]".into()), Some("[esp+8]".into()), None]
+        );
+
+        let abi = compute(&catalog, "Fixture.FastCallback.Invoke", Architecture::X86);
+        assert_eq!(abi.parameters, locations(&["ecx", "edx"]));
+
+        // The other architectures ignore the fastcall decoration.
+        for (arch, expected) in [
+            (Architecture::X64, &["rcx", "xmm1", "xmm2", "r9"][..]),
+            (Architecture::Arm64, &["x0", "s0", "d1", "x1"][..]),
+        ] {
+            let abi = compute(&catalog, "Fixture.Apis.FastFp", arch);
+            assert_eq!(abi.parameters, locations(expected), "{arch:?}");
+            let abi = compute(&catalog, "Fixture.FastCallback.Invoke", arch);
+            let expected = match arch {
+                Architecture::X64 => &["rcx", "rdx"][..],
+                Architecture::Arm64 => &["x0", "x1"][..],
+                Architecture::X86 => unreachable!(),
+            };
+            assert_eq!(abi.parameters, locations(expected), "{arch:?}");
+        }
     }
 
     #[test]
