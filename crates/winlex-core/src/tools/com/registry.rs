@@ -187,3 +187,16 @@ fn expand(text: &str) -> String {
     }
     String::from_utf16_lossy(&buffer[..written as usize - 1])
 }
+
+#[cfg(test)]
+mod tests {
+    use super::expand;
+
+    #[test]
+    fn expands_environment_variables_and_keeps_plain_text() {
+        let expanded = expand("%SystemRoot%\\System32");
+        assert!(expanded.ends_with("\\System32"), "{expanded}");
+        assert!(!expanded.contains('%'), "{expanded}");
+        assert_eq!(expand("C:\\plain"), "C:\\plain");
+    }
+}

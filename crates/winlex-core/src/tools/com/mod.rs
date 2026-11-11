@@ -1154,6 +1154,47 @@ mod tests {
     }
 
     #[test]
+    fn one_guid_lists_every_registration_kind_it_matches() {
+        let class = format!("Software\\Classes\\CLSID\\{CLSID}");
+        let interface = format!("Software\\Classes\\Interface\\{CLSID}");
+        let typelib = format!("Software\\Classes\\TypeLib\\{CLSID}");
+        let version = format!("{typelib}\\1.0");
+        let appid = format!("Software\\Classes\\AppID\\{CLSID}");
+        let source = Snapshot::default()
+            .key(Root::Machine, View::X86, &class)
+            .value(Root::Machine, View::X86, &class, "", "Example class")
+            .key(Root::Machine, View::X86, &interface)
+            .value(Root::Machine, View::X86, &interface, "", "IExample")
+            .key(Root::Machine, View::X86, &typelib)
+            .subkey(Root::Machine, View::X86, &typelib, "1.0")
+            .key(Root::Machine, View::X86, &version)
+            .value(Root::Machine, View::X86, &version, "", "1.0")
+            .key(Root::Machine, View::X86, &appid)
+            .value(Root::Machine, View::X86, &appid, "DllSurrogate", "");
+        let report = query(
+            &source,
+            &Request {
+                text: CLSID.into(),
+                kind: TargetKind::Guid,
+                views: Views::Both,
+            },
+        );
+        assert_eq!(
+            report
+                .groups
+                .iter()
+                .map(|group| group.kind)
+                .collect::<Vec<_>>(),
+            [
+                GroupKind::Class,
+                GroupKind::Interface,
+                GroupKind::TypeLib,
+                GroupKind::AppId
+            ]
+        );
+    }
+
+    #[test]
     fn missing_and_unavailable_registrations_become_warnings() {
         let source = Snapshot::default().unsupported(View::X64);
         let report = query(
