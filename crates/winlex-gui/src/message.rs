@@ -40,6 +40,7 @@ enum Icon {
 enum Buttons {
     Ok,
     YesNo,
+    YesNoDefaultNo,
 }
 
 /// Show an error with a native OK button; Escape and the close button are allowed.
@@ -58,6 +59,17 @@ fn error_result(button: i32) -> anyhow::Result<()> {
 /// Ask a Yes/No question, defaulting to Yes without allowing cancellation.
 pub fn confirm(owner: HWND, title: &str, text: &str) -> anyhow::Result<bool> {
     confirmation_result(show(owner, title, text, Icon::Information, Buttons::YesNo)?)
+}
+
+/// Ask a Yes/No question defaulting to No, for actions that run local code.
+pub fn confirm_no(owner: HWND, title: &str, text: &str) -> anyhow::Result<bool> {
+    confirmation_result(show(
+        owner,
+        title,
+        text,
+        Icon::Information,
+        Buttons::YesNoDefaultNo,
+    )?)
 }
 
 fn confirmation_result(button: i32) -> anyhow::Result<bool> {
@@ -79,6 +91,7 @@ fn show(owner: HWND, title: &str, text: &str, icon: Icon, buttons: Buttons) -> a
             } | match buttons {
                 Buttons::Ok => MB_OK,
                 Buttons::YesNo => MB_YESNO | MB_DEFBUTTON1,
+                Buttons::YesNoDefaultNo => MB_YESNO | MB_DEFBUTTON2,
             };
             let button = unsafe { MessageBoxW(owner, text.as_ptr(), title.as_ptr(), flags) };
             if button == 0 {
@@ -123,6 +136,10 @@ fn task_config(
         Buttons::YesNo => {
             config.dwCommonButtons = TDCBF_YES_BUTTON | TDCBF_NO_BUTTON;
             config.nDefaultButton = IDYES;
+        }
+        Buttons::YesNoDefaultNo => {
+            config.dwCommonButtons = TDCBF_YES_BUTTON | TDCBF_NO_BUTTON;
+            config.nDefaultButton = IDNO;
         }
     }
     config

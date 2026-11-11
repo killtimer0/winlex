@@ -30,6 +30,7 @@ const VIEWS: &[(u16, Views)] = &[
     (IDS_COM_VIEW_X64, Views::X64),
     (IDS_COM_VIEW_AUTO, Views::Auto),
 ];
+const TEXT_SUBCLASS: usize = 1811;
 
 pub(in crate::app) struct View {
     // The document lives inside the context, so the pointer cannot outlive it.
@@ -197,6 +198,9 @@ impl View {
             EnableWindow(self.activate, 0);
         }
         send(self.input, EM_SETLIMITTEXT, 4096, 0);
+        if unsafe { set_subclass(self.input, Some(text_proc), TEXT_SUBCLASS, 0) } == 0 {
+            return Err(error("Subclass the COM input"));
+        }
         self.setting.set(false);
         Ok(())
     }
@@ -339,7 +343,7 @@ impl View {
         let question = resources::format(IDS_COM_ACTIVATE_CONFIRM, &[&guid.to_string()]);
         match crate::app::status::report(
             self.ctx(),
-            crate::message::confirm(self.hwnd, &resources::text(IDS_APP_TITLE), &question),
+            crate::message::confirm_no(self.hwnd, &resources::text(IDS_APP_TITLE), &question),
         ) {
             Some(true) => {}
             Some(false) => return,
@@ -598,6 +602,35 @@ impl View {
         if let Some(id) = self.activate_ticket.take() {
             self.ctx().cancel_job(id);
         }
+    }
+}
+
+unsafe extern "system" fn text_proc(
+    hwnd: HWND,
+    msg: u32,
+    w: usize,
+    l: isize,
+    _id: usize,
+    _data: usize,
+) -> isize {
+    unsafe {
+        match msg {
+            WM_GETDLGCODE if w == VK_TAB as usize => {
+                return (DLGC_WANTARROWS | DLGC_WANTCHARS) as isize;
+            }
+            WM_IME_STARTCOMPOSITION => {
+                SetPropW(hwnd, w!("Winlex.Tool.Composing"), 1usize as HANDLE);
+            }
+            WM_IME_ENDCOMPOSITION => {
+                RemovePropW(hwnd, w!("Winlex.Tool.Composing"));
+            }
+            WM_NCDESTROY => {
+                RemovePropW(hwnd, w!("Winlex.Tool.Composing"));
+                remove_subclass(hwnd, Some(text_proc), TEXT_SUBCLASS);
+            }
+            _ => {}
+        }
+        default_subclass(hwnd, msg, w, l)
     }
 }
 
