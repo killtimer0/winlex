@@ -25,6 +25,8 @@ winlex Windows.Win32.winmd Windows.Wdk.winmd show Windows.Wdk.winmd::NtCancelIoF
 | `iid TYPE --arch ARCH` | WinRT 接口或委托的 IID，支持闭合泛型实例 |
 | `references TYPE --arch ARCH` | 字段、方法、属性、事件签名及接口要求中的反向引用 |
 | `error-code CODE` | 独立查询错误码或模块消息，不加载 WinMD |
+| `demangle SYMBOL...` | 还原 Visual C++ 与 Itanium 修饰名，不加载 WinMD |
+| `com TARGET` | 从本机注册表解析 COM/WinRT 的 ProgID、CLSID、IID、LIBID 与 AppID，不加载 WinMD |
 
 `ARCH` 可选 `x86`、`x64`、`arm64`，与程序自身架构无关。搜索和反向引用使用 `--limit`（默认 50，范围 0–1000）和 `--offset` 分页。
 
