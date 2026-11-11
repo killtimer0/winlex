@@ -18,6 +18,7 @@ Commands:
   iid INTERFACE           WinRT interface/delegate instance IID
   references TYPE         Reverse type uses across loaded sources
   error-code CODE         Query Windows messages (no input file required)
+  demangle SYMBOL...      Undecorate Visual C++ and Itanium symbols
 
 Options:
   --source SOURCE         Zero-based input index or unique assembly name
@@ -31,7 +32,7 @@ Options:
   --help, --version       No input required
 
 Input files precede the command. Use .\search for a file named search.
-Tools: winlex error-code --help
+Tools: winlex error-code --help, winlex demangle --help
 Declaration selectors accept SOURCE::NAME or SOURCE::0xTOKEN.
 Closed types use NAME<ARG,...>, for example 'Windows.Foundation.Collections.IVector<int32>'.
 Instance show and iid require --arch. Arguments may be nested or SOURCE:: qualified.

@@ -298,6 +298,35 @@ fn error_code_json_uses_the_same_schema_without_metadata() {
 }
 
 #[test]
+fn demangle_tools_do_not_require_metadata() {
+    let (code, out, err) = invoke(
+        ["demangle", "?foo@@YAHH@Z", "_Z3fooi", "--json"]
+            .into_iter()
+            .map(Into::into),
+    );
+    assert_eq!(code, 0, "{out}");
+    assert!(err.is_empty());
+    let response: Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(response["schema"], "winlex-cli-1");
+    assert_eq!(response["command"], "demangle");
+    let results = response["results"].as_array().unwrap();
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0]["result"]["abi"], "msvc");
+    assert_eq!(results[1]["result"]["abi"], "itanium");
+
+    let (code, out, err) = invoke(
+        ["demangle", "not-a-symbol", "--json"]
+            .into_iter()
+            .map(Into::into),
+    );
+    assert_eq!(code, 3);
+    assert!(err.is_empty());
+    let response: Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(response["ok"], false);
+    assert_eq!(response["results"][0]["ok"], false);
+}
+
+#[test]
 fn architecture_ambiguity_and_pagination_are_preserved() {
     let (c, v, _) = cli(&["search", "OPENFILENAMEW", "--name", "--limit", "1"]);
     assert_eq!(c, 0);

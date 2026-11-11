@@ -42,6 +42,8 @@ serde_json = "1"
 serde = { version = "1", features = ["derive"] }
 sha1 = "0.10"
 anyhow = "1"
+cpp_demangle = "=0.5.1"
+msvc-demangler = "=0.11.0"
 
 [patch.crates-io]
 windows-metadata = { path = "vendor/windows-metadata" }

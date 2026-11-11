@@ -87,6 +87,24 @@ winlex error-code 0x20000001 --module .\messages.dll --lang auto
 - `--json` 输出版本化结构化结果。没有找到消息仍退出 0；参数错误退出 2，执行故障退出 3，输出失败退出 4。部分来源失败时保留其它结果并返回 3。
 - 本机系统版本和资源语言决定可查询的消息范围。
 
+## 符号还原
+
+```powershell
+winlex demangle '?CreateFileW@@YAPEAXPEBGKKPEAU_SECURITY_ATTRIBUTES@@W4_CREATIONDISPOSITION@@W4_FILE_FLAGS_AND_ATTRIBUTES@@PEAX@Z'
+winlex demangle '_ZN3Foo3barEi' '_Z3fooi' --abi itanium
+winlex demangle --file .\exports.txt --json
+```
+
+- 仅做单向 demangle，不生成修饰名，也不读取 DLL／EXE 导出表。
+- `--abi auto`（默认）按前缀判断：`?` 为 Visual C++，`_Z` 为 Itanium，`_name@N`／`@name@N` 为 x86 C 装饰。无法判断时要求显式指定 ABI。
+- Visual C++ 结果包含返回类型和调用约定；Itanium 普通函数不编码返回类型，结果只描述已编码的信息。
+- Rust v0（`_R…`）符号不支持，直接报错。
+- `--file` 读取 UTF-8 文本，每行一个符号，空行忽略；可与位置参数同时使用，文件内容在前。
+- 文本输出每行 `原始 -> 还原 [abi, 类型(, 调用约定)]`；解析失败的符号保留原行并输出错误。
+- `--json` 输出版本化结果，每个符号包含 `symbol`、`ok`，成功时带 `result`（`text`、`abi`、`kind`、`convention`、`spans`），失败时带 `error`。
+- `spans` 使用 UTF-16 偏移标注可着色名称区域；当前只标注函数／成员名与限定名，未识别的片段不着色。
+- 任一符号还原失败时退出 3；参数错误退出 2；输出失败退出 4。
+
 ## 条件表达式
 
 ```powershell
