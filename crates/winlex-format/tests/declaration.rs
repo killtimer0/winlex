@@ -81,6 +81,11 @@ fn method_imports_and_variadic_signatures_preserve_metadata_meaning() {
         ("VaList", 0, 2, None),
         ("OtherConvention", 1, 1, None),
     ] {
+        let attributes = if MethodCallAttributes(flags).contains(MethodCallAttributes::HASTHIS) {
+            MethodAttributes::Public
+        } else {
+            MethodAttributes::Public | MethodAttributes::Static
+        };
         let method = file.MethodDef(
             name,
             &Signature {
@@ -88,7 +93,7 @@ fn method_imports_and_variadic_signatures_preserve_metadata_meaning() {
                 return_type: Type::I32,
                 types: vec![Type::I32; parameters],
             },
-            MethodAttributes::Public | MethodAttributes::Static,
+            attributes,
             MethodImplAttributes(0),
         );
         if let Some((module, entry, convention)) = import {
@@ -110,22 +115,155 @@ fn method_imports_and_variadic_signatures_preserve_metadata_meaning() {
             "UnknownConvention",
             "// entry\nint32 UnknownConvention(void);\n",
         ),
-        ("OnlyVariadic", "int32 OnlyVariadic(...);\n"),
+        ("OnlyVariadic", "static int32 Apis::OnlyVariadic(...);\n"),
         (
             "InstanceVariadic",
-            "int32 InstanceVariadic(\n    int32 arg1,\n    ...\n);\n",
+            "int32 Apis::InstanceVariadic(\n    int32 arg1,\n    ...\n);\n",
         ),
         (
             "VaList",
-            "int32 VaList(\n    int32 arg1,\n    int32 arg2\n);\n",
+            "static int32 Apis::VaList(\n    int32 arg1,\n    int32 arg2\n);\n",
         ),
         (
             "OtherConvention",
-            "int32 OtherConvention(\n    int32 arg1\n);\n",
+            "static int32 Apis::OtherConvention(\n    int32 arg1\n);\n",
         ),
     ] {
         assert_eq!(render(&catalog, name).text, expected, "{name}");
     }
+}
+
+#[test]
+fn method_declarations_mark_static_and_declaring_type_only_at_the_root() {
+    use winlex_core::windows_metadata::{writer, *};
+    use winlex_format::declaration::RegionKind;
+    let mut file = writer::File::new("MethodMarkers");
+    file.TypeDef(
+        "Fixture",
+        "Owner",
+        writer::TypeDefOrRef::default(),
+        TypeAttributes::Public,
+    );
+    let signature = Signature {
+        flags: MethodCallAttributes::default(),
+        return_type: Type::Void,
+        types: vec![],
+    };
+    file.MethodDef(
+        "Run",
+        &signature,
+        MethodAttributes::Public,
+        MethodImplAttributes(0),
+    );
+    file.MethodDef(
+        "Build",
+        &signature,
+        MethodAttributes::Public | MethodAttributes::Static,
+        MethodImplAttributes::default(),
+    );
+    let native = file.MethodDef(
+        "Native",
+        &signature,
+        MethodAttributes::Public | MethodAttributes::Static,
+        MethodImplAttributes::default(),
+    );
+    file.ImplMap(native, PInvokeAttributes(0), "Native", "library.dll");
+    let catalog = Catalog::from_inputs([source("method-markers", file.into_stream())]).unwrap();
+
+    let run = render(&catalog, "Run");
+    assert_eq!(run.text, "void Owner::Run(void);\n");
+    assert_eq!(run.regions.len(), 2);
+    assert_eq!(run.regions[1].range, 5..10);
+    assert_eq!(
+        catalog
+            .entity(run.regions[1].reference().unwrap())
+            .unwrap()
+            .full_name,
+        "Fixture.Owner"
+    );
+    let build = render(&catalog, "Build");
+    assert_eq!(build.text, "static void Owner::Build(void);\n");
+    assert_eq!(build.regions.len(), 2);
+    assert_eq!(build.regions[1].range, 12..17);
+    assert!(matches!(build.regions[1].kind, RegionKind::Reference(_)));
+    let native = render(&catalog, "Native");
+    assert_eq!(native.text, "// library.dll!Native\nvoid Native(void);\n");
+    assert!(
+        native
+            .regions
+            .iter()
+            .all(|region| !matches!(region.kind, RegionKind::Reference(_)))
+    );
+
+    let owner = render(&catalog, "Owner");
+    assert!(
+        owner.text.contains("    void Run(void);\n"),
+        "{}",
+        owner.text
+    );
+    assert!(
+        owner.text.contains("    static void Build(void);\n"),
+        "{}",
+        owner.text
+    );
+    assert!(
+        owner.text.contains("    void Native(void);\n"),
+        "{}",
+        owner.text
+    );
+    assert!(
+        owner
+            .regions
+            .iter()
+            .all(|region| !matches!(region.kind, RegionKind::Reference(_)))
+    );
+}
+
+#[test]
+fn generic_method_owners_link_the_type_but_not_its_parameters() {
+    use winlex_core::windows_metadata::{writer, *};
+    use winlex_format::declaration::RegionKind;
+    let mut file = writer::File::new("GenericMethodOwner");
+    let owner = file.TypeDef(
+        "Fixture",
+        "Box`1",
+        writer::TypeDefOrRef::default(),
+        TypeAttributes::Public,
+    );
+    file.GenericParam(
+        "T",
+        writer::TypeOrMethodDef::TypeDef(owner),
+        0,
+        GenericParamAttributes(0),
+    );
+    file.MethodDef(
+        "Run",
+        &Signature {
+            flags: MethodCallAttributes::default(),
+            return_type: Type::Generic("T".into(), 0),
+            types: vec![],
+        },
+        MethodAttributes::Public | MethodAttributes::Static,
+        MethodImplAttributes(0),
+    );
+    let catalog =
+        Catalog::from_inputs([source("generic-method-owner", file.into_stream())]).unwrap();
+
+    let rendered = render(&catalog, "Run");
+    assert_eq!(rendered.text, "static T Box<T>::Run(void);\n");
+    assert_eq!(rendered.regions.len(), 3);
+    assert_eq!(rendered.regions[0].range, 7..8);
+    assert!(matches!(rendered.regions[0].kind, RegionKind::Type));
+    assert_eq!(rendered.regions[1].range, 9..12);
+    assert_eq!(
+        catalog
+            .entity(rendered.regions[1].reference().unwrap())
+            .unwrap()
+            .full_name,
+        "Fixture.Box`1"
+    );
+    assert_eq!(rendered.regions[2].range, 13..14);
+    assert!(matches!(rendered.regions[2].kind, RegionKind::Type));
 }
 
 #[test]

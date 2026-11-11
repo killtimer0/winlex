@@ -1,11 +1,11 @@
-//! Compact C/IDL-like reading view; not a compilable header or an ABI definition.
+//! Compact C/C++-like reading view; not a compilable header or an ABI definition.
 use super::{const_annotation, normalized_integer};
 use std::fmt::Write;
 use winlex_core::windows_metadata::reader::*;
 use winlex_core::windows_metadata::*;
 use winlex_core::{
-    Architecture, Catalog, Declaration, DeclarationTarget, EntityId, EntitySummary, Result, guid,
-    integer, primitive_name,
+    Architecture, Catalog, Declaration, DeclarationTarget, EntityCategory, EntityId, EntitySummary,
+    Result, guid, integer, primitive_name,
 };
 
 struct Types<'a> {
@@ -58,36 +58,7 @@ impl Types<'_> {
             }
             _ => {
                 let mut base = match t {
-                    Type::ClassName(n) | Type::ValueName(n) => {
-                        let head = if n.generics.is_empty() {
-                            n.name.as_str()
-                        } else {
-                            n.name.split('`').next().unwrap_or(&n.name)
-                        };
-                        let kind = self
-                            .catalog
-                            .resolve_target(self.owner, n, self.arch)
-                            .map(RegionKind::Reference)
-                            .unwrap_or(RegionKind::Type);
-                        let mut base = if self.qualified && !n.namespace.is_empty() {
-                            Rendered::from(format!("{}.{head}", n.namespace))
-                        } else {
-                            Rendered::from(head)
-                        };
-                        base.regions.push(Region {
-                            range: 0..base.position,
-                            kind,
-                        });
-                        if !n.generics.is_empty() {
-                            base.write_str("<").unwrap();
-                            base.fragment(Rendered::join(
-                                n.generics.iter().map(|t| self.ty(t, "".into())),
-                                ", ",
-                            ));
-                            base.write_str(">").unwrap();
-                        }
-                        base
-                    }
+                    Type::ClassName(n) | Type::ValueName(n) => self.named(n),
                     Type::Generic(n, _) | Type::MethodGeneric(n, _) => n.to_string().into(),
                     other => primitive_name(other)
                         .map_or_else(|| format!("{other:?}").into(), Into::into),
@@ -110,6 +81,39 @@ impl Types<'_> {
                 }
             }
         }
+    }
+
+    /// Type name with its own reference region and argument regions, shared by
+    /// signatures and the declaring type of a method.
+    fn named(&self, n: &TypeName) -> Rendered {
+        let head = if n.generics.is_empty() {
+            n.name.as_str()
+        } else {
+            n.name.split('`').next().unwrap_or(&n.name)
+        };
+        let kind = self
+            .catalog
+            .resolve_target(self.owner, n, self.arch)
+            .map(RegionKind::Reference)
+            .unwrap_or(RegionKind::Type);
+        let mut base = if self.qualified && !n.namespace.is_empty() {
+            Rendered::from(format!("{}.{head}", n.namespace))
+        } else {
+            Rendered::from(head)
+        };
+        base.regions.push(Region {
+            range: 0..base.position,
+            kind,
+        });
+        if !n.generics.is_empty() {
+            base.write_str("<").unwrap();
+            base.fragment(Rendered::join(
+                n.generics.iter().map(|t| self.ty(t, "".into())),
+                ", ",
+            ));
+            base.write_str(">").unwrap();
+        }
+        base
     }
 }
 
@@ -452,7 +456,8 @@ fn method(
     types: &Types<'_>,
     m: MethodDef<'_>,
     target: &DeclarationTarget,
-    name: &str,
+    name: Rendered,
+    modifiers: &str,
     pad: &str,
 ) -> Result<()> {
     let signature = target.signature(m.signature(&[]))?;
@@ -500,7 +505,7 @@ fn method(
             .prefix(&format!("\n{pad}    "))
             .suffix(&format!("\n{pad}"))
     };
-    write!(out, "{pad}")?;
+    write!(out, "{pad}{modifiers}")?;
     write!(
         out,
         "{}",
@@ -509,10 +514,10 @@ fn method(
             .map(const_annotation)
             .unwrap_or_default()
     )?;
-    out.fragment(types.ty(
-        &signature.return_type,
-        parameters.prefix(&format!("{name}(")).suffix(")"),
-    ));
+    let mut name = name.suffix("(");
+    name.fragment(parameters);
+    name = name.suffix(")");
+    out.fragment(types.ty(&signature.return_type, name));
     writeln!(out, ";")?;
     Ok(())
 }
@@ -569,6 +574,7 @@ fn append(
         arch,
         qualified: false,
     };
+    let is_function = row.category() == EntityCategory::Function;
     match row {
         Declaration::Type(t) => {
             let category = (t.name() != "<Module>").then(|| t.category());
@@ -636,7 +642,7 @@ fn append(
                     )?;
                 }
                 write!(out, "{pad}delegate ")?;
-                method(out, &types, invoke, target, &name, "")?;
+                method(out, &types, invoke, target, name.into(), "", "")?;
                 return Ok(());
             }
             let generics = t.generic_types();
@@ -774,14 +780,26 @@ fn append(
                 }
                 writeln!(out)?;
             }
-            method(
-                out,
-                &types,
-                m,
-                target,
-                &generic_name(m.name(), m.generic_params()),
-                pad,
-            )?;
+            let name = generic_name(m.name(), m.generic_params());
+            let name = if is_function || !pad.is_empty() {
+                Rendered::from(name)
+            } else {
+                let owner = m.parent_row::<TypeDef>(5);
+                let mut owner_type = TypeName::named(owner.namespace(), owner.name());
+                let mut params: Vec<_> = owner.generic_params().collect();
+                params.sort_by_key(|param| param.sequence());
+                owner_type.generics = params
+                    .iter()
+                    .map(|param| Type::Generic(param.name().to_owned(), param.sequence()))
+                    .collect();
+                types.named(&owner_type).suffix(&format!("::{name}"))
+            };
+            let modifiers = if !is_function && m.flags().contains(MethodAttributes::Static) {
+                "static "
+            } else {
+                ""
+            };
+            method(out, &types, m, target, name, modifiers, pad)?;
         }
         Declaration::Property(p) => {
             write!(out, "{pad}")?;

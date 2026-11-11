@@ -795,6 +795,7 @@ fn spans(text: &[u16], regions: &[Region]) -> Vec<(usize, usize, u8)> {
                     "enum",
                     "typedef",
                     "const",
+                    "static",
                     "void",
                     "interface",
                     "return",
@@ -1656,6 +1657,10 @@ mod tests {
             (
                 "/**/const",
                 vec![("/**/", COMMENT_STYLE), ("const", KEYWORD_STYLE)],
+            ),
+            (
+                "static const",
+                vec![("static", KEYWORD_STYLE), ("const", KEYWORD_STYLE)],
             ),
             (
                 "/* **/42",

@@ -88,8 +88,13 @@ fn official_const_owners_remain_visible_without_replacing_native_string_types() 
             ));
             let rendered =
                 winlex_format::declaration::render(&catalog, entity.id, Architecture::X64).unwrap();
+            let expected_start = if selector.ends_with("Field") {
+                format!("{prefix}PSTR ")
+            } else {
+                format!("static {prefix}PSTR Apis::{name}(")
+            };
             assert!(
-                rendered.text.starts_with(&format!("{prefix}PSTR ")),
+                rendered.text.starts_with(&expected_start),
                 "{}",
                 rendered.text
             );
@@ -104,11 +109,26 @@ fn official_const_owners_remain_visible_without_replacing_native_string_types() 
                 );
             }
             let units: Vec<_> = rendered.text.encode_utf16().collect();
-            for region in &rendered.regions {
-                assert_eq!(
-                    String::from_utf16(&units[region.range.clone()]).unwrap(),
-                    "PSTR"
-                );
+            let reference_text = |region: &winlex_format::declaration::Region| {
+                String::from_utf16(&units[region.range.clone()]).unwrap()
+            };
+            let references: Vec<_> = rendered
+                .regions
+                .iter()
+                .filter(|region| region.reference().is_some())
+                .map(reference_text)
+                .collect();
+            if selector.ends_with("Field") {
+                assert!(references.is_empty(), "{references:?}");
+            } else {
+                assert_eq!(references, ["Apis"]);
+            }
+            for region in rendered
+                .regions
+                .iter()
+                .filter(|region| region.reference().is_none())
+            {
+                assert_eq!(reference_text(region), "PSTR");
             }
         }
     }
