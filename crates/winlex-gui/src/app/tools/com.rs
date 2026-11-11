@@ -12,8 +12,11 @@ use std::{
 use winlex_core::tools::com::{
     self, Field, Group, GroupKind, Report, Request, ResolvedKind, TargetKind, View as RegistryView,
     Views, Warning,
+    typelib::{self, Convention, Direction, MemberKind, TypeKind, TypeLibrary},
 };
 use winlex_format::declaration::{Region, Rendered, SymbolRole};
+
+use crate::tasks::tools::{Completion as ToolCompletion, Job as ToolJob};
 
 const KINDS: &[(u16, TargetKind)] = &[
     (IDS_COM_KIND_AUTO, TargetKind::Auto),
@@ -40,6 +43,7 @@ pub(in crate::app) struct View {
     kind: HWND,
     registry_view: HWND,
     query: HWND,
+    type_lib: HWND,
     copy: HWND,
     result: HWND,
     labels: Vec<HWND>,
@@ -47,6 +51,10 @@ pub(in crate::app) struct View {
     setting: Cell<bool>,
     body: RefCell<crate::rich_text::Content>,
     plain: RefCell<String>,
+    report: RefCell<Option<Report>>,
+    type_libraries: RefCell<Vec<TypeLibrary>>,
+    type_lib_errors: RefCell<Vec<String>>,
+    type_lib_ticket: Cell<Option<u64>>,
 }
 
 impl View {
@@ -66,6 +74,7 @@ impl View {
             kind: std::ptr::null_mut(),
             registry_view: std::ptr::null_mut(),
             query: std::ptr::null_mut(),
+            type_lib: std::ptr::null_mut(),
             copy: std::ptr::null_mut(),
             result: std::ptr::null_mut(),
             labels: vec![],
@@ -73,6 +82,10 @@ impl View {
             setting: Cell::new(true),
             body: RefCell::new(crate::rich_text::Content::new(String::new())),
             plain: RefCell::new(String::new()),
+            report: RefCell::new(None),
+            type_libraries: RefCell::new(Vec::new()),
+            type_lib_errors: RefCell::new(Vec::new()),
+            type_lib_ticket: Cell::new(None),
         }
     }
     fn update_icons(&self) {
@@ -148,6 +161,7 @@ impl View {
                 IDS_COM_QUERY,
                 BS_DEFPUSHBUTTON as u32,
             ),
+            (&mut self.type_lib, COM_TYPELIB, IDS_COM_TYPELIB, 0),
             (&mut self.copy, COM_COPY_ALL, IDS_COM_COPY_ALL, 0),
         ] {
             *control = unsafe {
@@ -170,6 +184,7 @@ impl View {
             )
         }?);
         self.result = crate::rich_text::create(hwnd, COM_RESULT)?;
+        unsafe { EnableWindow(self.type_lib, 0) };
         send(self.input, EM_SETLIMITTEXT, 4096, 0);
         self.setting.set(false);
         Ok(())
@@ -178,18 +193,24 @@ impl View {
         let raw = native_text(self.input);
         let target = String::from_utf16_lossy(&raw);
         let target = target.trim();
+        if let Some(id) = self.type_lib_ticket.take() {
+            self.ctx().cancel_job(id);
+        }
+        self.type_libraries.borrow_mut().clear();
+        self.type_lib_errors.borrow_mut().clear();
         if target.is_empty() {
+            self.report.replace(None);
             let empty = resources::text(IDS_COM_EMPTY);
             self.show(
                 crate::rich_text::Content::new(empty.clone()),
                 String::new(),
                 &empty,
             );
+            self.update_actions();
             return;
         }
         let kind = selected(self.kind, KINDS, TargetKind::Auto);
         let views = selected(self.registry_view, VIEWS, Views::Both);
-        let labels = Labels::from_resources();
         let report = com::query(
             &com::registry::Live,
             &Request {
@@ -198,16 +219,30 @@ impl View {
                 views,
             },
         );
-        let warnings: Vec<String> = report
+        self.report.replace(Some(report));
+        self.present();
+    }
+    fn present(&self) {
+        let Some(report) = self.report.borrow().clone() else {
+            return;
+        };
+        let labels = Labels::from_resources();
+        let mut warnings: Vec<String> = report
             .warnings
             .iter()
             .map(|warning| warning_text(warning, &labels))
             .collect();
-        let output = render(&report, &labels, &warnings);
+        warnings.extend(self.type_lib_errors.borrow().iter().cloned());
+        let mut output = render(&report, &labels, &warnings);
+        for library in self.type_libraries.borrow().iter() {
+            render_type_library(&mut output.body, library, &labels);
+        }
+        output.copy = output.body.text.trim_end().to_owned();
         let status = resources::format(
             IDS_COM_STATUS,
             &[
                 &report.groups.len().to_string(),
+                &self.type_libraries.borrow().len().to_string(),
                 &warnings.len().to_string(),
             ],
         );
@@ -216,6 +251,85 @@ impl View {
             output.copy,
             &status,
         );
+        self.update_actions();
+    }
+    fn update_actions(&self) {
+        let has_library = self
+            .report
+            .borrow()
+            .as_ref()
+            .is_some_and(|report| !type_library_references(report).is_empty());
+        let enabled = has_library && self.type_lib_ticket.get().is_none();
+        unsafe { EnableWindow(self.type_lib, if enabled { 1 } else { 0 }) };
+    }
+    fn read_type_libraries(&self) {
+        let report = self.report.borrow();
+        let Some(report) = report.as_ref() else {
+            return;
+        };
+        let libraries = type_library_references(report);
+        if libraries.is_empty() {
+            self.set_status(&resources::text(IDS_COM_TYPELIB_NONE));
+            return;
+        }
+        let ctx = self.ctx();
+        let ticket = crate::app::catalog::next_ticket(ctx);
+        let id = ticket.id;
+        let previous = self.type_lib_ticket.take();
+        match ctx.replace_job(
+            previous,
+            ticket,
+            crate::tasks::Job::Tool {
+                document: self.id,
+                job: ToolJob::TypeLibraries { libraries },
+            },
+        ) {
+            Ok(()) => {
+                self.type_lib_ticket.set(Some(id));
+                self.set_status(&resources::text(IDS_COM_TYPELIB_LOADING));
+                self.update_actions();
+            }
+            Err(error) => self.set_status(&format!("{error:#}")),
+        }
+    }
+    pub(in crate::app) fn complete(&self, id: u64, completion: ToolCompletion) {
+        let ToolCompletion::TypeLibraries { results } = completion else {
+            return;
+        };
+        if self.type_lib_ticket.get() != Some(id) {
+            return;
+        }
+        self.type_lib_ticket.set(None);
+        let mut libraries = self.type_libraries.borrow_mut();
+        let mut errors = self.type_lib_errors.borrow_mut();
+        libraries.clear();
+        errors.clear();
+        for outcome in results {
+            match outcome.result {
+                Ok(library) => libraries.push(library),
+                Err(error) => {
+                    let reason = match error {
+                        typelib::Error::NotRegistered => {
+                            resources::text(IDS_COM_TYPELIB_NOT_REGISTERED)
+                        }
+                        typelib::Error::Failure(message) => message,
+                    };
+                    errors.push(resources::format(
+                        IDS_COM_TYPELIB_FAILED,
+                        &[&outcome.guid.to_string(), &reason],
+                    ));
+                }
+            }
+        }
+        drop(errors);
+        drop(libraries);
+        self.present();
+    }
+    pub(in crate::app) fn worker_stopped(&self) {
+        if self.type_lib_ticket.take().is_some() {
+            self.set_status(&resources::text(IDS_WORKER_STOPPED));
+            self.update_actions();
+        }
     }
     fn show(&self, content: crate::rich_text::Content, copy: String, status: &str) {
         if let Err(error) = crate::rich_text::set_content(self.result, &content) {
@@ -274,7 +388,11 @@ impl View {
             positions.push((control, layout::center_vertical(line, heights[index])));
             layout::take_top(&mut area, gap);
         }
-        m.buttons(&mut area, [self.query, self.copy], &mut positions);
+        m.buttons(
+            &mut area,
+            [self.query, self.type_lib, self.copy],
+            &mut positions,
+        );
         layout::take_top(&mut area, m.px(4));
         positions.push((
             self.labels[3],
@@ -296,6 +414,7 @@ impl View {
             self.kind,
             self.registry_view,
             self.query,
+            self.type_lib,
             self.copy,
         ]) {
             super::super::bind(h, m.font);
@@ -347,6 +466,7 @@ impl View {
                 let code = (w >> 16) as u32;
                 match id {
                     COM_QUERY if code == BN_CLICKED => self.execute(),
+                    COM_TYPELIB if code == BN_CLICKED => self.read_type_libraries(),
                     COM_COPY_ALL if code == BN_CLICKED => {
                         let copy_text: Vec<u16> = self.plain.borrow().encode_utf16().collect();
                         if let Err(error) = copy_unicode(self.hwnd, &copy_text) {
@@ -369,7 +489,11 @@ impl View {
             _ => None,
         }
     }
-    pub fn destroy(&self) {}
+    pub fn destroy(&self) {
+        if let Some(id) = self.type_lib_ticket.take() {
+            self.ctx().cancel_job(id);
+        }
+    }
 }
 
 fn native_text(hwnd: HWND) -> Vec<u16> {
@@ -417,6 +541,27 @@ struct Labels {
     empty_value: String,
     warnings: String,
     warn_empty: String,
+    type_library: String,
+    type_enum: String,
+    type_record: String,
+    type_module: String,
+    type_interface: String,
+    type_dispatch: String,
+    type_coclass: String,
+    type_alias: String,
+    type_union: String,
+    type_unknown: String,
+    member_function: String,
+    member_get: String,
+    member_put: String,
+    member_put_ref: String,
+    member_unknown: String,
+    direction_in: String,
+    direction_out: String,
+    direction_inout: String,
+    implements: String,
+    optional: String,
+    retval: String,
 }
 
 impl Labels {
@@ -438,6 +583,27 @@ impl Labels {
             empty_value: resources::text(IDS_COM_EMPTY_VALUE),
             warnings: resources::text(IDS_COM_WARNINGS),
             warn_empty: resources::text(IDS_COM_WARN_EMPTY),
+            type_library: resources::text(IDS_COM_TYPELIB_LABEL),
+            type_enum: resources::text(IDS_COM_TYPE_ENUM),
+            type_record: resources::text(IDS_COM_TYPE_RECORD),
+            type_module: resources::text(IDS_COM_TYPE_MODULE),
+            type_interface: resources::text(IDS_COM_TYPE_INTERFACE),
+            type_dispatch: resources::text(IDS_COM_TYPE_DISPATCH),
+            type_coclass: resources::text(IDS_COM_TYPE_COCLASS),
+            type_alias: resources::text(IDS_COM_TYPE_ALIAS),
+            type_union: resources::text(IDS_COM_TYPE_UNION),
+            type_unknown: resources::text(IDS_COM_TYPE_UNKNOWN),
+            member_function: resources::text(IDS_COM_MEMBER_FUNCTION),
+            member_get: resources::text(IDS_COM_MEMBER_GET),
+            member_put: resources::text(IDS_COM_MEMBER_PUT),
+            member_put_ref: resources::text(IDS_COM_MEMBER_PUTREF),
+            member_unknown: resources::text(IDS_COM_MEMBER_UNKNOWN),
+            direction_in: resources::text(IDS_COM_DIRECTION_IN),
+            direction_out: resources::text(IDS_COM_DIRECTION_OUT),
+            direction_inout: resources::text(IDS_COM_DIRECTION_INOUT),
+            implements: resources::text(IDS_COM_IMPLEMENTS),
+            optional: resources::text(IDS_COM_OPTIONAL),
+            retval: resources::text(IDS_COM_RETVAL),
         }
     }
     fn group(&self, kind: GroupKind) -> &str {
@@ -462,6 +628,36 @@ impl Labels {
         match origin {
             com::Origin::Machine => &self.origin_machine,
             com::Origin::User => &self.origin_user,
+        }
+    }
+    fn type_kind(&self, kind: TypeKind) -> &str {
+        match kind {
+            TypeKind::Enum => &self.type_enum,
+            TypeKind::Record => &self.type_record,
+            TypeKind::Module => &self.type_module,
+            TypeKind::Interface => &self.type_interface,
+            TypeKind::Dispatch => &self.type_dispatch,
+            TypeKind::Coclass => &self.type_coclass,
+            TypeKind::Alias => &self.type_alias,
+            TypeKind::Union => &self.type_union,
+            TypeKind::Unknown => &self.type_unknown,
+        }
+    }
+    fn member(&self, kind: MemberKind) -> &str {
+        match kind {
+            MemberKind::Function => &self.member_function,
+            MemberKind::PropertyGet => &self.member_get,
+            MemberKind::PropertyPut => &self.member_put,
+            MemberKind::PropertyPutRef => &self.member_put_ref,
+            MemberKind::Unknown => &self.member_unknown,
+        }
+    }
+    fn direction(&self, direction: Direction) -> &str {
+        match direction {
+            Direction::In => &self.direction_in,
+            Direction::Out => &self.direction_out,
+            Direction::InOut => &self.direction_inout,
+            Direction::Unknown => "",
         }
     }
 }
@@ -523,6 +719,152 @@ fn render(report: &Report, labels: &Labels, warnings: &[String]) -> Output {
         copy: body.text.trim_end().to_owned(),
         body,
     }
+}
+
+fn render_type_library(body: &mut Rendered, library: &TypeLibrary, labels: &Labels) {
+    body.text.push('\n');
+    body.text.push_str(&labels.type_library);
+    body.text.push(' ');
+    body.text
+        .push_str(&format!("{}.{}", library.major, library.minor));
+    body.text.push(' ');
+    push_symbol(body, &library.guid, SymbolRole::Type);
+    if !library.name.is_empty() {
+        body.text.push(' ');
+        body.text.push_str(&library.name);
+    }
+    body.text.push('\n');
+    for info in &library.types {
+        body.text.push_str("  ");
+        body.text.push_str(labels.type_kind(info.kind));
+        body.text.push(' ');
+        push_symbol(body, &info.name, SymbolRole::Type);
+        if let Some(guid) = &info.guid {
+            body.text.push(' ');
+            body.text.push_str(guid);
+        }
+        body.text.push('\n');
+        for implemented in &info.implemented {
+            body.text.push_str("    ");
+            body.text.push_str(&labels.implements);
+            body.text.push(' ');
+            push_symbol(body, &implemented.name, SymbolRole::Type);
+            if let Some(guid) = &implemented.guid {
+                body.text.push(' ');
+                body.text.push_str(guid);
+            }
+            let mut flags = Vec::new();
+            if implemented.source {
+                flags.push("source");
+            }
+            if implemented.default {
+                flags.push("default");
+            }
+            if implemented.restricted {
+                flags.push("restricted");
+            }
+            if implemented.default_vtable {
+                flags.push("defaultvtable");
+            }
+            if !flags.is_empty() {
+                body.text.push_str(" [");
+                body.text.push_str(&flags.join(", "));
+                body.text.push(']');
+            }
+            body.text.push('\n');
+        }
+        for function in &info.functions {
+            body.text.push_str("    ");
+            push_symbol(body, &function.name, SymbolRole::Method);
+            body.text.push_str(" (");
+            body.text.push_str(labels.member(function.member));
+            if function.convention != Convention::Unknown {
+                body.text.push_str(", ");
+                body.text.push_str(convention_name(function.convention));
+            }
+            body.text.push_str(") -> ");
+            body.text.push_str(&function.returns);
+            body.text.push('\n');
+            for parameter in &function.parameters {
+                body.text.push_str("      [");
+                body.text.push_str(labels.direction(parameter.direction));
+                if parameter.optional {
+                    body.text.push_str(", ");
+                    body.text.push_str(&labels.optional);
+                }
+                if parameter.return_value {
+                    body.text.push_str(", ");
+                    body.text.push_str(&labels.retval);
+                }
+                body.text.push_str("] ");
+                body.text.push_str(&parameter.ty);
+                if !parameter.name.is_empty() {
+                    body.text.push(' ');
+                    body.text.push_str(&parameter.name);
+                }
+                body.text.push('\n');
+            }
+        }
+        for variable in &info.variables {
+            body.text.push_str("    ");
+            push_symbol(body, &variable.name, SymbolRole::Member);
+            body.text.push_str(" : ");
+            body.text.push_str(&variable.ty);
+            body.text.push('\n');
+        }
+    }
+}
+
+fn push_symbol(body: &mut Rendered, value: &str, role: SymbolRole) {
+    if value.is_empty() {
+        return;
+    }
+    let start = body.text.encode_utf16().count();
+    body.text.push_str(value);
+    let end = start + value.encode_utf16().count();
+    body.regions.push(Region::symbol(start..end, role));
+}
+
+fn convention_name(convention: Convention) -> &'static str {
+    match convention {
+        Convention::Cdecl => "cdecl",
+        Convention::Stdcall => "stdcall",
+        Convention::Fastcall => "fastcall",
+        Convention::Pascal => "pascal",
+        Convention::Syscall => "syscall",
+        Convention::MacPascal => "macpascal",
+        Convention::FpFastcall => "fpfastcall",
+        Convention::Unknown => "",
+    }
+}
+
+fn parse_version(value: &str) -> Option<(u16, u16)> {
+    let (major, minor) = value.split_once('.')?;
+    Some((major.parse().ok()?, minor.parse().ok()?))
+}
+
+fn type_library_references(report: &Report) -> Vec<(com::Guid, u16, u16)> {
+    let mut libraries = Vec::new();
+    for group in &report.groups {
+        if group.kind != GroupKind::TypeLib {
+            continue;
+        }
+        let Some(guid) = group.identity.as_deref().and_then(com::Guid::parse) else {
+            continue;
+        };
+        for child in &group.children {
+            if child.kind != GroupKind::TypeLibVersion {
+                continue;
+            }
+            let Some((major, minor)) = child.identity.as_deref().and_then(parse_version) else {
+                continue;
+            };
+            if !libraries.contains(&(guid, major, minor)) {
+                libraries.push((guid, major, minor));
+            }
+        }
+    }
+    libraries
 }
 
 fn render_group(body: &mut Rendered, group: &Group, depth: usize, labels: &Labels) {
@@ -610,6 +952,27 @@ mod tests {
             empty_value: "(empty)".into(),
             warnings: "Warnings:".into(),
             warn_empty: "Enter a target.".into(),
+            type_library: "Type library".into(),
+            type_enum: "Enumeration".into(),
+            type_record: "Structure".into(),
+            type_module: "Module".into(),
+            type_interface: "Interface".into(),
+            type_dispatch: "Dispatch interface".into(),
+            type_coclass: "Class".into(),
+            type_alias: "Alias".into(),
+            type_union: "Union".into(),
+            type_unknown: "Other".into(),
+            member_function: "function".into(),
+            member_get: "property get".into(),
+            member_put: "property put".into(),
+            member_put_ref: "property put by reference".into(),
+            member_unknown: "member".into(),
+            direction_in: "in".into(),
+            direction_out: "out".into(),
+            direction_inout: "in, out".into(),
+            implements: "Implements".into(),
+            optional: "optional".into(),
+            retval: "retval".into(),
         }
     }
 
@@ -699,5 +1062,105 @@ mod tests {
         };
         let output = render(&report, &labels(), &["cannot tell".into()]);
         assert_eq!(output.copy, "not a target\n\nWarnings:\n  cannot tell");
+    }
+
+    #[test]
+    fn type_libraries_are_appended_with_members_and_parameters() {
+        let library = TypeLibrary {
+            guid: "{00020430-0000-0000-C000-000000000046}".into(),
+            major: 2,
+            minor: 0,
+            lcid: 0,
+            name: "OLE Automation".into(),
+            documentation: None,
+            types: vec![typelib::TypeInfo {
+                name: "IFont".into(),
+                kind: TypeKind::Interface,
+                guid: Some("{BEF6E003-A874-101A-8BBA-00AA00300CAB}".into()),
+                documentation: None,
+                implemented: vec![typelib::Implemented {
+                    name: "IUnknown".into(),
+                    guid: Some("{00000000-0000-0000-C000-000000000046}".into()),
+                    source: false,
+                    default: true,
+                    restricted: false,
+                    default_vtable: false,
+                }],
+                functions: vec![typelib::Function {
+                    name: "Name".into(),
+                    memid: 0,
+                    member: MemberKind::PropertyGet,
+                    convention: Convention::Stdcall,
+                    returns: "BSTR".into(),
+                    parameters: vec![typelib::Parameter {
+                        name: "pName".into(),
+                        ty: "BSTR".into(),
+                        direction: Direction::Out,
+                        optional: false,
+                        return_value: true,
+                    }],
+                }],
+                variables: vec![typelib::Variable {
+                    name: "hFont".into(),
+                    memid: 1,
+                    ty: "OLE_HANDLE".into(),
+                    kind: typelib::VariableKind::PerInstance,
+                }],
+            }],
+        };
+        let mut body = Rendered::default();
+        render_type_library(&mut body, &library, &labels());
+        assert!(body.text.starts_with("\nType library 2.0 "));
+        assert!(body.text.contains("\n  Interface IFont "));
+        assert!(body.text.contains("\n    Implements IUnknown "));
+        assert!(
+            body.text
+                .contains("\n    Name (property get, stdcall) -> BSTR")
+        );
+        assert!(body.text.contains("\n      [out, retval] BSTR pName"));
+        assert!(body.text.contains("\n    hFont : OLE_HANDLE"));
+        assert!(
+            body.regions
+                .iter()
+                .any(|region| region.role == Some(SymbolRole::Method))
+        );
+        assert!(
+            body.regions
+                .iter()
+                .any(|region| region.role == Some(SymbolRole::Member))
+        );
+    }
+
+    #[test]
+    fn type_library_references_follow_registered_versions() {
+        let report = Report {
+            input: "Example.Object".into(),
+            kind: Some(ResolvedKind::ProgId),
+            normalized: Some("Example.Object".into()),
+            groups: vec![Group {
+                kind: GroupKind::TypeLib,
+                identity: Some("{00020430-0000-0000-C000-000000000046}".into()),
+                fields: vec![],
+                children: vec![
+                    Group {
+                        kind: GroupKind::TypeLibVersion,
+                        identity: Some("2.0".into()),
+                        fields: vec![],
+                        children: vec![],
+                    },
+                    Group {
+                        kind: GroupKind::TypeLibVersion,
+                        identity: Some("1.0".into()),
+                        fields: vec![],
+                        children: vec![],
+                    },
+                ],
+            }],
+            warnings: vec![],
+        };
+        let references = type_library_references(&report);
+        assert_eq!(references.len(), 2);
+        assert_eq!(references[0].1, 2);
+        assert_eq!(references[1].1, 1);
     }
 }

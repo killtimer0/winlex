@@ -3,6 +3,7 @@ use serde::Serialize;
 use std::{cell::RefCell, fmt};
 
 pub mod registry;
+pub mod typelib;
 
 /// Where a registration was read from. `Machine` is HKLM, `User` is HKCU.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]

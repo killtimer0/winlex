@@ -165,13 +165,17 @@ impl ToolView {
         forward!(self, view, view.activated())
     }
     pub fn complete(&self, id: u64, completion: crate::tasks::tools::Completion) {
-        if let Self::ErrorCode(view) = self {
-            view.complete(id, completion);
+        match self {
+            Self::ErrorCode(view) => view.complete(id, completion),
+            Self::Com(view) => view.complete(id, completion),
+            Self::Demangle(_) => {}
         }
     }
     pub fn worker_stopped(&self) {
-        if let Self::ErrorCode(view) = self {
-            view.worker_stopped();
+        match self {
+            Self::ErrorCode(view) => view.worker_stopped(),
+            Self::Com(view) => view.worker_stopped(),
+            Self::Demangle(_) => {}
         }
     }
     pub fn description(&self) -> String {
