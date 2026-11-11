@@ -93,6 +93,7 @@ impl View {
                     | WS_VSCROLL
                     | ES_MULTILINE as u32
                     | ES_AUTOVSCROLL as u32
+                    | ES_WANTRETURN as u32
                     | ES_NOHIDESEL as u32,
                 WS_EX_CLIENTEDGE,
             ),
