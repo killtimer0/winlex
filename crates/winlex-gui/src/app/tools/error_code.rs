@@ -22,15 +22,21 @@ use winlex_core::{
 };
 
 const TEXT_SUBCLASS: usize = 1810;
-pub(in crate::app) fn item_code(
-    value: Option<&crate::app::result_value::ResultValue>,
-) -> Option<u32> {
+fn item_code(value: Option<&crate::app::result_value::ResultValue>) -> Option<u32> {
     let number = value?.integer?;
     if number < 0 {
         i32::try_from(number).ok().map(|number| number as u32)
     } else {
         u32::try_from(number).ok()
     }
+}
+pub(super) fn action(
+    value: Option<&crate::app::result_value::ResultValue>,
+) -> Option<super::Action> {
+    item_code(value).map(|code| super::Action {
+        label: IDS_ERROR_CODE_SEARCH,
+        request: super::Request::ErrorCode(code),
+    })
 }
 const SCOPES: &[(u16, Scope)] = &[
     (IDS_ERROR_CODE_AUTO, Scope::Auto),

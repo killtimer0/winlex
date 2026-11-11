@@ -438,10 +438,12 @@ pub(super) fn context_menu(ctx: &Context, hwnd: HWND, location: isize) -> anyhow
             menu.item(5, resources::wide_text(IDS_RESULT_COPY_HEX), true)?;
         }
     }
-    let code = super::tools::item_code(value.as_ref());
-    if code.is_some() {
+    let actions = super::tools::actions(value.as_ref());
+    if !actions.is_empty() {
         menu.separator()?;
-        menu.item(100, resources::wide_text(IDS_ERROR_CODE_SEARCH), true)?;
+        for (index, action) in actions.iter().enumerate() {
+            menu.item(100 + index as u16, resources::wide_text(action.label), true)?;
+        }
     }
     match menu.track(hwnd, point) {
         command @ (1 | 2) => {
@@ -479,9 +481,9 @@ pub(super) fn context_menu(ctx: &Context, hwnd: HWND, location: isize) -> anyhow
                 }
             }
         }
-        100 => {
-            if let Some(code) = code {
-                super::tools::open_with(ctx, super::tools::Request::ErrorCode(code));
+        command if command >= 100 => {
+            if let Some(action) = actions.get(usize::from(command - 100)) {
+                super::tools::open_with(ctx, action.request.clone());
             }
         }
         _ => {}

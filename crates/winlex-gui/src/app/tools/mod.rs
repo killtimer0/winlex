@@ -11,7 +11,6 @@ use crate::{
 use std::rc::Rc;
 
 mod error_code;
-pub(super) use error_code::item_code;
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub(super) enum Kind {
@@ -53,6 +52,22 @@ impl Request {
             Self::ErrorCode(_) => Kind::ErrorCode,
         }
     }
+}
+
+/// A search-result command owned by one tool.
+pub(super) struct Action {
+    pub label: u16,
+    pub request: Request,
+}
+
+/// Search-result actions in tool descriptor order.
+pub(super) fn actions(value: Option<&crate::app::result_value::ResultValue>) -> Vec<Action> {
+    TOOLS
+        .iter()
+        .filter_map(|descriptor| match descriptor.kind {
+            Kind::ErrorCode => error_code::action(value),
+        })
+        .collect()
 }
 
 pub(super) enum ToolView {
@@ -282,5 +297,28 @@ mod tests {
             Request::ErrorCode(5).kind().descriptor().kind,
             Kind::ErrorCode
         );
+    }
+
+    #[test]
+    fn search_result_actions_follow_the_descriptor_order() {
+        use crate::app::result_value::ResultValue;
+        assert!(actions(None).is_empty());
+        let integer = ResultValue {
+            text: "5".into(),
+            hexadecimal: Some("0x00000005".into()),
+            integer: Some(5),
+        };
+        let acts = actions(Some(&integer));
+        assert_eq!(acts.len(), 1);
+        assert_eq!(acts[0].label, IDS_ERROR_CODE_SEARCH);
+        match &acts[0].request {
+            Request::ErrorCode(code) => assert_eq!(*code, 5),
+        }
+        let string_value = ResultValue {
+            text: "Windows".into(),
+            hexadecimal: None,
+            integer: None,
+        };
+        assert!(actions(Some(&string_value)).is_empty());
     }
 }
