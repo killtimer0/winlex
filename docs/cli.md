@@ -100,7 +100,7 @@ winlex demangle --file .\exports.txt --json
 - 仅做单向 demangle，不生成修饰名，也不读取 DLL／EXE 导出表。
 - `--abi auto`（默认）按前缀判断：`?` 为 Visual C++，`_Z` 为 Itanium，`_name@N`／`@name@N` 为 x86 C 装饰。无法判断时要求显式指定 ABI。
 - Visual C++ 结果包含返回类型和调用约定；Itanium 普通函数不编码返回类型，结果只描述已编码的信息。
-- Rust v0（`_R…`）符号不支持，直接报错。
+- Rust v0（`_R…`）符号不支持，直接报错；形如 `_name@N` 的 x86 C 装饰仍按 C 装饰解析。
 - `--file` 读取 UTF-8 文本，每行一个符号，空行忽略；可与位置参数同时使用，文件内容在前。
 - 文本输出每行 `原始 -> 还原 [abi, 类型(, 调用约定)]`；解析失败的符号保留原行并输出错误。
 - `--json` 输出版本化结果，每个符号包含 `symbol`、`ok`，成功时带 `result`（`text`、`abi`、`kind`、`convention`、`spans`），失败时带 `error`。

@@ -82,8 +82,6 @@ pub fn detect(symbol: &str) -> Option<Abi> {
         Some(Abi::Msvc)
     } else if symbol.starts_with("_Z") {
         Some(Abi::Itanium)
-    } else if symbol.starts_with("_R") {
-        None
     } else if c_decoration(symbol, true).is_some() {
         Some(Abi::Msvc)
     } else {
@@ -115,7 +113,7 @@ fn msvc(symbol: &str) -> anyhow::Result<Demangled> {
         "Itanium symbol; select the Itanium ABI"
     );
     ensure!(
-        !symbol.starts_with("_R"),
+        !symbol.starts_with("_R") || c_decoration(symbol, true).is_some(),
         "Rust v0 symbols are not supported"
     );
     if let Some((name, convention)) = c_decoration(symbol, false) {
@@ -288,8 +286,11 @@ impl cpp_demangle::DemangleWrite for NameWriter {
 
 impl NameWriter {
     fn name_span(&self) -> Option<Span> {
+        // A nested name starting at offset zero is the symbol's own qualified
+        // name. Later nested names belong to parameter types of a global
+        // function, whose own name is the first unqualified name.
         let (start, end) = match (self.nested_start, self.nested_end) {
-            (Some(start), Some(end)) if end > start => (start, end),
+            (Some(0), Some(end)) if end > 0 => (0, end),
             _ => self.simple?,
         };
         Some(Span {
@@ -304,14 +305,32 @@ fn name_span(text: &str, name: &str) -> Vec<Span> {
     if name.is_empty() {
         return Vec::new();
     }
-    let Some(byte) = text.find(name) else {
-        return Vec::new();
-    };
-    vec![Span {
+    let mut fallback = None;
+    let mut start = 0;
+    while let Some(offset) = text[start..].find(name) {
+        let byte = start + offset;
+        let end = byte + name.len();
+        // The function name is the occurrence that precedes an argument list.
+        // For data symbols fall back to the last occurrence, because the type
+        // may repeat the name.
+        if text[end..].starts_with('(') {
+            return vec![span(text, byte, end)];
+        }
+        fallback = Some((byte, end));
+        start = end;
+    }
+    match fallback {
+        Some((byte, end)) => vec![span(text, byte, end)],
+        None => Vec::new(),
+    }
+}
+
+fn span(text: &str, byte: usize, end: usize) -> Span {
+    Span {
         start: text[..byte].encode_utf16().count(),
-        end: text[..byte + name.len()].encode_utf16().count(),
+        end: text[..end].encode_utf16().count(),
         role: Role::Method,
-    }]
+    }
 }
 
 #[cfg(test)]
@@ -391,6 +410,47 @@ mod tests {
         }
         assert_eq!(detect("_foo@8"), Some(Abi::Msvc));
         assert_eq!(detect("_foo"), None);
+    }
+
+    #[test]
+    fn c_decorations_take_precedence_over_the_rust_prefix() {
+        for symbol in ["_RegOpenKeyExW@20", "_ReadFile@20"] {
+            assert_eq!(detect(symbol), Some(Abi::Msvc), "{symbol}");
+        }
+        let result = demangle("_RegOpenKeyExW@20", Abi::Auto).expect("stdcall decoration");
+        assert_eq!(result.text, "RegOpenKeyExW");
+        assert_eq!(result.convention, Some(Convention::Stdcall));
+        assert_eq!(span_text(&result), ["RegOpenKeyExW"]);
+        assert!(demangle("_Rhello", Abi::Msvc).is_err());
+    }
+
+    #[test]
+    fn itanium_global_function_span_ignores_parameter_names() {
+        let result = demangle("_Z3fooN5space3BazE", Abi::Auto).expect("global symbol");
+        assert_eq!(result.text, "foo(space::Baz)");
+        assert_eq!(span_text(&result), ["foo"]);
+    }
+
+    #[test]
+    fn msvc_span_prefers_the_name_before_the_argument_list() {
+        let result = demangle("?foo@@YAPEAUfoo@@XZ", Abi::Msvc).expect("msvc symbol");
+        assert!(result.text.contains("foo(void)"), "{}", result.text);
+        assert_eq!(span_text(&result), ["foo"]);
+    }
+
+    #[test]
+    fn real_export_names_keep_their_function_span() {
+        let result = demangle(
+            "?CreateFileW@@YAPEAXPEBGKKPEAU_SECURITY_ATTRIBUTES@@W4_CREATIONDISPOSITION@@W4_FILE_FLAGS_AND_ATTRIBUTES@@PEAX@Z",
+            Abi::Auto,
+        )
+        .expect("CreateFileW");
+        assert_eq!(result.abi, Abi::Msvc);
+        assert_eq!(result.kind, SymbolKind::Function);
+        assert!(result.text.contains("CreateFileW("), "{}", result.text);
+        assert_eq!(span_text(&result), ["CreateFileW"]);
+        let result = demangle("??YFoo@@QEAAAEAV0@H@Z", Abi::Msvc).expect("operator");
+        assert_eq!(span_text(&result), ["Foo::operator+="]);
     }
 
     #[test]
