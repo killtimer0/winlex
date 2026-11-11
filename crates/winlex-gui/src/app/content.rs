@@ -114,7 +114,7 @@ impl Content {
             Self::Declaration(v) => {
                 let b = v.binding();
                 format!(
-                    "{} �� {:08X}",
+                    "{} · {:08X}",
                     b.catalog.sources()[b.entity.id.source_id].path.display(),
                     b.entity.id.token
                 )
