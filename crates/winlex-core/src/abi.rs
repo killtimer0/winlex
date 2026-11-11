@@ -362,10 +362,9 @@ impl Catalog {
         }
         let kind = kind.expect("non-empty value");
         let count = (size_bits / 8 / kind.bytes()) as u32;
-        ensure!(
-            (1..=4).contains(&count),
-            "invalid homogeneous aggregate size"
-        );
+        if !(1..=4).contains(&count) {
+            return Ok(None);
+        }
         Ok(Some((kind, count)))
     }
 
@@ -1044,6 +1043,18 @@ mod tests {
             "F4",
             &[Type::F32, Type::F32, Type::F32, Type::F32],
         );
+        add_struct(
+            &mut file,
+            "F6",
+            &[
+                Type::F32,
+                Type::F32,
+                Type::F32,
+                Type::F32,
+                Type::F32,
+                Type::F32,
+            ],
+        );
 
         let aligned = add_struct(&mut file, "A8", &[Type::I32, Type::I32]);
         let alignment = file.TypeRef("Winlex.Metadata", "NativeAlignmentAttribute");
@@ -1077,6 +1088,8 @@ mod tests {
             ("GetS8", named("S8"), &[Type::I32][..]),
             ("GetBool", named("BOOL"), &[Type::I32][..]),
             ("TakeS16", Type::Void, &[named("S16"), Type::I32][..]),
+            ("GetF6", named("F6"), &[][..]),
+            ("TakeF6", Type::Void, &[named("F6")][..]),
             (
                 "TakeMany",
                 Type::Void,
@@ -1435,6 +1448,25 @@ mod tests {
         let abi = compute(&catalog, "Fixture.HfaCallback.Invoke", Architecture::X86);
         assert_eq!(abi.return_buffer.as_deref(), Some("[esp+4]"));
         assert_eq!(abi.parameters, locations(&["[esp+8]", "[esp+24]"]));
+    }
+
+    #[test]
+    fn homogeneous_float_aggregates_over_four_elements_are_not_hfa() {
+        let catalog = fixture();
+        for (arch, this, parameter, buffer) in [
+            (Architecture::X64, "rcx", "rdx", "rdx"),
+            (Architecture::Arm64, "x0", "x1", "x1"),
+            (Architecture::X86, "[esp+4]", "[esp+8]", "[esp+8]"),
+        ] {
+            let abi = compute(&catalog, "Fixture.IThing.TakeF6", arch);
+            assert_eq!(abi.this.as_deref(), Some(this), "{arch:?}");
+            assert_eq!(abi.parameters, locations(&[parameter]), "{arch:?}");
+
+            let abi = compute(&catalog, "Fixture.IThing.GetF6", arch);
+            assert_eq!(abi.this.as_deref(), Some(this), "{arch:?}");
+            assert_eq!(abi.return_buffer.as_deref(), Some(buffer), "{arch:?}");
+            assert_eq!(abi.parameters, locations(&[]), "{arch:?}");
+        }
     }
 
     #[test]
