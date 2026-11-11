@@ -109,6 +109,7 @@ BEGIN
     IDS_COM_INTERFACES "接口"
     IDS_COM_ACTIVATE_NONE "对象未提供 IDispatch 或 IInspectable。"
     IDS_COM_ACTIVATE_EMPTY "当前结果没有可实例化的 CLSID。"
+    IDS_COM_ACTIVATE_ABANDONED "上一个实例可能仍在初始化。"
     IDS_PANEL_TOOLS "工具"
     IDS_TOOL_OPEN "打开"
     IDS_TOOL_NEW "新建实例"

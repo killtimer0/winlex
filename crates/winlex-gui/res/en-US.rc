@@ -109,6 +109,7 @@ BEGIN
     IDS_COM_INTERFACES "Interfaces"
     IDS_COM_ACTIVATE_NONE "The object exposes neither IDispatch nor IInspectable."
     IDS_COM_ACTIVATE_EMPTY "No CLSID is available to instantiate."
+    IDS_COM_ACTIVATE_ABANDONED "The previous instance may still be initializing."
     IDS_PANEL_TOOLS "Tools"
     IDS_TOOL_OPEN "Open"
     IDS_TOOL_NEW "New instance"

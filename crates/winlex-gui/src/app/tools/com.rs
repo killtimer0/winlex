@@ -207,22 +207,35 @@ impl View {
         if let Some(id) = self.type_lib_ticket.take() {
             self.ctx().cancel_job(id);
         }
-        if let Some(id) = self.activate_ticket.take() {
+        let abandoned = if let Some(id) = self.activate_ticket.take() {
+            // Cancellation only stops waiting; the isolated process may still
+            // be creating the object.
             self.ctx().cancel_job(id);
-        }
+            true
+        } else {
+            false
+        };
         self.type_libraries.borrow_mut().clear();
         self.type_lib_errors.borrow_mut().clear();
         self.activated.replace(None);
+        let note = abandoned.then(|| resources::text(IDS_COM_ACTIVATE_ABANDONED));
         if target.is_empty() {
             self.report.replace(None);
             let empty = resources::text(IDS_COM_EMPTY);
+            let message = match &note {
+                Some(note) => format!("{empty}\n\n{note}"),
+                None => empty.clone(),
+            };
             self.show(
-                crate::rich_text::Content::new(empty.clone()),
+                crate::rich_text::Content::new(message),
                 String::new(),
                 &empty,
             );
             self.update_actions();
             return;
+        }
+        if let Some(note) = note {
+            self.type_lib_errors.borrow_mut().push(note);
         }
         let kind = selected(self.kind, KINDS, TargetKind::Auto);
         let views = selected(self.registry_view, VIEWS, Views::Both);
