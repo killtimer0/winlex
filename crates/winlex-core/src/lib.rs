@@ -1,5 +1,6 @@
 //! Synchronous, UI-independent access to an immutable collection of WinMD sources.
 //! Search results own their data; declaration views borrow their Catalog.
+mod abi;
 mod api;
 mod instantiation;
 mod model;
@@ -10,6 +11,7 @@ mod source;
 pub mod tools;
 mod type_expression;
 mod winrt;
+pub use abi::NativeAbi;
 pub use instantiation::DeclarationTarget;
 pub use model::*;
 pub use search::SearchQuery as CompiledQuery;

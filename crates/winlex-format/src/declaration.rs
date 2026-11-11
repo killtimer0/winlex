@@ -461,6 +461,11 @@ fn method(
     pad: &str,
 ) -> Result<()> {
     let signature = target.signature(m.signature(&[]))?;
+    let abi = if pad.is_empty() {
+        types.catalog.native_abi(target, m, types.arch).ok()
+    } else {
+        None
+    };
     let params = m.params_by_sequence(signature.types.len())?;
     let mut parameters = signature
         .types
@@ -496,15 +501,37 @@ fn method(
     if signature.flags.0 & 0x0f == MethodCallAttributes::VARARG.0 {
         parameters.push("...".into());
     }
-    let parameters = if parameters.is_empty() {
+    let count = parameters.len();
+    let mut joined = Rendered::default();
+    for (index, parameter) in parameters.into_iter().enumerate() {
+        joined.fragment(parameter);
+        if index + 1 != count {
+            joined.write_str(",").unwrap();
+        }
+        if let Some(Some(location)) = abi.as_ref().and_then(|abi| abi.parameters.get(index)) {
+            write!(joined, " // {location}").unwrap();
+        }
+        if index + 1 != count {
+            write!(joined, "\n{pad}    ").unwrap();
+        }
+    }
+    let parameters = if count == 0 {
         "void".into()
     } else if signature.types.is_empty() {
         "...".into()
     } else {
-        Rendered::join(parameters, &format!(",\n{pad}    "))
+        joined
             .prefix(&format!("\n{pad}    "))
             .suffix(&format!("\n{pad}"))
     };
+    if let Some(abi) = &abi {
+        if let Some(this) = &abi.this {
+            writeln!(out, "{pad}// this: {this}")?;
+        }
+        if let Some(buffer) = &abi.return_buffer {
+            writeln!(out, "{pad}// return buffer: {buffer}")?;
+        }
+    }
     write!(out, "{pad}{modifiers}")?;
     write!(
         out,
@@ -518,7 +545,11 @@ fn method(
     name.fragment(parameters);
     name = name.suffix(")");
     out.fragment(types.ty(&signature.return_type, name));
-    writeln!(out, ";")?;
+    write!(out, ";")?;
+    if let Some(location) = abi.as_ref().and_then(|abi| abi.return_location.as_ref()) {
+        write!(out, " // return: {location}")?;
+    }
+    writeln!(out)?;
     Ok(())
 }
 

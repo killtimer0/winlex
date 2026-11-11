@@ -118,7 +118,7 @@ fn method_imports_and_variadic_signatures_preserve_metadata_meaning() {
         ("OnlyVariadic", "static int32 Apis::OnlyVariadic(...);\n"),
         (
             "InstanceVariadic",
-            "int32 Apis::InstanceVariadic(\n    int32 arg1,\n    ...\n);\n",
+            "// this: rcx\nint32 Apis::InstanceVariadic(\n    int32 arg1, // rdx\n    ...\n); // return: rax\n",
         ),
         (
             "VaList",
@@ -171,9 +171,9 @@ fn method_declarations_mark_static_and_declaring_type_only_at_the_root() {
     let catalog = Catalog::from_inputs([source("method-markers", file.into_stream())]).unwrap();
 
     let run = render(&catalog, "Run");
-    assert_eq!(run.text, "void Owner::Run(void);\n");
+    assert_eq!(run.text, "// this: rcx\nvoid Owner::Run(void);\n");
     assert_eq!(run.regions.len(), 2);
-    assert_eq!(run.regions[1].range, 5..10);
+    assert_eq!(run.regions[1].range, 18..23);
     assert_eq!(
         catalog
             .entity(run.regions[1].reference().unwrap())
@@ -871,4 +871,80 @@ fn enum_members_and_individual_constants_share_annotations() {
     let null = render("NullText");
     assert!(null.text.contains("= null;"), "{}", null.text);
     assert!(null.regions.iter().all(|r| r.number().is_none()));
+}
+
+#[test]
+fn native_callables_annotate_parameters_and_hidden_returns() {
+    use winlex_core::windows_metadata::{writer, *};
+    let mut file = writer::File::new("NativeAbi");
+    let value_type = file.TypeRef("System", "ValueType");
+    file.TypeDef(
+        "Fixture",
+        "Record",
+        writer::TypeDefOrRef::TypeRef(value_type),
+        TypeAttributes::Public | TypeAttributes::SequentialLayout,
+    );
+    for index in 0..4 {
+        file.Field(&format!("f{index}"), &Type::I32, FieldAttributes::Public);
+    }
+
+    file.TypeDef(
+        "Fixture",
+        "IThing",
+        writer::TypeDefOrRef::default(),
+        TypeAttributes::Public | TypeAttributes::Interface | TypeAttributes::Abstract,
+    );
+    let parameters = 5;
+    file.MethodDef(
+        "Annotate",
+        &Signature {
+            flags: MethodCallAttributes::HASTHIS,
+            return_type: Type::value_named("Fixture", "Record"),
+            types: vec![Type::I32; parameters],
+        },
+        MethodAttributes::Public | MethodAttributes::Abstract | MethodAttributes::Virtual,
+        MethodImplAttributes(0),
+    );
+    for index in 1..=parameters {
+        file.Param(&format!("p{index}"), index as u16, ParamAttributes::In);
+    }
+
+    let mut unannotated = writer::File::new("NativeAbiSkip");
+    let base = unannotated.TypeRef("System", "Object");
+    unannotated.TypeDef(
+        "Fixture",
+        "Apis",
+        writer::TypeDefOrRef::TypeRef(base),
+        TypeAttributes::Public,
+    );
+    let method = unannotated.MethodDef(
+        "Copy",
+        &Signature {
+            flags: MethodCallAttributes::default(),
+            return_type: Type::Void,
+            types: vec![Type::Array(Box::new(Type::I32))],
+        },
+        MethodAttributes::Public | MethodAttributes::Static,
+        MethodImplAttributes(0),
+    );
+    unannotated.ImplMap(
+        method,
+        PInvokeAttributes::CallConvPlatformapi,
+        "Copy",
+        "fixture.dll",
+    );
+
+    let catalog = Catalog::from_inputs([
+        source("native-abi", file.into_stream()),
+        source("native-abi-skip", unannotated.into_stream()),
+    ])
+    .unwrap();
+    assert_eq!(
+        render(&catalog, "Annotate").text,
+        "// this: rcx\n// return buffer: rdx\nRecord IThing::Annotate(\n    [in] int32 p1, // r8\n    [in] int32 p2, // r9\n    [in] int32 p3, // [rsp+0x28]\n    [in] int32 p4, // [rsp+0x30]\n    [in] int32 p5 // [rsp+0x38]\n);\n"
+    );
+    assert_eq!(
+        render(&catalog, "Copy").text,
+        "// fixture.dll!Copy; system\nvoid Copy(\n    int32 arg1[]\n);\n"
+    );
 }
