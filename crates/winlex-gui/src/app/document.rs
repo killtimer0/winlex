@@ -4,7 +4,6 @@ use super::{history, metadata::MetadataView, workspace};
 use crate::app::context::Context;
 use crate::native::*;
 use std::{cell::RefCell, rc::Rc};
-use windows::Win32::UI::Controls::RichEdit::{EN_LINK, ENLINK};
 
 pub(super) const FOLLOW_REFERENCE: u32 = WM_APP + 42;
 pub(super) fn status_changed(ctx: &Context, hwnd: HWND) {
@@ -219,10 +218,6 @@ impl MetadataView {
                         self.selection_changed();
                         return 0;
                     }
-                    if header.code == EN_LINK {
-                        self.link_notification((l as *const ENLINK).read_unaligned());
-                        return 0;
-                    }
                 }
                 WM_COMMAND => {
                     let id = (w & 0xffff) as u16;
@@ -279,30 +274,59 @@ unsafe extern "system" fn editor_proc(
                 document.cancel_restore();
             }
             match msg {
-                WM_LBUTTONDOWN | WM_LBUTTONDBLCLK | WM_RBUTTONDOWN | WM_KILLFOCUS
-                | WM_CANCELMODE | WM_SIZE | WM_SETFONT | WM_MOUSEWHEEL | WM_MOUSEHWHEEL
-                | WM_VSCROLL | WM_HSCROLL | WM_KEYDOWN | WM_SYSKEYDOWN => {
-                    document.cancel_link_press()
+                WM_MOUSEMOVE => {
+                    let point = point_from_lparam(l);
+                    document.move_link_press(point);
+                    document.track_leave(hwnd);
+                    if GetKeyState(VK_LBUTTON as i32) >= 0 {
+                        let hand = document.hover(point);
+                        set_link_cursor(hand);
+                    }
                 }
-                WM_CAPTURECHANGED if !document.releasing_link.get() || l != 0 => {
+                WM_LBUTTONDOWN => {
                     document.cancel_link_press();
+                    document.press_link(point_from_lparam(l));
                 }
-                WM_LBUTTONUP => document.releasing_link.set(true),
-                WM_RBUTTONUP => document.clear_context_link(),
-                WM_MOUSEMOVE => document.move_link_press(point_from_lparam(l)),
+                WM_LBUTTONUP => document.release_link(point_from_lparam(l)),
+                WM_KEYDOWN | WM_KEYUP if w == VK_CONTROL as usize || w == VK_MENU as usize => {
+                    if let Some(hand) = document.hover_cursor() {
+                        set_link_cursor(hand);
+                    }
+                }
+                WM_KEYDOWN => document.cancel_link_press(),
+                WM_MOUSELEAVE => document.mouse_leave(),
+                WM_KILLFOCUS | WM_CANCELMODE | WM_SIZE | WM_SETFONT | WM_MOUSEWHEEL
+                | WM_MOUSEHWHEEL | WM_VSCROLL | WM_HSCROLL | WM_SYSKEYDOWN => {
+                    document.cancel_link_press();
+                    if msg != WM_SYSKEYDOWN || w == VK_MENU as usize {
+                        document.clear_hover();
+                    }
+                }
+                WM_CAPTURECHANGED => document.cancel_link_press(),
                 _ => {}
             }
         }
         if msg == WM_NCDESTROY {
             remove_subclass(hwnd, Some(editor_proc), 1);
         }
-        let result = default_subclass(hwnd, msg, w, l);
-        if msg == WM_LBUTTONUP
-            && let Some(document) = document
+        if msg == WM_SETCURSOR
+            && (l as usize & 0xffff) as u32 == HTCLIENT
+            && let Some(document) = &document
+            && document.hand()
         {
-            document.releasing_link.set(false);
-            document.cancel_link_press();
+            set_link_cursor(true);
+            return 1;
         }
-        result
+        default_subclass(hwnd, msg, w, l)
+    }
+}
+
+fn set_link_cursor(hand: bool) {
+    unsafe {
+        let cursor = LoadCursorW(
+            std::ptr::null_mut(),
+            if hand { IDC_HAND } else { IDC_IBEAM },
+        );
+        SetCursor(cursor);
     }
 }

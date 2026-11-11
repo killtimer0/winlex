@@ -692,7 +692,7 @@ impl View {
         match msg {
             WM_COMMAND if self.command(w as u16, (w >> 16) as u32) => Some(0),
             WM_CONTEXTMENU if w as HWND == self.result => {
-                let _ = crate::rich_text::context_menu(self.result, l, &[], None);
+                let _ = crate::rich_text::context_menu(self.result, l, &[]);
                 Some(0)
             }
             _ => None,

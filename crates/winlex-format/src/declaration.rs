@@ -64,10 +64,8 @@ impl Types<'_> {
                         .map_or_else(|| format!("{other:?}").into(), Into::into),
                 };
                 if base.regions.is_empty() && !base.text.is_empty() {
-                    base.regions.push(Region {
-                        range: 0..base.position,
-                        kind: RegionKind::Type,
-                    });
+                    base.regions
+                        .push(Region::symbol(0..base.position, SymbolRole::Type));
                 }
                 if is_const {
                     base = base.prefix("const ");
@@ -95,7 +93,7 @@ impl Types<'_> {
             .catalog
             .resolve_target(self.owner, n, self.arch)
             .map(RegionKind::Reference)
-            .unwrap_or(RegionKind::Type);
+            .unwrap_or(RegionKind::Symbol);
         let mut base = if self.qualified && !n.namespace.is_empty() {
             Rendered::from(format!("{}.{head}", n.namespace))
         } else {
@@ -104,6 +102,7 @@ impl Types<'_> {
         base.regions.push(Region {
             range: 0..base.position,
             kind,
+            role: Some(SymbolRole::Type),
         });
         if !n.generics.is_empty() {
             base.write_str("<").unwrap();
@@ -122,17 +121,47 @@ impl Types<'_> {
 pub struct Region {
     pub range: std::ops::Range<usize>,
     pub kind: RegionKind,
+    /// Presentation role; independent from whether the symbol is navigable.
+    /// `None` for annotations that are not source symbols, such as numbers.
+    pub role: Option<SymbolRole>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SymbolRole {
+    Type,
+    Method,
+    Member,
 }
 
 #[derive(Clone, Debug)]
 pub enum RegionKind {
-    /// A signature type with no navigable definition in this catalog.
-    Type,
+    /// A symbol with no navigable definition in this catalog.
+    Symbol,
     Number(NumberValue),
     Reference(DeclarationTarget),
 }
 
 impl Region {
+    pub fn symbol(range: std::ops::Range<usize>, role: SymbolRole) -> Self {
+        Self {
+            range,
+            kind: RegionKind::Symbol,
+            role: Some(role),
+        }
+    }
+
+    pub fn link(
+        range: std::ops::Range<usize>,
+        target: DeclarationTarget,
+        role: SymbolRole,
+    ) -> Self {
+        Self {
+            range,
+            kind: RegionKind::Reference(target),
+            role: Some(role),
+        }
+    }
+
     pub fn number(&self) -> Option<&NumberValue> {
         match &self.kind {
             RegionKind::Number(value) => Some(value),
@@ -140,11 +169,15 @@ impl Region {
         }
     }
 
-    pub fn reference(&self) -> Option<EntityId> {
+    pub fn target(&self) -> Option<&DeclarationTarget> {
         match &self.kind {
-            RegionKind::Reference(target) => Some(target.id),
+            RegionKind::Reference(target) => Some(target),
             _ => None,
         }
+    }
+
+    pub fn reference(&self) -> Option<EntityId> {
+        self.target().map(|target| target.id)
     }
 }
 
@@ -283,6 +316,7 @@ impl Rendered {
                 unit,
                 entity,
             }),
+            role: None,
         });
         Ok(())
     }
@@ -436,19 +470,37 @@ pub fn target_summary(
     Ok(summary)
 }
 
-fn generic_name<'a>(name: &str, params: impl Iterator<Item = GenericParam<'a>>) -> String {
+fn labelled(text: &str, role: SymbolRole, target: Option<&DeclarationTarget>) -> Rendered {
+    let mut out = Rendered::from(text);
+    let range = 0..out.position;
+    out.regions.push(match target {
+        Some(target) => Region::link(range, target.clone(), role),
+        None => Region::symbol(range, role),
+    });
+    out
+}
+
+fn generic_label<'a>(
+    name: &str,
+    params: impl Iterator<Item = GenericParam<'a>>,
+    role: SymbolRole,
+    target: Option<&DeclarationTarget>,
+) -> Rendered {
     let mut params: Vec<_> = params.collect();
     params.sort_by_key(|p| p.sequence());
+    let mut out = labelled(name.split('`').next().unwrap_or(name), role, target);
     if params.is_empty() {
-        name.to_owned()
-    } else {
-        let names = params
-            .iter()
-            .map(|p| p.name())
-            .collect::<Vec<_>>()
-            .join(", ");
-        format!("{}<{names}>", name.split('`').next().unwrap_or(name))
+        return out;
     }
+    out.write_str("<").unwrap();
+    for (index, param) in params.iter().enumerate() {
+        if index != 0 {
+            out.write_str(", ").unwrap();
+        }
+        out.fragment(labelled(param.name(), SymbolRole::Type, None));
+    }
+    out.write_str(">").unwrap();
+    out
 }
 
 fn method(
@@ -656,9 +708,13 @@ fn append(
                 _ => "struct",
             };
             let name = if target.arguments.is_empty() {
-                generic_name(t.name(), t.generic_params())
+                generic_label(t.name(), t.generic_params(), SymbolRole::Type, None)
             } else {
-                target_summary(c, target, arch)?.name
+                labelled(
+                    &target_summary(c, target, arch)?.name,
+                    SymbolRole::Type,
+                    None,
+                )
             };
             if category == Some(TypeCategory::Delegate)
                 && let Some(invoke) = t.methods().find(|m| m.name() == "Invoke")
@@ -673,7 +729,7 @@ fn append(
                     )?;
                 }
                 write!(out, "{pad}delegate ")?;
-                method(out, &types, invoke, target, name.into(), "", "")?;
+                method(out, &types, invoke, target, name, "", "")?;
                 return Ok(());
             }
             let generics = t.generic_types();
@@ -696,7 +752,8 @@ fn append(
             } else {
                 Rendered::join(bases, ", ").prefix(" : ")
             };
-            write!(out, "{pad}{keyword} {name}")?;
+            write!(out, "{pad}{keyword} ")?;
+            out.fragment(name);
             out.fragment(bases);
             writeln!(out, "\n{pad}{{")?;
             let inner = format!("{pad}    ");
@@ -720,13 +777,16 @@ fn append(
                 for f in t.fields().filter(|f| f.constant().is_some()) {
                     if winlex_core::metadata::supports(f, arch.bit()) {
                         let value = f.constant().unwrap().value();
-                        write!(out, "{inner}{} = ", f.name())?;
+                        let member: DeclarationTarget = winlex_core::metadata::key(f, 4).into();
+                        write!(out, "{inner}")?;
+                        out.fragment(labelled(f.name(), SymbolRole::Member, Some(&member)));
+                        write!(out, " = ")?;
                         constant(
                             out,
                             &value,
                             &t.underlying_type().unwrap_or_else(|| value.ty()),
                             arch,
-                            winlex_core::metadata::key(f, 4),
+                            member.id,
                             ",",
                         )?;
                     }
@@ -777,7 +837,12 @@ fn append(
                 writeln!(out)?;
             }
             write!(out, "{pad}{}", const_annotation(f))?;
-            out.fragment(types.ty(&target.ty(&f.ty())?, f.name().into()));
+            let name = labelled(
+                f.name(),
+                SymbolRole::Member,
+                (!pad.is_empty()).then_some(target),
+            );
+            out.fragment(types.ty(&target.ty(&f.ty())?, name));
             if let Some(value) = f.constant() {
                 // ELEMENT_TYPE_CLASS represents a null reference constant.
                 if value.usize(0) == 0x12 {
@@ -811,9 +876,14 @@ fn append(
                 }
                 writeln!(out)?;
             }
-            let name = generic_name(m.name(), m.generic_params());
+            let name = generic_label(
+                m.name(),
+                m.generic_params(),
+                SymbolRole::Method,
+                (!pad.is_empty()).then_some(target),
+            );
             let name = if is_function || !pad.is_empty() {
-                Rendered::from(name)
+                name
             } else {
                 let owner = m.parent_row::<TypeDef>(5);
                 let mut owner_type = TypeName::named(owner.namespace(), owner.name());
@@ -823,7 +893,9 @@ fn append(
                     .iter()
                     .map(|param| Type::Generic(param.name().to_owned(), param.sequence()))
                     .collect();
-                types.named(&owner_type).suffix(&format!("::{name}"))
+                let mut rendered = types.named(&owner_type).suffix("::");
+                rendered.fragment(name);
+                rendered
             };
             let modifiers = if !is_function && m.flags().contains(MethodAttributes::Static) {
                 "static "
@@ -834,12 +906,22 @@ fn append(
         }
         Declaration::Property(p) => {
             write!(out, "{pad}")?;
-            out.fragment(types.ty(&target.ty(&p.signature().return_type)?, p.name().into()));
+            let name = labelled(
+                p.name(),
+                SymbolRole::Member,
+                (!pad.is_empty()).then_some(target),
+            );
+            out.fragment(types.ty(&target.ty(&p.signature().return_type)?, name));
             writeln!(out, "; // property")?;
         }
         Declaration::Event(e) => {
             write!(out, "{pad}")?;
-            out.fragment(types.ty(&target.ty(&e.ty())?, e.name().into()));
+            let name = labelled(
+                e.name(),
+                SymbolRole::Member,
+                (!pad.is_empty()).then_some(target),
+            );
+            out.fragment(types.ty(&target.ty(&e.ty())?, name));
             writeln!(out, "; // event")?;
         }
         Declaration::Reference(_) => {
@@ -853,10 +935,11 @@ fn append(
                     write!(out, "{pad}// Resolved: ")?;
                     let start = out.position;
                     write!(out, "{}", c.entity(target)?.full_name)?;
-                    out.regions.push(Region {
-                        range: start..out.position,
-                        kind: RegionKind::Reference(target.into()),
-                    });
+                    out.regions.push(Region::link(
+                        start..out.position,
+                        target.into(),
+                        SymbolRole::Type,
+                    ));
                     writeln!(out)?;
                 }
                 Err(error) => writeln!(out, "{pad}// {error}")?,
@@ -1017,7 +1100,7 @@ mod tests {
             })
             .collect();
         assert_eq!(ids.len(), cases.len());
-        for (id, (base, _, _, expected)) in ids.into_iter().zip(cases) {
+        for (id, (base, name, _, expected)) in ids.into_iter().zip(cases) {
             for arch in Architecture::ALL {
                 let rendered = render(&catalog, id, arch).unwrap();
                 assert_eq!(rendered.text, expected);
@@ -1026,11 +1109,16 @@ mod tests {
                     .regions
                     .iter()
                     .map(|region| {
-                        assert!(matches!(region.kind, RegionKind::Type));
+                        assert!(matches!(region.kind, RegionKind::Symbol));
+                        assert_eq!(region.role, Some(SymbolRole::Type));
                         String::from_utf16(&units[region.range.clone()]).unwrap()
                     })
                     .collect();
-                assert_eq!(types, if base.is_empty() { vec![] } else { vec![base] });
+                let mut expected = vec![name.to_owned()];
+                if !base.is_empty() {
+                    expected.push(base.to_owned());
+                }
+                assert_eq!(types, expected);
             }
         }
     }
@@ -1210,10 +1298,9 @@ mod tests {
     #[test]
     fn composed_references_follow_utf16_and_normalized_newlines() {
         let mut fragment = Rendered::from("😀Target");
-        fragment.regions.push(Region {
-            range: 2..8,
-            kind: RegionKind::Reference(entity().into()),
-        });
+        fragment
+            .regions
+            .push(Region::link(2..8, entity().into(), SymbolRole::Type));
         let mut out = Rendered::from("// 文😀\r\n");
         out.fragment(fragment.prefix("const ").suffix(" *value;\r\n"));
         assert_eq!(out.text, "// 文😀\nconst 😀Target *value;\n");

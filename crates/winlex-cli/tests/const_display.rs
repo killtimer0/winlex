@@ -123,11 +123,10 @@ fn official_const_owners_remain_visible_without_replacing_native_string_types() 
             } else {
                 assert_eq!(references, ["Apis"]);
             }
-            for region in rendered
-                .regions
-                .iter()
-                .filter(|region| region.reference().is_none())
-            {
+            for region in rendered.regions.iter().filter(|region| {
+                region.reference().is_none()
+                    && region.role == Some(winlex_format::declaration::SymbolRole::Type)
+            }) {
                 assert_eq!(reference_text(region), "PSTR");
             }
         }

@@ -17,7 +17,7 @@ fn render(catalog: &Catalog, name: &str) -> winlex_format::declaration::Rendered
 #[test]
 fn signature_types_use_metadata_names_and_semantic_regions() {
     use winlex_core::windows_metadata::{writer, *};
-    use winlex_format::declaration::RegionKind;
+    use winlex_format::declaration::{RegionKind, SymbolRole};
     let mut file = writer::File::new("SignatureTypes");
     let base = file.TypeRef("System", "ValueType");
     file.TypeDef(
@@ -53,11 +53,18 @@ fn signature_types_use_metadata_names_and_semantic_regions() {
     for (i, (_, expected)) in cases.iter().enumerate() {
         let rendered = render(&catalog, &format!("field{i}"));
         assert_eq!(rendered.text, format!("{expected} field{i};\n"));
-        assert_eq!(rendered.regions.len(), 1);
-        assert!(matches!(rendered.regions[0].kind, RegionKind::Type));
+        assert_eq!(rendered.regions.len(), 2);
+        assert!(matches!(rendered.regions[0].kind, RegionKind::Symbol));
+        assert_eq!(rendered.regions[0].role, Some(SymbolRole::Type));
         assert_eq!(
             rendered.regions[0].range,
             0..expected.encode_utf16().count()
+        );
+        assert!(matches!(rendered.regions[1].kind, RegionKind::Symbol));
+        assert_eq!(rendered.regions[1].role, Some(SymbolRole::Member));
+        assert_eq!(
+            rendered.regions[1].range.start,
+            expected.encode_utf16().count() + 1
         );
     }
 }
@@ -136,7 +143,7 @@ fn method_imports_and_variadic_signatures_preserve_metadata_meaning() {
 #[test]
 fn method_declarations_mark_static_and_declaring_type_only_at_the_root() {
     use winlex_core::windows_metadata::{writer, *};
-    use winlex_format::declaration::RegionKind;
+    use winlex_format::declaration::{RegionKind, SymbolRole};
     let mut file = writer::File::new("MethodMarkers");
     file.TypeDef(
         "Fixture",
@@ -172,8 +179,9 @@ fn method_declarations_mark_static_and_declaring_type_only_at_the_root() {
 
     let run = render(&catalog, "Run");
     assert_eq!(run.text, "// this: rcx\nvoid Owner::Run(void);\n");
-    assert_eq!(run.regions.len(), 2);
+    assert_eq!(run.regions.len(), 3);
     assert_eq!(run.regions[1].range, 18..23);
+    assert_eq!(run.regions[1].role, Some(SymbolRole::Type));
     assert_eq!(
         catalog
             .entity(run.regions[1].reference().unwrap())
@@ -181,11 +189,16 @@ fn method_declarations_mark_static_and_declaring_type_only_at_the_root() {
             .full_name,
         "Fixture.Owner"
     );
+    assert_eq!(run.regions[2].range, 25..28);
+    assert_eq!(run.regions[2].role, Some(SymbolRole::Method));
+    assert!(run.regions[2].reference().is_none());
     let build = render(&catalog, "Build");
     assert_eq!(build.text, "static void Owner::Build(void);\n");
-    assert_eq!(build.regions.len(), 2);
+    assert_eq!(build.regions.len(), 3);
     assert_eq!(build.regions[1].range, 12..17);
     assert!(matches!(build.regions[1].kind, RegionKind::Reference(_)));
+    assert_eq!(build.regions[2].range, 19..24);
+    assert_eq!(build.regions[2].role, Some(SymbolRole::Method));
     let native = render(&catalog, "Native");
     assert_eq!(native.text, "// library.dll!Native\nvoid Native(void);\n");
     assert!(
@@ -193,6 +206,15 @@ fn method_declarations_mark_static_and_declaring_type_only_at_the_root() {
             .regions
             .iter()
             .all(|region| !matches!(region.kind, RegionKind::Reference(_)))
+    );
+    assert_eq!(
+        native
+            .regions
+            .iter()
+            .find(|region| region.role == Some(SymbolRole::Method))
+            .unwrap()
+            .range,
+        27..33
     );
 
     let owner = render(&catalog, "Owner");
@@ -211,18 +233,25 @@ fn method_declarations_mark_static_and_declaring_type_only_at_the_root() {
         "{}",
         owner.text
     );
-    assert!(
-        owner
+    for name in ["Run", "Build", "Native"] {
+        let member = owner
             .regions
             .iter()
-            .all(|region| !matches!(region.kind, RegionKind::Reference(_)))
-    );
+            .find(|region| {
+                region.role == Some(SymbolRole::Method)
+                    && region
+                        .reference()
+                        .is_some_and(|id| catalog.entity(id).unwrap().name == name)
+            })
+            .unwrap_or_else(|| panic!("missing member link {name}: {}", owner.text));
+        assert!(matches!(member.kind, RegionKind::Reference(_)));
+    }
 }
 
 #[test]
 fn generic_method_owners_link_the_type_but_not_its_parameters() {
     use winlex_core::windows_metadata::{writer, *};
-    use winlex_format::declaration::RegionKind;
+    use winlex_format::declaration::{RegionKind, SymbolRole};
     let mut file = writer::File::new("GenericMethodOwner");
     let owner = file.TypeDef(
         "Fixture",
@@ -251,10 +280,12 @@ fn generic_method_owners_link_the_type_but_not_its_parameters() {
 
     let rendered = render(&catalog, "Run");
     assert_eq!(rendered.text, "static T Box<T>::Run(void);\n");
-    assert_eq!(rendered.regions.len(), 3);
+    assert_eq!(rendered.regions.len(), 4);
     assert_eq!(rendered.regions[0].range, 7..8);
-    assert!(matches!(rendered.regions[0].kind, RegionKind::Type));
+    assert!(matches!(rendered.regions[0].kind, RegionKind::Symbol));
+    assert_eq!(rendered.regions[0].role, Some(SymbolRole::Type));
     assert_eq!(rendered.regions[1].range, 9..12);
+    assert_eq!(rendered.regions[1].role, Some(SymbolRole::Type));
     assert_eq!(
         catalog
             .entity(rendered.regions[1].reference().unwrap())
@@ -263,12 +294,17 @@ fn generic_method_owners_link_the_type_but_not_its_parameters() {
         "Fixture.Box`1"
     );
     assert_eq!(rendered.regions[2].range, 13..14);
-    assert!(matches!(rendered.regions[2].kind, RegionKind::Type));
+    assert!(matches!(rendered.regions[2].kind, RegionKind::Symbol));
+    assert_eq!(rendered.regions[2].role, Some(SymbolRole::Type));
+    assert_eq!(rendered.regions[3].range, 17..20);
+    assert_eq!(rendered.regions[3].role, Some(SymbolRole::Method));
+    assert!(rendered.regions[3].reference().is_none());
 }
 
 #[test]
 fn external_references_remain_unlinked_when_missing_or_ambiguous() {
     use winlex_core::windows_metadata::{reader, writer, *};
+    use winlex_format::declaration::SymbolRole;
     let mut dependency = writer::File::new("NavigationExternal");
     dependency.TypeDef(
         "External",
@@ -308,9 +344,13 @@ fn external_references_remain_unlinked_when_missing_or_ambiguous() {
     ] {
         let rendered = render(catalog, "Member");
         assert_eq!(rendered.text, "Target Member;\n");
-        assert_eq!(rendered.regions.len(), 1);
+        assert_eq!(rendered.regions.len(), 2);
         assert_eq!(rendered.regions[0].range, 0..6);
+        assert_eq!(rendered.regions[0].role, Some(SymbolRole::Type));
         assert_eq!(rendered.regions[0].reference().is_some(), expected);
+        assert_eq!(rendered.regions[1].range, 7..13);
+        assert_eq!(rendered.regions[1].role, Some(SymbolRole::Member));
+        assert!(rendered.regions[1].reference().is_none());
         if expected {
             let target = rendered.regions[0].reference().unwrap();
             assert_eq!(target.source_id, 1);
@@ -323,6 +363,7 @@ fn external_references_remain_unlinked_when_missing_or_ambiguous() {
 #[test]
 fn named_references_keep_identity_through_declarators_generics_and_utf16() {
     use winlex_core::windows_metadata::{writer, *};
+    use winlex_format::declaration::SymbolRole;
     let mut file = writer::File::new("NavigationDeclarations");
     for namespace in ["Left", "Right"] {
         file.TypeDef(
@@ -430,10 +471,14 @@ fn named_references_keep_identity_through_declarators_generics_and_utf16() {
             ("Item", "Left.Item"),
             ("Box", "Fixture.Box`1"),
             ("Item", "Right.Item"),
+            ("值😀", "Fixture.Owner😀.值😀"),
             ("Box", "Fixture.Box`1"),
             ("Item", "Right.Item"),
+            ("Current", "Fixture.Owner😀.Current"),
             ("Item", "Right.Item"),
+            ("Changed", "Fixture.Owner😀.Changed"),
             ("Item", "Left.Item"),
+            ("Call", "Fixture.Owner😀.Call"),
             ("Box", "Fixture.Box`1"),
             ("Item", "Right.Item"),
         ]
@@ -442,6 +487,22 @@ fn named_references_keep_identity_through_declarators_generics_and_utf16() {
     for pair in rendered.regions.windows(2) {
         assert!(pair[0].range.end <= pair[1].range.start);
     }
+    let role_of = |name: &str| {
+        rendered
+            .regions
+            .iter()
+            .find(|region| {
+                region.reference().is_some()
+                    && String::from_utf16(&units[region.range.clone()]).unwrap() == name
+            })
+            .unwrap_or_else(|| panic!("missing link {name}"))
+            .role
+            .expect("link role")
+    };
+    assert_eq!(role_of("Current"), SymbolRole::Member);
+    assert_eq!(role_of("Changed"), SymbolRole::Member);
+    assert_eq!(role_of("值😀"), SymbolRole::Member);
+    assert_eq!(role_of("Call"), SymbolRole::Method);
     let reference = first_match(catalog.search(
         "Left.Item",
         SearchOptions {
@@ -746,6 +807,7 @@ fn generic_inheritance_and_delegate_signatures_are_preserved() {
 #[test]
 fn enum_members_and_individual_constants_share_annotations() {
     use winlex_core::windows_metadata::{writer, *};
+    use winlex_format::declaration::SymbolRole;
     let mut file = writer::File::new("ConstantDeclarations");
     let base = file.TypeRef("System", "Enum");
     file.TypeDef(
@@ -824,6 +886,29 @@ fn enum_members_and_individual_constants_share_annotations() {
         parent.text
     );
     assert!(member.text.contains("Failure = -1073741819; // 0xC0000005"));
+    fn constant(
+        rendered: &winlex_format::declaration::Rendered,
+    ) -> &winlex_format::declaration::Region {
+        rendered
+            .regions
+            .iter()
+            .find(|region| region.role == Some(SymbolRole::Member))
+            .expect("enum constant member region")
+    }
+    let units: Vec<_> = parent.text.encode_utf16().collect();
+    let parent_constant = constant(&parent);
+    assert_eq!(
+        String::from_utf16(&units[parent_constant.range.clone()]).unwrap(),
+        "Failure"
+    );
+    assert_eq!(
+        catalog
+            .entity(parent_constant.reference().unwrap())
+            .unwrap()
+            .name,
+        "Failure"
+    );
+    assert!(constant(&member).reference().is_none());
     assert_eq!(member.regions.iter().filter_map(|r| r.number()).count(), 2);
     for number in member.regions.iter().filter_map(|r| r.number()) {
         assert_eq!(number.value, -1073741819);

@@ -7,7 +7,10 @@ const LIGHT_HEADER: &[u8] = concat!(
     r"\red0\green0\blue128;",
     r"\red0\green128\blue0;",
     r"\red128\green0\blue0;",
-    r"\red128\green0\blue128;}",
+    r"\red128\green0\blue128;",
+    r"\red38\green127\blue153;",
+    r"\red121\green94\blue38;",
+    r"\red0\green16\blue128;}",
     r"\pard\f0 ",
 )
 .as_bytes();
@@ -20,7 +23,10 @@ static DARK_HEADER: LazyLock<Vec<u8>> = LazyLock::new(|| {
             r"\red86\green156\blue214;",
             r"\red87\green153\blue106;",
             r"\red206\green156\blue120;",
-            r"\red181\green206\blue168;}}",
+            r"\red181\green206\blue168;",
+            r"\red78\green201\blue176;",
+            r"\red220\green220\blue170;",
+            r"\red156\green220\blue254;}}",
             r"\pard\f0\cf0 ",
         ),
         color & 255,
@@ -69,7 +75,7 @@ fn append(out: &mut Vec<u8>, text: &[u16]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use winlex_format::declaration::RegionKind;
+    use winlex_format::declaration::{Region, SymbolRole};
 
     #[test]
     fn type_coloring_uses_semantics_not_identifier_spelling() {
@@ -80,17 +86,33 @@ mod tests {
                 let byte_start = text.find(declaration).unwrap();
                 let start = text[..byte_start].encode_utf16().count();
                 let ty = declaration.rsplit_once(' ').unwrap().0;
-                Region {
-                    range: start..start + ty.encode_utf16().count(),
-                    kind: RegionKind::Type,
-                }
+                Region::symbol(start..start + ty.encode_utf16().count(), SymbolRole::Type)
             })
             .collect();
         let output = render(text, &regions);
         let body = String::from_utf8(output).unwrap();
-        assert!(body.contains(r"\cf1 Guid\cf0  int32;"));
-        assert!(body.contains(r"\cf1 usize\cf0  string;"));
-        assert!(body.contains(r"\cf1 string\cf0  Guid;"));
+        assert!(body.contains(r"\cf5 Guid\cf0  int32;"));
+        assert!(body.contains(r"\cf5 usize\cf0  string;"));
+        assert!(body.contains(r"\cf5 string\cf0  Guid;"));
+    }
+
+    #[test]
+    fn symbol_roles_use_distinct_palette_slots_in_both_themes() {
+        let text = "Guid Run value";
+        let regions = [
+            Region::symbol(0..4, SymbolRole::Type),
+            Region::symbol(5..8, SymbolRole::Method),
+            Region::symbol(9..14, SymbolRole::Member),
+        ];
+        let light = render(text, &regions);
+        let body = String::from_utf8(light.clone()).unwrap();
+        assert!(body.contains(r"\cf5 Guid\cf0  \cf6 Run\cf0  \cf7 value\cf0 "));
+        assert_eq!(
+            themed(&light, true)
+                .strip_prefix(DARK_HEADER.as_slice())
+                .unwrap(),
+            light.strip_prefix(LIGHT_HEADER).unwrap()
+        );
     }
 
     #[test]

@@ -3,17 +3,15 @@ use crate::native::*;
 use anyhow::{Context, ensure};
 use std::{mem::size_of, sync::OnceLock};
 use windows::Win32::UI::Controls::RichEdit::{
-    CFE_LINK, CFE_LINKPROTECTED, CFE_UNDERLINE, CFM_COLOR, CFM_FACE, CFM_LINK, CFM_LINKPROTECTED,
-    CFM_SIZE, CFM_UNDERLINE, CHARFORMAT2W, CHARFORMATW, CHARRANGE, EDITSTREAM, EM_EXGETSEL,
-    EM_EXSETSEL, EM_GETCHARFORMAT, EM_GETEVENTMASK, EM_GETOLEINTERFACE, EM_GETSELTEXT, EM_GETZOOM,
-    EM_SETBKGNDCOLOR, EM_SETCHARFORMAT, EM_SETEDITSTYLEEX, EM_SETEVENTMASK, EM_SETPARAFORMAT,
-    EM_SETSCROLLPOS, EM_SETZOOM, EM_STREAMIN, ENLINK, ENM_LINK, IRichEditOle, ITextDocument,
-    PARAFORMAT, PARAFORMAT2, PFM_LINESPACING, PFM_RIGHTINDENT, PFM_STARTINDENT, SCF_ALL,
-    SCF_SELECTION, SES_EX_HANDLEFRIENDLYURL, SF_RTF,
+    CFE_UNDERLINE, CFM_COLOR, CFM_FACE, CFM_SIZE, CFM_UNDERLINE, CHARFORMAT2W, CHARFORMATW,
+    CHARRANGE, EDITSTREAM, EM_EXGETSEL, EM_EXSETSEL, EM_GETCHARFORMAT, EM_GETOLEINTERFACE,
+    EM_GETSELTEXT, EM_GETZOOM, EM_SETBKGNDCOLOR, EM_SETCHARFORMAT, EM_SETPARAFORMAT,
+    EM_SETSCROLLPOS, EM_SETZOOM, EM_STREAMIN, IRichEditOle, ITextDocument, PARAFORMAT, PARAFORMAT2,
+    PFM_LINESPACING, PFM_RIGHTINDENT, PFM_STARTINDENT, SCF_ALL, SCF_SELECTION, SF_RTF,
 };
 use windows_core::Interface;
 use winlex_core::DeclarationTarget;
-use winlex_format::declaration::{Region, RegionKind, Rendered};
+use winlex_format::declaration::{Region, RegionKind, Rendered, SymbolRole};
 
 mod rtf;
 mod scroll;
@@ -29,6 +27,17 @@ const KEYWORD_STYLE: u8 = 1;
 const COMMENT_STYLE: u8 = 2;
 const STRING_STYLE: u8 = 3;
 const NUMBER_STYLE: u8 = 4;
+const TYPE_STYLE: u8 = 5;
+const METHOD_STYLE: u8 = 6;
+const MEMBER_STYLE: u8 = 7;
+
+fn role_style(role: SymbolRole) -> u8 {
+    match role {
+        SymbolRole::Type => TYPE_STYLE,
+        SymbolRole::Method => METHOD_STYLE,
+        SymbolRole::Member => MEMBER_STYLE,
+    }
+}
 
 pub struct Content {
     text: String,
@@ -99,7 +108,7 @@ impl From<Rendered> for Content {
 
 pub fn region_at(regions: &[Region], range: std::ops::Range<usize>) -> Option<&Region> {
     regions.iter().find(|region| {
-        !matches!(region.kind, RegionKind::Type)
+        !matches!(region.kind, RegionKind::Symbol)
             && range.start <= range.end
             && region.range.start <= range.start
             && range.end <= region.range.end
@@ -107,22 +116,12 @@ pub fn region_at(regions: &[Region], range: std::ops::Range<usize>) -> Option<&R
     })
 }
 
-pub fn link_region<'a>(hwnd: HWND, content: &'a Content, link: &ENLINK) -> Option<&'a Region> {
-    let range = link.chrg;
-    let mut candidates = content.regions.iter().filter(|region| {
-        matches!(region.kind, RegionKind::Reference(_))
-            && range.cpMin >= 0
-            && range.cpMin as usize <= region.range.start
-            && region.range.end <= range.cpMax as usize
-    });
-    let first = candidates.next()?;
-    if candidates.next().is_none() {
-        return Some(first);
+pub fn region_at_point(hwnd: HWND, content: &Content, point: POINT) -> Option<&Region> {
+    let index = send_ref(hwnd, EM_CHARFROMPOS, 0, &point) as i32;
+    if index < 0 {
+        return None;
     }
-    let location = point_from_lparam(link.lParam.0);
-    let index = send_ref(hwnd, EM_CHARFROMPOS, 0, &location);
-    let region = region_at(&content.regions, index as usize..index as usize)?;
-    matches!(region.kind, RegionKind::Reference(_)).then_some(region)
+    region_at(&content.regions, index as usize..index as usize)
 }
 
 enum ContextAction {
@@ -135,7 +134,6 @@ pub fn context_menu(
     hwnd: HWND,
     location: isize,
     regions: &[Region],
-    mouse_region: Option<&Region>,
 ) -> anyhow::Result<Option<DeclarationTarget>> {
     use crate::resources::{
         self, IDS_COPY_DECIMAL, IDS_COPY_HEX, IDS_COPY_SELECTION, IDS_COPY_VALUE,
@@ -144,6 +142,7 @@ pub fn context_menu(
     let mut selection = CHARRANGE::default();
     send_mut(hwnd, EM_EXGETSEL, 0, &mut selection);
     let mut point = point_from_lparam(location);
+    let mut mouse_region = None;
     if location == -1 {
         send(
             hwnd,
@@ -164,6 +163,9 @@ pub fn context_menu(
             ScreenToClient(hwnd, &mut local);
         }
         let index = send_ref(hwnd, EM_CHARFROMPOS, 0, &local) as i32;
+        if index >= 0 {
+            mouse_region = region_at(regions, index as usize..index as usize);
+        }
         let selected_link = mouse_region.is_some_and(|region| {
             selection.cpMin as usize <= region.range.start
                 && region.range.end <= selection.cpMax as usize
@@ -190,7 +192,7 @@ pub fn context_menu(
     let mut actions = Vec::new();
     if let Some(region) = region {
         match &region.kind {
-            RegionKind::Type => {}
+            RegionKind::Symbol => {}
             RegionKind::Number(number) => {
                 actions.push((
                     IDS_COPY_DECIMAL,
@@ -264,7 +266,8 @@ pub fn create(parent: HWND, id: u16) -> anyhow::Result<HWND> {
     // Keep the module loaded for the lifetime of every control.
     static LOADED: OnceLock<Result<(), u32>> = OnceLock::new();
     static MODERN: OnceLock<Result<(), u32>> = OnceLock::new();
-    // RichEdit 2.0 ignores explicit hyperlink colors when painting.
+    // RichEdit 2.0 does not expose ITextDocument; both engines share the same
+    // character-format paths.
     let modern = crate::theme::supported() && load_module(&MODERN, "msftedit.dll").is_ok();
     let class = if modern {
         w!("RICHEDIT50W")
@@ -297,16 +300,6 @@ pub fn create(parent: HWND, id: u16) -> anyhow::Result<HWND> {
         anyhow::bail!("Subclass RichEdit failed");
     }
     send(hwnd, EM_SETLIMITTEXT, 0x7ffffffe, 0);
-    if crate::theme::supported() {
-        send(
-            hwnd,
-            EM_SETEDITSTYLEEX,
-            0,
-            SES_EX_HANDLEFRIENDLYURL as isize,
-        );
-    }
-    let mask = send(hwnd, EM_GETEVENTMASK, 0, 0);
-    send(hwnd, EM_SETEVENTMASK, 0, mask | ENM_LINK as isize);
     send(
         hwnd,
         EM_SETWORDBREAKPROC,
@@ -591,14 +584,7 @@ fn replace(hwnd: HWND, content: &Content) -> anyhow::Result<()> {
         let plain = CHARFORMAT2W {
             Base: CHARFORMATW {
                 cbSize: size_of::<CHARFORMAT2W>() as u32,
-                dwMask: CFM_COLOR
-                    | CFM_LINK
-                    | CFM_UNDERLINE
-                    | if crate::theme::supported() {
-                        CFM_LINKPROTECTED
-                    } else {
-                        Default::default()
-                    },
+                dwMask: CFM_COLOR | CFM_UNDERLINE,
                 crTextColor: windows::Win32::Foundation::COLORREF(crate::theme::color(
                     COLOR_WINDOWTEXT,
                 )),
@@ -611,7 +597,6 @@ fn replace(hwnd: HWND, content: &Content) -> anyhow::Result<()> {
     format.dwMask = CFM_SIZE;
     send_ref(hwnd, EM_SETCHARFORMAT, SCF_ALL as usize, &format);
     font(hwnd);
-    apply_regions(hwnd, content)?;
     let range = CHARRANGE::default();
     send_ref(hwnd, EM_EXSETSEL, 0, &range);
     result
@@ -621,48 +606,36 @@ fn syntax_enabled() -> bool {
     !high_contrast() && (crate::theme::is_dark() || crate::theme::color(COLOR_WINDOW) == 0x00ffffff)
 }
 
-fn apply_regions(hwnd: HWND, content: &Content) -> anyhow::Result<()> {
+/// Toggle underline on one symbol without changing its semantic color.
+/// Selection and scroll position are restored so hover feedback never moves the
+/// reading position or collapses the user's selection.
+pub fn set_underline(
+    hwnd: HWND,
+    range: &std::ops::Range<usize>,
+    enabled: bool,
+) -> anyhow::Result<()> {
     use windows::Win32::UI::Controls::RichEdit::ITextSelection2;
 
-    let ranges = content
-        .regions
-        .iter()
-        .filter(|region| matches!(region.kind, RegionKind::Reference(_)))
-        .map(|region| {
-            Ok(CHARRANGE {
-                cpMin: i32::try_from(region.range.start)?,
-                cpMax: i32::try_from(region.range.end)?,
-            })
-        })
-        .collect::<anyhow::Result<Vec<_>>>()?;
-    let Some(first) = ranges.first() else {
-        return Ok(());
-    };
-    let modern = crate::theme::supported();
-    let mut format = CHARFORMAT2W {
+    ensure!(range.start < range.end, "Empty underline range");
+    let scroll = scroll::position(hwnd);
+    let mut saved = CHARRANGE::default();
+    send_mut(hwnd, EM_EXGETSEL, 0, &mut saved);
+    let format = CHARFORMAT2W {
         Base: CHARFORMATW {
             cbSize: size_of::<CHARFORMAT2W>() as u32,
-            dwMask: CFM_LINK | CFM_UNDERLINE,
-            dwEffects: CFE_LINK | CFE_UNDERLINE,
-            crTextColor: windows::Win32::Foundation::COLORREF(if high_contrast() {
-                crate::theme::color(COLOR_WINDOWTEXT)
+            dwMask: CFM_UNDERLINE,
+            dwEffects: if enabled {
+                CFE_UNDERLINE
             } else {
-                crate::theme::color(COLOR_HOTLIGHT)
-            }),
+                Default::default()
+            },
             ..Default::default()
         },
         ..Default::default()
     };
-    if modern {
-        format.Base.dwMask |= CFM_COLOR | CFM_LINKPROTECTED;
-        format.Base.dwEffects |= CFE_LINKPROTECTED;
-    }
-    let apply = || {
-        ensure!(
-            send_ref(hwnd, EM_SETCHARFORMAT, SCF_SELECTION as usize, &format) != 0,
-            "Set declaration link failed"
-        );
-        Ok(())
+    let target = CHARRANGE {
+        cpMin: i32::try_from(range.start)?,
+        cpMax: i32::try_from(range.end)?,
     };
     let mut ole = None::<IRichEditOle>;
     send(hwnd, EM_GETOLEINTERFACE, 0, &mut ole as *mut _ as isize);
@@ -670,34 +643,31 @@ fn apply_regions(hwnd: HWND, content: &Content) -> anyhow::Result<()> {
         .and_then(|ole| ole.cast::<ITextDocument>().ok())
         .and_then(|document| unsafe { document.GetSelection().ok() })
         .and_then(|selection| selection.cast::<ITextSelection2>().ok());
-    if let Some(selection) = selection {
-        // One native formatting operation avoids repeatedly updating every UIA
-        // text range while keeping the control's original hyperlink semantics.
-        let mut saved = CHARRANGE::default();
-        send_mut(hwnd, EM_EXGETSEL, 0, &mut saved);
+    let result = if let Some(selection) = selection {
         let result = (|| unsafe {
-            selection.SetRange(first.cpMin, first.cpMax)?;
-            for range in &ranges[1..] {
-                selection.AddSubrange(range.cpMin, range.cpMax, 0)?;
-            }
-            apply()
+            selection.SetRange(target.cpMin, target.cpMax)?;
+            ensure!(
+                send_ref(hwnd, EM_SETCHARFORMAT, SCF_SELECTION as usize, &format) != 0,
+                "Set declaration underline failed"
+            );
+            Ok(())
         })();
-        // SetRange also removes the temporary subranges, including on failure.
         let restored = unsafe { selection.SetRange(saved.cpMin, saved.cpMax) };
         result.and(restored.map_err(Into::into))
     } else {
-        // RichEdit20 lacks TOM2. Balance only our own caret hide, so formatting
-        // neither steals focus nor makes an already hidden caret visible.
+        // RichEdit20 lacks TOM2; keep our own caret hide balanced.
         let hidden = unsafe { HideCaret(hwnd) } != 0;
-        let result = ranges.iter().try_for_each(|range| {
-            send_ref(hwnd, EM_EXSETSEL, 0, range);
-            apply()
-        });
+        send_ref(hwnd, EM_EXSETSEL, 0, &target);
+        let applied = send_ref(hwnd, EM_SETCHARFORMAT, SCF_SELECTION as usize, &format) != 0;
         if hidden {
             unsafe { ShowCaret(hwnd) };
         }
-        result
-    }
+        ensure!(applied, "Set declaration underline failed");
+        Ok(())
+    };
+    send_ref(hwnd, EM_EXSETSEL, 0, &saved);
+    send_ref(hwnd, EM_SETSCROLLPOS, 0, &scroll);
+    result
 }
 
 fn stream_in(hwnd: HWND, data: &[u8]) -> anyhow::Result<()> {
@@ -730,23 +700,25 @@ fn stream_in(hwnd: HWND, data: &[u8]) -> anyhow::Result<()> {
 
 fn spans(text: &[u16], regions: &[Region]) -> Vec<(usize, usize, u8)> {
     let mut result = Vec::new();
-    let mut types = regions
+    let mut roles: Vec<_> = regions
         .iter()
-        .filter(|region| {
-            matches!(region.kind, RegionKind::Type | RegionKind::Reference(_))
-                && region.range.start < region.range.end
-                && region.range.end <= text.len()
+        .filter_map(|region| {
+            let role = region.role?;
+            (region.range.start < region.range.end && region.range.end <= text.len())
+                .then_some((region.range.clone(), role_style(role)))
         })
-        .peekable();
+        .collect();
+    roles.sort_by_key(|(range, _)| range.start);
+    let mut roles = roles.into_iter().peekable();
     let mut i = 0;
     while i < text.len() {
-        while types.peek().is_some_and(|region| region.range.start < i) {
-            types.next();
+        while roles.peek().is_some_and(|(range, _)| range.start < i) {
+            roles.next();
         }
-        if let Some(region) = types.peek().filter(|region| region.range.start == i) {
-            result.push((i, region.range.end, KEYWORD_STYLE));
-            i = region.range.end;
-            types.next();
+        if let Some((range, style)) = roles.peek().filter(|(range, _)| range.start == i) {
+            result.push((i, range.end, *style));
+            i = range.end;
+            roles.next();
             continue;
         }
         let start = i;
@@ -892,7 +864,7 @@ mod tests {
     use winlex_core::EntityId;
 
     #[test]
-    fn many_disjoint_links_preserve_plain_gaps_and_single_selection() {
+    fn hover_underline_preserves_plain_gaps_and_single_selection() {
         let mut rendered = Rendered::default();
         let target = EntityId {
             source_id: 0,
@@ -901,10 +873,11 @@ mod tests {
         let mut position = 0;
         for _ in 0..1084 {
             rendered.text.push_str("😀 Target plain\n");
-            rendered.regions.push(Region {
-                range: position + 3..position + 9,
-                kind: RegionKind::Reference(target.into()),
-            });
+            rendered.regions.push(Region::link(
+                position + 3..position + 9,
+                target.into(),
+                SymbolRole::Member,
+            ));
             position += 16;
         }
         let content = Content::from(rendered);
@@ -946,45 +919,51 @@ mod tests {
                 fixture.select(3, 9);
                 send(fixture.1, EM_LINESCROLL, 0, 30);
                 let view = ViewState::capture(fixture.1);
-                recolor(fixture.1, &content).unwrap();
-                assert_eq!(ViewState::capture(fixture.1), view);
-                assert_eq!(unsafe { GetFocus() }, fixture.1);
-                assert_eq!(text(fixture.1).replace("\r\n", "\r"), content.text);
-                let mut selected = [0u16; 32];
-                assert_eq!(
-                    send(fixture.1, EM_GETSELTEXT, 0, selected.as_mut_ptr() as isize),
-                    6
-                );
-                assert_eq!(String::from_utf16(&selected[..6]).unwrap(), "Target");
-                for region in &content.regions {
-                    for (start, end, linked) in [
-                        (region.range.start, region.range.end, true),
-                        (region.range.start - 1, region.range.start, false),
-                        (region.range.end, region.range.end + 1, false),
-                    ] {
-                        fixture.select(start as i32, end as i32);
-                        let format = fixture.character_format().Base;
-                        assert_eq!(format.dwEffects.contains(CFE_LINK), linked);
-                        assert_eq!(format.dwEffects.contains(CFE_UNDERLINE), linked);
-                    }
+                let scroll = scroll::position(fixture.1);
+                let samples = [
+                    content.regions[0].range.clone(),
+                    content.regions[content.regions.len() / 2].range.clone(),
+                    content.regions[content.regions.len() - 1].range.clone(),
+                ];
+                for range in samples {
+                    fixture.select(3, 9);
+                    send_ref(fixture.1, EM_SETSCROLLPOS, 0, &scroll);
+                    assert_eq!(ViewState::capture(fixture.1), view);
+                    set_underline(fixture.1, &range, true).unwrap();
+                    assert_eq!(ViewState::capture(fixture.1), view);
+                    assert_eq!(unsafe { GetFocus() }, fixture.1);
+                    let mut selected = [0u16; 32];
+                    assert_eq!(
+                        send(fixture.1, EM_GETSELTEXT, 0, selected.as_mut_ptr() as isize),
+                        6
+                    );
+                    assert_eq!(String::from_utf16(&selected[..6]).unwrap(), "Target");
+                    fixture.select(range.start as i32, range.end as i32);
+                    assert!(
+                        fixture
+                            .character_format()
+                            .Base
+                            .dwEffects
+                            .contains(CFE_UNDERLINE)
+                    );
+                    fixture.select(range.start as i32 - 1, range.start as i32);
+                    assert!(
+                        !fixture
+                            .character_format()
+                            .Base
+                            .dwEffects
+                            .contains(CFE_UNDERLINE)
+                    );
+                    set_underline(fixture.1, &range, false).unwrap();
+                    fixture.select(range.start as i32, range.end as i32);
+                    assert!(
+                        !fixture
+                            .character_format()
+                            .Base
+                            .dwEffects
+                            .contains(CFE_UNDERLINE)
+                    );
                 }
-                // Subsequent ordinary formatting must affect only the requested
-                // selection, not any of the temporary disjoint link ranges.
-                fixture.select(10, 15);
-                let plain = CHARFORMATW {
-                    cbSize: size_of::<CHARFORMATW>() as u32,
-                    dwMask: CFM_UNDERLINE,
-                    ..Default::default()
-                };
-                send_ref(fixture.1, EM_SETCHARFORMAT, SCF_SELECTION as usize, &plain);
-                fixture.select(3, 9);
-                assert!(
-                    fixture
-                        .character_format()
-                        .Base
-                        .dwEffects
-                        .contains(CFE_UNDERLINE)
-                );
                 send(fixture.1, WM_CHAR, b'X' as usize, 0);
                 assert_eq!(text(fixture.1).replace("\r\n", "\r"), content.text);
             }
@@ -1035,7 +1014,7 @@ mod tests {
     }
 
     #[test]
-    fn dpi_zoom_preserves_character_colors_sizes_and_links() {
+    fn dpi_zoom_preserves_character_colors_sizes_and_effects() {
         let fixture = Editor::new(WS_POPUP, crate::layout::rect(0, 0, 900, 600));
         let reference = Editor::new(WS_POPUP, crate::layout::rect(0, 0, 900, 600));
         for editor in [fixture.1, reference.1] {
@@ -1061,19 +1040,17 @@ mod tests {
                 reference.character_format().Base.yHeight,
                 "content loading must retain the previously applied font size"
             );
-            // A native link is another independently formatted range, not just
-            // the document's default foreground color.
+            // Hover underlining is another independently formatted range, not
+            // just the document's default foreground color.
             fixture.select(13, 18);
-            let link = CHARFORMATW {
+            let hover = CHARFORMATW {
                 cbSize: size_of::<CHARFORMATW>() as u32,
-                dwMask: CFM_LINK | CFM_COLOR | CFM_UNDERLINE,
-                dwEffects: CFE_LINK | CFE_UNDERLINE,
-                crTextColor: windows::Win32::Foundation::COLORREF(crate::theme::color(
-                    COLOR_HOTLIGHT,
-                )),
+                dwMask: CFM_COLOR | CFM_UNDERLINE,
+                dwEffects: CFE_UNDERLINE,
+                crTextColor: windows::Win32::Foundation::COLORREF(0x002f6b31),
                 ..Default::default()
             };
-            send_ref(fixture.1, EM_SETCHARFORMAT, SCF_SELECTION as usize, &link);
+            send_ref(fixture.1, EM_SETCHARFORMAT, SCF_SELECTION as usize, &hover);
             fixture.select(6, 12);
             let large = CHARFORMATW {
                 cbSize: size_of::<CHARFORMATW>() as u32,
@@ -1135,7 +1112,7 @@ mod tests {
     }
 
     #[test]
-    fn native_link_pixels_use_theme_color_after_dark_and_light_recoloring() {
+    fn semantic_member_pixels_follow_theme_palette() {
         unsafe fn painted_pixels(hwnd: HWND, color: u32) -> usize {
             unsafe {
                 let area = client(hwnd);
@@ -1187,28 +1164,29 @@ mod tests {
         set_bounds(fixture.1, crate::layout::rect(0, 0, 500, 100)).unwrap();
         fixture.font_size(360);
         let mut rendered = Rendered::from("Target");
-        rendered.regions.push(Region {
-            range: 0..6,
-            kind: RegionKind::Reference(
-                winlex_core::EntityId {
-                    source_id: 0,
-                    token: 0x02000001,
-                }
-                .into(),
-            ),
-        });
+        rendered.regions.push(Region::link(
+            0..6,
+            winlex_core::EntityId {
+                source_id: 0,
+                token: 0x02000001,
+            }
+            .into(),
+            SymbolRole::Member,
+        ));
         let content = Content::from(rendered);
         for mode in [2, 1, 2, 1] {
             crate::theme::set_mode(mode);
             recolor(fixture.1, &content).unwrap();
-            let color = crate::theme::color(if high_contrast() {
-                COLOR_WINDOWTEXT
+            let color = if high_contrast() {
+                crate::theme::color(COLOR_WINDOWTEXT)
+            } else if crate::theme::is_dark() {
+                0x00fedc9c
             } else {
-                COLOR_HOTLIGHT
-            });
+                0x00801000
+            };
             assert!(
                 unsafe { painted_pixels(fixture.1, color) } > 20,
-                "missing rendered hyperlink color {color:06x} in mode {mode}"
+                "missing rendered member color {color:06x} in mode {mode}"
             );
         }
         drop(fixture);
@@ -1216,142 +1194,97 @@ mod tests {
     }
 
     #[test]
-    fn native_links_preserve_utf16_ranges_recoloring_and_plain_text_fallback() {
-        use windows::Win32::UI::Controls::RichEdit::EN_LINK;
-
-        unsafe {
-            let fixture = Editor::new(
-                WS_POPUP | WS_VISIBLE,
-                crate::layout::rect(-10000, -10000, 900, 600),
-            );
-            let Editor(parent, editor) = fixture;
-            set_bounds(editor, crate::layout::rect(0, 0, 750, 500)).unwrap();
-            let received = std::cell::RefCell::new(Vec::<ENLINK>::new());
-            let observe = |_, msg, _, l| {
-                if msg == WM_NOTIFY && (l as *const NMHDR).read_unaligned().code == EN_LINK {
-                    received
-                        .borrow_mut()
-                        .push((l as *const ENLINK).read_unaligned());
-                    return Some(0);
-                }
-                None
-            };
-            let callback = crate::test_support::observe_messages(parent, 1, &observe);
-            let target = EntityId {
-                source_id: 7,
-                token: 0x02000002,
-            };
-            let mut rendered = Rendered::from("// 😀\nTarget value;\nTarget");
-            rendered.regions = [6..12, 20..26]
-                .into_iter()
-                .map(|range| Region {
-                    range,
-                    kind: RegionKind::Reference(target.into()),
-                })
-                .collect();
-            let mut content = Content::from(rendered);
-            for plain in [false, true] {
-                if plain {
-                    content.rtf = b"invalid RTF".to_vec();
-                }
-                let result = set_content(editor, &content);
-                if !plain {
-                    result.unwrap();
-                }
-                assert_eq!(text(editor).replace("\r\n", "\r"), content.text);
-                assert_ne!(send(editor, EM_GETEVENTMASK, 0, 0) & ENM_LINK as isize, 0);
-                for mode in [None, Some(2), Some(1), Some(2), Some(1)] {
-                    let refresh = mode.is_some();
-                    if let Some(mode) = mode {
-                        crate::theme::set_mode(mode);
-                    }
-                    if refresh {
-                        fixture.select(7, 10);
-                        let result = recolor(editor, &content);
-                        if !plain {
-                            result.unwrap();
-                        }
-                        assert_eq!(fixture.selection(), (7, 10));
-                    }
-                    for index in 0..27 {
-                        fixture.select(index, index + 1);
-                        let format = fixture.character_format();
-                        let linked = content
-                            .regions
-                            .iter()
-                            .any(|r| r.range.contains(&(index as usize)));
-                        assert_eq!(
-                            format.Base.dwEffects.contains(CFE_LINK),
-                            linked,
-                            "index {index}"
-                        );
-                        assert_eq!(
-                            format.Base.dwEffects.contains(CFE_UNDERLINE),
-                            linked,
-                            "index {index}"
-                        );
-                        if linked && crate::theme::supported() {
-                            assert!(
-                                !format.Base.dwEffects.contains(
-                                    windows::Win32::UI::Controls::RichEdit::CFE_AUTOCOLOR
-                                )
-                            );
-                            assert_eq!(
-                                format.Base.crTextColor.0,
-                                crate::theme::color(if high_contrast() {
-                                    COLOR_WINDOWTEXT
-                                } else {
-                                    COLOR_HOTLIGHT
-                                }),
-                                "link color at {index}, mode={mode:?}"
-                            );
-                        }
-                    }
-                    for region in &content.regions {
-                        let end = fixture.character_position(region.range.end as i32);
-                        let last = fixture.character_position((region.range.end - 1) as i32);
-                        for (x, expected) in
-                            [((last.x + end.x) / 2 + 1, Some(target)), (end.x + 30, None)]
-                        {
-                            received.borrow_mut().clear();
-                            fixture.select(0, 0);
-                            let location =
-                                (((end.y + 6) as u16 as u32) << 16 | x as u16 as u32) as isize;
-                            send(editor, WM_LBUTTONDOWN, 9, location);
-                            send(editor, WM_LBUTTONUP, 8, location);
-                            let links = received.take();
-                            let actual = links.iter().find_map(|link| {
-                                link_region(editor, &content, link).and_then(Region::reference)
-                            });
-                            assert_eq!(
-                                actual,
-                                expected,
-                                "plain={plain}, refresh={refresh}, range={:?}, end=({}, {}), notifications={}",
-                                region.range,
-                                end.x,
-                                end.y,
-                                links.len()
-                            );
-                            if expected.is_some() {
-                                let range = links.last().unwrap().chrg;
-                                assert_eq!(
-                                    range.cpMin as usize..range.cpMax as usize,
-                                    region.range
-                                );
-                            }
-                        }
-                    }
-                }
-                // Replacing linked text must not leave an inherited link on ordinary text.
-                set_content(editor, &Content::new("plain replacement".into())).unwrap();
-                fixture.select(0, -1);
-                let format = fixture.character_format();
-                assert_eq!(format.Base.dwEffects.0 & (CFE_LINK | CFE_UNDERLINE).0, 0);
+    fn hover_regions_preserve_utf16_ranges_recoloring_and_plain_text_fallback() {
+        let fixture = Editor::new(
+            WS_POPUP | WS_VISIBLE,
+            crate::layout::rect(-10000, -10000, 900, 600),
+        );
+        let editor = fixture.1;
+        set_bounds(editor, crate::layout::rect(0, 0, 750, 500)).unwrap();
+        let target = EntityId {
+            source_id: 7,
+            token: 0x02000002,
+        };
+        let mut rendered = Rendered::from("// 😀\nTarget value;\nTarget");
+        rendered.regions = [6..12, 20..26]
+            .into_iter()
+            .map(|range| Region::link(range, target.into(), SymbolRole::Member))
+            .collect();
+        let mut content = Content::from(rendered);
+        for plain in [false, true] {
+            if plain {
+                content.rtf = b"invalid RTF".to_vec();
             }
-            remove_subclass(parent, callback, 1);
-            drop(fixture);
-            crate::theme::set_mode(0);
+            let result = set_content(editor, &content);
+            if !plain {
+                result.unwrap();
+            }
+            assert_eq!(text(editor).replace("\r\n", "\r"), content.text);
+            for mode in [None, Some(2), Some(1), Some(2), Some(1)] {
+                if let Some(mode) = mode {
+                    crate::theme::set_mode(mode);
+                }
+                if mode.is_some() {
+                    fixture.select(7, 10);
+                    let result = recolor(editor, &content);
+                    if !plain {
+                        result.unwrap();
+                    }
+                    assert_eq!(fixture.selection(), (7, 10));
+                }
+                for region in &content.regions {
+                    for index in [region.range.start, region.range.end - 1] {
+                        let point = fixture.character_position(index as i32);
+                        let point = POINT {
+                            x: point.x + 1,
+                            y: point.y + 2,
+                        };
+                        assert_eq!(
+                            region_at_point(editor, &content, point).map(|r| r.range.clone()),
+                            Some(region.range.clone()),
+                            "plain={plain}, mode={mode:?}, index={index}"
+                        );
+                    }
+                    let end = fixture.character_position(region.range.end as i32);
+                    let miss = POINT {
+                        x: end.x + 400,
+                        y: end.y + 2,
+                    };
+                    assert!(
+                        region_at_point(editor, &content, miss).is_none(),
+                        "plain={plain}, mode={mode:?}"
+                    );
+                    fixture.select(region.range.start as i32, region.range.end as i32);
+                    let color = fixture.character_format().Base.crTextColor;
+                    set_underline(editor, &region.range, true).unwrap();
+                    fixture.select(region.range.start as i32, region.range.end as i32);
+                    let format = fixture.character_format().Base;
+                    assert!(format.dwEffects.contains(CFE_UNDERLINE));
+                    assert_eq!(format.crTextColor, color);
+                    set_underline(editor, &region.range, false).unwrap();
+                    fixture.select(region.range.start as i32, region.range.end as i32);
+                    assert!(
+                        !fixture
+                            .character_format()
+                            .Base
+                            .dwEffects
+                            .contains(CFE_UNDERLINE)
+                    );
+                }
+            }
+            // Replacing interactive text must not leave an inherited underline.
+            set_content(editor, &Content::new("plain replacement".into())).unwrap();
+            fixture.select(0, -1);
+            assert!(
+                !fixture
+                    .character_format()
+                    .Base
+                    .dwEffects
+                    .contains(CFE_UNDERLINE)
+            );
         }
+        drop(fixture);
+        crate::theme::set_mode(0);
     }
 
     #[test]
@@ -1366,10 +1299,9 @@ mod tests {
             } else {
                 ty.encode_utf16().count()
             };
-            rendered.regions.push(Region {
-                range: start..start + length,
-                kind: RegionKind::Type,
-            });
+            rendered
+                .regions
+                .push(Region::symbol(start..start + length, SymbolRole::Type));
         }
         let content = Content::from(rendered);
         for mode in [1, 2] {
@@ -1381,8 +1313,8 @@ mod tests {
                 for index in region.range.clone() {
                     fixture.select(index as i32, index as i32 + 1);
                     let format = fixture.character_format();
-                    assert_eq!(format.Base.crTextColor, keyword_color);
-                    assert_eq!(format.Base.dwEffects.0 & (CFE_LINK | CFE_UNDERLINE).0, 0);
+                    assert_ne!(format.Base.crTextColor, keyword_color);
+                    assert!(!format.Base.dwEffects.contains(CFE_UNDERLINE));
                     assert!(region_at(&content.regions, index..index).is_none());
                 }
             }

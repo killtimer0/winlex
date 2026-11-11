@@ -12,7 +12,6 @@ use std::{
     rc::Rc,
     sync::Arc,
 };
-use windows::Win32::UI::Controls::RichEdit::ENLINK;
 use winlex_core::{Architecture, Catalog, DeclarationTarget};
 
 mod find;
@@ -72,7 +71,8 @@ struct State {
     content: Option<Rc<crate::rich_text::Content>>,
     press: Option<LinkPress>,
     navigation: Option<Navigation>,
-    context_link: Option<(Rc<crate::rich_text::Content>, std::ops::Range<usize>)>,
+    hover: Option<std::ops::Range<usize>>,
+    tracking: bool,
 }
 struct Navigation {
     content: Rc<crate::rich_text::Content>,
@@ -93,13 +93,14 @@ impl State {
             content: None,
             press: None,
             navigation: None,
-            context_link: None,
+            hover: None,
+            tracking: false,
         }
     }
     fn clear_interactions(&mut self) {
         self.press = None;
         self.navigation = None;
-        self.context_link = None;
+        self.hover = None;
     }
     fn contains(&self, navigation: &Navigation) -> bool {
         self.content
@@ -116,7 +117,6 @@ pub(super) struct MetadataView {
     pub placement: Cell<Option<layout::Placement>>,
     pub preview: Cell<bool>,
     pub live: Cell<bool>,
-    pub releasing_link: Cell<bool>,
     state: RefCell<State>,
     icons: RefCell<Option<Rc<crate::icons::WindowIcons>>>,
     editor: HWND,
@@ -138,7 +138,6 @@ pub(super) fn open(ctx: &Context, binding: Binding, preview: bool) -> anyhow::Re
         placement: Cell::new(None),
         preview: Cell::new(preview),
         live: Cell::new(true),
-        releasing_link: Cell::new(false),
         icons: RefCell::new(None),
         state: RefCell::new(State::new(binding)),
         editor: std::ptr::null_mut(),
@@ -345,24 +344,14 @@ impl MetadataView {
         if control != self.editor {
             return false;
         }
-        let (content, binding, mouse_link) = {
-            let mut state = self.state.borrow_mut();
-            (
-                state.content.clone(),
-                state.binding.clone(),
-                state.context_link.take(),
-            )
+        let (content, binding) = {
+            let state = self.state.borrow();
+            (state.content.clone(), state.binding.clone())
         };
         let regions = content.as_ref().map_or(&[][..], |c| c.regions.as_slice());
-        let mouse_region = mouse_link.as_ref().and_then(|(clicked, range)| {
-            content
-                .as_ref()
-                .filter(|current| Rc::ptr_eq(current, clicked))?;
-            regions.iter().find(|region| &region.range == range)
-        });
         if let Some(Some(target)) = super::status::report(
             self.ctx(),
-            crate::rich_text::context_menu(self.editor, location, regions, mouse_region),
+            crate::rich_text::context_menu(self.editor, location, regions),
         ) {
             self.queue_navigation(Navigation {
                 content: content.expect("reference content"),
@@ -375,9 +364,6 @@ impl MetadataView {
     pub(super) fn cancel_link_press(&self) {
         self.state.borrow_mut().press = None;
     }
-    pub(super) fn clear_context_link(&self) {
-        self.state.borrow_mut().context_link = None;
-    }
     pub(super) fn move_link_press(&self, point: POINT) {
         let mut state = self.state.borrow_mut();
         if state
@@ -388,15 +374,9 @@ impl MetadataView {
             state.press = None;
         }
     }
-    pub(super) fn link_notification(&self, link: ENLINK) {
-        if link.nmhdr.hwndFrom.0 != self.editor
-            || !matches!(link.msg, WM_LBUTTONDOWN | WM_LBUTTONUP | WM_RBUTTONUP)
-        {
-            return;
-        }
-        let point = point_from_lparam(link.lParam.0);
-        if link.msg != WM_RBUTTONUP && !link_modifiers(link.wParam.0) {
-            self.cancel_link_press();
+    pub(super) fn press_link(&self, point: POINT) {
+        self.cancel_link_press();
+        if !link_modifier() {
             return;
         }
         let (content, binding) = {
@@ -404,38 +384,98 @@ impl MetadataView {
             (state.content.clone(), state.binding.clone())
         };
         let Some(content) = content else { return };
-        let Some(region) = crate::rich_text::link_region(self.editor, &content, &link) else {
+        let Some((target, range)) = crate::rich_text::region_at_point(self.editor, &content, point)
+            .and_then(|region| {
+                region
+                    .target()
+                    .map(|target| (target.clone(), region.range.clone()))
+            })
+        else {
             return;
         };
-        let winlex_format::declaration::RegionKind::Reference(target) = &region.kind else {
+        self.state.borrow_mut().press = Some(LinkPress {
+            navigation: Navigation {
+                content,
+                binding,
+                target,
+            },
+            range,
+            origin: point,
+        });
+    }
+    pub(super) fn release_link(&self, point: POINT) {
+        let Some(press) = self.state.borrow_mut().press.take() else {
             return;
         };
-        if link.msg == WM_RBUTTONUP {
-            let range = region.range.clone();
-            self.state.borrow_mut().context_link = Some((content, range));
+        let same_symbol =
+            crate::rich_text::region_at_point(self.editor, &press.navigation.content, point)
+                .is_some_and(|region| region.range == press.range);
+        if same_symbol && click_distance(press.origin, point) {
+            self.queue_navigation(press.navigation);
+        }
+    }
+    /// Update the single Ctrl-hovered symbol; returns whether it is navigable.
+    pub(super) fn hover(&self, point: POINT) -> bool {
+        let range = link_modifier()
+            .then(|| {
+                let content = self.state.borrow().content.clone()?;
+                crate::rich_text::region_at_point(self.editor, &content, point)
+                    .filter(|region| region.target().is_some())
+                    .map(|region| region.range.clone())
+            })
+            .flatten();
+        self.set_hover(range.clone());
+        range.is_some()
+    }
+    pub(super) fn hover_cursor(&self) -> Option<bool> {
+        let mut point = POINT { x: 0, y: 0 };
+        unsafe {
+            GetCursorPos(&mut point);
+            ScreenToClient(self.editor, &mut point);
+        }
+        let area = client(self.editor);
+        if point.x < 0 || point.y < 0 || point.x >= area.right || point.y >= area.bottom {
+            self.set_hover(None);
+            return None;
+        }
+        Some(self.hover(point))
+    }
+    pub(super) fn mouse_leave(&self) {
+        self.state.borrow_mut().tracking = false;
+        self.set_hover(None);
+    }
+    pub(super) fn hand(&self) -> bool {
+        self.state.borrow().hover.is_some()
+    }
+    pub(super) fn clear_hover(&self) {
+        self.set_hover(None);
+    }
+    pub(super) fn track_leave(&self, hwnd: HWND) {
+        {
+            let mut state = self.state.borrow_mut();
+            if state.tracking {
+                return;
+            }
+            state.tracking = true;
+        }
+        let mut track = TRACKMOUSEEVENT {
+            cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
+            dwFlags: TME_LEAVE,
+            hwndTrack: hwnd,
+            dwHoverTime: 0,
+        };
+        unsafe { TrackMouseEvent(&mut track) };
+    }
+    fn set_hover(&self, range: Option<std::ops::Range<usize>>) {
+        let previous = std::mem::replace(&mut self.state.borrow_mut().hover, range.clone());
+        if previous == range {
             return;
         }
-        if link.msg == WM_LBUTTONDOWN {
-            let range = region.range.clone();
-            let target = target.clone();
-            self.state.borrow_mut().press = Some(LinkPress {
-                navigation: Navigation {
-                    content,
-                    binding,
-                    target,
-                },
-                range,
-                origin: point,
-            });
-        } else {
-            let press = self.state.borrow_mut().press.take();
-            if let Some(press) = press
-                && self.releasing_link.get()
-                && press.range == region.range
-                && click_distance(press.origin, point)
-            {
-                self.queue_navigation(press.navigation);
-            }
+        if let Some(previous) = previous {
+            let _ = crate::rich_text::set_underline(self.editor, &previous, false);
+        }
+        if let Some(range) = range {
+            let _ = crate::rich_text::set_underline(self.editor, &range, true);
         }
     }
     fn queue_navigation(&self, navigation: Navigation) {
@@ -527,6 +567,7 @@ impl MetadataView {
     pub(super) fn recolor(&self) {
         self.ctx().checked(self.update_icons());
         self.cancel_link_press();
+        self.state.borrow_mut().hover = None;
         let content = self.state.borrow().content.clone();
         if let Some(content) = content {
             super::status::report(self.ctx(), crate::rich_text::recolor(self.editor, &content));
@@ -632,10 +673,8 @@ impl MetadataView {
         });
     }
 }
-pub(super) fn link_modifiers(keys: usize) -> bool {
-    use windows_sys::Win32::System::SystemServices::{MK_CONTROL, MK_LBUTTON};
-    keys & !(MK_LBUTTON as usize) == MK_CONTROL as usize
-        && unsafe { GetKeyState(VK_MENU as i32) } >= 0
+pub(super) fn link_modifier() -> bool {
+    unsafe { GetKeyState(VK_CONTROL as i32) < 0 && GetKeyState(VK_MENU as i32) >= 0 }
 }
 fn click_distance(origin: POINT, point: POINT) -> bool {
     (point.x - origin.x).abs() < unsafe { GetSystemMetrics(SM_CXDRAG) }.max(1)
