@@ -1,6 +1,6 @@
 use crate::SCHEMA;
 use std::{ffi::OsString, fmt::Write as _, io::Write, path::PathBuf};
-use winlex_core::tools::demangle::{self, Abi, Convention, Demangled, SymbolKind};
+use winlex_core::tools::demangle::{self, Abi, Demangled, SymbolKind};
 
 const HELP: &str = "Usage: winlex demangle SYMBOL... [options]
 
@@ -19,7 +19,6 @@ struct Options {
     abi: Abi,
     symbols: Vec<String>,
     file: Option<PathBuf>,
-    json: bool,
 }
 
 fn parse(args: &[OsString]) -> Result<Options, String> {
@@ -27,7 +26,6 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
         abi: Abi::Auto,
         symbols: Vec::new(),
         file: None,
-        json: false,
     };
     let mut args = args.iter();
     while let Some(arg) = args.next() {
@@ -45,7 +43,7 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
                 let value = args.next().ok_or("missing value for --file")?;
                 options.file = Some(PathBuf::from(value));
             }
-            "--json" => options.json = true,
+            "--json" => {}
             _ if text.starts_with("--") => return Err(format!("unknown option {text}")),
             _ => options.symbols.push(text.to_owned()),
         }
@@ -75,12 +73,8 @@ fn symbols(options: &Options) -> Result<Vec<String>, String> {
 type Line = Result<Demangled, (String, String)>;
 
 pub(super) fn run(args: &[OsString], out: &mut dyn Write, err: &mut dyn Write) -> u8 {
-    if matches!(args, [arg] if arg == "--help" || arg == "-h") {
-        return if out.write_all(HELP.as_bytes()).is_ok() {
-            0
-        } else {
-            4
-        };
+    if let Some(code) = crate::help(args, out, HELP) {
+        return code;
     }
     let json = args.iter().any(|arg| arg == "--json");
     let options = match parse(args).and_then(|options| {
@@ -102,7 +96,7 @@ pub(super) fn run(args: &[OsString], out: &mut dyn Write, err: &mut dyn Write) -
             }
         }
     }
-    let written = if options.json {
+    let written = if json {
         let results: Vec<_> = lines
             .iter()
             .map(|line| match line {
@@ -118,8 +112,8 @@ pub(super) fn run(args: &[OsString], out: &mut dyn Write, err: &mut dyn Write) -
                 }),
             })
             .collect();
-        serde_json::to_writer_pretty(
-            &mut *out,
+        crate::write_json(
+            out,
             &serde_json::json!({
                 "schema": SCHEMA,
                 "ok": !failed,
@@ -127,8 +121,6 @@ pub(super) fn run(args: &[OsString], out: &mut dyn Write, err: &mut dyn Write) -
                 "results": results,
             }),
         )
-        .map_err(std::io::Error::other)
-        .and_then(|_| writeln!(out))
     } else {
         write!(out, "{}", render(&lines))
     };
@@ -143,7 +135,7 @@ fn render(lines: &[Line]) -> String {
                 let mut meta = format!("{}, {}", result.abi.name(), kind_name(result.kind));
                 if let Some(convention) = result.convention {
                     meta.push_str(", ");
-                    meta.push_str(convention_name(convention));
+                    meta.push_str(convention.name());
                 }
                 let _ = writeln!(text, "{} -> {} [{}]", result.symbol, result.text, meta);
             }
@@ -161,17 +153,6 @@ fn kind_name(kind: SymbolKind) -> &'static str {
         SymbolKind::Data => "data",
         SymbolKind::Special => "special",
         SymbolKind::Unknown => "unknown",
-    }
-}
-
-fn convention_name(convention: Convention) -> &'static str {
-    match convention {
-        Convention::Cdecl => "cdecl",
-        Convention::Stdcall => "stdcall",
-        Convention::Fastcall => "fastcall",
-        Convention::Thiscall => "thiscall",
-        Convention::Pascal => "pascal",
-        Convention::Regcall => "regcall",
     }
 }
 
@@ -243,8 +224,8 @@ mod tests {
         assert_eq!(response["results"][0]["ok"], true);
         assert_eq!(response["results"][0]["result"]["abi"], "itanium");
         assert_eq!(
-            response["results"][0]["result"]["spans"][0]["role"],
-            "method"
+            response["results"][0]["result"]["spans"],
+            serde_json::json!([{ "start": 0, "end": 10 }])
         );
         assert_eq!(response["results"][1]["ok"], false);
     }

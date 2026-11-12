@@ -104,14 +104,7 @@ impl Dialog<'_> {
             }
             if initialized || rescaled {
                 // Font changes intentionally defer repaint until all controls are positioned.
-                unsafe {
-                    RedrawWindow(
-                        hwnd,
-                        ptr::null(),
-                        ptr::null_mut(),
-                        RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN,
-                    );
-                }
+                super::repaint(hwnd);
                 return Ok(true);
             }
             Ok(false)

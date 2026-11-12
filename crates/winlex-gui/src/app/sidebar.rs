@@ -57,6 +57,10 @@ impl Sidebar {
             .find(|p| p.controls.contains(&hwnd))
             .cloned()
     }
+    /// The visible panel, if the sidebar is expanded.
+    fn current(&self) -> Option<Rc<Panel>> {
+        (!self.collapsed).then(|| self.panel(self.active))
+    }
 }
 pub(super) fn active(ctx: &Context) -> PanelId {
     ctx.with_sidebar(|sidebar| sidebar.active)
@@ -72,18 +76,10 @@ pub(super) fn search(ctx: &Context) -> Rc<Search> {
         .expect("search panel")
 }
 pub(super) fn current(ctx: &Context) -> Option<Rc<Panel>> {
-    ctx.with_sidebar(|sidebar| {
-        let s = &sidebar;
-        (!s.collapsed).then(|| s.panel(s.active))
-    })
+    ctx.with_sidebar(|sidebar| sidebar.current())
 }
 pub(super) fn focus(ctx: &Context) {
-    let (toolbar, panel) = ctx.with_sidebar(|sidebar| {
-        (
-            sidebar.toolbar,
-            (!sidebar.collapsed).then(|| sidebar.panel(sidebar.active)),
-        )
-    });
+    let (toolbar, panel) = ctx.with_sidebar(|sidebar| (sidebar.toolbar, sidebar.current()));
     if let Some(panel) = panel {
         panel.focus();
     } else {
@@ -220,12 +216,11 @@ pub(super) fn recolor(ctx: &Context) {
 pub(super) fn layout(ctx: &Context, bottom: i32, positions: &mut Vec<(HWND, RECT)>) -> i32 {
     let frame = ctx.frame();
     let (toolbar, splitter, width, panel) = ctx.with_sidebar(|sidebar| {
-        let s = &sidebar;
         (
-            s.toolbar,
-            s.splitter,
-            s.width,
-            (!s.collapsed).then(|| s.panel(s.active)),
+            sidebar.toolbar,
+            sidebar.splitter,
+            sidebar.width,
+            sidebar.current(),
         )
     });
     let m = ctx.metrics(frame);
@@ -237,10 +232,11 @@ pub(super) fn layout(ctx: &Context, bottom: i32, positions: &mut Vec<(HWND, RECT
         return x;
     };
     let mut area = layout::inset(layout::rect(x, 0, width, bottom), m.px(4));
-    match ctx.with_sidebar(|sidebar| sidebar.active) {
+    match panel.id {
         PanelId::Search => search(ctx).layout(ctx, &mut area, &m, positions),
-        PanelId::Sources => m.buttons(&mut area, panel.controls[1..].iter().copied(), positions),
-        PanelId::Tools => m.buttons(&mut area, panel.controls[1..].iter().copied(), positions),
+        PanelId::Sources | PanelId::Tools => {
+            m.buttons(&mut area, panel.controls[1..].iter().copied(), positions)
+        }
     }
     positions.push((panel.list.hwnd, area));
     positions.push((splitter, layout::rect(x + width, 0, s(3), bottom)));

@@ -62,7 +62,6 @@ struct State {
     dragging: bool,
     tooltip: HWND,
     tip: Vec<u16>,
-    name: String,
     select_label: String,
     object: Option<windows::Win32::UI::Accessibility::IAccessible>,
     next_child: i32,
@@ -117,7 +116,7 @@ impl State {
     }
 }
 fn contains(r: RECT, p: POINT) -> bool {
-    p.x >= r.left && p.x < r.right && p.y >= r.top && p.y < r.bottom
+    unsafe { PtInRect(&r, p) != 0 }
 }
 fn state(hwnd: HWND) -> Option<Rc<RefCell<State>>> {
     let p = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *const Rc<RefCell<State>>;
@@ -148,7 +147,6 @@ pub fn create(parent: HWND, id: u16, name: String, select_label: String) -> anyh
     }?;
     if let Some(s) = state(hwnd) {
         let mut s = s.borrow_mut();
-        s.name = name;
         s.select_label = select_label;
     }
     Ok(hwnd)
@@ -526,12 +524,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, w: usize, l: isize) 
         let p = point_from_lparam(l);
         match msg {
             WM_CREATE => {
-                let mut info: TTTOOLINFOW = std::mem::zeroed();
-                info.cbSize = TOOLINFO_SIZE;
-                info.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
-                info.hwnd = hwnd;
-                info.uId = hwnd as usize;
-                info.lpszText = shared.borrow_mut().tip.as_mut_ptr();
+                let info = tooltip_info(hwnd, shared.borrow_mut().tip.as_mut_ptr());
                 let Ok(tip) = crate::native::tooltip(hwnd, &info) else {
                     return -1;
                 };
@@ -577,8 +570,8 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, w: usize, l: isize) 
             }
             WM_SETFOCUS | WM_KILLFOCUS => {
                 InvalidateRect(hwnd, ptr::null(), 0);
-                let selected = shared.borrow().focused;
                 if msg == WM_SETFOCUS {
+                    let selected = shared.borrow().focused;
                     event(hwnd, EVENT_OBJECT_FOCUS, selected);
                 }
             }
@@ -615,13 +608,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, w: usize, l: isize) 
                     tooltip(&shared, hit);
                     InvalidateRect(hwnd, ptr::null(), 0);
                 }
-                let mut track = TRACKMOUSEEVENT {
-                    cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
-                    dwFlags: TME_LEAVE,
-                    hwndTrack: hwnd,
-                    dwHoverTime: 0,
-                };
-                TrackMouseEvent(&mut track);
+                track_leave(hwnd);
             }
             WM_MOUSELEAVE => {
                 shared.borrow_mut().hot = None;

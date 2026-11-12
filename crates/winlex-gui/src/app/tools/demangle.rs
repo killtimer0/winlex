@@ -1,85 +1,52 @@
 //! Symbol demangle tool: multi-line input, ABI selection and semantic results.
+use super::Shell;
+use super::combo_value;
 use crate::app::context::Context;
+use crate::native::text;
 use crate::{
+    icons::Icon,
     layout,
     native::*,
     resources::{self, *},
 };
-use std::{
-    cell::{Cell, RefCell},
-    rc::Rc,
-};
-use winlex_core::tools::demangle::{self, Abi, Convention, Role, SymbolKind};
+use std::ops::{Deref, DerefMut};
+use winlex_core::tools::demangle::{self, Abi, SymbolKind};
 use winlex_format::declaration::{Region, Rendered, SymbolRole};
 
 const MAX_LINES: usize = 1000;
 const MAX_UNITS: usize = 256 * 1024;
 
 const ABIS: &[(u16, Abi)] = &[
-    (IDS_DEMANGLE_AUTO, Abi::Auto),
+    (IDS_AUTO, Abi::Auto),
     (IDS_DEMANGLE_MSVC, Abi::Msvc),
     (IDS_DEMANGLE_ITANIUM, Abi::Itanium),
 ];
 
 pub(in crate::app) struct View {
-    // The document lives inside the context, so the pointer cannot outlive it.
-    ctx: *const Context,
-    pub id: u64,
-    pub hwnd: HWND,
-    pub placement: Cell<Option<layout::Placement>>,
-    pub live: Cell<bool>,
-    pub(super) recent: Cell<u64>,
-    icons: RefCell<Option<Rc<crate::icons::WindowIcons>>>,
+    shell: Shell,
     input: HWND,
     abi: HWND,
-    copy: HWND,
-    result: HWND,
-    status: RefCell<String>,
-    labels: Vec<HWND>,
-    setting: Cell<bool>,
-    body: RefCell<crate::rich_text::Content>,
-    plain: RefCell<String>,
+}
+
+impl Deref for View {
+    type Target = Shell;
+    fn deref(&self) -> &Shell {
+        &self.shell
+    }
+}
+impl DerefMut for View {
+    fn deref_mut(&mut self) -> &mut Shell {
+        &mut self.shell
+    }
 }
 
 impl View {
-    fn ctx(&self) -> &Context {
-        unsafe { &*self.ctx }
-    }
-    pub fn new(ctx: &Context) -> Self {
+    pub fn new(ctx: &Context, icon: Icon) -> Self {
         Self {
-            ctx: ctx as *const Context,
-            id: super::super::workspace::next_serial(ctx),
-            hwnd: std::ptr::null_mut(),
-            placement: Cell::new(None),
-            live: Cell::new(true),
-            recent: Cell::new(0),
-            icons: RefCell::new(None),
+            shell: Shell::new(ctx, resources::text(IDS_DEMANGLE_EMPTY), icon),
             input: std::ptr::null_mut(),
             abi: std::ptr::null_mut(),
-            copy: std::ptr::null_mut(),
-            result: std::ptr::null_mut(),
-            status: RefCell::new(resources::text(IDS_DEMANGLE_EMPTY)),
-            labels: vec![],
-            setting: Cell::new(true),
-            body: RefCell::new(crate::rich_text::Content::new(String::new())),
-            plain: RefCell::new(String::new()),
         }
-    }
-    fn update_icons(&self) {
-        let ctx = self.ctx();
-        super::super::status::report(
-            ctx,
-            super::super::document::update_icons(
-                ctx,
-                self.hwnd,
-                crate::icons::Icon::Method,
-                &self.icons,
-            ),
-        );
-    }
-    pub fn activated(&self) {
-        self.recent
-            .set(super::super::workspace::next_serial(self.ctx()));
     }
     pub fn create(&mut self, hwnd: HWND) -> anyhow::Result<()> {
         self.hwnd = hwnd;
@@ -89,8 +56,7 @@ impl View {
                 DEMANGLE_INPUT,
                 &mut self.input,
                 w!("EDIT"),
-                WS_TABSTOP
-                    | WS_VSCROLL
+                WS_VSCROLL
                     | ES_MULTILINE as u32
                     | ES_AUTOVSCROLL as u32
                     | ES_WANTRETURN as u32
@@ -102,70 +68,25 @@ impl View {
                 DEMANGLE_ABI,
                 &mut self.abi,
                 w!("COMBOBOX"),
-                WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST as u32,
+                WS_VSCROLL | CBS_DROPDOWNLIST as u32,
                 0,
             ),
         ] {
-            self.labels
-                .push(unsafe { child(hwnd, w!("STATIC"), resources::wide_text(label), 0, 0) }?);
-            *control = unsafe {
-                child_ex(
-                    hwnd,
-                    class,
-                    &[0],
-                    style,
-                    edge,
-                    if id == DEMANGLE_INPUT {
-                        DEMANGLE_INPUT
-                    } else {
-                        DEMANGLE_ABI
-                    },
-                )
-            }?;
+            *control = self.shell.create_field(hwnd, label, id, class, style, edge)?;
         }
-        for &(label, _) in ABIS {
-            send(
-                self.abi,
-                CB_ADDSTRING,
-                0,
-                resources::wide_text(label).as_ptr() as isize,
-            );
-        }
-        send(self.abi, CB_SETCURSEL, 0, 0);
-        self.copy = unsafe {
-            child(
-                hwnd,
-                w!("BUTTON"),
-                resources::wide_text(IDS_DEMANGLE_COPY_ALL),
-                WS_TABSTOP,
-                DEMANGLE_COPY_ALL,
-            )
-        }?;
-        self.labels.push(unsafe {
-            child(
-                hwnd,
-                w!("STATIC"),
-                resources::wide_text(IDS_DEMANGLE_RESULT_LABEL),
-                0,
-                0,
-            )
-        }?);
-        self.result = crate::rich_text::create(hwnd, DEMANGLE_RESULT)?;
+        self.shell
+            .populate_combo(self.abi, ABIS.iter().map(|&(label, _)| label));
+        self.shell.create_copy_button(hwnd, DEMANGLE_COPY_ALL)?;
+        self.shell.create_result(hwnd, DEMANGLE_RESULT)?;
         send(self.input, EM_SETLIMITTEXT, MAX_UNITS, 0);
-        self.setting.set(false);
         Ok(())
     }
     fn refresh(&self) {
-        if self.setting.get() || self.result.is_null() {
+        if self.result.is_null() {
             return;
         }
-        let selected = send(self.abi, CB_GETCURSEL, 0, 0);
-        let abi = ABIS
-            .get(selected.max(0) as usize)
-            .map(|&(_, abi)| abi)
-            .unwrap_or(Abi::Auto);
-        let raw = native_text(self.input);
-        let raw = String::from_utf16_lossy(&raw);
+        let abi = combo_value(self.abi, ABIS, Abi::Auto);
+        let raw = text(self.input);
         let (symbols, truncated) = split_input(&raw);
         let (content, copy, status) = if symbols.is_empty() {
             let empty = resources::text(IDS_DEMANGLE_EMPTY);
@@ -184,13 +105,7 @@ impl View {
                 status,
             )
         };
-        if let Err(error) = crate::rich_text::set_content(self.result, &content) {
-            self.set_status(&format!("{error:#}"));
-            return;
-        }
-        self.body.replace(content);
-        self.plain.replace(copy);
-        self.set_status(&status);
+        self.shell.show(content, copy, &status);
     }
     fn status_text(&self, output: &Output) -> String {
         let total = (output.restored + output.failed).to_string();
@@ -210,29 +125,16 @@ impl View {
         }
         status
     }
-    fn set_status(&self, message: &str) {
-        self.status.replace(message.to_owned());
-        super::super::document::status_changed(self.ctx(), self.hwnd);
-    }
     pub fn layout(&self) {
-        if self.result.is_null() {
+        let Some((m, mut area, gap, label_gap)) = self.layout_start() else {
             return;
-        }
-        let m = self.ctx().metrics(self.hwnd);
-        let mut area = layout::inset(client(self.hwnd), m.px(8));
+        };
         let mut positions = vec![];
-        let gap = m.px(4);
-        let label_gap = m.px(8);
-        let label_width = [
-            IDS_DEMANGLE_LABEL,
-            IDS_DEMANGLE_ABI,
-            IDS_DEMANGLE_RESULT_LABEL,
-        ]
-        .into_iter()
-        .map(|id| m.text_width(resources::wide_text(id)))
-        .max()
-        .unwrap_or(0)
-        .min((area.right - area.left) / 3);
+        let label_width = self.label_column(
+            &m,
+            &[IDS_DEMANGLE_LABEL, IDS_DEMANGLE_ABI, IDS_RESULT_LABEL],
+            area.right - area.left,
+        );
         let input_height = (m.row() * 5).max(m.height * 3);
         let mut line = layout::take_top(&mut area, input_height);
         let label = layout::take_left(&mut line, label_width);
@@ -264,92 +166,36 @@ impl View {
                 copy.cy,
             ),
         ));
-        layout::take_top(&mut area, gap);
-        positions.push((
-            self.labels[2],
-            layout::take_top(&mut area, m.height + m.px(4)),
-        ));
-        positions.push((self.result, area));
-        if let Err(error) = place_all(&positions) {
-            self.set_status(&format!("{error:#}"));
-        }
+        self.finish_layout(&m, &mut area, self.labels[2], &mut positions);
     }
     pub fn focus(&self) {
         focus(self.input)
     }
     pub fn prepare(&self) {
-        self.update_icons();
-        let m = self.ctx().metrics(self.hwnd);
-        for h in self
-            .labels
-            .iter()
-            .copied()
-            .chain([self.input, self.abi, self.copy])
-        {
-            super::super::bind(h, m.font);
-        }
-        let ctx = self.ctx();
-        let mut rect = bounds(self.abi, self.hwnd);
-        rect.bottom = rect.top + m.row() * 9;
-        ctx.checked(set_bounds(self.abi, rect));
-        let (system_font, _) = ctx.font_for(ctx.dpi().system());
-        ctx.checked(crate::rich_text::prepare(
-            self.result,
-            system_font,
-            ctx.dpi(),
-        ));
+        self.prepare_common(&[self.input, self.abi], &[self.abi]);
         self.layout();
     }
-    pub fn recolor(&self) {
-        self.update_icons();
-        let _ = crate::rich_text::recolor(self.result, &self.body.borrow());
-    }
-    pub fn status(&self) -> String {
-        self.status.borrow().clone()
-    }
     pub fn key(&self, msg: &MSG) -> bool {
-        if msg.message == WM_KEYDOWN
-            && msg.wParam == VK_A as usize
-            && unsafe { GetKeyState(VK_CONTROL as i32) } < 0
-            && [self.input, self.result].contains(&msg.hwnd)
-        {
-            send(msg.hwnd, EM_SETSEL, 0, -1);
-            return true;
-        }
-        false
+        self.ctrl_a(msg, &[self.input, self.result])
     }
     pub fn message(&self, msg: u32, w: usize, l: isize) -> Option<isize> {
-        match msg {
-            WM_COMMAND => {
-                let id = w as u16;
-                let code = (w >> 16) as u32;
-                match id {
-                    DEMANGLE_INPUT if code == EN_CHANGE => self.refresh(),
-                    DEMANGLE_ABI if code == CBN_SELENDOK => self.refresh(),
-                    DEMANGLE_COPY_ALL if code == BN_CLICKED => {
-                        let copy_text: Vec<u16> = self.plain.borrow().encode_utf16().collect();
-                        if let Err(error) = copy_unicode(self.hwnd, &copy_text) {
-                            self.set_status(&format!("{error:#}"));
-                        }
-                    }
-                    _ => return None,
-                }
-                Some(0)
+        self.shell.message(msg, w, l, |id, code| match id {
+            DEMANGLE_INPUT if code == EN_CHANGE => {
+                self.refresh();
+                true
             }
-            WM_CONTEXTMENU if w as HWND == self.result => {
-                let _ = crate::rich_text::context_menu(self.result, l, &[]);
-                Some(0)
+            DEMANGLE_ABI if code == CBN_SELENDOK => {
+                self.refresh();
+                true
             }
-            _ => None,
-        }
+            DEMANGLE_COPY_ALL if code == BN_CLICKED => {
+                self.copy_plain();
+                true
+            }
+            _ => false,
+        })
     }
     pub fn destroy(&self) {}
-}
-
-fn native_text(hwnd: HWND) -> Vec<u16> {
-    let mut text = text_wide(hwnd);
-    text.pop();
-    text
 }
 
 struct Labels {
@@ -368,7 +214,7 @@ impl Labels {
         Self {
             msvc: resources::text(IDS_DEMANGLE_MSVC),
             itanium: resources::text(IDS_DEMANGLE_ITANIUM),
-            function: resources::text(IDS_DEMANGLE_FUNCTION),
+            function: resources::text(IDS_FUNCTION),
             data: resources::text(IDS_DEMANGLE_DATA),
             special: resources::text(IDS_DEMANGLE_SPECIAL),
             unknown: resources::text(IDS_DEMANGLE_UNKNOWN),
@@ -423,7 +269,7 @@ fn render(symbols: &[&str], abi: Abi, labels: &Labels, truncated: bool) -> Outpu
                 for span in &result.spans {
                     body.regions.push(Region::symbol(
                         start + span.start..start + span.end,
-                        role(span.role),
+                        SymbolRole::Method,
                     ));
                 }
                 body.text.push_str("  ");
@@ -432,7 +278,7 @@ fn render(symbols: &[&str], abi: Abi, labels: &Labels, truncated: bool) -> Outpu
                 body.text.push_str(labels.kind(result.kind));
                 if let Some(convention) = result.convention {
                     body.text.push_str(" · ");
-                    body.text.push_str(convention_name(convention));
+                    body.text.push_str(convention.name());
                 } else if result.abi == Abi::Itanium && result.kind == SymbolKind::Function {
                     body.text.push_str(" · ");
                     body.text.push_str(&labels.no_return);
@@ -460,23 +306,6 @@ fn render(symbols: &[&str], abi: Abi, labels: &Labels, truncated: bool) -> Outpu
         failed,
         first_error,
         truncated,
-    }
-}
-
-fn role(role: Role) -> SymbolRole {
-    match role {
-        Role::Method => SymbolRole::Method,
-    }
-}
-
-fn convention_name(convention: Convention) -> &'static str {
-    match convention {
-        Convention::Cdecl => "cdecl",
-        Convention::Stdcall => "stdcall",
-        Convention::Fastcall => "fastcall",
-        Convention::Thiscall => "thiscall",
-        Convention::Pascal => "pascal",
-        Convention::Regcall => "regcall",
     }
 }
 

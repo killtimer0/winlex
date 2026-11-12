@@ -44,10 +44,8 @@ pub(crate) fn initialize_controls(classes: u32) {
 
 pub(crate) fn catalog() -> Arc<Catalog> {
     Arc::new(
-        Catalog::open(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../inputs/Windows.Win32.winmd"),
-        )
+        Catalog::open_many([std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../inputs/Windows.Win32.winmd")])
         .unwrap(),
     )
 }

@@ -253,14 +253,8 @@ fn poll_completions(ctx: &Context) {
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 catalog::flush_results(ctx);
                 catalog::worker_stopped(ctx);
-                for view in workspace::views(ctx) {
-                    view.worker_stopped();
-                }
-                for tool in workspace::contents(ctx)
-                    .into_iter()
-                    .filter_map(|c| c.tool())
-                {
-                    tool.worker_stopped();
+                for content in workspace::contents(ctx) {
+                    content.worker_stopped();
                 }
                 panel::cancel_debounce(ctx);
                 return;

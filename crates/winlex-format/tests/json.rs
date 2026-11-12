@@ -24,7 +24,8 @@ fn reference_json_distinguishes_builtin_definition_and_missing_dependency() {
     let catalog = Catalog::from_inputs([source("reference-semantics", bytes)]).unwrap();
     for r in index.rows::<reader::TypeRef>(0) {
         let id = winlex_core::metadata::key(r, 1);
-        let result = winlex_format::describe(&catalog, id, Some(Architecture::X64)).unwrap();
+        let result =
+            winlex_format::describe_target(&catalog, &id.into(), Some(Architecture::X64)).unwrap();
         let resolution = &result["resolution"];
         match r.name() {
             "Guid" => {

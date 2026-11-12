@@ -7,7 +7,8 @@ use crate::{
 };
 use std::cell::RefCell;
 
-pub(super) fn search(ctx: &Context) -> anyhow::Result<()> {
+/// Scrollable plain text in the search-help dialog, with an optional caption.
+pub(super) fn show_text(ctx: &Context, caption: Option<u16>, body: &str) -> anyhow::Result<()> {
     modal::show(
         ctx.frame(),
         ctx.dpi(),
@@ -18,13 +19,21 @@ pub(super) fn search(ctx: &Context) -> anyhow::Result<()> {
         ],
         &|hwnd, message, _, _| {
             if message == WM_INITDIALOG {
-                set_text(
-                    unsafe { GetDlgItem(hwnd, SEARCH_HELP_TEXT as i32) },
-                    &resources::text(IDS_SEARCH_HELP).replace('\n', "\r\n"),
-                );
+                if let Some(caption) = caption {
+                    set_text(hwnd, &resources::text(caption));
+                }
+                set_text(unsafe { GetDlgItem(hwnd, SEARCH_HELP_TEXT as i32) }, body);
             }
             Ok(())
         },
+    )
+}
+
+pub(super) fn search(ctx: &Context) -> anyhow::Result<()> {
+    show_text(
+        ctx,
+        None,
+        &resources::text(IDS_SEARCH_HELP).replace('\n', "\r\n"),
     )
 }
 

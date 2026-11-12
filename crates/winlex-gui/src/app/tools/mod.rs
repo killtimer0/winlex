@@ -3,16 +3,342 @@ use super::{history, workspace};
 use crate::app::context::Context;
 use crate::{
     icons::Icon,
-    layout::Placement,
+    layout::{self, Placement},
     list::{Display, TextSegment},
     native::*,
     resources::{self, *},
 };
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 mod com;
 mod demangle;
 mod error_code;
+
+/// Shared tool subclass: Tab stays inside single-line inputs and IME composition
+/// is flagged so Enter does not submit a half-composed value.
+const TEXT_SUBCLASS: usize = 1810;
+
+unsafe extern "system" fn text_proc(
+    hwnd: HWND,
+    msg: u32,
+    w: usize,
+    l: isize,
+    _id: usize,
+    _data: usize,
+) -> isize {
+    unsafe {
+        match msg {
+            WM_GETDLGCODE if w == VK_TAB as usize => {
+                return (DLGC_WANTARROWS | DLGC_WANTCHARS) as isize;
+            }
+            WM_IME_STARTCOMPOSITION => {
+                SetPropW(hwnd, w!("Winlex.Tool.Composing"), 1usize as HANDLE);
+            }
+            WM_IME_ENDCOMPOSITION => {
+                RemovePropW(hwnd, w!("Winlex.Tool.Composing"));
+            }
+            WM_NCDESTROY => {
+                RemovePropW(hwnd, w!("Winlex.Tool.Composing"));
+                remove_subclass(hwnd, Some(text_proc), TEXT_SUBCLASS);
+            }
+            _ => {}
+        }
+        default_subclass(hwnd, msg, w, l)
+    }
+}
+
+fn native_text(hwnd: HWND) -> Vec<u16> {
+    let mut text = text_wide(hwnd);
+    text.pop();
+    text
+}
+
+/// State every tool view shares with the document host. Views dereference to it,
+/// so tool code keeps using `self.hwnd`, `self.body` and the lifecycle helpers.
+pub(super) struct Shell {
+    // The document lives inside the context, so the pointer cannot outlive it.
+    ctx: *const Context,
+    pub id: u64,
+    pub hwnd: HWND,
+    pub placement: Cell<Option<Placement>>,
+    pub(super) recent: Cell<u64>,
+    icons: RefCell<Option<Rc<crate::icons::WindowIcons>>>,
+    icon: Icon,
+    pub labels: Vec<HWND>,
+    result: HWND,
+    copy: HWND,
+    status: RefCell<String>,
+    body: RefCell<crate::rich_text::Content>,
+    plain: RefCell<String>,
+    /// Set while the view updates its own controls, so their notifications are
+    /// not mistaken for user edits.
+    pub(super) setting: Cell<bool>,
+}
+
+impl Shell {
+    fn new(ctx: &Context, status: String, icon: Icon) -> Self {
+        Self {
+            ctx: ctx as *const Context,
+            id: super::workspace::next_serial(ctx),
+            hwnd: std::ptr::null_mut(),
+            placement: Cell::new(None),
+            recent: Cell::new(0),
+            icons: RefCell::new(None),
+            icon,
+            labels: Vec::new(),
+            result: std::ptr::null_mut(),
+            copy: std::ptr::null_mut(),
+            status: RefCell::new(status),
+            body: RefCell::new(crate::rich_text::Content::new(String::new())),
+            plain: RefCell::new(String::new()),
+            setting: Cell::new(true),
+        }
+    }
+    fn ctx(&self) -> &Context {
+        unsafe { &*self.ctx }
+    }
+    /// Dropdown lists need their collapsed height set from the font metrics; a
+    /// later resize only sets the dropdown, not the closed control.
+    fn size_combos(&self, controls: &[HWND]) {
+        let ctx = self.ctx();
+        let m = ctx.metrics(self.hwnd);
+        for &combo in controls {
+            ctx.checked(collapse_combo(combo, m.row(), 9));
+        }
+    }
+    /// Font the labels, controls, copy button and result editor, then lay out.
+    fn prepare_common(&self, controls: &[HWND], combos: &[HWND]) {
+        self.update_icons();
+        let m = self.ctx().metrics(self.hwnd);
+        for h in self
+            .labels
+            .iter()
+            .copied()
+            .chain(controls.iter().copied())
+            .chain(Some(self.copy))
+        {
+            super::bind(h, m.font);
+        }
+        self.size_combos(combos);
+        let ctx = self.ctx();
+        let (system_font, _) = ctx.font_for(ctx.dpi().system());
+        ctx.checked(crate::rich_text::prepare(
+            self.result,
+            system_font,
+            ctx.dpi(),
+        ));
+    }
+    fn activated(&self) {
+        self.recent.set(super::workspace::next_serial(self.ctx()));
+    }
+    /// Queue this tool's job, replacing its pending one and recording the new ticket.
+    /// A submission failure belongs in the shared status line.
+    fn submit(&self, pending: &Cell<Option<u64>>, job: crate::tasks::tools::Job) -> bool {
+        let ctx = self.ctx();
+        let ticket = crate::app::catalog::next_ticket(ctx);
+        let id = ticket.id;
+        let previous = pending.take();
+        let result = ctx.replace_job(
+            previous,
+            ticket,
+            crate::tasks::Job::Tool {
+                document: self.id,
+                job,
+            },
+        );
+        match result {
+            Ok(()) => {
+                pending.set(Some(id));
+                true
+            }
+            Err(error) => {
+                self.set_status(&format!("{error:#}"));
+                false
+            }
+        }
+    }
+    fn set_status(&self, message: &str) {
+        self.status.replace(message.to_owned());
+        super::document::status_changed(self.ctx(), self.hwnd);
+    }
+    fn status(&self) -> String {
+        self.status.borrow().clone()
+    }
+    fn update_icons(&self) {
+        let ctx = self.ctx();
+        super::status::report(
+            ctx,
+            super::document::update_icons(ctx, self.hwnd, self.icon, &self.icons),
+        );
+    }
+    fn recolor(&self) {
+        self.update_icons();
+        let _ = crate::rich_text::recolor(self.result, &self.body.borrow());
+    }
+    fn show(&self, content: crate::rich_text::Content, copy: String, status: &str) {
+        if let Err(error) = crate::rich_text::set_content(self.result, &content) {
+            self.set_status(&format!("{error:#}"));
+            return;
+        }
+        self.body.replace(content);
+        self.plain.replace(copy);
+        self.set_status(status);
+    }
+    /// Shared tool layout: inset area and the row gaps above the result.
+    fn layout_start(&self) -> Option<(layout::Metrics, RECT, i32, i32)> {
+        if self.result.is_null() {
+            return None;
+        }
+        let metrics = self.ctx().metrics(self.hwnd);
+        let area = layout::inset(client(self.hwnd), metrics.px(8));
+        let gap = metrics.px(4);
+        let label_gap = metrics.px(8);
+        Some((metrics, area, gap, label_gap))
+    }
+    /// Every tool ends with the result caption and the editor filling the rest.
+    fn finish_layout(
+        &self,
+        metrics: &layout::Metrics,
+        area: &mut RECT,
+        label: HWND,
+        positions: &mut Vec<(HWND, RECT)>,
+    ) {
+        layout::take_top(area, metrics.px(4));
+        positions.push((
+            label,
+            layout::take_top(area, metrics.height + metrics.px(4)),
+        ));
+        positions.push((self.result, *area));
+        if let Err(error) = place_all(positions) {
+            self.set_status(&format!("{error:#}"));
+        }
+    }
+    /// One shared label column, capped so controls always keep most of the width.
+    fn label_column(&self, metrics: &layout::Metrics, labels: &[u16], available: i32) -> i32 {
+        labels
+            .iter()
+            .map(|&id| metrics.text_width(resources::wide_text(id)))
+            .max()
+            .unwrap_or(0)
+            .min(available / 3)
+    }
+    /// Ctrl+A selects the whole target edit, including an editable combo's child edit.
+    fn ctrl_a(&self, msg: &MSG, targets: &[HWND]) -> bool {
+        if msg.message == WM_KEYDOWN
+            && msg.wParam == VK_A as usize
+            && unsafe { GetKeyState(VK_CONTROL as i32) } < 0
+            && targets
+                .iter()
+                .any(|&target| target == msg.hwnd || unsafe { IsChild(target, msg.hwnd) } != 0)
+        {
+            send(msg.hwnd, EM_SETSEL, 0, -1);
+            return true;
+        }
+        false
+    }
+    /// Route the shared input shortcuts; `submit` runs when Enter reaches the input.
+    fn key(&self, msg: &MSG, targets: &[HWND], input: HWND, submit: impl FnOnce()) -> bool {
+        if self.ctrl_a(msg, targets) {
+            return true;
+        }
+        if self.submits(msg, input) {
+            submit();
+            return true;
+        }
+        false
+    }
+    /// Enter submits a tool input only when IME composition is not active.
+    fn submits(&self, msg: &MSG, input: HWND) -> bool {
+        msg.message == WM_KEYDOWN
+            && msg.hwnd == input
+            && msg.wParam == VK_RETURN as usize
+            && unsafe { GetPropW(input, w!("Winlex.Tool.Composing")) }.is_null()
+    }
+    /// Append the static caption for a labelled row or the result section.
+    fn create_label(&mut self, hwnd: HWND, id: u16) -> anyhow::Result<()> {
+        let caption = unsafe { child(hwnd, w!("STATIC"), resources::wide_text(id), 0, 0) }?;
+        self.labels.push(caption);
+        Ok(())
+    }
+    /// Create a labelled tab-stop edit or combo row.
+    fn create_field(
+        &mut self,
+        hwnd: HWND,
+        label: u16,
+        id: u16,
+        class: *const u16,
+        style: u32,
+        edge: u32,
+    ) -> anyhow::Result<HWND> {
+        self.create_label(hwnd, label)?;
+        unsafe { child_ex(hwnd, class, &[0], WS_TABSTOP | style, edge, id) }
+    }
+    /// Create a tab-stop push button.
+    fn create_button(&mut self, hwnd: HWND, label: u16, id: u16, style: u32) -> anyhow::Result<HWND> {
+        unsafe { child(hwnd, w!("BUTTON"), resources::wide_text(label), WS_TABSTOP | style, id) }
+    }
+    /// Create the result copy button; the id identifies the tool's text.
+    fn create_copy_button(&mut self, hwnd: HWND, id: u16) -> anyhow::Result<()> {
+        self.copy = self.create_button(hwnd, IDS_COPY_ALL, id, 0)?;
+        Ok(())
+    }
+    /// Fill a combo from fixed resource labels and select the first row.
+    fn populate_combo(&self, combo: HWND, labels: impl IntoIterator<Item = u16>) {
+        for label in labels {
+            send(
+                combo,
+                CB_ADDSTRING,
+                0,
+                resources::wide_text(label).as_ptr() as isize,
+            );
+        }
+        send(combo, CB_SETCURSEL, 0, 0);
+    }
+    /// Create the result section's caption and rich-text editor.
+    fn create_result(&mut self, hwnd: HWND, id: u16) -> anyhow::Result<()> {
+        self.create_label(hwnd, IDS_RESULT_LABEL)?;
+        self.result = crate::rich_text::create(hwnd, id)?;
+        Ok(())
+    }
+    /// Subclass a single-line tool input for Tab and IME composition handling.
+    fn subclass_text(&self, control: HWND) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            unsafe { set_subclass(control, Some(text_proc), TEXT_SUBCLASS, 0) } != 0,
+            "Subclass tool text control"
+        );
+        Ok(())
+    }
+    /// Copy the tool's plain result text; every tool owns one copy control.
+    fn copy_plain(&self) {
+        let copy: Vec<u16> = self.plain.borrow().encode_utf16().collect();
+        if let Err(error) = copy_unicode(self.hwnd, &copy) {
+            self.set_status(&format!("{error:#}"));
+        }
+    }
+    /// The result editor's context menu belongs to the shared rich-text control.
+    fn result_context_menu(&self, w: usize, l: isize) -> Option<isize> {
+        if w as HWND != self.result {
+            return None;
+        }
+        let _ = crate::rich_text::context_menu(self.result, l, &[]);
+        Some(0)
+    }
+    /// Decode the tool message protocol; `command` handles the command id and code.
+    fn message(
+        &self,
+        msg: u32,
+        w: usize,
+        l: isize,
+        command: impl FnOnce(u16, u32) -> bool,
+    ) -> Option<isize> {
+        match msg {
+            WM_COMMAND if command(w as u16, (w >> 16) as u32) => Some(0),
+            WM_CONTEXTMENU => self.result_context_menu(w, l),
+            _ => None,
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub(super) enum Kind {
@@ -125,12 +451,6 @@ impl ToolView {
     fn recent(&self) -> u64 {
         forward!(self, view, view.recent.get())
     }
-    pub fn is_live(&self) -> bool {
-        forward!(self, view, view.live.get())
-    }
-    pub fn mark_closed(&self) {
-        forward!(self, view, view.live.set(false))
-    }
     pub fn placement(&self) -> Option<Placement> {
         forward!(self, view, view.placement.get())
     }
@@ -191,19 +511,20 @@ impl ToolView {
 }
 
 pub(super) fn instantiate(ctx: &Context, kind: Kind, hwnd: HWND) -> anyhow::Result<ToolView> {
+    let icon = kind.descriptor().icon;
     let view = match kind {
         Kind::ErrorCode => {
-            let mut view = error_code::View::new(ctx);
+            let mut view = error_code::View::new(ctx, icon);
             view.create(hwnd)?;
             ToolView::ErrorCode(Rc::new(view))
         }
         Kind::Demangle => {
-            let mut view = demangle::View::new(ctx);
+            let mut view = demangle::View::new(ctx, icon);
             view.create(hwnd)?;
             ToolView::Demangle(Rc::new(view))
         }
         Kind::Com => {
-            let mut view = com::View::new(ctx);
+            let mut view = com::View::new(ctx, icon);
             view.create(hwnd)?;
             ToolView::Com(Rc::new(view))
         }
@@ -213,15 +534,15 @@ pub(super) fn instantiate(ctx: &Context, kind: Kind, hwnd: HWND) -> anyhow::Resu
 
 pub(super) fn open(ctx: &Context, kind: Kind, new: bool) -> Option<Rc<ToolView>> {
     history::visit(ctx, || {
-        let existing = (!new)
-            .then(|| {
-                workspace::contents(ctx)
-                    .into_iter()
-                    .filter_map(|content| content.tool())
-                    .filter(|view| view.kind() == kind)
-                    .max_by_key(|view| view.recent())
-            })
-            .flatten();
+        let existing = if new {
+            None
+        } else {
+            workspace::contents(ctx)
+                .into_iter()
+                .filter_map(|content| content.tool())
+                .filter(|view| view.kind() == kind)
+                .max_by_key(|view| view.recent())
+        };
         let view = if let Some(view) = existing {
             workspace::show_document(ctx, view.hwnd());
             Some(view)
@@ -266,6 +587,15 @@ pub(super) fn selected(ctx: &Context, new: bool) {
         open_row(ctx, row, new);
     }
 }
+
+/// The model value of the selected combo row, or `fallback` when none is.
+fn combo_value<T: Copy>(combo: HWND, values: &[(u16, T)], fallback: T) -> T {
+    let selected = send(combo, CB_GETCURSEL, 0, 0);
+    values
+        .get(selected.max(0) as usize)
+        .map(|&(_, value)| value)
+        .unwrap_or(fallback)
+}
 pub(super) fn row(index: usize, visit: &mut dyn FnMut(&Display)) {
     let Some(descriptor) = TOOLS.get(index) else {
         return;
@@ -300,7 +630,7 @@ pub(super) fn context_menu(ctx: &Context, hwnd: HWND, l: isize) -> anyhow::Resul
         return Ok(());
     };
     let menu = Popup::new()?;
-    menu.item(1, resources::wide_text(IDS_TOOL_OPEN), true)?;
+    menu.item(1, resources::wide_text(IDS_OPEN), true)?;
     menu.item(2, resources::wide_text(IDS_TOOL_NEW), true)?;
     match menu.track(ctx.frame(), point) {
         1 => {

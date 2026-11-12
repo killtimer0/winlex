@@ -85,10 +85,9 @@ impl MatchQuality {
             | Self::GuidExact
             | Self::Reference
             | Self::StringExact => 0,
-            Self::Text => 3,
+            Self::Text | Self::NameScope => 3,
             Self::Filter => 5,
             Self::GuidFragment => 2,
-            Self::NameScope => 3,
             Self::Fuzzy { .. } => 4,
         };
         rank(self)

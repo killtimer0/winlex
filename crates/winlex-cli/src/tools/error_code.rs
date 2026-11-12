@@ -91,12 +91,8 @@ fn parse(args: &[OsString]) -> Result<Request, String> {
 }
 
 pub(super) fn run(args: &[OsString], out: &mut dyn Write, err: &mut dyn Write) -> u8 {
-    if matches!(args, [arg] if arg == "--help" || arg == "-h") {
-        return if out.write_all(HELP.as_bytes()).is_ok() {
-            0
-        } else {
-            4
-        };
+    if let Some(code) = crate::help(args, out, HELP) {
+        return code;
     }
     let json = args.iter().any(|a| a == "--json");
     let request = match parse(args) {
@@ -109,8 +105,8 @@ pub(super) fn run(args: &[OsString], out: &mut dyn Write, err: &mut dyn Write) -
     };
     let failed = result.has_failures();
     let written = if json {
-        serde_json::to_writer_pretty(
-            &mut *out,
+        crate::write_json(
+            out,
             &serde_json::json!({
                 "schema": SCHEMA,
                 "ok": !failed,
@@ -118,8 +114,6 @@ pub(super) fn run(args: &[OsString], out: &mut dyn Write, err: &mut dyn Write) -
                 "result": result,
             }),
         )
-        .map_err(std::io::Error::other)
-        .and_then(|_| writeln!(out))
     } else {
         write!(out, "{}", render(&result))
     };

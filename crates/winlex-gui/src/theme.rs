@@ -134,6 +134,20 @@ thread_local! {
     static APPLYING: Cell<bool> = const { Cell::new(false) };
 }
 
+/// Reentrancy guard for a UI-thread flag; dropping it clears the flag.
+struct Reentry(&'static std::thread::LocalKey<std::cell::Cell<bool>>);
+impl Reentry {
+    /// Enter the guarded operation, or return `None` when it is already running.
+    fn enter(flag: &'static std::thread::LocalKey<std::cell::Cell<bool>>) -> Option<Self> {
+        (!flag.with(|value| value.replace(true))).then(|| Self(flag))
+    }
+}
+impl Drop for Reentry {
+    fn drop(&mut self) {
+        self.0.with(|value| value.set(false));
+    }
+}
+
 #[derive(Clone, Copy)]
 enum Role {
     Background,
@@ -154,19 +168,34 @@ const fn rgb(value: u32) -> COLORREF {
     ((value & 0xff0000) >> 16) | (value & 0xff00) | ((value & 0xff) << 16)
 }
 
+/// Edge role for a control's disabled/hot state.
+fn edge(disabled: bool, hot: bool) -> Role {
+    if disabled {
+        Role::DisabledEdge
+    } else if hot {
+        Role::HotEdge
+    } else {
+        Role::Edge
+    }
+}
+
+/// Compact corner radius shared by inputs and tab bodies; square before Windows 11.
+fn roundness() -> i32 {
+    if windows11() { 4 } else { 0 }
+}
+
 fn color_role(role: Role) -> COLORREF {
     if !is_dark() {
         return unsafe {
             GetSysColor(match role {
                 Role::Background | Role::Dialog => COLOR_BTNFACE,
                 Role::Control => COLOR_WINDOW,
-                Role::Hot | Role::Highlight => COLOR_HIGHLIGHT,
+                Role::Hot | Role::Highlight | Role::HotEdge => COLOR_HIGHLIGHT,
                 Role::Text => COLOR_WINDOWTEXT,
                 Role::DimText => COLOR_BTNTEXT,
                 Role::DisabledText | Role::DisabledEdge => COLOR_GRAYTEXT,
                 Role::Link => COLOR_HOTLIGHT,
                 Role::Edge => COLOR_3DSHADOW,
-                Role::HotEdge => COLOR_HIGHLIGHT,
             })
         };
     }
@@ -207,9 +236,8 @@ pub fn is_dark() -> bool {
     STATE.with(|state| state.borrow().dark)
 }
 
-fn effective_dark(mode: u32, system: bool, contrast: bool, supported: bool) -> bool {
-    supported
-        && !contrast
+fn effective_dark(mode: u32, system: bool, contrast: bool) -> bool {
+    !contrast
         && match mode {
             1 => false,
             2 => true,
@@ -233,7 +261,7 @@ fn refresh_palette() -> bool {
     let system = api::system_dark();
     let changed = STATE.with(|state| {
         let mut state = state.borrow_mut();
-        let dark = effective_dark(state.mode, system, contrast, true);
+        let dark = effective_dark(state.mode, system, contrast);
         let changed = !state.initialized || state.dark != dark || state.contrast != contrast;
         state.initialized = true;
         state.dark = dark;
@@ -303,6 +331,17 @@ fn class_name(hwnd: HWND) -> String {
     String::from_utf16_lossy(&name[..count.max(0) as usize]).to_ascii_lowercase()
 }
 
+fn repaint(hwnd: HWND) {
+    unsafe {
+        RedrawWindow(
+            hwnd,
+            ptr::null(),
+            ptr::null_mut(),
+            RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_FRAME,
+        );
+    }
+}
+
 fn set_native_theme(hwnd: HWND, dark_name: &str, light_name: Option<&str>) {
     let name = if is_dark() {
         (!dark_name.is_empty()).then_some(dark_name)
@@ -324,16 +363,9 @@ pub fn apply(hwnd: HWND) {
     if !supported() || hwnd.is_null() || unsafe { IsWindow(hwnd) } == 0 {
         return;
     }
-    if APPLYING.with(|applying| applying.replace(true)) {
+    let Some(_guard) = Reentry::enter(&APPLYING) else {
         return;
-    }
-    struct Applying;
-    impl Drop for Applying {
-        fn drop(&mut self) {
-            APPLYING.with(|value| value.set(false));
-        }
-    }
-    let _applying = Applying;
+    };
     unsafe extern "system" fn child(hwnd: HWND, _: isize) -> BOOL {
         apply_one(hwnd);
         1
@@ -341,12 +373,9 @@ pub fn apply(hwnd: HWND) {
     apply_one(hwnd);
     unsafe {
         EnumChildWindows(hwnd, Some(child), 0);
-        RedrawWindow(
-            hwnd,
-            ptr::null(),
-            ptr::null_mut(),
-            RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_FRAME,
-        );
+    }
+    repaint(hwnd);
+    unsafe {
         if !GetMenu(hwnd).is_null() {
             DrawMenuBar(hwnd);
         }
@@ -398,7 +427,7 @@ fn apply_one(hwnd: HWND) {
                         },
                         None,
                     );
-                    controls::install(hwnd, &class);
+                    controls::install(hwnd, controls::Control::Tab);
                 }
                 "msctls_statusbar32" => {
                     set_native_theme(
@@ -410,22 +439,19 @@ fn apply_one(hwnd: HWND) {
                         },
                         None,
                     );
-                    controls::install(hwnd, &class);
+                    controls::install(hwnd, controls::Control::Status);
                 }
                 "toolbarwindow32" => {
                     set_native_theme(hwnd, "DarkMode_Explorer", None);
+                    let color = if dark {
+                        color_role(Role::Dialog)
+                    } else {
+                        CLR_DEFAULT as u32
+                    };
                     let scheme = COLORSCHEME {
                         dwSize: std::mem::size_of::<COLORSCHEME>() as u32,
-                        clrBtnHighlight: if dark {
-                            color_role(Role::Dialog)
-                        } else {
-                            CLR_DEFAULT as u32
-                        },
-                        clrBtnShadow: if dark {
-                            color_role(Role::Dialog)
-                        } else {
-                            CLR_DEFAULT as u32
-                        },
+                        clrBtnHighlight: color,
+                        clrBtnShadow: color,
                     };
                     send_ref(hwnd, TB_SETCOLORSCHEME, 0, &scheme);
                 }
@@ -699,7 +725,7 @@ unsafe fn paint_menu(hwnd: HWND, msg: u32, data: isize) -> Option<isize> {
             paint_mdi_menu_bitmap(hwnd, item, info.hbmpItem, info.dwItemData as HWND, disabled);
             return Some(0);
         }
-        let theme = OpenThemeData(hwnd, w!("Menu"));
+        let theme = Theme::open(hwnd, w!("Menu"));
         let state = menu_text_state(item.draw.itemState);
         let mut options: DTTOPTS = std::mem::zeroed();
         options.dwSize = std::mem::size_of::<DTTOPTS>() as u32;
@@ -718,9 +744,9 @@ unsafe fn paint_menu(hwnd: HWND, msg: u32, data: isize) -> Option<isize> {
             } else {
                 0
             };
-        if theme != 0 {
+        if theme.raw() != 0 {
             DrawThemeTextEx(
-                theme,
+                theme.raw(),
                 item.menu.dc,
                 MENU_BARITEM,
                 state,
@@ -730,7 +756,6 @@ unsafe fn paint_menu(hwnd: HWND, msg: u32, data: isize) -> Option<isize> {
                 &mut area,
                 &options,
             );
-            CloseThemeData(theme);
         }
         Some(0)
     }

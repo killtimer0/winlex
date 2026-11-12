@@ -34,8 +34,6 @@ pub(super) enum PanelId {
     Sources = 1,
     Tools = 2,
 }
-pub(super) const SEARCH_PANEL: PanelId = PanelId::Search;
-pub(super) const SOURCES_PANEL: PanelId = PanelId::Sources;
 pub(super) fn update_actions(ctx: &Context, id: PanelId) {
     match id {
         PanelId::Search => {}
@@ -81,16 +79,6 @@ pub(super) struct Search {
     deadline: Cell<Option<std::time::Instant>>,
 }
 const SEARCH_TIMER: usize = 1;
-fn search_tool(input: HWND, label: u16) -> TTTOOLINFOW {
-    TTTOOLINFOW {
-        cbSize: TOOLINFO_SIZE,
-        uFlags: TTF_IDISHWND | TTF_SUBCLASS,
-        hwnd: input,
-        uId: input as usize,
-        lpszText: resources::wide_text(label).as_ptr().cast_mut(),
-        ..unsafe { std::mem::zeroed() }
-    }
-}
 pub(super) fn cancel_debounce(ctx: &Context) -> (HWND, bool) {
     let search = sidebar::search(ctx);
     search.deadline.set(None);
@@ -142,7 +130,10 @@ pub(super) fn create(ctx: &Context, frame: HWND) -> anyhow::Result<([Rc<Panel>; 
         );
     }
     send(mode, CB_SETCURSEL, 0, 0);
-    let tool = search_tool(input, SEARCH_MODES[0].2);
+    let tool = tooltip_info(
+        input,
+        resources::wide_text(SEARCH_MODES[0].2).as_ptr().cast_mut(),
+    );
     let tooltip = tooltip(frame, &tool).map_err(|error| error.context("Search tooltip"))?;
     send(tooltip, TTM_SETMAXTIPWIDTH, 0, 480);
     let list = List::new(
@@ -256,9 +247,7 @@ impl Search {
         bind(self.tooltip, m.font);
         send(self.tooltip, TTM_SETMAXTIPWIDTH, 0, m.px(480) as isize);
         // Configure dropdown height with font/DPI changes, not routine layout.
-        let mut rect = bounds(self.selector, unsafe { GetParent(self.selector) });
-        rect.bottom = rect.top + m.row() * 6;
-        set_bounds(self.selector, rect)
+        collapse_combo(self.selector, m.row(), 6)
     }
     pub fn layout(
         &self,
@@ -293,13 +282,8 @@ impl Search {
     }
     fn command(&self, ctx: &Context, id: u16, code: u32) -> bool {
         match id {
-            SEARCH if code == EN_SETFOCUS => {
-                super::status::status_context(
-                    ctx,
-                    super::status::StatusContext::Panel(PanelId::Search),
-                );
-            }
-            SEARCH_MODE if code == CBN_SETFOCUS => {
+            // Both search controls report their own focus notification code.
+            SEARCH | SEARCH_MODE if matches!(code, EN_SETFOCUS | CBN_SETFOCUS) => {
                 super::status::status_context(
                     ctx,
                     super::status::StatusContext::Panel(PanelId::Search),
@@ -313,7 +297,12 @@ impl Search {
                 );
                 let index = send(self.selector, CB_GETCURSEL, 0, 0) as usize;
                 if index < SEARCH_MODES.len() && self.mode.replace(index) != index {
-                    let tool = search_tool(self.input, SEARCH_MODES[index].2);
+                    let tool = tooltip_info(
+                        self.input,
+                        resources::wide_text(SEARCH_MODES[index].2)
+                            .as_ptr()
+                            .cast_mut(),
+                    );
                     send(self.tooltip, TTM_POP, 0, 0);
                     send_ref(self.tooltip, TTM_UPDATETIPTEXTW, 0, &tool);
                     catalog::search(ctx);
@@ -323,7 +312,7 @@ impl Search {
                 send(self.selector, CB_SETCURSEL, self.mode.get(), 0);
             }
             FOCUS_SEARCH => {
-                sidebar::show(ctx, SEARCH_PANEL, false);
+                sidebar::show(ctx, PanelId::Search, false);
                 send(self.input, EM_SETSEL, 0, -1);
             }
             _ => return false,

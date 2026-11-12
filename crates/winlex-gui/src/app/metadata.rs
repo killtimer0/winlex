@@ -166,9 +166,7 @@ impl MetadataView {
             state.binding = binding;
             state.clear_interactions();
         }
-        self.fill_architectures();
-        self.ctx().checked(self.info.fill(&self.binding()));
-        self.ctx().checked(self.update_icons());
+        self.ctx().checked(self.apply_binding());
         self.request();
     }
     pub(super) fn title(&self) -> String {
@@ -178,6 +176,11 @@ impl MetadataView {
             state.binding.entity.name,
             state.binding.architecture.name()
         )
+    }
+    fn apply_binding(&self) -> anyhow::Result<()> {
+        self.fill_architectures();
+        self.info.fill(&self.binding())?;
+        self.update_icons()
     }
     fn update_icons(&self) -> anyhow::Result<()> {
         let icon = {
@@ -246,13 +249,16 @@ impl MetadataView {
     fn select_architecture(&self, code: u32) {
         let binding = self.binding();
         let supported: Vec<_> = Architecture::supported(binding.entity.architecture_mask).collect();
-        if code == CBN_SELENDCANCEL {
+        let restore = || {
             if let Some(index) = supported
                 .iter()
                 .position(|arch| *arch == binding.architecture)
             {
                 send(self.info.architecture, CB_SETCURSEL, index, 0);
             }
+        };
+        if code == CBN_SELENDCANCEL {
+            restore();
             return;
         }
         if code != CBN_SELENDOK {
@@ -270,12 +276,7 @@ impl MetadataView {
                 ArchitectureChoice::Exact(arch),
             ),
         ) else {
-            if let Some(index) = supported
-                .iter()
-                .position(|arch| *arch == binding.architecture)
-            {
-                send(self.info.architecture, CB_SETCURSEL, index, 0);
-            }
+            restore();
             return;
         };
         if supported.len() > 1 {
@@ -458,13 +459,7 @@ impl MetadataView {
             }
             state.tracking = true;
         }
-        let mut track = TRACKMOUSEEVENT {
-            cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
-            dwFlags: TME_LEAVE,
-            hwndTrack: hwnd,
-            dwHoverTime: 0,
-        };
-        unsafe { TrackMouseEvent(&mut track) };
+        crate::native::track_leave(hwnd);
     }
     fn set_hover(&self, range: Option<std::ops::Range<usize>>) {
         let previous = std::mem::replace(&mut self.state.borrow_mut().hover, range.clone());
@@ -506,14 +501,9 @@ impl MetadataView {
         }
     }
     pub(super) fn follow_reference(&self) {
-        let navigation = {
-            let mut state = self.state.borrow_mut();
-            state
-                .navigation
-                .take()
-                .filter(|request| state.contains(request))
+        let Some(navigation) = self.state.borrow_mut().navigation.take() else {
+            return;
         };
-        let Some(navigation) = navigation else { return };
         self.open_target(navigation.binding, navigation.target);
     }
     pub(super) fn create(&mut self, hwnd: HWND) -> anyhow::Result<()> {
@@ -542,10 +532,7 @@ impl MetadataView {
             0,
             mask | ENM_SELCHANGE as isize,
         );
-        self.fill_architectures();
-        let binding = self.state.borrow().binding.clone();
-        self.info.fill(&binding)?;
-        self.update_icons()?;
+        self.apply_binding()?;
         Ok(())
     }
     pub(super) fn prepare(&self) {

@@ -6,7 +6,7 @@ use crate::app::context::Context;
 use crate::{
     layout::{Arrangement, Placement},
     native::*,
-    resources::{self, IDS_PREVIEW, IDS_TAB_CLOSE, IDS_TAB_PIN},
+    resources::{self, IDS_CLOSE, IDS_PREVIEW, IDS_TAB_PIN},
     tabs,
 };
 use std::rc::Rc;
@@ -65,7 +65,7 @@ pub(super) fn active(ctx: &Context) -> HWND {
     send(mdi, WM_MDIGETACTIVE, 0, 0) as HWND
 }
 pub(super) fn show_document(ctx: &Context, hwnd: HWND) {
-    let mdi = ctx.with_workspace(|workspace| workspace.mdi);
+    let mdi = mdi(ctx);
     if unsafe { IsIconic(hwnd) } != 0 {
         send(mdi, WM_MDIRESTORE, hwnd as usize, 0);
     }
@@ -89,23 +89,20 @@ pub(super) fn register_document(ctx: &Context, doc: Content) {
     ctx.with_workspace_mut(|workspace| workspace.documents.push(doc));
 }
 pub(super) fn unregister_document(ctx: &Context, hwnd: HWND) {
-    let removed = ctx.with_workspace_mut(|workspace| {
+    ctx.with_workspace_mut(|workspace| {
         let docs = &mut workspace.documents;
-        docs.iter().position(|d| d.hwnd() == hwnd).map(|index| {
-            let document = docs.remove(index);
-            document.mark_closed();
-            document
-        })
+        if let Some(index) = docs.iter().position(|d| d.hwnd() == hwnd) {
+            docs.remove(index).mark_closed();
+        }
     });
-    drop(removed);
 }
 pub(super) fn close_document(ctx: &Context, hwnd: HWND) {
     history::closing(ctx, || close_now(ctx, hwnd));
 }
 fn close_now(ctx: &Context, hwnd: HWND) {
-    let mdi = ctx.with_workspace(|workspace| workspace.mdi);
+    let mdi = mdi(ctx);
     if content(ctx, hwnd).is_some() {
-        let tabs = ctx.with_workspace(|workspace| workspace.tabs);
+        let tabs = tabs(ctx);
         let previous = unsafe { GetFocus() };
         let tab_focus = previous == tabs;
         let next = if active(ctx) == hwnd {
@@ -123,15 +120,14 @@ fn close_now(ctx: &Context, hwnd: HWND) {
         if let Some(next) = next {
             keep_focus(ctx, || show_document(ctx, next));
         }
+        let empty = ctx.with_workspace(|workspace| workspace.documents.is_empty());
         if tab_focus {
-            if ctx.with_workspace(|workspace| workspace.documents.is_empty()) {
+            if empty {
                 super::sidebar::focus(ctx);
             } else {
                 focus(tabs);
             }
-        } else if ctx.with_workspace(|workspace| workspace.documents.is_empty())
-            && (previous == hwnd || unsafe { IsWindow(previous) } == 0)
-        {
+        } else if empty && (previous == hwnd || unsafe { IsWindow(previous) } == 0) {
             super::sidebar::focus(ctx);
         }
     }
@@ -147,13 +143,13 @@ pub(super) fn pin_document(ctx: &Context, hwnd: HWND) {
 }
 pub(super) fn sync_document_selection(ctx: &Context) {
     let current = active(ctx);
-    let tabs = ctx.with_workspace(|workspace| workspace.tabs);
+    let tabs = tabs(ctx);
     let selected = content(ctx, current).map(|d| d.id());
     tabs::select(tabs, selected);
     super::status::refresh_status(ctx);
 }
 pub(super) fn refresh_document_tabs(ctx: &Context) {
-    let tabs = ctx.with_workspace(|workspace| workspace.tabs);
+    let tabs = tabs(ctx);
     let docs = contents(ctx);
     let mut ordinals = std::collections::HashMap::new();
     let items = docs
@@ -212,7 +208,7 @@ pub(super) fn tab_notification(ctx: &Context, n: &tabs::Notification) {
 }
 fn tab_menu(ctx: &Context, hwnd: HWND, point: POINT) -> anyhow::Result<()> {
     let menu = Popup::new()?;
-    menu.item(1, resources::wide_text(IDS_TAB_CLOSE), true)?;
+    menu.item(1, resources::wide_text(IDS_CLOSE), true)?;
     if view(ctx, hwnd).is_some_and(|d| d.preview.get()) {
         menu.item(2, resources::wide_text(IDS_TAB_PIN), true)?;
     }
@@ -224,19 +220,16 @@ fn tab_menu(ctx: &Context, hwnd: HWND, point: POINT) -> anyhow::Result<()> {
     Ok(())
 }
 pub(super) fn scale_documents(ctx: &Context) {
-    let docs: Vec<_> = contents(ctx)
+    let positions: Vec<_> = contents(ctx)
         .into_iter()
         .filter_map(|d| d.placement().map(|p| (d.hwnd(), p)))
-        .collect();
-    let positions: Vec<_> = docs
-        .into_iter()
         .filter(|(hwnd, _)| unsafe { IsZoomed(*hwnd) == 0 && IsIconic(*hwnd) == 0 })
         .map(|(hwnd, placement)| (hwnd, placement.at(ctx.dpi().window(hwnd))))
         .collect();
     let _ = place_all(&positions);
 }
 pub(super) fn capture_placements(ctx: &Context) {
-    let mdi = ctx.with_workspace(|workspace| workspace.mdi);
+    let mdi = mdi(ctx);
     for doc in contents(ctx) {
         let hwnd = doc.hwnd();
         if unsafe { IsZoomed(hwnd) != 0 || IsIconic(hwnd) != 0 } {
@@ -251,7 +244,7 @@ pub(super) fn capture_placements(ctx: &Context) {
 }
 pub(super) fn set_arrangement(ctx: &Context, arrangement: Arrangement) {
     set_maximized(ctx, false);
-    let mdi = ctx.with_workspace(|workspace| workspace.mdi);
+    let mdi = mdi(ctx);
     let current = active(ctx);
     if !current.is_null() && unsafe { IsZoomed(current) } != 0 {
         send(mdi, WM_MDIRESTORE, current as usize, 0);
@@ -321,6 +314,7 @@ fn create_window(
     let content = content(ctx, hwnd).expect("created content");
     content.set_placement(placement);
     content.prepare();
+    refresh_document_tabs(ctx);
     Ok(content)
 }
 pub(super) fn create_document(
@@ -338,7 +332,6 @@ pub(super) fn create_document(
         "Create MDI document",
     )?;
     let doc = content.declaration().expect("created document");
-    refresh_document_tabs(ctx);
     Ok(doc)
 }
 pub(super) fn view(ctx: &Context, hwnd: HWND) -> Option<Rc<MetadataView>> {
@@ -388,6 +381,5 @@ pub(super) fn create_tool(
         }),
         "Create tool window",
     )?;
-    refresh_document_tabs(ctx);
     Ok(content.tool().expect("created tool"))
 }

@@ -1,5 +1,7 @@
 //! Compute each named type once and reuse its complete ABI layout in containing records.
-use crate::metadata::{Db, supports};
+use crate::metadata::{
+    Db, instance_fields, native_alignment, native_alignment_attributes, supports,
+};
 use crate::source::EntityId;
 use crate::{Architecture, FieldLayout, Layout};
 use anyhow::{Result, bail, ensure};
@@ -41,10 +43,6 @@ struct Layouts<'a> {
 struct Computed {
     layout: l::TypeLayout,
     fields: Vec<FieldLayout>,
-}
-fn instance_fields(t: TypeDef<'_>, arch: i32) -> impl Iterator<Item = Field<'_>> {
-    t.fields()
-        .filter(move |f| !f.flags().contains(FieldAttributes::Static) && supports(*f, arch))
 }
 impl Layouts<'_> {
     fn sig(&mut self, ty: Type, owner: TypeDef<'_>) -> Result<(l::Type<()>, Vec<FieldLayout>)> {
@@ -135,10 +133,7 @@ impl Layouts<'_> {
                     annotations.push(l::Annotation::PragmaPack(c.packing_size() as u64 * 8));
                 }
             }
-            let mut alignments = t.attributes().filter(|attribute| {
-                attribute.namespace() == "Winlex.Metadata"
-                    && attribute.name() == "NativeAlignmentAttribute"
-            });
+            let mut alignments = native_alignment_attributes(t);
             if let Some(attribute) = alignments.next() {
                 ensure!(
                     alignments.next().is_none(),
@@ -148,16 +143,14 @@ impl Layouts<'_> {
                     attribute.ctor().signature(&[]).types == [Type::I32],
                     "invalid native alignment constructor"
                 );
-                let values = attribute.value();
-                let alignment = match values.as_slice() {
-                    [(name, Value::I32(value))] if name.is_empty() && *value > 0 => *value as u32,
-                    _ => bail!("invalid native alignment attribute"),
+                let Some(alignment) = native_alignment(&attribute) else {
+                    bail!("invalid native alignment attribute");
                 };
                 ensure!(
                     alignment.is_power_of_two(),
                     "invalid native alignment attribute"
                 );
-                annotations.push(l::Annotation::Align(Some(u64::from(alignment) * 8)));
+                annotations.push(l::Annotation::Align(Some(alignment * 8)));
             }
             let mut inputs = vec![];
             for f in instance_fields(t, self.arch) {

@@ -2,7 +2,7 @@ use winlex_core::windows_metadata::{writer, *};
 use winlex_core::{
     Architecture, Catalog, Declaration, DeclarationTarget, EntityCategory, SearchOptions,
 };
-use winlex_format::declaration::{RegionKind, render, render_target};
+use winlex_format::declaration::{RegionKind, render_target};
 
 include!("support/source.rs");
 
@@ -69,7 +69,7 @@ fn instance_links_keep_arguments_across_members_and_nested_navigation() {
     file.Field("Integers", &Type::ClassName(name), FieldAttributes::Public);
     let catalog = Catalog::from_inputs([source("instances", file.into_stream())]).unwrap();
     let arch = Architecture::X64;
-    let source = render(&catalog, find(&catalog, "Uses"), arch).unwrap();
+    let source = render_target(&catalog, &find(&catalog, "Uses").into(), arch).unwrap();
     let target = source
         .regions
         .iter()
@@ -121,7 +121,7 @@ fn instance_links_keep_arguments_across_members_and_nested_navigation() {
             .text
             .contains("int32 Value;")
     );
-    let definition = render(&catalog, target.id, arch).unwrap();
+    let definition = render_target(&catalog, &target.id.into(), arch).unwrap();
     assert!(definition.text.contains("T Value;"));
     assert!(
         definition

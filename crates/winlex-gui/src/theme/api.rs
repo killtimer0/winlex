@@ -205,16 +205,9 @@ pub(super) fn titlebar(hwnd: HWND, dark: bool) {
 }
 
 unsafe fn refresh_titlebar(hwnd: HWND) {
-    if REFRESHING_TITLEBAR.with(|refreshing| refreshing.replace(true)) {
+    let Some(_guard) = super::Reentry::enter(&REFRESHING_TITLEBAR) else {
         return;
-    }
-    struct Refreshing;
-    impl Drop for Refreshing {
-        fn drop(&mut self) {
-            REFRESHING_TITLEBAR.with(|refreshing| refreshing.set(false));
-        }
-    }
-    let _refreshing = Refreshing;
+    };
     unsafe {
         let active = hwnd == GetActiveWindow() && hwnd == GetForegroundWindow();
         send(hwnd, WM_NCACTIVATE, usize::from(!active), 0);

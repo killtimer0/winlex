@@ -106,6 +106,17 @@ pub fn template_size(template: &[u8]) -> anyhow::Result<SIZE> {
     Ok(size)
 }
 
+fn repaint(hwnd: HWND) {
+    unsafe {
+        RedrawWindow(
+            hwnd,
+            ptr::null(),
+            ptr::null_mut(),
+            RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN,
+        );
+    }
+}
+
 struct Control {
     window: HWND,
     units: RECT,

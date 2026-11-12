@@ -61,6 +61,28 @@ pub fn supports<'a>(r: impl HasAttributes<'a>, arch: i32) -> bool {
     mask(r) & arch != 0
 }
 
+/// The positive integer carried by a single unnamed `NativeAlignmentAttribute` value.
+pub(crate) fn native_alignment(attribute: &Attribute<'_>) -> Option<u64> {
+    match attribute.value().as_slice() {
+        [(name, Value::I32(value))] if name.is_empty() && *value > 0 => Some(*value as u64),
+        _ => None,
+    }
+}
+
+pub(crate) fn native_alignment_attributes<'a>(
+    row: TypeDef<'a>,
+) -> impl Iterator<Item = Attribute<'a>> {
+    row.attributes().filter(|attribute| {
+        attribute.namespace() == "Winlex.Metadata" && attribute.name() == "NativeAlignmentAttribute"
+    })
+}
+
+/// Fields that participate in the native layout of the selected architecture.
+pub(crate) fn instance_fields<'a>(t: TypeDef<'a>, arch: i32) -> impl Iterator<Item = Field<'a>> {
+    t.fields()
+        .filter(move |f| !f.flags().contains(FieldAttributes::Static) && supports(*f, arch))
+}
+
 pub fn bitfields(f: Field<'_>) -> Result<Vec<Bitfield>> {
     let mut result = vec![];
     for a in f
@@ -287,9 +309,6 @@ impl Db {
         };
         ensure!(found.len() == 1, "unresolved/ambiguous type {n:?}");
         Ok(found[0])
-    }
-    pub(crate) fn vtable_key(&self, key: EntityId, arch: Architecture) -> Result<Vtable> {
-        self.vtable_bound(&key.into(), arch)
     }
     pub(crate) fn vtable_bound(
         &self,

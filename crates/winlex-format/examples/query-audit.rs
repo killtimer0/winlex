@@ -9,7 +9,7 @@ fn main() -> winlex_core::Result<()> {
         if catalog.declaration(id, None)?.name() == "<Module>" {
             continue;
         }
-        winlex_format::describe(&catalog, id, Some(Architecture::X64))?;
+        winlex_format::describe_target(&catalog, &id.into(), Some(Architecture::X64))?;
         count += 1;
     }
     println!("Decoded {count} complete type declarations");

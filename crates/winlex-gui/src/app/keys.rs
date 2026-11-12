@@ -24,7 +24,7 @@ pub(super) fn translate(ctx: &Context, msg: &MSG) -> bool {
             catalog::search(ctx);
         }
         key if key == VK_SPACE as usize
-            && msg.hwnd == sidebar::panel(ctx, panel::SEARCH_PANEL).list.hwnd =>
+            && msg.hwnd == sidebar::panel(ctx, panel::PanelId::Search).list.hwnd =>
         {
             catalog::open_selected(ctx, catalog::Open::Preview);
         }

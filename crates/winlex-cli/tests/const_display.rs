@@ -60,7 +60,7 @@ fn official_const_owners_remain_visible_without_replacing_native_string_types() 
     std::fs::create_dir_all(&directory).unwrap();
     let path = directory.join(format!("const-display-{}.winmd", std::process::id()));
     std::fs::write(&path, file.into_stream()).unwrap();
-    let catalog = Catalog::open(&path).unwrap();
+    let catalog = Catalog::open_many([&path]).unwrap();
     for (name, annotated) in [("Official", true), ("Foreign", false)] {
         for selector in [name.to_owned(), format!("{name}Field")] {
             let (exit, text, err) = invoke([
@@ -86,8 +86,12 @@ fn official_const_owners_remain_visible_without_replacing_native_string_types() 
                     ..Default::default()
                 },
             ));
-            let rendered =
-                winlex_format::declaration::render(&catalog, entity.id, Architecture::X64).unwrap();
+            let rendered = winlex_format::declaration::render_target(
+                &catalog,
+                &entity.id.into(),
+                Architecture::X64,
+            )
+            .unwrap();
             let expected_start = if selector.ends_with("Field") {
                 format!("{prefix}PSTR ")
             } else {

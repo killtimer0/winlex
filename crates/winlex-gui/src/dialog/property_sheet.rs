@@ -251,12 +251,7 @@ unsafe extern "system" fn sheet_proc(
                     .and_then(|_| state.align_pages(hwnd))
                     .map(|_| {
                         // Repaint the subtree after final positioning.
-                        RedrawWindow(
-                            hwnd,
-                            ptr::null(),
-                            ptr::null_mut(),
-                            RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN,
-                        );
+                        super::repaint(hwnd);
                         true
                     })
             }

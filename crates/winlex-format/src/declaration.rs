@@ -186,7 +186,6 @@ pub struct NumberValue {
     pub value: i128,
     pub bits: Option<u32>,
     pub unit: Option<&'static str>,
-    pub entity: EntityId,
 }
 
 impl NumberValue {
@@ -286,14 +285,12 @@ impl Rendered {
         label: &str,
         value: u64,
         unit: Option<&'static str>,
-        entity: EntityId,
     ) -> std::fmt::Result {
         let suffix = unit.map_or(String::new(), |unit| format!(" {unit}"));
         self.annotated(
             value.into(),
             None,
             unit,
-            entity,
             format_args!("{label}{value}{suffix}"),
         )
     }
@@ -303,46 +300,34 @@ impl Rendered {
         value: i128,
         bits: Option<u32>,
         unit: Option<&'static str>,
-        entity: EntityId,
         text: std::fmt::Arguments<'_>,
     ) -> std::fmt::Result {
         let start = self.position;
         self.write_fmt(text)?;
         self.regions.push(Region {
             range: start..self.position,
-            kind: RegionKind::Number(NumberValue {
-                value,
-                bits,
-                unit,
-                entity,
-            }),
+            kind: RegionKind::Number(NumberValue { value, bits, unit }),
             role: None,
         });
         Ok(())
     }
 
-    fn bit_position(&mut self, label: &str, bits: u64, entity: EntityId) -> std::fmt::Result {
+    fn bit_position(&mut self, label: &str, bits: u64) -> std::fmt::Result {
         if bits.is_multiple_of(8) {
-            self.number(label, bits / 8, Some("bytes"), entity)
+            self.number(label, bits / 8, Some("bytes"))
         } else {
-            self.number(label, bits, Some("bits"), entity)
+            self.number(label, bits, Some("bits"))
         }
     }
 
-    fn slot_position(
-        &mut self,
-        index: usize,
-        arch: Architecture,
-        entity: EntityId,
-    ) -> std::fmt::Result {
-        self.number("slot ", index as u64, None, entity)?;
+    fn slot_position(&mut self, index: usize, arch: Architecture) -> std::fmt::Result {
+        self.number("slot ", index as u64, None)?;
         write!(self, ", ")?;
         let value = index as i128 * arch.pointer_bytes() as i128;
         self.annotated(
             value,
             None,
             Some("bytes"),
-            entity,
             format_args!("vtable +0x{value:X}"),
         )
     }
@@ -367,14 +352,13 @@ fn constant(
     value: &Value,
     t: &Type,
     arch: Architecture,
-    entity: EntityId,
     suffix: &str,
 ) -> Result<()> {
     if let Some((value, bits)) = normalized_integer(value, t, arch) {
-        out.annotated(value, Some(bits), None, entity, format_args!("{value}"))?;
+        out.annotated(value, Some(bits), None, format_args!("{value}"))?;
         let hex = out.regions.last().unwrap().number().unwrap().hexadecimal();
         write!(out, "{suffix} // ")?;
-        out.annotated(value, Some(bits), None, entity, format_args!("{hex}"))?;
+        out.annotated(value, Some(bits), None, format_args!("{hex}"))?;
     } else if let Value::Utf8(text) | Value::Utf16(text) = value {
         write!(out, "\"")?;
         for ch in text.chars() {
@@ -393,7 +377,6 @@ fn constant(
             "length: ",
             text.encode_utf16().count() as u64,
             Some("UTF-16 code units"),
-            entity,
         )?;
     } else {
         let value = integer(value).map_or_else(|| format!("{value:?}"), |value| value.to_string());
@@ -401,10 +384,6 @@ fn constant(
     }
     writeln!(out)?;
     Ok(())
-}
-
-pub fn render(catalog: &Catalog, id: EntityId, arch: Architecture) -> Result<Rendered> {
-    render_target(catalog, &id.into(), arch)
 }
 
 pub fn render_target(
@@ -478,6 +457,27 @@ fn labelled(text: &str, role: SymbolRole, target: Option<&DeclarationTarget>) ->
         None => Region::symbol(range, role),
     });
     out
+}
+
+/// A collapsed COM property or event: `type name; // kind`.
+fn collapsed_member(
+    out: &mut Rendered,
+    types: &Types<'_>,
+    target: &DeclarationTarget,
+    pad: &str,
+    name: &str,
+    ty: &Type,
+    kind: &str,
+) -> Result<()> {
+    write!(out, "{pad}")?;
+    let name = labelled(
+        name,
+        SymbolRole::Member,
+        (!pad.is_empty()).then_some(target),
+    );
+    out.fragment(types.ty(&target.ty(ty)?, name));
+    writeln!(out, "; // {kind}")?;
+    Ok(())
 }
 
 fn generic_label<'a>(
@@ -619,7 +619,7 @@ fn slot_comments(
         .filter(|(_, slot)| slot.id == Some(member))
     {
         write!(out, "{pad}// ")?;
-        out.slot_position(index, arch, member)?;
+        out.slot_position(index, arch)?;
         writeln!(out)?;
         if let Some(result) = &slot.abi {
             if let Ok(abi) = result {
@@ -628,11 +628,7 @@ fn slot_comments(
                     "{pad}// scalar ABI ({}): {}({})",
                     abi.calling_convention,
                     abi.return_type,
-                    abi.parameters
-                        .iter()
-                        .map(|p| format!("[{}] {} {}", p.direction, p.ty, p.name))
-                        .collect::<Vec<_>>()
-                        .join(", ")
+                    super::abi_parameters(&abi.parameters)
                 )?;
             } else if let Err(reason) = result {
                 writeln!(out, "{pad}// ABI unsupported: {reason}")?;
@@ -663,9 +659,9 @@ fn append(
             let category = (t.name() != "<Module>").then(|| t.category());
             let layout = if category == Some(TypeCategory::Struct) {
                 out.context(pad, arch, "Layout", c.layout(id, arch), |out, layout| {
-                    out.bit_position("size: ", layout.size_bits, id)?;
+                    out.bit_position("size: ", layout.size_bits)?;
                     write!(out, ", ")?;
-                    out.bit_position("alignment: ", layout.alignment_bits, id)
+                    out.bit_position("alignment: ", layout.alignment_bits)
                 })?
             } else {
                 None
@@ -680,7 +676,7 @@ fn append(
                     "Vtable",
                     c.vtable_target(target, arch),
                     |out, vtable| {
-                        out.number("vtable: ", vtable.slots.len() as u64, Some("slots"), id)
+                        out.number("vtable: ", vtable.slots.len() as u64, Some("slots"))
                     },
                 )?
             } else {
@@ -765,7 +761,7 @@ fn append(
                     .filter(|(_, slot)| slot.declaring_type_id != Some(id))
                 {
                     write!(out, "{inner}// ")?;
-                    out.slot_position(index, arch, slot.id.unwrap_or(id))?;
+                    out.slot_position(index, arch)?;
                     writeln!(
                         out,
                         ": {}::{} (inherited/implicit)",
@@ -786,7 +782,6 @@ fn append(
                             &value,
                             &t.underlying_type().unwrap_or_else(|| value.ty()),
                             arch,
-                            member.id,
                             ",",
                         )?;
                     }
@@ -794,19 +789,15 @@ fn append(
                 writeln!(out, "{pad}}};")?;
                 return Ok(());
             }
-            for member in super::member_ids(t.fields(), 4, Some(arch))
-                .chain(super::member_ids(t.properties(), 0x17, Some(arch)))
-                .chain(super::member_ids(t.events(), 0x14, Some(arch)))
-                .chain(super::member_ids(t.methods(), 6, Some(arch)))
-            {
+            for member in super::type_members(&t, Some(arch)) {
                 if let Some(field) = layout
                     .as_ref()
                     .and_then(|layout| layout.fields.iter().find(|f| f.id == member))
                 {
                     write!(out, "{inner}// ")?;
-                    out.bit_position("offset: ", field.offset_bits, member)?;
+                    out.bit_position("offset: ", field.offset_bits)?;
                     write!(out, ", ")?;
-                    out.bit_position("size: ", field.size_bits, member)?;
+                    out.bit_position("size: ", field.size_bits)?;
                     writeln!(out)?;
                     for bitfield in &field.bitfields {
                         write!(out, "{inner}// {}: ", bitfield.name)?;
@@ -815,11 +806,10 @@ fn append(
                             offset.into(),
                             None,
                             Some("bits"),
-                            member,
                             format_args!("bit offset {offset} bits from struct start"),
                         )?;
                         write!(out, ", ")?;
-                        out.number("width ", bitfield.width_bits, Some("bits"), member)?;
+                        out.number("width ", bitfield.width_bits, Some("bits"))?;
                         writeln!(out)?;
                     }
                 }
@@ -833,7 +823,7 @@ fn append(
         Declaration::Field(f) => {
             if let Some(offset) = f.explicit_offset() {
                 write!(out, "{pad}// ")?;
-                out.number("Declared offset: ", offset.into(), Some("bytes"), id)?;
+                out.number("Declared offset: ", offset.into(), Some("bytes"))?;
                 writeln!(out)?;
             }
             write!(out, "{pad}{}", const_annotation(f))?;
@@ -857,7 +847,7 @@ fn append(
                 } else {
                     f.ty()
                 };
-                constant(out, &value, &t, arch, id, ";")?;
+                constant(out, &value, &t, arch, ";")?;
                 return Ok(());
             }
             writeln!(out, ";")?;
@@ -905,24 +895,18 @@ fn append(
             method(out, &types, m, target, name, modifiers, pad)?;
         }
         Declaration::Property(p) => {
-            write!(out, "{pad}")?;
-            let name = labelled(
+            collapsed_member(
+                out,
+                &types,
+                target,
+                pad,
                 p.name(),
-                SymbolRole::Member,
-                (!pad.is_empty()).then_some(target),
-            );
-            out.fragment(types.ty(&target.ty(&p.signature().return_type)?, name));
-            writeln!(out, "; // property")?;
+                &p.signature().return_type,
+                "property",
+            )?;
         }
         Declaration::Event(e) => {
-            write!(out, "{pad}")?;
-            let name = labelled(
-                e.name(),
-                SymbolRole::Member,
-                (!pad.is_empty()).then_some(target),
-            );
-            out.fragment(types.ty(&target.ty(&e.ty())?, name));
-            writeln!(out, "; // event")?;
+            collapsed_member(out, &types, target, pad, e.name(), &e.ty(), "event")?;
         }
         Declaration::Reference(_) => {
             writeln!(
@@ -1102,7 +1086,7 @@ mod tests {
         assert_eq!(ids.len(), cases.len());
         for (id, (base, name, _, expected)) in ids.into_iter().zip(cases) {
             for arch in Architecture::ALL {
-                let rendered = render(&catalog, id, arch).unwrap();
+                let rendered = render_target(&catalog, &id.into(), arch).unwrap();
                 assert_eq!(rendered.text, expected);
                 let units: Vec<_> = rendered.text.encode_utf16().collect();
                 let types: Vec<_> = rendered
@@ -1127,11 +1111,11 @@ mod tests {
     fn labeled_positions_capture_complete_regions_without_separators() {
         let mut out = Rendered::default();
         write!(out, "😀\r\n").unwrap();
-        out.bit_position("offset: ", 24, entity()).unwrap();
+        out.bit_position("offset: ", 24).unwrap();
         write!(out, ", ").unwrap();
-        out.bit_position("size: ", 7, entity()).unwrap();
+        out.bit_position("size: ", 7).unwrap();
         write!(out, "; ").unwrap();
-        out.number("vtable: ", 3, Some("slots"), entity()).unwrap();
+        out.number("vtable: ", 3, Some("slots")).unwrap();
         let units: Vec<_> = out.text.encode_utf16().collect();
         assert_eq!(
             out.text,
@@ -1149,7 +1133,6 @@ mod tests {
             let number = region.number().unwrap();
             assert_eq!(number.value, value);
             assert_eq!(number.unit, Some(unit));
-            assert_eq!(number.entity, entity());
         }
         assert_eq!(out.regions.len(), 3);
         assert_eq!(out.regions[0].range.start, 3);
@@ -1164,7 +1147,7 @@ mod tests {
 
     fn render_constant(value: &Value, t: &Type, arch: Architecture, suffix: &str) -> Rendered {
         let mut out = Rendered::default();
-        constant(&mut out, value, t, arch, entity(), suffix).unwrap();
+        constant(&mut out, value, t, arch, suffix).unwrap();
         out
     }
 
@@ -1217,7 +1200,6 @@ mod tests {
                 &Value::Utf16(text.into()),
                 &Type::String,
                 Architecture::X64,
-                entity(),
                 ";",
             )
             .unwrap();
@@ -1265,7 +1247,7 @@ mod tests {
     fn vtable_context_regions_cover_labels_but_not_separators() {
         for (arch, hex) in [(Architecture::X86, "0xC"), (Architecture::X64, "0x18")] {
             let mut out = Rendered::default();
-            out.slot_position(3, arch, entity()).unwrap();
+            out.slot_position(3, arch).unwrap();
             assert_eq!(out.text, format!("slot 3, vtable +{hex}"));
             let utf16: Vec<_> = out.text.encode_utf16().collect();
             for (region, expected) in out

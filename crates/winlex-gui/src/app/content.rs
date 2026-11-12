@@ -62,13 +62,12 @@ impl Content {
     pub fn is_live(&self) -> bool {
         match self {
             Self::Declaration(v) => v.live.get(),
-            Self::Tool(v) => v.is_live(),
+            Self::Tool(_) => true,
         }
     }
     pub fn mark_closed(&self) {
-        match self {
-            Self::Declaration(v) => v.live.set(false),
-            Self::Tool(v) => v.mark_closed(),
+        if let Self::Declaration(v) = self {
+            v.live.set(false);
         }
     }
     pub fn placement(&self) -> Option<Placement> {
@@ -103,6 +102,9 @@ impl Content {
     }
     pub fn destroy(&self) {
         forward!(self, v, v.destroy())
+    }
+    pub fn worker_stopped(&self) {
+        forward!(self, v, v.worker_stopped())
     }
     pub fn activated(&self) {
         if let Self::Tool(v) = self {

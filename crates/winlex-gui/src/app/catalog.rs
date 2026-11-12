@@ -375,7 +375,7 @@ pub(super) fn flush_results(ctx: &Context) {
         merge_results(&mut s.results, &mut s.pending_results, &mut state.indices);
     });
     state.apply(hwnd, ctx.with_session(|session| session.results.len()));
-    super::sidebar::panel(ctx, super::panel::SEARCH_PANEL)
+    super::sidebar::panel(ctx, super::panel::PanelId::Search)
         .list
         .refresh_tooltip();
     super::status::refresh_status(ctx);
@@ -408,6 +408,22 @@ pub(super) fn row_text(ctx: &Context, row: usize) -> Vec<u16> {
         value
     })
 }
+/// Resolve an entity in the active document's architecture, falling back to the preference.
+fn preferred_binding(
+    ctx: &Context,
+    catalog: Arc<Catalog>,
+    id: winlex_core::EntityId,
+    current: Option<winlex_core::Architecture>,
+) -> anyhow::Result<Binding> {
+    Binding::resolve(
+        catalog,
+        id,
+        ArchitectureChoice::Preferred {
+            current,
+            preferred: settings::preferred_architecture(ctx),
+        },
+    )
+}
 pub(super) fn context_menu(ctx: &Context, hwnd: HWND, location: isize) -> anyhow::Result<()> {
     let Some((row, point)) = crate::list::context_target(hwnd, location) else {
         return Ok(());
@@ -418,17 +434,12 @@ pub(super) fn context_menu(ctx: &Context, hwnd: HWND, location: isize) -> anyhow
     }) else {
         return Ok(());
     };
-    let preferred = settings::preferred_architecture(ctx);
     let current =
         workspace::view(ctx, workspace::active(ctx)).map(|doc| doc.binding().architecture);
-    let binding = Binding::resolve(
-        catalog,
-        id,
-        ArchitectureChoice::Preferred { current, preferred },
-    )?;
+    let binding = preferred_binding(ctx, catalog, id, current)?;
     let value = super::result_value::read(&binding.catalog, id, binding.architecture)?;
     let menu = Popup::new()?;
-    menu.item(1, resources::wide_text(IDS_RESULT_OPEN), true)?;
+    menu.item(1, resources::wide_text(IDS_OPEN), true)?;
     menu.item(2, resources::wide_text(IDS_RESULT_NEW), true)?;
     menu.separator()?;
     menu.item(3, resources::wide_text(IDS_RESULT_COPY_NAME), true)?;
@@ -448,25 +459,7 @@ pub(super) fn context_menu(ctx: &Context, hwnd: HWND, location: isize) -> anyhow
     match menu.track(hwnd, point) {
         command @ (1 | 2) => {
             let mode = if command == 1 { Open::Pin } else { Open::New };
-            let binding = if mode == Open::New {
-                Binding::resolve(
-                    binding.catalog,
-                    id,
-                    ArchitectureChoice::Preferred {
-                        current: None,
-                        preferred,
-                    },
-                )?
-            } else {
-                binding
-            };
-            history::visit(ctx, || {
-                if let Some(hwnd) = open_binding(ctx, binding, mode, None)
-                    && let Some(document) = workspace::content(ctx, hwnd)
-                {
-                    document.focus();
-                }
-            });
+            open(ctx, Some(row), mode);
         }
         3 => copy_unicode(hwnd, &name.encode_utf16().collect::<Vec<_>>())?,
         command @ (4 | 5) => {
@@ -532,21 +525,13 @@ fn open_now(ctx: &Context, row: Option<usize>, mode: Open) -> Option<HWND> {
     let (id, Some(catalog)) = item? else {
         return None;
     };
-    let preferred = settings::preferred_architecture(ctx);
     // A new result keeps the architecture of the declaration being read.
     let current = if mode == Open::New {
         None
     } else {
         workspace::view(ctx, workspace::active(ctx)).map(|doc| doc.binding().architecture)
     };
-    let binding = super::status::report(
-        ctx,
-        Binding::resolve(
-            catalog,
-            id,
-            ArchitectureChoice::Preferred { current, preferred },
-        ),
-    )?;
+    let binding = super::status::report(ctx, preferred_binding(ctx, catalog, id, current))?;
     open_binding(ctx, binding, mode, None)
 }
 pub(super) fn open_binding(
@@ -555,26 +540,26 @@ pub(super) fn open_binding(
     mode: Open,
     original: Option<u64>,
 ) -> Option<HWND> {
-    let existing = (mode != Open::New)
-        .then(|| {
-            original
-                .and_then(|id| workspace::by_id(ctx, id))
-                .filter(|doc| doc.binding().same_entity(&binding))
-                .map(|doc| {
-                    if !doc.binding().same_location(&binding) {
-                        doc.rebind(binding.clone());
-                    }
+    let existing = if mode == Open::New {
+        None
+    } else {
+        original
+            .and_then(|id| workspace::by_id(ctx, id))
+            .filter(|doc| doc.binding().same_entity(&binding))
+            .map(|doc| {
+                if !doc.binding().same_location(&binding) {
+                    doc.rebind(binding.clone());
+                }
+                doc.hwnd
+            })
+            .or_else(|| metadata::find(ctx, &binding))
+            .or_else(|| {
+                workspace::preview_document(ctx).map(|doc| {
+                    doc.rebind(binding.clone());
                     doc.hwnd
                 })
-                .or_else(|| metadata::find(ctx, &binding))
-                .or_else(|| {
-                    workspace::preview_document(ctx).map(|doc| {
-                        doc.rebind(binding.clone());
-                        doc.hwnd
-                    })
-                })
-        })
-        .flatten();
+            })
+    };
     let hwnd = existing.or_else(|| {
         super::status::report(ctx, metadata::open(ctx, binding, mode == Open::Preview))
     })?;

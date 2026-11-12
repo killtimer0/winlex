@@ -224,6 +224,25 @@ fn accessor(s: MethodSemantics<'_>) -> Json {
         "name": s.method().name(),
     })
 }
+/// Provenance notes are needed when values differ or the only source is the user hive.
+pub fn annotate_sources(field: &winlex_core::tools::com::Field) -> bool {
+    field.values.len() > 1
+        || field
+            .values
+            .iter()
+            .flat_map(|value| &value.sources)
+            .all(|source| source.origin == winlex_core::tools::com::Origin::User)
+}
+
+/// Scalar ABI parameter list as `[direction] type name` entries.
+pub fn abi_parameters(parameters: &[winlex_core::AbiParameter]) -> String {
+    parameters
+        .iter()
+        .map(|p| format!("[{}] {} {}", p.direction, p.ty, p.name))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// Member identities filtered for presentation, preserving metadata order.
 pub fn member_ids<'a, R: HasAttributes<'a> + AsRow<'a>>(
     rows: impl Iterator<Item = R>,
@@ -232,6 +251,16 @@ pub fn member_ids<'a, R: HasAttributes<'a> + AsRow<'a>>(
 ) -> impl Iterator<Item = EntityId> {
     rows.filter(move |r| arch.is_none_or(|a| winlex_core::metadata::supports(*r, a.bit())))
         .map(move |r| key(r, table))
+}
+/// A type's fields, properties, events and methods in metadata order.
+pub fn type_members<'a>(
+    t: &'a TypeDef<'_>,
+    arch: Option<Architecture>,
+) -> impl Iterator<Item = EntityId> + 'a {
+    member_ids(t.fields(), 4, arch)
+        .chain(member_ids(t.properties(), 0x17, arch))
+        .chain(member_ids(t.events(), 0x14, arch))
+        .chain(member_ids(t.methods(), 6, arch))
 }
 /// Presentation name for a type's declared layout kind.
 pub fn layout_kind(flags: TypeAttributes) -> &'static str {
@@ -243,27 +272,19 @@ pub fn layout_kind(flags: TypeAttributes) -> &'static str {
         "auto"
     }
 }
-pub fn describe(c: &Catalog, id: EntityId, arch: Option<Architecture>) -> Result<Json> {
-    describe_target(c, &id.into(), arch)
-}
-
 /// Closed instances require an explicit architecture for dependency resolution.
 pub fn describe_target(
     c: &Catalog,
     target: &DeclarationTarget,
     arch: Option<Architecture>,
 ) -> Result<Json> {
-    let selected = if target.arguments.is_empty() {
-        arch.unwrap_or(Architecture::X64)
+    let (selected, target) = if target.arguments.is_empty() {
+        (arch.unwrap_or(Architecture::X64), target.clone())
     } else {
-        arch.ok_or_else(|| {
+        let selected = arch.ok_or_else(|| {
             winlex_core::Error::msg("instance description requires an architecture")
-        })?
-    };
-    let target = if target.arguments.is_empty() {
-        target.clone()
-    } else {
-        c.bind_target(target, selected)?
+        })?;
+        (selected, c.bind_target(target, selected)?)
     };
     let id = target.id;
     let row = c.declaration(id, arch)?;

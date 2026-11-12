@@ -6,6 +6,10 @@ pub mod activation;
 pub mod registry;
 pub mod typelib;
 
+pub(super) fn wide(value: &str) -> Vec<u16> {
+    value.encode_utf16().chain(Some(0)).collect()
+}
+
 /// Where a registration was read from. `Machine` is HKLM, `User` is HKCU.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -14,21 +18,8 @@ pub enum Root {
     User,
 }
 
-impl Root {
-    fn origin(self) -> Origin {
-        match self {
-            Self::Machine => Origin::Machine,
-            Self::User => Origin::User,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Origin {
-    Machine,
-    User,
-}
+/// Where a registration was read from; the same partition as [`Root`].
+pub type Origin = Root;
 
 /// A registry view. `Native` follows the process bitness.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -130,11 +121,8 @@ pub enum Attribute {
     VersionIndependentProgId,
     AppId,
     TypeLib,
-    TypeLibVersion,
     TreatAs,
     AutoConvertTo,
-    Insertable,
-    NotInsertable,
     ProxyStubClsid32,
     NumMethods,
     BaseInterface,
@@ -165,11 +153,8 @@ impl Attribute {
             Self::VersionIndependentProgId => "VersionIndependentProgID",
             Self::AppId => "AppID",
             Self::TypeLib => "TypeLib",
-            Self::TypeLibVersion => "TypeLibVersion",
             Self::TreatAs => "TreatAs",
             Self::AutoConvertTo => "AutoConvertTo",
-            Self::Insertable => "Insertable",
-            Self::NotInsertable => "NotInsertable",
             Self::ProxyStubClsid32 => "ProxyStubClsid32",
             Self::NumMethods => "NumMethods",
             Self::BaseInterface => "BaseInterface",
@@ -387,7 +372,7 @@ fn resolve(request: &Request) -> Result<Resolved, Warning> {
 
 pub fn query(source: &dyn Source, request: &Request) -> Report {
     let reader = Reader::new(source, request.views.expand());
-    let (kind, normalized, mut groups) = match resolve(request) {
+    let (kind, normalized, groups) = match resolve(request) {
         Ok(Resolved::Guid(guid)) => (
             Some(ResolvedKind::Guid),
             Some(guid.to_string()),
@@ -399,13 +384,12 @@ pub fn query(source: &dyn Source, request: &Request) -> Report {
             reader.prog_id_groups(&text),
         ),
         Err(warning) => {
-            let warnings = reader.take_warnings();
             return Report {
                 input: request.text.clone(),
                 kind: None,
                 normalized: None,
                 groups: Vec::new(),
-                warnings: [vec![warning], warnings].concat(),
+                warnings: vec![warning],
             };
         }
     };
@@ -419,7 +403,7 @@ pub fn query(source: &dyn Source, request: &Request) -> Report {
         input: request.text.clone(),
         kind,
         normalized,
-        groups: std::mem::take(&mut groups),
+        groups,
         warnings,
     }
 }
@@ -447,66 +431,54 @@ impl<'a> Reader<'a> {
             warnings.push(warning);
         }
     }
-    fn locations(&self, path: &str) -> Vec<Provenance> {
-        let mut out = Vec::new();
+    fn each_location(
+        &self,
+        mut read: impl FnMut(Root, View) -> std::result::Result<(), ReadError>,
+    ) {
         for &view in &self.views {
             for root in [Root::Machine, Root::User] {
-                match self.source.exists(root, view, path) {
-                    Ok(true) => out.push(Provenance {
-                        view,
-                        origin: root.origin(),
-                    }),
-                    Ok(false) => {}
+                match read(root, view) {
+                    Ok(()) => {}
                     Err(ReadError::UnsupportedView) => self.warn(Warning::UnsupportedView(view)),
                     Err(ReadError::Other(error)) => self.warn(Warning::Registry(error)),
                 }
             }
         }
+    }
+    fn locations(&self, path: &str) -> Vec<Provenance> {
+        let mut out = Vec::new();
+        self.each_location(|root, view| {
+            if self.source.exists(root, view, path)? {
+                out.push(Provenance { view, origin: root });
+            }
+            Ok(())
+        });
         out
     }
     fn values(&self, path: &str, name: &str) -> Vec<Sourced> {
         let mut out: Vec<Sourced> = Vec::new();
-        for &view in &self.views {
-            for root in [Root::Machine, Root::User] {
-                match self.source.value(root, view, path, name) {
-                    Ok(Some(value)) => push_sourced(
-                        &mut out,
-                        value,
-                        Provenance {
-                            view,
-                            origin: root.origin(),
-                        },
-                    ),
-                    Ok(None) => {}
-                    Err(ReadError::UnsupportedView) => self.warn(Warning::UnsupportedView(view)),
-                    Err(ReadError::Other(error)) => self.warn(Warning::Registry(error)),
-                }
+        self.each_location(|root, view| {
+            if let Some(value) = self.source.value(root, view, path, name)? {
+                push_sourced(&mut out, value, Provenance { view, origin: root });
             }
-        }
+            Ok(())
+        });
         out
     }
     fn subkeys(&self, path: &str) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
-        for &view in &self.views {
-            for root in [Root::Machine, Root::User] {
-                match self.source.subkeys(root, view, path) {
-                    Ok(names) => {
-                        for name in names {
-                            if !out.iter().any(|seen| seen.eq_ignore_ascii_case(&name)) {
-                                out.push(name);
-                            }
-                        }
-                    }
-                    Err(ReadError::UnsupportedView) => self.warn(Warning::UnsupportedView(view)),
-                    Err(ReadError::Other(error)) => self.warn(Warning::Registry(error)),
+        self.each_location(|root, view| {
+            for name in self.source.subkeys(root, view, path)? {
+                if !out.iter().any(|seen| seen.eq_ignore_ascii_case(&name)) {
+                    out.push(name);
                 }
             }
-        }
+            Ok(())
+        });
         out
     }
     fn field(&self, path: &str, attribute: Attribute) -> Option<Field> {
-        let values = self.values(path, "");
-        (!values.is_empty()).then_some(Field { attribute, values })
+        self.named_field(path, "", attribute)
     }
     fn named_field(&self, path: &str, name: &str, attribute: Attribute) -> Option<Field> {
         let values = self.values(path, name);
@@ -514,17 +486,15 @@ impl<'a> Reader<'a> {
     }
     fn guid_groups(&self, guid: Guid) -> Vec<Group> {
         let mut groups = Vec::new();
-        let class = self.class_group(guid);
-        let mut referenced = Vec::new();
-        if let Some(group) = &class {
-            referenced.extend(referenced_ids(group, Attribute::TypeLib));
-            referenced.extend(referenced_ids(group, Attribute::AppId));
-        }
-        if let Some(group) = class {
+        let mut type_libs = Vec::new();
+        let mut app_ids = Vec::new();
+        if let Some(group) = self.class_group(guid) {
+            type_libs.extend(referenced_ids(&group, Attribute::TypeLib));
+            app_ids.extend(referenced_ids(&group, Attribute::AppId));
             groups.push(group);
         }
         if let Some(group) = self.interface_group(guid) {
-            referenced.extend(referenced_ids(&group, Attribute::TypeLib));
+            type_libs.extend(referenced_ids(&group, Attribute::TypeLib));
             groups.push(group);
         }
         if let Some(group) = self.type_lib_group(guid) {
@@ -533,84 +503,72 @@ impl<'a> Reader<'a> {
         if let Some(group) = self.app_id_group(guid) {
             groups.push(group);
         }
-        let type_libraries: Vec<Guid> = referenced
-            .iter()
-            .filter(|(attribute, _)| *attribute == Attribute::TypeLib)
-            .filter_map(|(_, id)| *id)
-            .collect();
-        let app_ids: Vec<Guid> = referenced
-            .iter()
-            .filter(|(attribute, _)| *attribute == Attribute::AppId)
-            .filter_map(|(_, id)| *id)
-            .collect();
-        for libid in type_libraries {
-            if libid != guid
-                && !groups.iter().any(|group| {
-                    group.kind == GroupKind::TypeLib
-                        && group.identity.as_deref() == Some(&libid.to_string())
-                })
-                && let Some(group) = self.type_lib_group(libid)
-            {
-                groups.push(group);
-            }
-        }
-        for appid in app_ids {
-            if appid != guid
-                && !groups.iter().any(|group| {
-                    group.kind == GroupKind::AppId
-                        && group.identity.as_deref() == Some(&appid.to_string())
-                })
-                && let Some(group) = self.app_id_group(appid)
-            {
-                groups.push(group);
+        for (ids, kind, build) in [
+            (
+                type_libs,
+                GroupKind::TypeLib,
+                Self::type_lib_group as fn(&Self, Guid) -> Option<Group>,
+            ),
+            (app_ids, GroupKind::AppId, Self::app_id_group),
+        ] {
+            for id in ids {
+                if id != guid
+                    && !groups.iter().any(|group| {
+                        group.kind == kind && group.identity.as_deref() == Some(&id.to_string())
+                    })
+                    && let Some(group) = build(self, id)
+                {
+                    groups.push(group);
+                }
             }
         }
         groups
     }
-    fn class_group(&self, guid: Guid) -> Option<Group> {
-        let path = format!("Software\\Classes\\CLSID\\{guid}");
-        if self.locations(&path).is_empty() {
+    /// The description field when the key exists, or `None` when it does not.
+    fn described(&self, path: &str) -> Option<Vec<Field>> {
+        if self.locations(path).is_empty() {
             return None;
         }
-        let mut fields = Vec::new();
-        if let Some(field) = self.field(&path, Attribute::Description) {
-            fields.push(field);
-        }
+        Some(
+            self.field(path, Attribute::Description)
+                .into_iter()
+                .collect(),
+        )
+    }
+    /// Read the named subkeys of `path` as fields, preserving the requested order.
+    fn subkey_fields(&self, path: &str, subkeys: &[(Attribute, &str)]) -> Vec<Field> {
+        subkeys
+            .iter()
+            .filter_map(|&(attribute, name)| self.field(&format!("{path}\\{name}"), attribute))
+            .collect()
+    }
+    fn class_group(&self, guid: Guid) -> Option<Group> {
+        let path = format!("Software\\Classes\\CLSID\\{guid}");
+        let mut fields = self.described(&path)?;
         for (attribute, name) in [
             (Attribute::InprocServer32, "InprocServer32"),
             (Attribute::LocalServer32, "LocalServer32"),
-            (Attribute::InprocHandler32, "InprocHandler32"),
-            (Attribute::InprocHandler, "InprocHandler"),
         ] {
             let subkey = format!("{path}\\{name}");
-            if let Some(field) = self.field(&subkey, attribute) {
-                fields.push(field);
-            }
-            if matches!(
-                attribute,
-                Attribute::InprocServer32 | Attribute::LocalServer32
-            ) && let Some(field) =
-                self.named_field(&subkey, "ThreadingModel", Attribute::ThreadingModel)
-            {
-                fields.push(field);
-            }
+            fields.extend(self.field(&subkey, attribute));
+            fields.extend(self.named_field(&subkey, "ThreadingModel", Attribute::ThreadingModel));
         }
-        for (attribute, name) in [
-            (Attribute::ProgId, "ProgID"),
-            (
-                Attribute::VersionIndependentProgId,
-                "VersionIndependentProgID",
-            ),
-            (Attribute::AppId, "AppID"),
-            (Attribute::TypeLib, "TypeLib"),
-            (Attribute::TreatAs, "TreatAs"),
-            (Attribute::AutoConvertTo, "AutoConvertTo"),
-        ] {
-            let subkey = format!("{path}\\{name}");
-            if let Some(field) = self.field(&subkey, attribute) {
-                fields.push(field);
-            }
-        }
+        fields.extend(self.subkey_fields(
+            &path,
+            &[
+                (Attribute::InprocHandler32, "InprocHandler32"),
+                (Attribute::InprocHandler, "InprocHandler"),
+                (Attribute::ProgId, "ProgID"),
+                (
+                    Attribute::VersionIndependentProgId,
+                    "VersionIndependentProgID",
+                ),
+                (Attribute::AppId, "AppID"),
+                (Attribute::TypeLib, "TypeLib"),
+                (Attribute::TreatAs, "TreatAs"),
+                (Attribute::AutoConvertTo, "AutoConvertTo"),
+            ],
+        ));
         Some(Group {
             kind: GroupKind::Class,
             identity: Some(guid.to_string()),
@@ -620,25 +578,17 @@ impl<'a> Reader<'a> {
     }
     fn interface_group(&self, guid: Guid) -> Option<Group> {
         let path = format!("Software\\Classes\\Interface\\{guid}");
-        if self.locations(&path).is_empty() {
-            return None;
-        }
-        let mut fields = Vec::new();
-        if let Some(field) = self.field(&path, Attribute::Description) {
-            fields.push(field);
-        }
-        for (attribute, name) in [
-            (Attribute::ProxyStubClsid32, "ProxyStubClsid32"),
-            (Attribute::NumMethods, "NumMethods"),
-            (Attribute::BaseInterface, "BaseInterface"),
-            (Attribute::AsynchronousInterface, "AsynchronousInterface"),
-            (Attribute::TypeLib, "TypeLib"),
-        ] {
-            let subkey = format!("{path}\\{name}");
-            if let Some(field) = self.field(&subkey, attribute) {
-                fields.push(field);
-            }
-        }
+        let mut fields = self.described(&path)?;
+        fields.extend(self.subkey_fields(
+            &path,
+            &[
+                (Attribute::ProxyStubClsid32, "ProxyStubClsid32"),
+                (Attribute::NumMethods, "NumMethods"),
+                (Attribute::BaseInterface, "BaseInterface"),
+                (Attribute::AsynchronousInterface, "AsynchronousInterface"),
+                (Attribute::TypeLib, "TypeLib"),
+            ],
+        ));
         Some(Group {
             kind: GroupKind::Interface,
             identity: Some(guid.to_string()),
@@ -648,13 +598,7 @@ impl<'a> Reader<'a> {
     }
     fn type_lib_group(&self, guid: Guid) -> Option<Group> {
         let path = format!("Software\\Classes\\TypeLib\\{guid}");
-        if self.locations(&path).is_empty() {
-            return None;
-        }
-        let fields: Vec<Field> = self
-            .field(&path, Attribute::Description)
-            .into_iter()
-            .collect();
+        let fields = self.described(&path)?;
         let mut children = Vec::new();
         for version in self.subkeys(&path) {
             if version.eq_ignore_ascii_case("FLAGS") || version.eq_ignore_ascii_case("HELPDIR") {
@@ -664,14 +608,10 @@ impl<'a> Reader<'a> {
             if self.locations(&version_path).is_empty() {
                 continue;
             }
-            let mut fields = Vec::new();
-            if let Some(field) = self.field(&format!("{version_path}\\FLAGS"), Attribute::Flags) {
-                fields.push(field);
-            }
-            if let Some(field) = self.field(&format!("{version_path}\\HELPDIR"), Attribute::HelpDir)
-            {
-                fields.push(field);
-            }
+            let fields = self.subkey_fields(
+                &version_path,
+                &[(Attribute::Flags, "FLAGS"), (Attribute::HelpDir, "HELPDIR")],
+            );
             let mut locales = Vec::new();
             for locale in self.subkeys(&version_path) {
                 if locale.eq_ignore_ascii_case("FLAGS") || locale.eq_ignore_ascii_case("HELPDIR") {
@@ -685,40 +625,31 @@ impl<'a> Reader<'a> {
                         name.eq_ignore_ascii_case("win32") || name.eq_ignore_ascii_case("win64")
                     })
                     .collect();
-                if flavors.is_empty() {
-                    let mut locale_fields = Vec::new();
-                    if let Some(field) = self.field(&locale_path, Attribute::Description) {
-                        locale_fields.push(field);
-                    }
-                    if !locale_fields.is_empty() {
+                let mut add_locale = |identity: String, fields: Vec<Field>| {
+                    if !fields.is_empty() {
                         locales.push(Group {
                             kind: GroupKind::TypeLibLocale,
-                            identity: Some(locale),
-                            fields: locale_fields,
+                            identity: Some(identity),
+                            fields,
                             children: Vec::new(),
                         });
                     }
+                };
+                if flavors.is_empty() {
+                    add_locale(
+                        locale,
+                        self.field(&locale_path, Attribute::Description)
+                            .into_iter()
+                            .collect(),
+                    );
                     continue;
                 }
                 for flavor in flavors {
                     let flavor_path = format!("{locale_path}\\{flavor}");
-                    let mut locale_fields = Vec::new();
-                    if let Some(field) = self.field(&flavor_path, Attribute::Description) {
-                        locale_fields.push(field);
-                    }
-                    if let Some(field) =
-                        self.named_field(&flavor_path, "HELPFILE", Attribute::HelpFile)
-                    {
-                        locale_fields.push(field);
-                    }
-                    if !locale_fields.is_empty() {
-                        locales.push(Group {
-                            kind: GroupKind::TypeLibLocale,
-                            identity: Some(format!("{flavor} {locale}")),
-                            fields: locale_fields,
-                            children: Vec::new(),
-                        });
-                    }
+                    let mut fields = Vec::new();
+                    fields.extend(self.field(&flavor_path, Attribute::Description));
+                    fields.extend(self.named_field(&flavor_path, "HELPFILE", Attribute::HelpFile));
+                    add_locale(format!("{flavor} {locale}"), fields);
                 }
             }
             children.push(Group {
@@ -737,13 +668,7 @@ impl<'a> Reader<'a> {
     }
     fn app_id_group(&self, guid: Guid) -> Option<Group> {
         let path = format!("Software\\Classes\\AppID\\{guid}");
-        if self.locations(&path).is_empty() {
-            return None;
-        }
-        let mut fields = Vec::new();
-        if let Some(field) = self.field(&path, Attribute::Description) {
-            fields.push(field);
-        }
+        let mut fields = self.described(&path)?;
         for (attribute, name) in [
             (Attribute::DllSurrogate, "DllSurrogate"),
             (Attribute::LocalService, "LocalService"),
@@ -764,19 +689,13 @@ impl<'a> Reader<'a> {
     }
     fn prog_id_groups(&self, text: &str) -> Vec<Group> {
         let path = format!("Software\\Classes\\{text}");
-        if self.locations(&path).is_empty() {
+        let Some(mut fields) = self.described(&path) else {
             return Vec::new();
-        }
-        let mut fields = Vec::new();
-        if let Some(field) = self.field(&path, Attribute::Description) {
-            fields.push(field);
-        }
-        for (attribute, name) in [(Attribute::Clsid, "CLSID"), (Attribute::CurVer, "CurVer")] {
-            let subkey = format!("{path}\\{name}");
-            if let Some(field) = self.field(&subkey, attribute) {
-                fields.push(field);
-            }
-        }
+        };
+        fields.extend(self.subkey_fields(
+            &path,
+            &[(Attribute::Clsid, "CLSID"), (Attribute::CurVer, "CurVer")],
+        ));
         let classes: Vec<Guid> = fields
             .iter()
             .filter(|field| field.attribute == Attribute::Clsid)
@@ -809,13 +728,13 @@ fn push_sourced(values: &mut Vec<Sourced>, value: String, provenance: Provenance
     }
 }
 
-fn referenced_ids(group: &Group, attribute: Attribute) -> Vec<(Attribute, Option<Guid>)> {
+fn referenced_ids(group: &Group, attribute: Attribute) -> Vec<Guid> {
     group
         .fields
         .iter()
         .filter(|field| field.attribute == attribute)
         .flat_map(|field| field.values.iter())
-        .map(|value| (attribute, Guid::parse(&value.value)))
+        .filter_map(|value| Guid::parse(&value.value))
         .collect()
 }
 

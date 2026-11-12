@@ -38,8 +38,53 @@ owned_handle! {
     pub struct GdiObject(pub HGDIOBJ); DeleteObject, null = ptr::null_mut()
 }
 
+/// Owns a native theme handle; dropping closes it exactly once.
+pub struct Theme(std::cell::Cell<HTHEME>);
+impl Theme {
+    pub const fn empty() -> Self {
+        Self(std::cell::Cell::new(0))
+    }
+    pub fn open(hwnd: HWND, class: *const u16) -> Self {
+        Self(std::cell::Cell::new(unsafe {
+            OpenThemeData(hwnd, class)
+        }))
+    }
+    pub fn get(&self, hwnd: HWND, class: *const u16) -> HTHEME {
+        if self.0.get() == 0 {
+            self.0.set(unsafe { OpenThemeData(hwnd, class) });
+        }
+        self.0.get()
+    }
+    pub fn raw(&self) -> HTHEME {
+        self.0.get()
+    }
+    pub fn clear(&self) {
+        let theme = self.0.replace(0);
+        if theme != 0 {
+            unsafe { CloseThemeData(theme) };
+        }
+    }
+}
+impl Drop for Theme {
+    fn drop(&mut self) {
+        self.clear();
+    }
+}
+
 /// XP accepts the older TTTOOLINFOW layout without the trailing reserved field.
 pub const TOOLINFO_SIZE: u32 = std::mem::offset_of!(TTTOOLINFOW, lpReserved) as u32;
+
+/// A tool that uses its control handle as both the tool id and the tracked window.
+pub fn tooltip_info(control: HWND, text: *mut u16) -> TTTOOLINFOW {
+    TTTOOLINFOW {
+        cbSize: TOOLINFO_SIZE,
+        uFlags: TTF_IDISHWND | TTF_SUBCLASS,
+        hwnd: control,
+        uId: control as usize,
+        lpszText: text,
+        ..unsafe { std::mem::zeroed() }
+    }
+}
 
 pub fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
@@ -212,6 +257,12 @@ pub fn set_bounds(hwnd: HWND, r: RECT) -> anyhow::Result<()> {
     }
     Ok(())
 }
+/// Set the closed height of a combo box to `rows` text rows, keeping its width.
+pub fn collapse_combo(hwnd: HWND, row: i32, rows: i32) -> anyhow::Result<()> {
+    let mut rect = bounds(hwnd, unsafe { GetParent(hwnd) });
+    rect.bottom = rect.top + row * rows;
+    set_bounds(hwnd, rect)
+}
 pub fn place_all(positions: &[(HWND, RECT)]) -> anyhow::Result<()> {
     let changed: Vec<_> = positions
         .iter()
@@ -326,6 +377,38 @@ pub fn send_ref<T>(hwnd: HWND, msg: u32, w: usize, value: &T) -> isize {
 }
 pub fn send_mut<T>(hwnd: HWND, msg: u32, w: usize, value: &mut T) -> isize {
     send(hwnd, msg, w, value as *mut T as isize)
+}
+
+/// Forward the shared context-menu gestures of a child control to its owner:
+/// right-click, the menu key and Shift+F10. Returns the handled result.
+pub fn forward_context_menu(hwnd: HWND, msg: u32, w: usize, l: isize) -> Option<isize> {
+    unsafe {
+        if msg == WM_CONTEXTMENU {
+            return Some(send(GetParent(hwnd), msg, hwnd as usize, l));
+        }
+        let menu_key =
+            w == VK_APPS as usize || w == VK_F10 as usize && GetKeyState(VK_SHIFT as i32) < 0;
+        (menu_key && (msg == WM_KEYDOWN || msg == WM_KEYUP)).then(|| {
+            if msg == WM_KEYDOWN {
+                send(GetParent(hwnd), WM_CONTEXTMENU, hwnd as usize, -1)
+            } else {
+                0
+            }
+        })
+    }
+}
+
+/// Ask for one `WM_MOUSELEAVE` after the pointer leaves `hwnd`.
+pub fn track_leave(hwnd: HWND) {
+    let mut event = TRACKMOUSEEVENT {
+        cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
+        dwFlags: TME_LEAVE,
+        hwndTrack: hwnd,
+        dwHoverTime: 0,
+    };
+    unsafe {
+        TrackMouseEvent(&mut event);
+    }
 }
 
 owned_handle! { pub struct Popup(HMENU); DestroyMenu }

@@ -1,5 +1,5 @@
 //! Live registry source backed by `RegOpenKeyExW` and `RegQueryValueExW`.
-use super::{ReadError, Root, Source, View};
+use super::{ReadError, Root, Source, View, wide};
 use std::{io, ptr};
 use windows_sys::Win32::Foundation::{
     ERROR_FILE_NOT_FOUND, ERROR_INVALID_PARAMETER, ERROR_MORE_DATA, ERROR_NO_MORE_ITEMS,
@@ -128,10 +128,6 @@ impl Drop for Key {
             RegCloseKey(self.0);
         }
     }
-}
-
-fn wide(value: &str) -> Vec<u16> {
-    value.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
 fn open(root: Root, view: View, path: &str) -> Result<Option<Key>, ReadError> {

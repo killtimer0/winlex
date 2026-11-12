@@ -255,7 +255,6 @@ impl List {
         if unsafe { set_subclass(hwnd, Some(list_proc), 1, palette(hwnd)) } == 0 {
             anyhow::bail!("Subclass list control {id} failed");
         }
-        refresh_palette(hwnd);
         list_column(hwnd, 0, "", 100);
         send(
             hwnd,
@@ -613,15 +612,8 @@ unsafe fn background(hwnd: HWND, dc: HDC, area: &RECT, selected: bool) {
     }
 }
 fn themed_items(hwnd: HWND) -> bool {
-    unsafe {
-        let theme = OpenThemeData(hwnd, w!("ListView"));
-        if theme == 0 {
-            return false;
-        }
-        let supported = IsThemePartDefined(theme, LVP_LISTITEM, 0) != 0;
-        CloseThemeData(theme);
-        supported
-    }
+    let theme = Theme::open(hwnd, w!("ListView"));
+    theme.raw() != 0 && unsafe { IsThemePartDefined(theme.raw(), LVP_LISTITEM, 0) } != 0
 }
 const THEMED: usize = 1;
 const HIGH_CONTRAST: usize = 2;
@@ -648,17 +640,8 @@ unsafe extern "system" fn list_proc(
             refresh_palette(h);
             return result;
         }
-        if msg == WM_CONTEXTMENU {
-            return send(GetParent(h), msg, h as usize, l);
-        }
-        if (msg == WM_KEYDOWN || msg == WM_KEYUP)
-            && (w == VK_APPS as usize || w == VK_F10 as usize && GetKeyState(VK_SHIFT as i32) < 0)
-        {
-            return if msg == WM_KEYDOWN {
-                send(GetParent(h), WM_CONTEXTMENU, h as usize, -1)
-            } else {
-                0
-            };
+        if let Some(result) = forward_context_menu(h, msg, w, l) {
+            return result;
         }
         if msg == WM_NCDESTROY {
             let image = send(h, LVM_SETIMAGELIST, LVSIL_SMALL as usize, 0);

@@ -219,7 +219,6 @@ pub(super) unsafe extern "system" fn frame_proc(hwnd: HWND, msg: u32, w: usize, 
                 return 0;
             }
             WM_DESTROY => {
-                ctx.notify_worker_window(ptr::null_mut(), 0);
                 PostQuitMessage(0);
                 return 0;
             }

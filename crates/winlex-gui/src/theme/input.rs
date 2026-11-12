@@ -7,12 +7,20 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 // https://github.com/ozone10/win32-darkmodelib
 //! Native input themes and non-client edit/list borders; never consumes business notifications.
-use super::{Role, brush_role, color_role, is_dark};
+use super::{Role, color_role, edge, is_dark, roundness};
 use crate::native::*;
 use std::{cell::Cell, ptr, rc::Rc};
 use windows_sys::Win32::UI::{HiDpi::*, Shell::GetWindowSubclass};
 
 const BORDER: usize = 0x574c4244;
+
+fn body_theme() -> &'static str {
+    if super::native_dark_theme() {
+        "DarkMode_DarkTheme"
+    } else {
+        "DarkMode_CFD"
+    }
+}
 
 struct Border {
     edit: bool,
@@ -80,12 +88,7 @@ pub(super) fn apply(hwnd: HWND, class: &str) {
             } else {
                 None
             };
-            let body_theme = if super::native_dark_theme() {
-                "DarkMode_DarkTheme"
-            } else {
-                "DarkMode_CFD"
-            };
-            super::set_native_theme(hwnd, body_theme, None);
+            super::set_native_theme(hwnd, body_theme(), None);
             if has_info {
                 if !info.hwndList.is_null() {
                     if GetWindowLongW(hwnd, GWL_STYLE) & CBS_DROPDOWNLIST == CBS_SIMPLE {
@@ -107,7 +110,7 @@ pub(super) fn apply(hwnd: HWND, class: &str) {
                     super::set_native_theme(info.hwndList, "DarkMode_Explorer", Some("Explorer"));
                 }
                 if !info.hwndItem.is_null() && info.hwndItem != hwnd {
-                    super::set_native_theme(info.hwndItem, body_theme, None);
+                    super::set_native_theme(info.hwndItem, body_theme(), None);
                 }
             }
             if let Some((start, end)) = edit_selection {
@@ -131,15 +134,7 @@ pub(super) fn apply(hwnd: HWND, class: &str) {
             if scroll || class.eq_ignore_ascii_case("ListBox") {
                 super::set_native_theme(hwnd, "DarkMode_Explorer", Some("Explorer"));
             } else {
-                super::set_native_theme(
-                    hwnd,
-                    if super::native_dark_theme() {
-                        "DarkMode_DarkTheme"
-                    } else {
-                        "DarkMode_CFD"
-                    },
-                    None,
-                );
+                super::set_native_theme(hwnd, body_theme(), None);
             }
             if GetWindowSubclass(hwnd, Some(border_proc), BORDER, ptr::null_mut()) != 0 {
                 let old = GetWindowLongW(hwnd, GWL_EXSTYLE);
@@ -177,40 +172,6 @@ unsafe fn frame_changed(hwnd: HWND) {
     }
 }
 
-fn edge(disabled: bool, hot: bool) -> Role {
-    if disabled {
-        Role::DisabledEdge
-    } else if hot {
-        Role::HotEdge
-    } else {
-        Role::Edge
-    }
-}
-
-fn roundness() -> i32 {
-    if super::windows11() { 4 } else { 0 }
-}
-
-unsafe fn outline(dc: HDC, rect: RECT, role: Role, rounded: bool) {
-    unsafe {
-        let pen = GdiObject(CreatePen(PS_SOLID, 1, color_role(role)));
-        let saved = SaveDC(dc);
-        SelectObject(dc, pen.0);
-        SelectObject(dc, GetStockObject(NULL_BRUSH));
-        let radius = if rounded { roundness() } else { 0 };
-        RoundRect(
-            dc,
-            rect.left,
-            rect.top,
-            rect.right,
-            rect.bottom,
-            radius,
-            radius,
-        );
-        RestoreDC(dc, saved);
-    }
-}
-
 unsafe fn track(hwnd: HWND, cancel: bool) {
     unsafe {
         let mut event = TRACKMOUSEEVENT {
@@ -243,7 +204,7 @@ unsafe fn border_paint(hwnd: HWND, border: &Border) {
         let disabled = IsWindowEnabled(hwnd) == 0;
         let mut inner = rect;
         InflateRect(&mut inner, -1, -1);
-        outline(
+        super::controls::outline(
             dc,
             inner,
             if disabled {
@@ -251,7 +212,8 @@ unsafe fn border_paint(hwnd: HWND, border: &Border) {
             } else {
                 Role::Background
             },
-            false,
+            None,
+            0,
         );
         let mut cursor: POINT = std::mem::zeroed();
         GetCursorPos(&mut cursor);
@@ -259,7 +221,7 @@ unsafe fn border_paint(hwnd: HWND, border: &Border) {
         let focus = GetFocus() == hwnd;
         let readonly = border.edit && style & ES_READONLY != 0;
         let hot = !readonly && ((border.hot.get() && PtInRect(&rect, cursor) != 0) || focus);
-        outline(dc, rect, edge(disabled, hot), true);
+        super::controls::outline(dc, rect, edge(disabled, hot), None, roundness());
         if roundness() != 0
             && focus
             && border.edit
@@ -269,20 +231,7 @@ unsafe fn border_paint(hwnd: HWND, border: &Border) {
                 top: rect.bottom - MulDiv(2, dpi as i32, 96),
                 ..rect
             };
-            let pen = GdiObject(CreatePen(PS_SOLID, 1, color_role(Role::Highlight)));
-            let saved = SaveDC(dc);
-            SelectObject(dc, pen.0);
-            SelectObject(dc, brush_role(Role::Highlight));
-            RoundRect(
-                dc,
-                line.left,
-                line.top,
-                line.right,
-                line.bottom,
-                roundness(),
-                roundness(),
-            );
-            RestoreDC(dc, saved);
+            super::controls::rounded(dc, line, Role::Highlight, Role::Highlight, roundness());
         }
         ReleaseDC(hwnd, dc);
     }

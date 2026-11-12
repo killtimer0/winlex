@@ -112,7 +112,6 @@ pub(super) unsafe extern "system" fn document_proc(
                 let result = DefMDIChildProcW(hwnd, msg, w, l);
                 drop(content);
                 workspace::refresh_document_tabs(ctx);
-                super::status::refresh_status(ctx);
                 return result;
             }
             _ => {}

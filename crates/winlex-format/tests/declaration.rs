@@ -11,7 +11,8 @@ fn render(catalog: &Catalog, name: &str) -> winlex_format::declaration::Rendered
             ..Default::default()
         },
     ));
-    winlex_format::declaration::render(catalog, entity.id, Architecture::X64).unwrap()
+    winlex_format::declaration::render_target(catalog, &entity.id.into(), Architecture::X64)
+        .unwrap()
 }
 
 #[test]
@@ -430,7 +431,9 @@ fn named_references_keep_identity_through_declarators_generics_and_utf16() {
         .type_ids()
         .find(|&id| catalog.entity(id).unwrap().name == "Owner😀")
         .unwrap();
-    let rendered = winlex_format::declaration::render(&catalog, owner, Architecture::X64).unwrap();
+    let rendered =
+        winlex_format::declaration::render_target(&catalog, &owner.into(), Architecture::X64)
+            .unwrap();
     assert!(
         rendered.text.contains("class Owner😀 : Base, Item\n{"),
         "{}",
@@ -511,8 +514,12 @@ fn named_references_keep_identity_through_declarators_generics_and_utf16() {
             ..Default::default()
         },
     ));
-    let resolved =
-        winlex_format::declaration::render(&catalog, reference.id, Architecture::X64).unwrap();
+    let resolved = winlex_format::declaration::render_target(
+        &catalog,
+        &reference.id.into(),
+        Architecture::X64,
+    )
+    .unwrap();
     let link = resolved
         .regions
         .iter()
@@ -610,10 +617,10 @@ fn parameter_modifiers_preserve_order_and_missing_parameter_names() {
 
 #[test]
 fn declarations_cover_native_signatures_and_architecture_specific_types() {
-    let catalog = Catalog::open(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../inputs/Windows.Win32.winmd"),
-    )
-    .unwrap();
+    let catalog =
+        Catalog::open_many([std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../inputs/Windows.Win32.winmd")])
+        .unwrap();
     for arch in [Architecture::X86, Architecture::X64, Architecture::Arm64] {
         let render = |name| {
             let entity = first_match(catalog.search(
@@ -628,7 +635,7 @@ fn declarations_cover_native_signatures_and_architecture_specific_types() {
                     ..Default::default()
                 },
             ));
-            winlex_format::declaration::render(&catalog, entity.id, arch).unwrap()
+            winlex_format::declaration::render_target(&catalog, &entity.id.into(), arch).unwrap()
         };
         for name in ["CreateFileW", "RECT"] {
             let rendered = render(name);
@@ -646,7 +653,6 @@ fn declarations_cover_native_signatures_and_architecture_specific_types() {
                         || region.contains(&number.hexadecimal()),
                     "{region}"
                 );
-                assert!(catalog.entity(number.entity).is_ok());
             }
             let text = rendered.text;
             if name == "CreateFileW" {
@@ -718,8 +724,18 @@ fn declarations_cover_native_signatures_and_architecture_specific_types() {
         .map(|id| catalog.entity(id).unwrap())
         .find(|e| e.architecture_mask == 4)
         .expect("ARM64-only fixture");
-    assert!(winlex_format::declaration::render(&catalog, entity.id, Architecture::Arm64).is_ok());
-    assert!(winlex_format::declaration::render(&catalog, entity.id, Architecture::X64).is_err());
+    assert!(
+        winlex_format::declaration::render_target(
+            &catalog,
+            &entity.id.into(),
+            Architecture::Arm64,
+        )
+        .is_ok()
+    );
+    assert!(
+        winlex_format::declaration::render_target(&catalog, &entity.id.into(), Architecture::X64)
+            .is_err()
+    );
 }
 
 #[test]
@@ -921,7 +937,6 @@ fn enum_members_and_individual_constants_share_annotations() {
         .filter_map(|r| r.number())
         .zip(member.regions.iter().filter_map(|r| r.number()))
     {
-        assert_eq!(a.entity, b.entity);
         assert_eq!(a.value, b.value);
         assert_eq!(a.hexadecimal(), b.hexadecimal());
     }
@@ -939,15 +954,6 @@ fn enum_members_and_individual_constants_share_annotations() {
     assert_eq!(numbers.len(), 1);
     assert_eq!(numbers[0].value, 7);
     assert_eq!(numbers[0].with_unit(), "7 UTF-16 code units");
-    assert_eq!(
-        parent
-            .regions
-            .iter()
-            .find_map(|r| r.number())
-            .unwrap()
-            .entity,
-        numbers[0].entity
-    );
     assert!(
         render("EmptyText")
             .text
@@ -1007,7 +1013,7 @@ fn fastcall_functions_annotate_x86_registers_and_stack_slots() {
         },
     ));
     assert_eq!(
-        winlex_format::declaration::render(&catalog, entity.id, Architecture::X86)
+        winlex_format::declaration::render_target(&catalog, &entity.id.into(), Architecture::X86)
             .unwrap()
             .text,
         "void Mix(\n    [in] int32 a, // ecx\n    [in] float32 b, // [esp+4]\n    [in] float64 c, // [esp+8]\n    [in] int32 d // edx\n);\n"

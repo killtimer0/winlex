@@ -6,7 +6,7 @@ use winlex_core::{
     Architecture, Catalog, Declaration, DeclarationTarget, EntityId, Result, guid, metadata::key,
     primitive_name,
 };
-use winlex_format::{attribute_value as value, const_annotation, layout_kind, member_ids};
+use winlex_format::{attribute_value as value, const_annotation, layout_kind};
 
 fn ty(t: &Type) -> String {
     qualified_ty(t, false)
@@ -164,11 +164,7 @@ fn declaration(
                     }
                 )?;
             }
-            let ids = member_ids(t.fields(), 4, arch)
-                .chain(member_ids(t.properties(), 0x17, arch))
-                .chain(member_ids(t.events(), 0x14, arch))
-                .chain(member_ids(t.methods(), 6, arch));
-            for id in ids {
+            for id in winlex_format::type_members(&t, arch) {
                 declaration(out, c, &target.with_id(id), arch, depth + 1)?;
             }
         }
@@ -351,11 +347,7 @@ pub(super) fn render(q: &Query, c: &Catalog, arch: Option<Architecture>) -> Resu
                             slot,
                             abi.calling_convention,
                             abi.return_type,
-                            abi.parameters
-                                .iter()
-                                .map(|p| format!("[{}] {} {}", p.direction, p.ty, p.name))
-                                .collect::<Vec<_>>()
-                                .join(", ")
+                            winlex_format::abi_parameters(&abi.parameters)
                         )?;
                     } else if let Some(Err(reason)) = &method.abi {
                         writeln!(out, "  slot {slot} ABI unsupported: {reason}")?;

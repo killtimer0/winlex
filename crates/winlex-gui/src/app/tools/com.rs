@@ -1,13 +1,15 @@
 //! COM/WinRT registration tool: one target, registry views and grouped results.
 use crate::app::context::Context;
+use crate::native::text;
 use crate::{
+    icons::Icon,
     layout,
     native::*,
     resources::{self, *},
 };
 use std::{
     cell::{Cell, RefCell},
-    rc::Rc,
+    ops::{Deref, DerefMut},
 };
 use winlex_core::tools::com::{
     self, Field, Group, GroupKind, Report, Request, ResolvedKind, TargetKind, View as RegistryView,
@@ -17,43 +19,29 @@ use winlex_core::tools::com::{
 };
 use winlex_format::declaration::{Region, Rendered, SymbolRole};
 
+use super::{Shell, combo_value};
 use crate::tasks::tools::{ActivationError, Completion as ToolCompletion, Job as ToolJob};
 
 const KINDS: &[(u16, TargetKind)] = &[
-    (IDS_COM_KIND_AUTO, TargetKind::Auto),
-    (IDS_COM_KIND_PROGID, TargetKind::ProgId),
+    (IDS_AUTO, TargetKind::Auto),
+    (IDS_PROGID, TargetKind::ProgId),
     (IDS_COM_KIND_GUID, TargetKind::Guid),
 ];
 const VIEWS: &[(u16, Views)] = &[
     (IDS_COM_VIEW_BOTH, Views::Both),
     (IDS_COM_VIEW_X86, Views::X86),
     (IDS_COM_VIEW_X64, Views::X64),
-    (IDS_COM_VIEW_AUTO, Views::Auto),
+    (IDS_AUTO, Views::Auto),
 ];
-const TEXT_SUBCLASS: usize = 1811;
 
 pub(in crate::app) struct View {
-    // The document lives inside the context, so the pointer cannot outlive it.
-    ctx: *const Context,
-    pub id: u64,
-    pub hwnd: HWND,
-    pub placement: Cell<Option<layout::Placement>>,
-    pub live: Cell<bool>,
-    pub(super) recent: Cell<u64>,
-    icons: RefCell<Option<Rc<crate::icons::WindowIcons>>>,
+    shell: Shell,
     input: HWND,
     kind: HWND,
     registry_view: HWND,
     query: HWND,
     type_lib: HWND,
     activate: HWND,
-    copy: HWND,
-    result: HWND,
-    labels: Vec<HWND>,
-    status: RefCell<String>,
-    setting: Cell<bool>,
-    body: RefCell<crate::rich_text::Content>,
-    plain: RefCell<String>,
     report: RefCell<Option<Report>>,
     type_libraries: RefCell<Vec<TypeLibrary>>,
     type_lib_errors: RefCell<Vec<String>>,
@@ -62,32 +50,28 @@ pub(in crate::app) struct View {
     activate_ticket: Cell<Option<u64>>,
 }
 
-impl View {
-    fn ctx(&self) -> &Context {
-        unsafe { &*self.ctx }
+impl Deref for View {
+    type Target = Shell;
+    fn deref(&self) -> &Shell {
+        &self.shell
     }
-    pub fn new(ctx: &Context) -> Self {
+}
+impl DerefMut for View {
+    fn deref_mut(&mut self) -> &mut Shell {
+        &mut self.shell
+    }
+}
+
+impl View {
+    pub fn new(ctx: &Context, icon: Icon) -> Self {
         Self {
-            ctx: ctx as *const Context,
-            id: super::super::workspace::next_serial(ctx),
-            hwnd: std::ptr::null_mut(),
-            placement: Cell::new(None),
-            live: Cell::new(true),
-            recent: Cell::new(0),
-            icons: RefCell::new(None),
+            shell: Shell::new(ctx, resources::text(IDS_COM_READY), icon),
             input: std::ptr::null_mut(),
             kind: std::ptr::null_mut(),
             registry_view: std::ptr::null_mut(),
             query: std::ptr::null_mut(),
             type_lib: std::ptr::null_mut(),
             activate: std::ptr::null_mut(),
-            copy: std::ptr::null_mut(),
-            result: std::ptr::null_mut(),
-            labels: vec![],
-            status: RefCell::new(resources::text(IDS_COM_READY)),
-            setting: Cell::new(true),
-            body: RefCell::new(crate::rich_text::Content::new(String::new())),
-            plain: RefCell::new(String::new()),
             report: RefCell::new(None),
             type_libraries: RefCell::new(Vec::new()),
             type_lib_errors: RefCell::new(Vec::new()),
@@ -95,22 +79,6 @@ impl View {
             activated: RefCell::new(None),
             activate_ticket: Cell::new(None),
         }
-    }
-    fn update_icons(&self) {
-        let ctx = self.ctx();
-        super::super::status::report(
-            ctx,
-            super::super::document::update_icons(
-                ctx,
-                self.hwnd,
-                crate::icons::Icon::Interface,
-                &self.icons,
-            ),
-        );
-    }
-    pub fn activated(&self) {
-        self.recent
-            .set(super::super::workspace::next_serial(self.ctx()));
     }
     pub fn create(&mut self, hwnd: HWND) -> anyhow::Result<()> {
         self.hwnd = hwnd;
@@ -140,73 +108,37 @@ impl View {
                 0,
             ),
         ] {
-            self.labels
-                .push(unsafe { child(hwnd, w!("STATIC"), resources::wide_text(label), 0, 0) }?);
-            *control = unsafe { child_ex(hwnd, class, &[0], WS_TABSTOP | style, edge, id) }?;
+            *control = self.shell.create_field(hwnd, label, id, class, style, edge)?;
         }
-        for &(label, _) in KINDS {
-            send(
-                self.kind,
-                CB_ADDSTRING,
-                0,
-                resources::wide_text(label).as_ptr() as isize,
-            );
-        }
-        send(self.kind, CB_SETCURSEL, 0, 0);
-        for &(label, _) in VIEWS {
-            send(
-                self.registry_view,
-                CB_ADDSTRING,
-                0,
-                resources::wide_text(label).as_ptr() as isize,
-            );
-        }
-        send(self.registry_view, CB_SETCURSEL, 0, 0);
-        for (control, id, label, style) in [
+        self.shell
+            .populate_combo(self.kind, KINDS.iter().map(|&(label, _)| label));
+        self.shell
+            .populate_combo(self.registry_view, VIEWS.iter().map(|&(label, _)| label));
+        for (label, id, control, style) in [
             (
-                &mut self.query,
+                IDS_QUERY,
                 COM_QUERY,
-                IDS_COM_QUERY,
+                &mut self.query,
                 BS_DEFPUSHBUTTON as u32,
             ),
-            (&mut self.type_lib, COM_TYPELIB, IDS_COM_TYPELIB, 0),
-            (&mut self.activate, COM_ACTIVATE, IDS_COM_ACTIVATE, 0),
-            (&mut self.copy, COM_COPY_ALL, IDS_COM_COPY_ALL, 0),
+            (IDS_COM_TYPELIB, COM_TYPELIB, &mut self.type_lib, 0),
+            (IDS_COM_ACTIVATE, COM_ACTIVATE, &mut self.activate, 0),
         ] {
-            *control = unsafe {
-                child(
-                    hwnd,
-                    w!("BUTTON"),
-                    resources::wide_text(label),
-                    WS_TABSTOP | style,
-                    id,
-                )
-            }?;
+            *control = self.shell.create_button(hwnd, label, id, style)?;
         }
-        self.labels.push(unsafe {
-            child(
-                hwnd,
-                w!("STATIC"),
-                resources::wide_text(IDS_COM_RESULT_LABEL),
-                0,
-                0,
-            )
-        }?);
-        self.result = crate::rich_text::create(hwnd, COM_RESULT)?;
+        self.shell.create_copy_button(hwnd, COM_COPY_ALL)?;
+        self.shell.create_result(hwnd, COM_RESULT)?;
         unsafe {
             EnableWindow(self.type_lib, 0);
             EnableWindow(self.activate, 0);
         }
         send(self.input, EM_SETLIMITTEXT, 4096, 0);
-        if unsafe { set_subclass(self.input, Some(text_proc), TEXT_SUBCLASS, 0) } == 0 {
-            return Err(error("Subclass the COM input"));
-        }
+        self.shell.subclass_text(self.input)?;
         self.setting.set(false);
         Ok(())
     }
     fn execute(&self) {
-        let raw = native_text(self.input);
-        let target = String::from_utf16_lossy(&raw);
+        let target = text(self.input);
         let target = target.trim();
         if let Some(id) = self.type_lib_ticket.take() {
             self.ctx().cancel_job(id);
@@ -230,7 +162,7 @@ impl View {
                 Some(note) => format!("{empty}\n\n{note}"),
                 None => empty.clone(),
             };
-            self.show(
+            self.shell.show(
                 crate::rich_text::Content::new(message),
                 String::new(),
                 &empty,
@@ -241,8 +173,8 @@ impl View {
         if let Some(note) = note {
             self.type_lib_errors.borrow_mut().push(note);
         }
-        let kind = selected(self.kind, KINDS, TargetKind::Auto);
-        let views = selected(self.registry_view, VIEWS, Views::Both);
+        let kind = combo_value(self.kind, KINDS, TargetKind::Auto);
+        let views = combo_value(self.registry_view, VIEWS, Views::Both);
         let report = com::query(
             &com::registry::Live,
             &Request {
@@ -267,12 +199,12 @@ impl View {
         warnings.extend(self.type_lib_errors.borrow().iter().cloned());
         let mut output = render(&report, &labels, &warnings);
         for library in self.type_libraries.borrow().iter() {
-            render_type_library(&mut output.body, library, &labels);
+            render_type_library(&mut output, library, &labels);
         }
         if let Some(activated) = self.activated.borrow().as_ref() {
-            render_activation(&mut output.body, activated, &labels);
+            render_activation(&mut output, activated, &labels);
         }
-        output.copy = output.body.text.trim_end().to_owned();
+        let copy = output.text.trim_end().to_owned();
         let status = resources::format(
             IDS_COM_STATUS,
             &[
@@ -281,11 +213,8 @@ impl View {
                 &warnings.len().to_string(),
             ],
         );
-        self.show(
-            crate::rich_text::Content::from(output.body),
-            output.copy,
-            &status,
-        );
+        self.shell
+            .show(crate::rich_text::Content::from(output), copy, &status);
         self.update_actions();
     }
     fn update_actions(&self) {
@@ -312,24 +241,9 @@ impl View {
             self.set_status(&resources::text(IDS_COM_TYPELIB_NONE));
             return;
         }
-        let ctx = self.ctx();
-        let ticket = crate::app::catalog::next_ticket(ctx);
-        let id = ticket.id;
-        let previous = self.type_lib_ticket.take();
-        match ctx.replace_job(
-            previous,
-            ticket,
-            crate::tasks::Job::Tool {
-                document: self.id,
-                job: ToolJob::TypeLibraries { libraries },
-            },
-        ) {
-            Ok(()) => {
-                self.type_lib_ticket.set(Some(id));
-                self.set_status(&resources::text(IDS_COM_TYPELIB_LOADING));
-                self.update_actions();
-            }
-            Err(error) => self.set_status(&format!("{error:#}")),
+        if self.submit(&self.type_lib_ticket, ToolJob::TypeLibraries { libraries }) {
+            self.set_status(&resources::text(IDS_COM_TYPELIB_LOADING));
+            self.update_actions();
         }
     }
     fn activate(&self) {
@@ -346,28 +260,12 @@ impl View {
             crate::message::confirm_no(self.hwnd, &resources::text(IDS_APP_TITLE), &question),
         ) {
             Some(true) => {}
-            Some(false) => return,
-            None => return,
+            Some(false) | None => return,
         }
-        let ctx = self.ctx();
-        let ticket = crate::app::catalog::next_ticket(ctx);
-        let id = ticket.id;
-        let previous = self.activate_ticket.take();
-        match ctx.replace_job(
-            previous,
-            ticket,
-            crate::tasks::Job::Tool {
-                document: self.id,
-                job: ToolJob::Activate { guid },
-            },
-        ) {
-            Ok(()) => {
-                self.activate_ticket.set(Some(id));
-                self.activated.replace(None);
-                self.set_status(&resources::text(IDS_COM_ACTIVATE_RUNNING));
-                self.present();
-            }
-            Err(error) => self.set_status(&format!("{error:#}")),
+        if self.submit(&self.activate_ticket, ToolJob::Activate { guid }) {
+            self.activated.replace(None);
+            self.set_status(&resources::text(IDS_COM_ACTIVATE_RUNNING));
+            self.present();
         }
     }
     pub(in crate::app) fn complete(&self, id: u64, completion: ToolCompletion) {
@@ -435,47 +333,29 @@ impl View {
             self.update_actions();
         }
     }
-    fn show(&self, content: crate::rich_text::Content, copy: String, status: &str) {
-        if let Err(error) = crate::rich_text::set_content(self.result, &content) {
-            self.set_status(&format!("{error:#}"));
-            return;
-        }
-        self.body.replace(content);
-        self.plain.replace(copy);
-        self.set_status(status);
-    }
-    fn set_status(&self, message: &str) {
-        self.status.replace(message.to_owned());
-        super::super::document::status_changed(self.ctx(), self.hwnd);
-    }
     pub(in crate::app) fn search(&self, target: &str) {
-        let value: Vec<u16> = target.encode_utf16().chain(Some(0)).collect();
-        unsafe { SetWindowTextW(self.input, value.as_ptr()) };
+        set_text(self.input, target);
         send(self.kind, CB_SETCURSEL, 0, 0);
         send(self.registry_view, CB_SETCURSEL, 0, 0);
         self.execute();
     }
     pub fn layout(&self) {
-        if self.result.is_null() {
+        let Some((m, mut area, gap, label_gap)) = self.layout_start() else {
             return;
-        }
-        let m = self.ctx().metrics(self.hwnd);
-        let mut area = layout::inset(client(self.hwnd), m.px(8));
+        };
         let mut positions = vec![];
-        let gap = m.px(4);
-        let label_gap = m.px(8);
-        let label_width = [IDS_COM_LABEL, IDS_COM_KIND, IDS_COM_VIEW]
-            .into_iter()
-            .map(|id| m.text_width(resources::wide_text(id)))
-            .max()
-            .unwrap_or(0)
-            .min((area.right - area.left) / 3);
+        let label_width = self.label_column(
+            &m,
+            &[IDS_COM_LABEL, IDS_COM_KIND, IDS_COM_VIEW],
+            area.right - area.left,
+        );
         let dpi = self.ctx().dpi();
+        let kind = bounds(self.kind, self.hwnd);
+        let view = bounds(self.registry_view, self.hwnd);
         let heights = [
             m.edit_height(self.input, dpi),
-            bounds(self.kind, self.hwnd).bottom - bounds(self.kind, self.hwnd).top,
-            bounds(self.registry_view, self.hwnd).bottom
-                - bounds(self.registry_view, self.hwnd).top,
+            kind.bottom - kind.top,
+            view.bottom - view.top,
         ];
         for (index, (label, control)) in [
             (self.labels[0], self.input),
@@ -497,103 +377,57 @@ impl View {
             [self.query, self.type_lib, self.activate, self.copy],
             &mut positions,
         );
-        layout::take_top(&mut area, m.px(4));
-        positions.push((
-            self.labels[3],
-            layout::take_top(&mut area, m.height + m.px(4)),
-        ));
-        positions.push((self.result, area));
-        if let Err(error) = place_all(&positions) {
-            self.set_status(&format!("{error:#}"));
-        }
+        self.finish_layout(&m, &mut area, self.labels[3], &mut positions);
     }
     pub fn focus(&self) {
         focus(self.input)
     }
     pub fn prepare(&self) {
-        self.update_icons();
-        let m = self.ctx().metrics(self.hwnd);
-        for h in self.labels.iter().copied().chain([
-            self.input,
-            self.kind,
-            self.registry_view,
-            self.query,
-            self.type_lib,
-            self.activate,
-            self.copy,
-        ]) {
-            super::super::bind(h, m.font);
-        }
-        let ctx = self.ctx();
-        for combo in [self.kind, self.registry_view] {
-            let mut rect = bounds(combo, self.hwnd);
-            rect.bottom = rect.top + m.row() * 9;
-            ctx.checked(set_bounds(combo, rect));
-        }
-        let (system_font, _) = ctx.font_for(ctx.dpi().system());
-        ctx.checked(crate::rich_text::prepare(
-            self.result,
-            system_font,
-            ctx.dpi(),
-        ));
+        self.prepare_common(
+            &[
+                self.input,
+                self.kind,
+                self.registry_view,
+                self.query,
+                self.type_lib,
+                self.activate,
+            ],
+            &[self.kind, self.registry_view],
+        );
         self.layout();
     }
-    pub fn recolor(&self) {
-        self.update_icons();
-        let _ = crate::rich_text::recolor(self.result, &self.body.borrow());
-    }
-    pub fn status(&self) -> String {
-        self.status.borrow().clone()
-    }
     pub fn key(&self, msg: &MSG) -> bool {
-        if msg.message == WM_KEYDOWN
-            && msg.wParam == VK_A as usize
-            && unsafe { GetKeyState(VK_CONTROL as i32) } < 0
-            && [self.input, self.result].contains(&msg.hwnd)
-        {
-            send(msg.hwnd, EM_SETSEL, 0, -1);
-            return true;
-        }
-        if msg.message == WM_KEYDOWN
-            && msg.hwnd == self.input
-            && msg.wParam == VK_RETURN as usize
-            && unsafe { GetPropW(self.input, w!("Winlex.Tool.Composing")) }.is_null()
-        {
-            self.execute();
-            return true;
-        }
-        false
+        self.shell
+            .key(msg, &[self.input, self.result], self.input, || {
+                self.execute()
+            })
     }
     pub fn message(&self, msg: u32, w: usize, l: isize) -> Option<isize> {
-        match msg {
-            WM_COMMAND => {
-                let id = w as u16;
-                let code = (w >> 16) as u32;
-                match id {
-                    COM_QUERY if code == BN_CLICKED => self.execute(),
-                    COM_TYPELIB if code == BN_CLICKED => self.read_type_libraries(),
-                    COM_ACTIVATE if code == BN_CLICKED => self.activate(),
-                    COM_COPY_ALL if code == BN_CLICKED => {
-                        let copy_text: Vec<u16> = self.plain.borrow().encode_utf16().collect();
-                        if let Err(error) = copy_unicode(self.hwnd, &copy_text) {
-                            self.set_status(&format!("{error:#}"));
-                        }
-                    }
-                    COM_KIND | COM_VIEW if code == CBN_SELENDOK => {
-                        if !self.setting.get() && !native_text(self.input).is_empty() {
-                            self.execute();
-                        }
-                    }
-                    _ => return None,
+        self.shell.message(msg, w, l, |id, code| match id {
+            COM_QUERY if code == BN_CLICKED => {
+                self.execute();
+                true
+            }
+            COM_TYPELIB if code == BN_CLICKED => {
+                self.read_type_libraries();
+                true
+            }
+            COM_ACTIVATE if code == BN_CLICKED => {
+                self.activate();
+                true
+            }
+            COM_COPY_ALL if code == BN_CLICKED => {
+                self.copy_plain();
+                true
+            }
+            COM_KIND | COM_VIEW if code == CBN_SELENDOK => {
+                if !self.setting.get() && !text(self.input).is_empty() {
+                    self.execute();
                 }
-                Some(0)
+                true
             }
-            WM_CONTEXTMENU if w as HWND == self.result => {
-                let _ = crate::rich_text::context_menu(self.result, l, &[]);
-                Some(0)
-            }
-            _ => None,
-        }
+            _ => false,
+        })
     }
     pub fn destroy(&self) {
         if let Some(id) = self.type_lib_ticket.take() {
@@ -603,41 +437,6 @@ impl View {
             self.ctx().cancel_job(id);
         }
     }
-}
-
-unsafe extern "system" fn text_proc(
-    hwnd: HWND,
-    msg: u32,
-    w: usize,
-    l: isize,
-    _id: usize,
-    _data: usize,
-) -> isize {
-    unsafe {
-        match msg {
-            WM_GETDLGCODE if w == VK_TAB as usize => {
-                return (DLGC_WANTARROWS | DLGC_WANTCHARS) as isize;
-            }
-            WM_IME_STARTCOMPOSITION => {
-                SetPropW(hwnd, w!("Winlex.Tool.Composing"), 1usize as HANDLE);
-            }
-            WM_IME_ENDCOMPOSITION => {
-                RemovePropW(hwnd, w!("Winlex.Tool.Composing"));
-            }
-            WM_NCDESTROY => {
-                RemovePropW(hwnd, w!("Winlex.Tool.Composing"));
-                remove_subclass(hwnd, Some(text_proc), TEXT_SUBCLASS);
-            }
-            _ => {}
-        }
-        default_subclass(hwnd, msg, w, l)
-    }
-}
-
-fn native_text(hwnd: HWND) -> Vec<u16> {
-    let mut value = text_wide(hwnd);
-    value.pop();
-    value
 }
 
 /// GUID search results can be looked up in the local registrations.
@@ -652,14 +451,6 @@ pub(super) fn action(
             text: target.clone(),
         },
     })
-}
-
-fn selected<T: Copy>(combo: HWND, values: &[(u16, T)], fallback: T) -> T {
-    let selected = send(combo, CB_GETCURSEL, 0, 0);
-    values
-        .get(selected.max(0) as usize)
-        .map(|&(_, value)| value)
-        .unwrap_or(fallback)
 }
 
 struct Labels {
@@ -678,7 +469,6 @@ struct Labels {
     origin_user: String,
     empty_value: String,
     warnings: String,
-    warn_empty: String,
     type_library: String,
     type_enum: String,
     type_record: String,
@@ -713,7 +503,7 @@ impl Labels {
     fn from_resources() -> Self {
         Self {
             guid: resources::text(IDS_COM_KIND_GUID),
-            prog_id: resources::text(IDS_COM_KIND_PROGID),
+            prog_id: resources::text(IDS_PROGID),
             group: resources::text(IDS_COM_GROUP_CLASS),
             interface: resources::text(IDS_COM_GROUP_INTERFACE),
             type_lib: resources::text(IDS_COM_GROUP_TYPELIB),
@@ -727,18 +517,17 @@ impl Labels {
             origin_user: resources::text(IDS_COM_ORIGIN_USER),
             empty_value: resources::text(IDS_COM_EMPTY_VALUE),
             warnings: resources::text(IDS_COM_WARNINGS),
-            warn_empty: resources::text(IDS_COM_WARN_EMPTY),
             type_library: resources::text(IDS_COM_TYPELIB_LABEL),
-            type_enum: resources::text(IDS_COM_TYPE_ENUM),
+            type_enum: resources::text(IDS_KIND_ENUM),
             type_record: resources::text(IDS_COM_TYPE_RECORD),
-            type_module: resources::text(IDS_COM_TYPE_MODULE),
-            type_interface: resources::text(IDS_COM_TYPE_INTERFACE),
+            type_module: resources::text(IDS_KIND_MODULE),
+            type_interface: resources::text(IDS_KIND_INTERFACE),
             type_dispatch: resources::text(IDS_COM_TYPE_DISPATCH),
-            type_coclass: resources::text(IDS_COM_TYPE_COCLASS),
+            type_coclass: resources::text(IDS_KIND_CLASS),
             type_alias: resources::text(IDS_COM_TYPE_ALIAS),
             type_union: resources::text(IDS_COM_TYPE_UNION),
-            type_unknown: resources::text(IDS_COM_TYPE_UNKNOWN),
-            member_function: resources::text(IDS_COM_MEMBER_FUNCTION),
+            type_unknown: resources::text(IDS_KIND_UNKNOWN),
+            member_function: resources::text(IDS_FUNCTION),
             member_get: resources::text(IDS_COM_MEMBER_GET),
             member_put: resources::text(IDS_COM_MEMBER_PUT),
             member_put_ref: resources::text(IDS_COM_MEMBER_PUTREF),
@@ -816,7 +605,7 @@ impl Labels {
 
 fn warning_text(warning: &Warning, labels: &Labels) -> String {
     match warning {
-        Warning::EmptyInput => labels.warn_empty.clone(),
+        Warning::EmptyInput => resources::text(IDS_COM_EMPTY),
         Warning::InvalidGuid(value) => resources::format(IDS_COM_WARN_INVALID_GUID, &[value]),
         Warning::InvalidProgId(value) => resources::format(IDS_COM_WARN_INVALID_PROGID, &[value]),
         Warning::Unrecognized(value) => resources::format(IDS_COM_WARN_UNRECOGNIZED, &[value]),
@@ -828,12 +617,7 @@ fn warning_text(warning: &Warning, labels: &Labels) -> String {
     }
 }
 
-struct Output {
-    body: Rendered,
-    copy: String,
-}
-
-fn render(report: &Report, labels: &Labels, warnings: &[String]) -> Output {
+fn render(report: &Report, labels: &Labels, warnings: &[String]) -> Rendered {
     let mut body = Rendered::default();
     body.text.push_str(&report.input);
     body.text.push('\n');
@@ -867,10 +651,7 @@ fn render(report: &Report, labels: &Labels, warnings: &[String]) -> Output {
         }
         body.text.push('\n');
     }
-    Output {
-        copy: body.text.trim_end().to_owned(),
-        body,
-    }
+    body
 }
 
 fn render_type_library(body: &mut Rendered, library: &TypeLibrary, labels: &Labels) {
@@ -1103,9 +884,6 @@ fn render_group(body: &mut Rendered, group: &Group, depth: usize, labels: &Label
     body.text.push_str(name);
     if !identity.is_empty() {
         body.text.push(' ');
-        let start = body.text.encode_utf16().count();
-        body.text.push_str(identity);
-        let end = start + identity.encode_utf16().count();
         if matches!(
             group.kind,
             GroupKind::ProgId
@@ -1114,8 +892,9 @@ fn render_group(body: &mut Rendered, group: &Group, depth: usize, labels: &Label
                 | GroupKind::TypeLib
                 | GroupKind::AppId
         ) {
-            body.regions
-                .push(Region::symbol(start..end, SymbolRole::Type));
+            push_symbol(body, identity, SymbolRole::Type);
+        } else {
+            body.text.push_str(identity);
         }
     }
     body.text.push('\n');
@@ -1131,14 +910,7 @@ fn render_field(body: &mut Rendered, field: &Field, depth: usize, labels: &Label
     let indent = "  ".repeat(depth);
     let name = field.attribute.name();
     let pad = " ".repeat(name.len());
-    // Identical values from both hives stay unannotated; a user-only
-    // registration is worth marking because machine registrations are typical.
-    let annotate = field.values.len() > 1
-        || field
-            .values
-            .iter()
-            .flat_map(|value| &value.sources)
-            .all(|source| source.origin == com::Origin::User);
+    let annotate = winlex_format::annotate_sources(field);
     for (index, value) in field.values.iter().enumerate() {
         body.text.push_str(&indent);
         body.text.push_str(if index == 0 { name } else { &pad });
@@ -1187,7 +959,6 @@ mod tests {
             origin_user: "user".into(),
             empty_value: "(empty)".into(),
             warnings: "Warnings:".into(),
-            warn_empty: "Enter a target.".into(),
             type_library: "Type library".into(),
             type_enum: "Enumeration".into(),
             type_record: "Structure".into(),
@@ -1252,13 +1023,12 @@ mod tests {
         let output = render(&report, &labels(), &[]);
         assert!(
             output
-                .body
                 .text
                 .contains("CLSID {00000000-0000-0000-0000-000000000001}")
         );
-        assert!(output.body.text.contains("C:\\x86\\a.dll [32-bit machine]"));
-        assert!(output.body.text.contains("C:\\x64\\a.dll [64-bit machine]"));
-        assert!(output.copy.contains("C:\\x86\\a.dll [32-bit machine]"));
+        assert!(output.text.contains("C:\\x86\\a.dll [32-bit machine]"));
+        assert!(output.text.contains("C:\\x64\\a.dll [64-bit machine]"));
+        assert!(output.text.trim_end().contains("C:\\x86\\a.dll [32-bit machine]"));
     }
 
     #[test]
@@ -1285,11 +1055,12 @@ mod tests {
             warnings: vec![],
         };
         let output = render(&report, &labels(), &[]);
-        assert_eq!(output.body.text.matches("Description: Example").count(), 1);
-        assert!(!output.body.text.contains("[32-bit"));
+        assert_eq!(output.text.matches("Description: Example").count(), 1);
+        assert!(!output.text.contains("[32-bit"));
         assert!(
             output
-                .copy
+                .text
+                .trim_end()
                 .starts_with("Example.Object\nProgID Example.Object")
         );
     }
@@ -1304,7 +1075,10 @@ mod tests {
             warnings: vec![Warning::Unrecognized("not a target".into())],
         };
         let output = render(&report, &labels(), &["cannot tell".into()]);
-        assert_eq!(output.copy, "not a target\n\nWarnings:\n  cannot tell");
+        assert_eq!(
+            output.text.trim_end(),
+            "not a target\n\nWarnings:\n  cannot tell"
+        );
     }
 
     #[test]
@@ -1313,14 +1087,11 @@ mod tests {
             guid: "{00020430-0000-0000-C000-000000000046}".into(),
             major: 2,
             minor: 0,
-            lcid: 0,
             name: "OLE Automation".into(),
-            documentation: None,
             types: vec![typelib::TypeInfo {
                 name: "IFont".into(),
                 kind: TypeKind::Interface,
                 guid: Some("{BEF6E003-A874-101A-8BBA-00AA00300CAB}".into()),
-                documentation: None,
                 implemented: vec![typelib::Implemented {
                     name: "IUnknown".into(),
                     guid: Some("{00000000-0000-0000-C000-000000000046}".into()),
@@ -1331,7 +1102,6 @@ mod tests {
                 }],
                 functions: vec![typelib::Function {
                     name: "Name".into(),
-                    memid: 0,
                     member: MemberKind::PropertyGet,
                     convention: Convention::Stdcall,
                     returns: "BSTR".into(),
@@ -1345,9 +1115,7 @@ mod tests {
                 }],
                 variables: vec![typelib::Variable {
                     name: "hFont".into(),
-                    memid: 1,
                     ty: "OLE_HANDLE".into(),
-                    kind: typelib::VariableKind::PerInstance,
                 }],
             }],
         };

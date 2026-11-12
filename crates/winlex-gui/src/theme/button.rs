@@ -37,7 +37,7 @@ fn kind(style: u32) -> Option<Kind> {
 }
 
 struct Button {
-    theme: Cell<HTHEME>,
+    theme: Theme,
     state: Cell<i32>,
     buffered: bool,
     alive: Cell<bool>,
@@ -45,31 +45,20 @@ struct Button {
 
 impl Button {
     fn ensure_theme(&self, hwnd: HWND) -> HTHEME {
-        if self.theme.get() == 0 {
-            self.theme.set(unsafe { OpenThemeData(hwnd, w!("Button")) });
-        }
-        self.theme.get()
+        self.theme.get(hwnd, w!("Button"))
     }
 
     fn reset(&self, hwnd: HWND) {
         stop_animation(hwnd);
         self.state.set(0);
-        let theme = self.theme.replace(0);
-        if theme != 0 {
-            unsafe { CloseThemeData(theme) };
-        }
+        self.theme.clear();
     }
 }
 
 impl Drop for Button {
     fn drop(&mut self) {
-        unsafe {
-            if self.theme.get() != 0 {
-                CloseThemeData(self.theme.get());
-            }
-            if self.buffered {
-                animation(|api| (api.uninit)());
-            }
+        if self.buffered {
+            animation(|api| unsafe { (api.uninit)() });
         }
     }
 }
@@ -86,7 +75,7 @@ pub(super) fn install(hwnd: HWND) {
             return;
         }
         let data = Rc::new(Button {
-            theme: Cell::new(0),
+            theme: Theme::empty(),
             state: Cell::new(0),
             buffered: animation(|api| (api.init)() >= 0),
             alive: Cell::new(true),
@@ -206,7 +195,7 @@ fn visual_state(kind: Kind, enabled: bool, state: u32) -> i32 {
 
 fn paint_button(hwnd: HWND, dc: HDC, button: &Button, kind: Kind, animate: bool) {
     unsafe {
-        let theme = button.theme.get();
+        let theme = button.theme.raw();
         let part = if kind == Kind::Radio {
             BP_RADIOBUTTON
         } else {
@@ -304,7 +293,7 @@ impl Drop for SavedDc {
 struct Font {
     dc: HDC,
     old: HGDIOBJ,
-    owned: GdiObject,
+    _owned: GdiObject,
 }
 impl Font {
     fn select(hwnd: HWND, dc: HDC, theme: HTHEME, part: i32, state: i32) -> Self {
@@ -326,7 +315,7 @@ impl Font {
                 } else {
                     SelectObject(dc, font)
                 },
-                owned,
+                _owned: owned,
             }
         }
     }
@@ -336,8 +325,6 @@ impl Drop for Font {
         if !self.old.is_null() {
             unsafe { SelectObject(self.dc, self.old) };
         }
-        // Keep the owned font alive until after it has been deselected.
-        let _ = &self.owned;
     }
 }
 
@@ -506,7 +493,7 @@ fn draw_glyph(dc: HDC, part: i32, state: i32, rect: RECT) -> bool {
 
 fn paint_group(hwnd: HWND, dc: HDC, button: &Button) {
     unsafe {
-        let theme = button.theme.get();
+        let theme = button.theme.raw();
         let _saved = SavedDc::new(dc);
         let state = if IsWindowEnabled(hwnd) == 0 {
             GBS_DISABLED

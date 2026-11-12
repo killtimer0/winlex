@@ -32,35 +32,12 @@ pub(super) fn prompt_guide(ctx: &Context) {
 
 pub(super) fn open_guide(ctx: &Context) {
     if open_url(ctx.frame(), METADATA_RELEASES).is_err() {
-        let result = resources::dialog(IDD_SEARCH_HELP).and_then(|template| {
-            crate::dialog::modal::show(
-                ctx.frame(),
-                ctx.dpi(),
-                template,
-                &[
-                    (
-                        SEARCH_HELP_TEXT as i32,
-                        crate::dialog::SIZE_X | crate::dialog::SIZE_Y,
-                    ),
-                    (IDOK, crate::dialog::MOVE_X | crate::dialog::MOVE_Y),
-                ],
-                &|hwnd, message, _, _| {
-                    if message == WM_INITDIALOG {
-                        set_text(hwnd, &resources::text(IDS_GET_METADATA));
-                        set_text(
-                            unsafe { GetDlgItem(hwnd, SEARCH_HELP_TEXT as i32) },
-                            &format!(
-                                "{}\r\n\r\n{}",
-                                resources::text(IDS_METADATA_BROWSER_FAILED),
-                                METADATA_RELEASES
-                            ),
-                        );
-                    }
-                    Ok(())
-                },
-            )
-        });
-        super::status::report(ctx, result);
+        let body = format!(
+            "{}\r\n\r\n{}",
+            resources::text(IDS_METADATA_BROWSER_FAILED),
+            METADATA_RELEASES
+        );
+        super::status::report(ctx, super::help::show_text(ctx, Some(IDS_GET_METADATA), &body));
     }
 }
 
@@ -300,7 +277,7 @@ pub(super) fn refresh(ctx: &Context) {
     let count = rows.len();
     ctx.with_sources_mut(|sources| sources.rows = rows);
     state.apply(list, count);
-    super::sidebar::panel(ctx, super::panel::SOURCES_PANEL)
+    super::sidebar::panel(ctx, super::panel::PanelId::Sources)
         .list
         .refresh_tooltip();
     super::panel::update_actions(ctx, super::panel::PanelId::Sources);

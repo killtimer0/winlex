@@ -9,7 +9,9 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use super::animation::{animation, client_animation_enabled, stop_animation};
-use super::{Buffer, Role, brush_role, color_role, is_dark, native_dark_theme, windows11};
+use super::{
+    Buffer, Role, brush_role, color_role, edge, is_dark, native_dark_theme, roundness, windows11,
+};
 use crate::native::*;
 use std::{
     cell::{Cell, RefCell},
@@ -24,7 +26,7 @@ use windows_sys::Win32::{
 const SUBCLASS: usize = 0x574c4443;
 
 #[derive(Clone, Copy)]
-enum Control {
+pub(super) enum Control {
     Tab = 1,
     Status,
     Overflow,
@@ -35,7 +37,7 @@ struct ControlData {
     buffer: RefCell<Option<Buffer>>,
     active_dc: Cell<HDC>,
     status: RefCell<Option<Rc<StatusResources>>>,
-    spin: RefCell<Option<Rc<SpinResources>>>,
+    spin: RefCell<Option<Rc<Theme>>>,
     spin_states: Cell<[i32; 2]>,
     animated: bool,
 }
@@ -65,13 +67,13 @@ impl ControlData {
         self.status.borrow().clone()
     }
 
-    fn spin(&self, hwnd: HWND) -> Rc<SpinResources> {
+    fn spin(&self, hwnd: HWND) -> Rc<Theme> {
         if self.spin.borrow().is_none() {
-            *self.spin.borrow_mut() = Some(Rc::new(SpinResources(Cell::new(0))));
+            *self.spin.borrow_mut() = Some(Rc::new(Theme::empty()));
         }
-        let resources = self.spin.borrow().as_ref().unwrap().clone();
-        resources.theme(hwnd);
-        resources
+        let theme = self.spin.borrow().as_ref().unwrap().clone();
+        theme.get(hwnd, w!("SPIN"));
+        theme
     }
 
     fn stop(&self, hwnd: HWND) {
@@ -94,27 +96,8 @@ impl Drop for ControlData {
     }
 }
 
-struct SpinResources(Cell<HTHEME>);
-
-impl SpinResources {
-    fn theme(&self, hwnd: HWND) -> HTHEME {
-        if self.0.get() == 0 {
-            self.0.set(unsafe { OpenThemeData(hwnd, w!("SPIN")) });
-        }
-        self.0.get()
-    }
-}
-
-impl Drop for SpinResources {
-    fn drop(&mut self) {
-        if self.0.get() != 0 {
-            unsafe { CloseThemeData(self.0.get()) };
-        }
-    }
-}
-
 struct StatusResources {
-    theme: Cell<HTHEME>,
+    theme: Theme,
     font: GdiObject,
 }
 
@@ -137,18 +120,8 @@ impl StatusResources {
                 ptr::null_mut()
             };
             Self {
-                theme: Cell::new(OpenThemeData(hwnd, w!("STATUS"))),
+                theme: Theme::open(hwnd, w!("STATUS")),
                 font: GdiObject(font),
-            }
-        }
-    }
-}
-
-impl Drop for StatusResources {
-    fn drop(&mut self) {
-        if self.theme.get() != 0 {
-            unsafe {
-                CloseThemeData(self.theme.get());
             }
         }
     }
@@ -157,14 +130,7 @@ impl Drop for StatusResources {
 /// Install once; light mode and unsupported tab arrangements keep native painting.
 /// Native dark tabs leave dynamic overflow creation entirely to comctl32.
 /// Existing overflow buttons are reapplied separately, like upstream enumeration.
-pub(super) fn install(hwnd: HWND, class: &str) {
-    let kind = if class.eq_ignore_ascii_case("systabcontrol32") {
-        Control::Tab
-    } else if class.eq_ignore_ascii_case("msctls_statusbar32") {
-        Control::Status
-    } else {
-        return;
-    };
+pub(super) fn install(hwnd: HWND, kind: Control) {
     if !matches!(kind, Control::Tab) || !native_dark_theme() {
         install_one(hwnd, kind);
     }
@@ -204,11 +170,13 @@ fn custom(hwnd: HWND, kind: Control) -> bool {
     }
     is_dark()
         && match kind {
+            // Only fallback tabs install this subclass, so native dark tabs are
+            // already excluded; vertical, bottom, button and owner-drawn styles
+            // keep their native painting.
             Control::Tab => unsafe {
-                !native_dark_theme()
-                    && GetWindowLongW(hwnd, GWL_STYLE) as u32
-                        & (TCS_VERTICAL | TCS_BOTTOM | TCS_BUTTONS | TCS_OWNERDRAWFIXED)
-                        == 0
+                GetWindowLongW(hwnd, GWL_STYLE) as u32
+                    & (TCS_VERTICAL | TCS_BOTTOM | TCS_BUTTONS | TCS_OWNERDRAWFIXED)
+                    == 0
             },
             Control::Status => !native_dark_theme(),
             Control::Overflow => true,
@@ -249,11 +217,7 @@ unsafe extern "system" fn subclass(
         ) {
             state.stop(hwnd);
         }
-        if matches!(kind, Control::Tab)
-            && !native_dark_theme()
-            && msg == WM_PARENTNOTIFY
-            && w as u16 as u32 == WM_CREATE
-        {
+        if matches!(kind, Control::Tab) && msg == WM_PARENTNOTIFY && w as u16 as u32 == WM_CREATE {
             let mut name = [0; 32];
             let length = GetClassNameW(l as HWND, name.as_mut_ptr(), name.len() as i32);
             if name[..length.max(0) as usize] == wide("msctls_updown32")[..15] {
@@ -295,13 +259,7 @@ unsafe extern "system" fn subclass(
                     return 0;
                 }
                 WM_MOUSEMOVE if !matches!(kind, Control::Status) => {
-                    let mut tracking = TRACKMOUSEEVENT {
-                        cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
-                        dwFlags: TME_LEAVE,
-                        hwndTrack: hwnd,
-                        dwHoverTime: 0,
-                    };
-                    TrackMouseEvent(&mut tracking);
+                    track_leave(hwnd);
                     InvalidateRect(hwnd, ptr::null(), 0);
                 }
                 _ => {}
@@ -343,7 +301,7 @@ unsafe extern "system" fn subclass(
 }
 
 fn scale(hwnd: HWND, value: i32) -> i32 {
-    unsafe { MulDiv(value, GetDpiForWindow(hwnd).max(96) as i32, 96) }
+    crate::layout::scale(value, unsafe { GetDpiForWindow(hwnd) }.max(96))
 }
 
 unsafe fn font(hwnd: HWND, dc: HDC) {
@@ -439,7 +397,7 @@ unsafe fn paint(
     dc: HDC,
     kind: Control,
     status_resources: Option<&StatusResources>,
-    spin: Option<&SpinResources>,
+    spin: Option<&Theme>,
 ) {
     unsafe {
         let saved = SaveDC(dc);
@@ -459,18 +417,27 @@ unsafe fn paint(
             }
             Control::Overflow => {
                 let resources = spin.expect("overflow paint resources");
-                render_overflow(hwnd, dc, resources.theme(hwnd), overflow_states(hwnd));
+                render_overflow(
+                    hwnd,
+                    dc,
+                    resources.get(hwnd, w!("SPIN")),
+                    overflow_states(hwnd),
+                );
             }
         }
         RestoreDC(dc, saved);
     }
 }
 
-unsafe fn rounded(dc: HDC, area: RECT, edge: Role, fill: Role, radius: i32) {
+/// One-pixel outline with an optional solid fill, outlined at `radius`.
+pub(super) unsafe fn outline(dc: HDC, area: RECT, edge: Role, fill: Option<Role>, radius: i32) {
     unsafe {
         let pen = GdiObject(CreatePen(PS_SOLID, 1, color_role(edge)));
         let old_pen = SelectObject(dc, pen.0);
-        let old_brush = SelectObject(dc, brush_role(fill));
+        let old_brush = SelectObject(
+            dc,
+            fill.map_or_else(|| GetStockObject(NULL_BRUSH), brush_role),
+        );
         if radius > 0 {
             RoundRect(
                 dc,
@@ -486,6 +453,12 @@ unsafe fn rounded(dc: HDC, area: RECT, edge: Role, fill: Role, radius: i32) {
         }
         SelectObject(dc, old_brush);
         SelectObject(dc, old_pen);
+    }
+}
+
+pub(super) unsafe fn rounded(dc: HDC, area: RECT, edge: Role, fill: Role, radius: i32) {
+    unsafe {
+        outline(dc, area, edge, Some(fill), radius);
     }
 }
 
@@ -532,21 +505,13 @@ unsafe fn tabs(hwnd: HWND, dc: HDC) {
             top: body_top,
             ..area
         };
-        let pen = GdiObject(CreatePen(PS_SOLID, 1, color_role(Role::Edge)));
-        let old_pen = SelectObject(dc, pen.0);
-        let old_brush = SelectObject(dc, GetStockObject(NULL_BRUSH));
-        let radius = if windows11() { 4 } else { 0 };
-        RoundRect(
+        rounded(
             dc,
-            body.left,
-            body.top,
-            body.right,
-            body.bottom,
-            radius,
-            radius,
+            body,
+            Role::Edge,
+            Role::Dialog,
+            roundness(),
         );
-        SelectObject(dc, old_brush);
-        SelectObject(dc, old_pen);
         if saved != 0 {
             RestoreDC(dc, saved);
         }
@@ -802,10 +767,7 @@ unsafe fn status(hwnd: HWND, dc: HDC, resources: &StatusResources) {
             // Upstream uses the STATUS theme's native SP_GRIPPER, not dots or a
             // hand-drawn approximation. Theme/DPI messages invalidate its cache.
             // Like ThemeData::ensureTheme, retry if the theme was unavailable.
-            if resources.theme.get() == 0 {
-                resources.theme.set(OpenThemeData(hwnd, w!("STATUS")));
-            }
-            let theme = resources.theme.get();
+            let theme = resources.theme.get(hwnd, w!("STATUS"));
             if theme != 0 {
                 let mut size: SIZE = std::mem::zeroed();
                 if GetThemePartSize(theme, dc, SP_GRIPPER, 0, &area, TS_DRAW, &mut size) >= 0 {
@@ -872,7 +834,7 @@ unsafe fn paint_overflow(hwnd: HWND, dc: HDC, state: &ControlData, dirty: RECT) 
             return;
         }
         let resources = state.spin(hwnd);
-        let theme = resources.theme(hwnd);
+        let theme = resources.get(hwnd, w!("SPIN"));
         let current = overflow_states(hwnd);
         let old = state.spin_states.get();
         let from = overflow_from_states(old, current);
@@ -960,13 +922,7 @@ unsafe fn render_overflow(hwnd: HWND, dc: HDC, theme: HTHEME, states: [i32; 2]) 
             rounded(
                 dc,
                 r,
-                if disabled {
-                    Role::DisabledEdge
-                } else if hot {
-                    Role::HotEdge
-                } else {
-                    Role::Edge
-                },
+                edge(disabled, hot),
                 if disabled {
                     Role::Dialog
                 } else if hot {
@@ -1055,21 +1011,24 @@ fn toolbar_pen() -> HPEN {
     })
 }
 
-unsafe fn dropdown(draw: &NMTBCUSTOMDRAW) -> Option<RECT> {
-    unsafe {
-        let hwnd = draw.nmcd.hdr.hwndFrom;
-        let mut info = TBBUTTONINFOW {
+unsafe fn button_info(hwnd: HWND, id: usize) -> TBBUTTONINFOW {
+    let mut info = unsafe {
+        TBBUTTONINFOW {
             cbSize: std::mem::size_of::<TBBUTTONINFOW>() as u32,
             dwMask: TBIF_IMAGE | TBIF_STYLE,
             ..std::mem::zeroed()
-        };
-        if send_mut(hwnd, TB_GETBUTTONINFOW, draw.nmcd.dwItemSpec, &mut info) < 0
-            || info.iImage == I_IMAGENONE
-            || info.fsStyle as u32 & BTNS_DROPDOWN == 0
-        {
+        }
+    };
+    send_mut(hwnd, TB_GETBUTTONINFOW, id, &mut info);
+    info
+}
+
+unsafe fn dropdown(hwnd: HWND, id: usize, info: &TBBUTTONINFOW) -> Option<RECT> {
+    unsafe {
+        if info.iImage == I_IMAGENONE || info.fsStyle as u32 & BTNS_DROPDOWN == 0 {
             return None;
         }
-        let index = send(hwnd, TB_COMMANDTOINDEX, draw.nmcd.dwItemSpec, 0);
+        let index = send(hwnd, TB_COMMANDTOINDEX, id, 0);
         let mut r: RECT = std::mem::zeroed();
         if index >= 0
             && send_mut(hwnd, TB_GETITEMDROPDOWNRECT, index as usize, &mut r) != 0
@@ -1118,18 +1077,13 @@ pub(super) fn toolbar(draw: &mut NMTBCUSTOMDRAW) -> isize {
                 draw.nHLStringBkMode = TRANSPARENT as i32;
                 let hot = !disabled && draw.nmcd.uItemState & CDIS_HOT != 0;
                 let checked = draw.nmcd.uItemState & CDIS_CHECKED != 0;
-                let drop = dropdown(draw);
+                let info = button_info(hwnd, draw.nmcd.dwItemSpec);
+                let drop = dropdown(hwnd, draw.nmcd.dwItemSpec, &info);
                 let mut r = draw.nmcd.rc;
                 if let Some(drop) = drop {
                     r.right = drop.left;
                 }
                 if hot || checked {
-                    let mut info = TBBUTTONINFOW {
-                        cbSize: std::mem::size_of::<TBBUTTONINFOW>() as u32,
-                        dwMask: TBIF_IMAGE,
-                        ..std::mem::zeroed()
-                    };
-                    send_mut(hwnd, TB_GETBUTTONINFOW, draw.nmcd.dwItemSpec, &mut info);
                     let fill = if hot { Role::Hot } else { Role::Control };
                     let saved = SaveDC(dc);
                     if info.iImage == I_IMAGENONE {
@@ -1139,7 +1093,7 @@ pub(super) fn toolbar(draw: &mut NMTBCUSTOMDRAW) -> isize {
                         rounded(
                             dc,
                             r,
-                            if hot { Role::HotEdge } else { Role::Edge },
+                            edge(false, hot),
                             fill,
                             radius,
                         );
@@ -1147,7 +1101,7 @@ pub(super) fn toolbar(draw: &mut NMTBCUSTOMDRAW) -> isize {
                             rounded(
                                 dc,
                                 drop,
-                                if hot { Role::HotEdge } else { Role::Edge },
+                                edge(false, hot),
                                 fill,
                                 radius,
                             );
@@ -1171,7 +1125,8 @@ pub(super) fn toolbar(draw: &mut NMTBCUSTOMDRAW) -> isize {
                 result as isize
             }
             CDDS_ITEMPOSTPAINT => {
-                if let Some(mut r) = dropdown(draw) {
+                let info = button_info(hwnd, draw.nmcd.dwItemSpec);
+                if let Some(mut r) = dropdown(hwnd, draw.nmcd.dwItemSpec, &info) {
                     let saved = SaveDC(dc);
                     font(hwnd, dc);
                     SetTextColor(
@@ -1595,7 +1550,7 @@ mod tests {
             render_overflow(
                 hwnd,
                 expected.buffer.dc,
-                state.spin(hwnd).theme(hwnd),
+                state.spin(hwnd).get(hwnd, w!("SPIN")),
                 [UPS_DISABLED; 2],
             );
             for half in overflow_rects(hwnd) {
@@ -1890,7 +1845,7 @@ mod tests {
                 },
             )
             .unwrap();
-            install(tab, "systabcontrol32");
+            install(tab, Control::Tab);
             // Create overflow after installation: only fallback tabs detect it.
             assert!(FindWindowExW(tab, ptr::null_mut(), UPDOWN_CLASSW, ptr::null()).is_null());
             fill_tab(tab);

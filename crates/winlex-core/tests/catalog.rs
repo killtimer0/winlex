@@ -17,7 +17,7 @@ fn catalog() -> &'static Catalog {
             .unwrap_or_else(|| {
                 PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../inputs/Windows.Win32.winmd")
             });
-        Catalog::open(path).unwrap()
+        Catalog::open_many([path]).unwrap()
     })
 }
 

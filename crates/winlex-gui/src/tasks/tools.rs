@@ -65,7 +65,7 @@ pub fn run(job: Job) -> Completion {
                 .into_iter()
                 .map(|(guid, major, minor)| TypeLibraryResult {
                     guid,
-                    result: typelib::load(guid, major, minor, 0),
+                    result: typelib::load(guid, major, minor),
                 })
                 .collect(),
         },

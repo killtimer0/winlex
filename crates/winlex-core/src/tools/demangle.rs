@@ -50,18 +50,24 @@ pub enum Convention {
     Regcall,
 }
 
-/// A semantic span. Offsets count UTF-16 code units.
+impl Convention {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Cdecl => "cdecl",
+            Self::Stdcall => "stdcall",
+            Self::Fastcall => "fastcall",
+            Self::Thiscall => "thiscall",
+            Self::Pascal => "pascal",
+            Self::Regcall => "regcall",
+        }
+    }
+}
+
+/// A symbol-name span. Offsets count UTF-16 code units.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub struct Span {
     pub start: usize,
     pub end: usize,
-    pub role: Role,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Role {
-    Method,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -127,10 +133,6 @@ fn msvc(symbol: &str) -> anyhow::Result<Demangled> {
             convention: Some(convention),
         });
     }
-    ensure!(
-        !symbol.starts_with("_Z"),
-        "Itanium symbol; select the Itanium ABI"
-    );
     let parsed = msvc_demangler::parse(symbol)
         .with_context(|| format!("invalid Visual C++ symbol {symbol:?}"))?;
     let flags = msvc_demangler::DemangleFlags::llvm();
@@ -293,11 +295,7 @@ impl NameWriter {
             (Some(0), Some(end)) if end > 0 => (0, end),
             _ => self.simple?,
         };
-        Some(Span {
-            start,
-            end,
-            role: Role::Method,
-        })
+        Some(Span { start, end })
     }
 }
 
@@ -329,7 +327,6 @@ fn span(text: &str, byte: usize, end: usize) -> Span {
     Span {
         start: text[..byte].encode_utf16().count(),
         end: text[..end].encode_utf16().count(),
-        role: Role::Method,
     }
 }
 

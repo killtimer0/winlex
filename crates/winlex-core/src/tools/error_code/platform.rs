@@ -19,13 +19,16 @@ use windows_sys::Win32::{
     },
 };
 
-fn failure(operation: &str) -> Failure {
-    let code = unsafe { GetLastError() };
+fn os_failure(operation: &str, code: u32) -> Failure {
     Failure {
         operation: operation.into(),
         os_code: Some(code),
         detail: std::io::Error::from_raw_os_error(code as i32).to_string(),
     }
+}
+
+fn failure(operation: &str) -> Failure {
+    os_failure(operation, unsafe { GetLastError() })
 }
 
 struct Module(HMODULE);
@@ -160,11 +163,7 @@ fn crt_message(code: u32, language: u16) -> Result<(String, Option<u16>), Failur
 }
 
 fn resource_error(code: u32) -> Failure {
-    Failure {
-        operation: "message_resource".into(),
-        os_code: Some(code),
-        detail: std::io::Error::from_raw_os_error(code as i32).to_string(),
-    }
+    os_failure("message_resource", code)
 }
 
 enum ResourceName {

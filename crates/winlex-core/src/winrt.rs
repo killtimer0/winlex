@@ -160,13 +160,7 @@ impl Catalog {
                 }
             }
             TypeCategory::Enum => {
-                let underlying = row
-                    .underlying_type()
-                    .ok_or_else(|| anyhow::anyhow!("enum has no underlying type"))?;
-                ensure!(
-                    matches!(underlying, Type::I32 | Type::U32),
-                    "WinRT enum must use Int32 or UInt32"
-                );
+                let underlying = enum_underlying(row)?;
                 format!(
                     "enum({full_name};{})",
                     self.signature_inner(target.id, &underlying, arch, depth + 1)?
@@ -262,13 +256,7 @@ impl Catalog {
                         self.interface_identity(&target, arch)?.iid
                     ),
                     TypeCategory::Enum => {
-                        let underlying = row
-                            .underlying_type()
-                            .ok_or_else(|| anyhow::anyhow!("enum has no underlying type"))?;
-                        ensure!(
-                            matches!(underlying, Type::I32 | Type::U32),
-                            "WinRT enum must use Int32 or UInt32"
-                        );
+                        let underlying = enum_underlying(row)?;
                         self.abi_type(owner, &underlying, arch)?
                     }
                     _ => bail!("struct/runtime-class ABI lowering is not implemented"),
@@ -356,6 +344,17 @@ impl Catalog {
             parameters,
         })
     }
+}
+
+fn enum_underlying(row: TypeDef<'_>) -> Result<Type> {
+    let underlying = row
+        .underlying_type()
+        .ok_or_else(|| anyhow::anyhow!("enum has no underlying type"))?;
+    ensure!(
+        matches!(underlying, Type::I32 | Type::U32),
+        "WinRT enum must use Int32 or UInt32"
+    );
+    Ok(underlying)
 }
 
 fn parameterized_iid(signature: &str) -> String {

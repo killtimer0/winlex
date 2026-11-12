@@ -1,13 +1,12 @@
 use super::*;
 
 #[test]
-fn accessibility_and_system_capabilities_override_dark_preferences() {
+fn accessibility_and_mode_override_system_dark_preference() {
     for mode in [0, 1, 2, u32::MAX] {
         for system in [false, true] {
-            assert!(!effective_dark(mode, system, true, true));
-            assert!(!effective_dark(mode, system, false, false));
+            assert!(!effective_dark(mode, system, true));
             assert_eq!(
-                effective_dark(mode, system, false, true),
+                effective_dark(mode, system, false),
                 match mode {
                     1 => false,
                     2 => true,

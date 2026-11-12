@@ -83,12 +83,10 @@ impl NumberQuery {
                 Self::Float { .. } => super::MatchQuality::Float,
             })
     }
-    pub fn is_nan(&self) -> bool {
-        matches!(self, Self::Float { wide, .. } if wide.is_nan())
-    }
     pub fn validate_comparison(&self, op: Comparison) -> Result<()> {
+        let nan = matches!(self, Self::Float { wide, .. } if wide.is_nan());
         ensure!(
-            op == Comparison::Equal || !self.is_nan(),
+            op == Comparison::Equal || !nan,
             "NaN cannot be an ordered bound"
         );
         Ok(())

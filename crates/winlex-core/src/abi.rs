@@ -3,7 +3,7 @@
 //! Positions are derived from metadata, the layout model, and the documented
 //! Microsoft x64, ARM64 and x86 calling conventions. Anything that cannot be
 //! derived is rejected as a whole instead of annotating part of a signature.
-use crate::metadata::supports;
+use crate::metadata::{instance_fields, native_alignment, native_alignment_attributes};
 use crate::{Architecture, Catalog, Declaration, DeclarationTarget, EntityId, Result};
 use anyhow::{bail, ensure};
 use windows_metadata::{reader::*, *};
@@ -70,6 +70,16 @@ enum Role {
     Function,
     ComMethod,
     Delegate,
+}
+
+/// A free-function declaration: a static method with either an import record or a
+/// native unmanaged implementation.
+pub(crate) fn is_native_callable(method: MethodDef<'_>) -> bool {
+    method.flags().contains(MethodAttributes::Static)
+        && (method.impl_map().is_some()
+            || method
+                .impl_flags()
+                .contains(MethodImplAttributes::Native | MethodImplAttributes::Unmanaged))
 }
 
 impl Catalog {
@@ -147,12 +157,10 @@ impl Catalog {
         if owner.category() == TypeCategory::Interface {
             return Ok(Role::ComMethod);
         }
-        let native = method.flags().contains(MethodAttributes::Static)
-            && (method.impl_map().is_some()
-                || method
-                    .impl_flags()
-                    .contains(MethodImplAttributes::Native | MethodImplAttributes::Unmanaged));
-        ensure!(native, "declaration is not a native callable");
+        ensure!(
+            is_native_callable(method),
+            "declaration is not a native callable"
+        );
         Ok(Role::Function)
     }
 
@@ -230,12 +238,14 @@ impl Catalog {
             Type::Char | Type::I16 | Type::U16 => Class::Int { bytes: 2 },
             Type::I32 | Type::U32 => Class::Int { bytes: 4 },
             Type::I64 | Type::U64 => Class::Int { bytes: 8 },
-            Type::ISize | Type::USize => Class::Int { bytes: pointer },
+            Type::ISize
+            | Type::USize
+            | Type::PtrMut(..)
+            | Type::PtrConst(..)
+            | Type::RefMut(..)
+            | Type::RefConst(..) => Class::Int { bytes: pointer },
             Type::F32 => Class::Float(FloatKind::F32),
             Type::F64 => Class::Float(FloatKind::F64),
-            Type::PtrMut(..) | Type::PtrConst(..) | Type::RefMut(..) | Type::RefConst(..) => {
-                Class::Int { bytes: pointer }
-            }
             // Every metadata class in a native signature denotes a COM interface
             // pointer. WinRT owners are rejected before classification.
             Type::ClassName(_) => Class::Int { bytes: pointer },
@@ -275,7 +285,7 @@ impl Catalog {
                     let alignment = layout.alignment_bits / 8;
                     ensure!(alignment > 0, "value type has no alignment");
                     let hfa = if arch == Architecture::Arm64 {
-                        self.hfa(target.id, layout.size_bits, arch, 0)?
+                        self.hfa(target.id, layout.size_bits, arch)?
                     } else {
                         None
                     };
@@ -318,9 +328,7 @@ impl Catalog {
         if !typedef {
             return Ok(None);
         }
-        let mut fields = t.fields().filter(|field| {
-            !field.flags().contains(FieldAttributes::Static) && supports(*field, arch.bit())
-        });
+        let mut fields = instance_fields(t, arch.bit());
         let field = fields.next();
         ensure!(
             fields.next().is_none(),
@@ -338,15 +346,13 @@ impl Catalog {
         id: EntityId,
         size_bits: u64,
         arch: Architecture,
-        depth: usize,
     ) -> Result<Option<(FloatKind, u32)>> {
-        ensure!(depth < 32, "type nesting exceeds limit");
         if size_bits == 0 || size_bits > 4 * 64 || !size_bits.is_multiple_of(8) {
             return Ok(None);
         }
         let bytes = (size_bits / 8) as usize;
         let mut marks = vec![Mark::Unset; bytes];
-        if !self.cover(id, arch, 0, &mut marks, depth)? {
+        if !self.cover(id, arch, 0, &mut marks, 0)? {
             return Ok(None);
         }
         let mut kind = None;
@@ -389,19 +395,13 @@ impl Catalog {
         );
         let layout = self.layout(id, arch)?;
         ensure!(
-            layout.fields.len()
-                == row
-                    .fields()
-                    .filter(|f| {
-                        !f.flags().contains(FieldAttributes::Static) && supports(*f, arch.bit())
-                    })
-                    .count(),
+            layout.fields.len() == instance_fields(row, arch.bit()).count(),
             "layout field count mismatch"
         );
-        let mut fields =
-            layout.fields.into_iter().zip(row.fields().filter(|f| {
-                !f.flags().contains(FieldAttributes::Static) && supports(*f, arch.bit())
-            }));
+        let mut fields = layout
+            .fields
+            .into_iter()
+            .zip(instance_fields(row, arch.bit()));
         let mut ok = true;
         for (position, field) in &mut fields {
             let span = Span {
@@ -426,8 +426,8 @@ impl Catalog {
     ) -> Result<bool> {
         ensure!(depth < 32, "type nesting exceeds limit");
         match ty {
-            Type::F32 => mark(marks, span, Mark::Float(FloatKind::F32)),
-            Type::F64 => mark(marks, span, Mark::Float(FloatKind::F64)),
+            Type::F32 => mark(marks, span, FloatKind::F32),
+            Type::F64 => mark(marks, span, FloatKind::F64),
             Type::Bool
             | Type::Char
             | Type::I8
@@ -493,27 +493,11 @@ impl Catalog {
                 let Declaration::Type(row) = self.declaration(target.id, Some(arch))? else {
                     bail!("expected a value type")
                 };
-                let own = row
-                    .attributes()
-                    .filter(|attribute| {
-                        attribute.namespace() == "Winlex.Metadata"
-                            && attribute.name() == "NativeAlignmentAttribute"
-                    })
-                    .find_map(|attribute| {
-                        let values = attribute.value();
-                        match values.as_slice() {
-                            [(name, Value::I32(value))] if name.is_empty() && *value > 0 => {
-                                Some(*value as u64)
-                            }
-                            _ => None,
-                        }
-                    });
+                let own = native_alignment_attributes(row)
+                    .find_map(|attribute| native_alignment(&attribute));
                 let mut alignment = own;
                 if row.category() == TypeCategory::Struct {
-                    for field in row.fields().filter(|field| {
-                        !field.flags().contains(FieldAttributes::Static)
-                            && supports(*field, arch.bit())
-                    }) {
+                    for field in instance_fields(row, arch.bit()) {
                         if let Some(nested) =
                             self.explicit_alignment(target.id, &field.ty(), arch, depth + 1)?
                         {
@@ -544,7 +528,7 @@ enum Mark {
     Float(FloatKind),
 }
 
-fn mark(marks: &mut [Mark], span: Span, value: Mark) -> Result<bool> {
+fn mark(marks: &mut [Mark], span: Span, kind: FloatKind) -> Result<bool> {
     ensure!(
         span.start.is_multiple_of(8) && span.len.is_multiple_of(8),
         "non-byte-aligned floating member"
@@ -552,9 +536,7 @@ fn mark(marks: &mut [Mark], span: Span, value: Mark) -> Result<bool> {
     let start = (span.start / 8) as usize;
     let end = start + (span.len / 8) as usize;
     ensure!(end <= marks.len(), "member exceeds aggregate size");
-    let Mark::Float(_) = value else {
-        return Ok(false);
-    };
+    let value = Mark::Float(kind);
     for slot in &mut marks[start..end] {
         match slot {
             Mark::Unset => *slot = value,
@@ -586,16 +568,13 @@ fn x64(parameters: &[Class], result: Option<&Class>, role: Role, variadic: bool)
         this = Some(x64_gpr(slot));
         slot += 1;
     }
-    let hidden = matches!(
-        (role, result),
-        (Role::ComMethod, Some(Class::Aggregate { .. }))
-    ) || matches!(
-        (role, result),
-        (
-            Role::Function | Role::Delegate,
-            Some(Class::Aggregate { bytes, .. })
-        ) if !matches!(bytes, 1 | 2 | 4 | 8)
-    );
+    let hidden = match (role, result) {
+        (Role::ComMethod, Some(Class::Aggregate { .. })) => true,
+        (Role::Function | Role::Delegate, Some(Class::Aggregate { bytes, .. })) => {
+            !matches!(bytes, 1 | 2 | 4 | 8)
+        }
+        _ => false,
+    };
     let return_buffer = hidden.then(|| {
         let location = if role == Role::ComMethod {
             "rdx"
@@ -609,7 +588,7 @@ fn x64(parameters: &[Class], result: Option<&Class>, role: Role, variadic: bool)
     let mut locations = Vec::with_capacity(parameters.len());
     for class in parameters {
         let location = match class {
-            Class::Int { .. } => x64_gpr(slot),
+            Class::Int { .. } | Class::Aggregate { .. } => x64_gpr(slot),
             Class::Float(_) => {
                 if slot < 4 {
                     let vector = format!("xmm{slot}");
@@ -622,7 +601,6 @@ fn x64(parameters: &[Class], result: Option<&Class>, role: Role, variadic: bool)
                     x64_stack(slot)
                 }
             }
-            Class::Aggregate { .. } => x64_gpr(slot),
         };
         locations.push(Some(location));
         slot += 1;
@@ -650,6 +628,19 @@ fn arm64_stack(offset: u64, alignment: u64) -> String {
         "[sp+0]".into()
     } else {
         format!("[sp+0x{offset:X}]")
+    }
+}
+
+/// Consume an integer argument register, or spill the argument to the stack.
+fn arm64_gpr(ngrn: &mut usize, stack: &mut u64) -> String {
+    if *ngrn < 8 {
+        let location = format!("x{ngrn}");
+        *ngrn += 1;
+        location
+    } else {
+        let location = arm64_stack(*stack, 8);
+        *stack += 8;
+        location
     }
 }
 
@@ -682,28 +673,10 @@ fn arm64(parameters: &[Class], result: Option<&Class>, role: Role, variadic: boo
     let mut locations = Vec::with_capacity(parameters.len());
     for class in parameters {
         let location = match class {
-            Class::Int { .. } => {
-                if ngrn < 8 {
-                    let location = format!("x{ngrn}");
-                    ngrn += 1;
-                    location
-                } else {
-                    let location = arm64_stack(stack, 8);
-                    stack += 8;
-                    location
-                }
-            }
+            Class::Int { .. } => arm64_gpr(&mut ngrn, &mut stack),
             Class::Float(kind) => {
                 if variadic {
-                    if ngrn < 8 {
-                        let location = format!("x{ngrn}");
-                        ngrn += 1;
-                        location
-                    } else {
-                        let location = arm64_stack(stack, 8);
-                        stack += 8;
-                        location
-                    }
+                    arm64_gpr(&mut ngrn, &mut stack)
                 } else if nsrn < 8 {
                     let location = kind.register(nsrn as u32);
                     nsrn += 1;
@@ -737,15 +710,7 @@ fn arm64(parameters: &[Class], result: Option<&Class>, role: Role, variadic: boo
                         location
                     }
                 } else if *bytes > 16 {
-                    if ngrn < 8 {
-                        let location = format!("x{ngrn}");
-                        ngrn += 1;
-                        location
-                    } else {
-                        let location = arm64_stack(stack, 8);
-                        stack += 8;
-                        location
-                    }
+                    arm64_gpr(&mut ngrn, &mut stack)
                 } else {
                     let fit = if *alignment == 16 {
                         (ngrn + 1) & !1

@@ -183,8 +183,8 @@ impl IAccessible_Impl for Accessible_Impl {
         let s = self.live()?;
         let s = s.borrow();
         Ok(match node {
-            Node::Root => s.name.as_str(),
-            Node::Tab(id) => &s.item(id).unwrap().title,
+            Node::Root => crate::native::text(s.hwnd),
+            Node::Tab(id) => s.item(id).unwrap().title.clone(),
         }
         .into())
     }

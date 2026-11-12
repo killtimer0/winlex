@@ -8,8 +8,7 @@ use windows_sys::Win32::System::Com::{
     FUNCDESC, IMPLTYPEFLAG_FDEFAULT, IMPLTYPEFLAG_FDEFAULTVTABLE, IMPLTYPEFLAG_FRESTRICTED,
     IMPLTYPEFLAG_FSOURCE, INVOKE_FUNC, INVOKE_PROPERTYGET, INVOKE_PROPERTYPUT,
     INVOKE_PROPERTYPUTREF, TKIND_ALIAS, TKIND_COCLASS, TKIND_DISPATCH, TKIND_ENUM, TKIND_INTERFACE,
-    TKIND_MODULE, TKIND_RECORD, TKIND_UNION, TYPEATTR, VAR_CONST, VAR_DISPATCH, VAR_PERINSTANCE,
-    VAR_STATIC, VARDESC,
+    TKIND_MODULE, TKIND_RECORD, TKIND_UNION, TYPEATTR, VARDESC,
 };
 use windows_sys::Win32::System::Ole::{
     LoadRegTypeLib, MEMBERID_NIL, PARAMFLAG_FIN, PARAMFLAG_FOPT, PARAMFLAG_FOUT, PARAMFLAG_FRETVAL,
@@ -29,9 +28,7 @@ pub struct TypeLibrary {
     pub guid: String,
     pub major: u16,
     pub minor: u16,
-    pub lcid: u32,
     pub name: String,
-    pub documentation: Option<String>,
     pub types: Vec<TypeInfo>,
 }
 
@@ -40,7 +37,6 @@ pub struct TypeInfo {
     pub name: String,
     pub kind: TypeKind,
     pub guid: Option<String>,
-    pub documentation: Option<String>,
     pub implemented: Vec<Implemented>,
     pub functions: Vec<Function>,
     pub variables: Vec<Variable>,
@@ -74,7 +70,6 @@ pub struct Implemented {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Function {
     pub name: String,
-    pub memid: i32,
     pub member: MemberKind,
     pub convention: Convention,
     pub returns: String,
@@ -128,20 +123,7 @@ pub enum Direction {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Variable {
     pub name: String,
-    pub memid: i32,
     pub ty: String,
-    pub kind: VariableKind,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum VariableKind {
-    #[default]
-    PerInstance,
-    Static,
-    Constant,
-    Dispatch,
-    Unknown,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -161,11 +143,11 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-/// Loads the type library registered for `guid` and expands every type in it.
-pub fn load(guid: Guid, major: u16, minor: u16, lcid: u32) -> Result<TypeLibrary, Error> {
+/// Loads and expands the type library registered for `guid` using the system default locale.
+pub fn load(guid: Guid, major: u16, minor: u16) -> Result<TypeLibrary, Error> {
     let native = native_guid(guid);
     let mut raw: *mut c_void = ptr::null_mut();
-    let status = unsafe { LoadRegTypeLib(&native, major, minor, lcid, &mut raw) };
+    let status = unsafe { LoadRegTypeLib(&native, major, minor, 0, &mut raw) };
     if status < 0 {
         return Err(if status == TYPE_E_LIBNOTREGISTERED {
             Error::NotRegistered
@@ -177,7 +159,7 @@ pub fn load(guid: Guid, major: u16, minor: u16, lcid: u32) -> Result<TypeLibrary
         return Err(Error::Failure("LoadRegTypeLib returned no library".into()));
     }
     let library = TypeLib(raw);
-    let documentation = library.documentation(-1);
+    let name = library.documentation(-1).unwrap_or_default();
     let count = library.count();
     let mut types = Vec::with_capacity(count as usize);
     for index in 0..count {
@@ -189,11 +171,18 @@ pub fn load(guid: Guid, major: u16, minor: u16, lcid: u32) -> Result<TypeLibrary
         guid: guid.to_string(),
         major,
         minor,
-        lcid,
-        name: documentation.name.unwrap_or_default(),
-        documentation: documentation.documentation,
+        name,
         types,
     })
+}
+
+fn guid_bytes(guid: GUID) -> [u8; 16] {
+    let mut bytes = [0u8; 16];
+    bytes[..4].copy_from_slice(&guid.data1.to_be_bytes());
+    bytes[4..6].copy_from_slice(&guid.data2.to_be_bytes());
+    bytes[6..8].copy_from_slice(&guid.data3.to_be_bytes());
+    bytes[8..].copy_from_slice(&guid.data4);
+    bytes
 }
 
 pub(super) fn native_guid(guid: Guid) -> GUID {
@@ -209,32 +198,8 @@ pub(super) fn native_guid(guid: Guid) -> GUID {
 }
 
 pub(super) fn guid_text(guid: &GUID) -> Option<String> {
-    if guid.data1 == 0
-        && guid.data2 == 0
-        && guid.data3 == 0
-        && guid.data4.iter().all(|&byte| byte == 0)
-    {
-        return None;
-    }
-    Some(format!(
-        "{{{:08X}-{:04X}-{:04X}-{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}}}",
-        guid.data1,
-        guid.data2,
-        guid.data3,
-        guid.data4[0],
-        guid.data4[1],
-        guid.data4[2],
-        guid.data4[3],
-        guid.data4[4],
-        guid.data4[5],
-        guid.data4[6],
-        guid.data4[7]
-    ))
-}
-
-struct Documentation {
-    name: Option<String>,
-    documentation: Option<String>,
+    let bytes = guid_bytes(*guid);
+    (bytes != [0; 16]).then(|| Guid(bytes).to_string())
 }
 
 fn take_bstr(value: BSTR) -> Option<String> {
@@ -288,7 +253,7 @@ impl TypeLib {
         let status = unsafe { (self.vtable().get_type_info)(self.0, index, &mut raw) };
         (status >= 0 && !raw.is_null()).then_some(RawTypeInfo(raw))
     }
-    fn documentation(&self, index: i32) -> Documentation {
+    fn documentation(&self, index: i32) -> Option<String> {
         documentation(self.0, self.vtable().get_documentation, index)
     }
 }
@@ -312,28 +277,19 @@ fn documentation(
     this: *mut c_void,
     get_documentation: GetDocumentation,
     member: i32,
-) -> Documentation {
+) -> Option<String> {
     let mut name: BSTR = ptr::null();
-    let mut text: BSTR = ptr::null();
-    let mut context = 0u32;
-    let mut help_file: BSTR = ptr::null();
     unsafe {
         (get_documentation)(
             this,
             member,
             &mut name,
-            &mut text,
-            &mut context,
-            &mut help_file,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            ptr::null_mut(),
         );
     }
-    let name = take_bstr(name);
-    let documentation = take_bstr(text);
-    take_bstr(help_file);
-    Documentation {
-        name,
-        documentation,
-    }
+    take_bstr(name)
 }
 
 #[repr(C)]
@@ -368,7 +324,7 @@ impl RawTypeInfo {
     fn vtable(&self) -> &TypeInfoVtable {
         unsafe { &**(self.0 as *const *const TypeInfoVtable) }
     }
-    fn documentation(&self, member: i32) -> Documentation {
+    fn documentation(&self, member: i32) -> Option<String> {
         documentation(self.0, self.vtable().get_documentation, member)
     }
     fn attr(&self) -> Option<Attr> {
@@ -445,7 +401,6 @@ impl RawTypeInfo {
                 .first()
                 .cloned()
                 .unwrap_or_else(|| format!("member {}", desc.memid)),
-            memid: desc.memid,
             member: member_kind(desc.invkind),
             convention: convention(desc.callconv),
             returns: self.type_name(&desc.elemdescFunc.tdesc, 0),
@@ -468,9 +423,7 @@ impl RawTypeInfo {
                 .first()
                 .cloned()
                 .unwrap_or_else(|| format!("member {}", desc.memid)),
-            memid: desc.memid,
             ty: self.type_name(&desc.elemdescVar.tdesc, 0),
-            kind: variable_kind(desc.varkind),
         };
         unsafe { (vtable.release_var_desc)(self.0, raw) };
         Some(variable)
@@ -484,16 +437,13 @@ impl RawTypeInfo {
         }
         let mut flags = 0i32;
         unsafe { (vtable.get_impl_type_flags)(self.0, index, &mut flags) };
-        let mut raw: *mut c_void = ptr::null_mut();
-        let status = unsafe { (vtable.get_ref_type_info)(self.0, href, &mut raw) };
-        if status < 0 || raw.is_null() {
-            return None;
-        }
-        let info = RawTypeInfo(raw);
-        let documentation = info.documentation(MEMBERID_NIL);
+        let info = self.ref_type_info(href)?;
+        let name = info
+            .documentation(MEMBERID_NIL)
+            .unwrap_or_else(|| "?".into());
         let guid = info.attr().and_then(|attr| guid_text(&attr.guid));
         Some(Implemented {
-            name: documentation.name.unwrap_or_else(|| "?".into()),
+            name,
             guid,
             source: flags & IMPLTYPEFLAG_FSOURCE != 0,
             default: flags & IMPLTYPEFLAG_FDEFAULT != 0,
@@ -501,13 +451,13 @@ impl RawTypeInfo {
             default_vtable: flags & IMPLTYPEFLAG_FDEFAULTVTABLE != 0,
         })
     }
-    fn ref_type_name(&self, href: u32) -> Option<String> {
+    fn ref_type_info(&self, href: u32) -> Option<RawTypeInfo> {
         let mut raw: *mut c_void = ptr::null_mut();
         let status = unsafe { (self.vtable().get_ref_type_info)(self.0, href, &mut raw) };
-        if status < 0 || raw.is_null() {
-            return None;
-        }
-        RawTypeInfo(raw).documentation(MEMBERID_NIL).name
+        (status >= 0 && !raw.is_null()).then_some(RawTypeInfo(raw))
+    }
+    fn ref_type_name(&self, href: u32) -> Option<String> {
+        self.ref_type_info(href)?.documentation(MEMBERID_NIL)
     }
     fn type_name(&self, desc: &windows_sys::Win32::System::Com::TYPEDESC, depth: u32) -> String {
         if depth > 8 {
@@ -545,37 +495,26 @@ impl RawTypeInfo {
         }
     }
     fn expand(&self) -> TypeInfo {
-        let documentation = self.documentation(MEMBERID_NIL);
+        let name = self.documentation(MEMBERID_NIL);
         let Some(attr) = self.attr() else {
             return TypeInfo {
-                name: documentation.name.unwrap_or_default(),
-                documentation: documentation.documentation,
+                name: name.unwrap_or_default(),
                 ..TypeInfo::default()
             };
         };
-        let mut implemented = Vec::new();
-        for index in 0..u32::from(attr.implemented) {
-            if let Some(value) = self.implemented(index) {
-                implemented.push(value);
-            }
-        }
-        let mut functions = Vec::new();
-        for index in 0..u32::from(attr.functions) {
-            if let Some(value) = self.function(index) {
-                functions.push(value);
-            }
-        }
-        let mut variables = Vec::new();
-        for index in 0..u32::from(attr.variables) {
-            if let Some(value) = self.variable(index) {
-                variables.push(value);
-            }
-        }
+        let implemented = (0..u32::from(attr.implemented))
+            .filter_map(|index| self.implemented(index))
+            .collect();
+        let functions = (0..u32::from(attr.functions))
+            .filter_map(|index| self.function(index))
+            .collect();
+        let variables = (0..u32::from(attr.variables))
+            .filter_map(|index| self.variable(index))
+            .collect();
         TypeInfo {
-            name: documentation.name.unwrap_or_default(),
+            name: name.unwrap_or_default(),
             kind: type_kind(attr.kind),
             guid: guid_text(&attr.guid),
-            documentation: documentation.documentation,
             implemented,
             functions,
             variables,
@@ -636,10 +575,8 @@ fn base_name(vt: VARENUM) -> String {
         VT_LPWSTR => "wchar_t*".into(),
         VT_FILETIME => "FILETIME".into(),
         VT_BLOB => "BLOB".into(),
-        VT_STREAM => "IStream*".into(),
-        VT_STORAGE => "IStorage*".into(),
-        VT_STREAMED_OBJECT => "IStream*".into(),
-        VT_STORED_OBJECT => "IStorage*".into(),
+        VT_STREAM | VT_STREAMED_OBJECT => "IStream*".into(),
+        VT_STORAGE | VT_STORED_OBJECT => "IStorage*".into(),
         VT_CF => "CLIPFORMAT".into(),
         VT_CLSID => "CLSID".into(),
         VT_INT_PTR => "INT_PTR".into(),
@@ -681,16 +618,6 @@ fn direction(flags: u16) -> Direction {
     }
 }
 
-fn variable_kind(value: i32) -> VariableKind {
-    match value {
-        VAR_PERINSTANCE => VariableKind::PerInstance,
-        VAR_STATIC => VariableKind::Static,
-        VAR_CONST => VariableKind::Constant,
-        VAR_DISPATCH => VariableKind::Dispatch,
-        _ => VariableKind::Unknown,
-    }
-}
-
 fn type_kind(value: i32) -> TypeKind {
     match value {
         TKIND_ENUM => TypeKind::Enum,
@@ -714,7 +641,7 @@ mod tests {
     #[test]
     fn expands_the_standard_ole_type_library() {
         let guid = Guid::parse(STD_OLE).expect("GUID");
-        let library = match load(guid, 2, 0, 0) {
+        let library = match load(guid, 2, 0) {
             Ok(library) => library,
             Err(Error::NotRegistered) => return,
             Err(error) => panic!("expand stdole2: {error}"),

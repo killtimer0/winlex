@@ -19,7 +19,9 @@ fn entity_id(v: &Value) -> winlex_core::EntityId {
 }
 fn catalog() -> &'static Catalog {
     static DB: OnceLock<Catalog> = OnceLock::new();
-    DB.get_or_init(|| Catalog::open(input()).expect("prepare pinned inputs/Windows.Win32.winmd"))
+    DB.get_or_init(|| {
+        Catalog::open_many([input()]).expect("prepare pinned inputs/Windows.Win32.winmd")
+    })
 }
 
 include!("support/invoke.rs");
@@ -192,7 +194,9 @@ fn fuzzy_scope_is_selected_by_the_query_and_exact_selectors_remain_independent()
             .any(|hit| hit["name"] == "CreateFileW")
     );
     let name = "Windows.Win32.Storage.FileSystem.Apis.CreateFileW";
-    let id = winlex_cli::select(db, name, Some(Architecture::X64), false).unwrap();
+    let id = db
+        .select_entity(name, Some(Architecture::X64), false)
+        .unwrap();
     assert_eq!(db.entity(id).unwrap().name, "CreateFileW");
     let (code, exact, _) = cli(&["search", name, "--name"]);
     assert_eq!(code, 0);
@@ -215,7 +219,7 @@ fn source_paths_preserve_native_utf16_without_changing_json() {
         0xd800, 0x2e, 0x77, 0x69, 0x6e, 0x6d, 0x64,
     ]));
     std::fs::copy(input(), &path).unwrap();
-    let db = Catalog::open(&path).unwrap();
+    let db = Catalog::open_many([&path]).unwrap();
     assert_eq!(db.sources()[0].path, path);
     let value = serde_json::to_value(&db.sources()[0]).unwrap();
     assert!(value.get("native_path").is_none());
@@ -432,7 +436,9 @@ fn constant_values_include_decimal_and_hex() {
 fn reverse_uses_and_cancellation() {
     use std::sync::atomic::AtomicBool;
     let db = catalog();
-    let id = winlex_cli::select(db, "LPOFNHOOKPROC", Some(Architecture::X64), true).unwrap();
+    let id = db
+        .select_entity("LPOFNHOOKPROC", Some(Architecture::X64), true)
+        .unwrap();
     let r: Vec<_> = search_results(db.references(id, Architecture::X64, None)).collect();
     assert!(
         r.iter()

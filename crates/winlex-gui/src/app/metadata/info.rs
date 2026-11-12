@@ -105,7 +105,7 @@ impl Info {
         let services: IAccPropServices =
             unsafe { CoCreateInstance(&CLSID_AccPropServices, None, CLSCTX_INPROC_SERVER)? };
         self.accessibility.replace(Some(services.clone()));
-        for (control, label) in self.names(editor) {
+        for (control, label) in self.names() {
             if let Err(error) = unsafe {
                 services.SetHwndPropStr(
                     ComHwnd(control),
@@ -121,19 +121,19 @@ impl Info {
         }
         Ok(())
     }
-    fn names(&self, editor: HWND) -> [(HWND, u16); 5] {
+    fn names(&self) -> [(HWND, u16); 5] {
         [
             (self.name, IDS_DOCUMENT_NAME),
             (self.scope, IDS_DOCUMENT_SCOPE),
             (self.source, IDS_DOCUMENT_SOURCE),
             (self.architecture, IDS_ARCHITECTURE),
-            (editor, IDS_DOCUMENT_CODE),
+            (self.editor, IDS_DOCUMENT_CODE),
         ]
     }
     pub fn clear_accessibility(&self) {
         let services = self.accessibility.borrow_mut().take();
         if let Some(services) = services {
-            for (control, _) in self.names(self.editor) {
+            for (control, _) in self.names() {
                 unsafe {
                     let _ = services.ClearHwndProps(
                         ComHwnd(control),
@@ -198,9 +198,7 @@ impl Info {
             super::super::bind(control, m.font);
         }
         // Configure dropdown height with font/DPI changes, not routine layout.
-        let mut rect = bounds(self.architecture, unsafe { GetParent(self.architecture) });
-        rect.bottom = rect.top + m.row() * 6;
-        set_bounds(self.architecture, rect)?;
+        collapse_combo(self.architecture, m.row(), 6)?;
         let heading = Font::heading(m.dpi, m.font)?;
         super::super::bind(self.name, heading.handle.0);
         self.heading.replace(Some(heading));

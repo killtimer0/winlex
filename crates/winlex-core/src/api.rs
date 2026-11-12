@@ -275,22 +275,10 @@ impl<'a> Declaration<'a> {
     /// Free-function declaration: a static method with either an import record or a native
     /// unmanaged implementation.
     fn is_function(&self) -> bool {
-        match self {
-            Self::Method(m) => {
-                m.flags().contains(MethodAttributes::Static)
-                    && (m.impl_map().is_some()
-                        || m.impl_flags().contains(
-                            MethodImplAttributes::Native | MethodImplAttributes::Unmanaged,
-                        ))
-            }
-            _ => false,
-        }
+        matches!(self, Self::Method(m) if crate::abi::is_native_callable(*m))
     }
 }
 impl Catalog {
-    pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        Self::open_many([path])
-    }
     pub fn open_many<P: AsRef<Path>>(paths: impl IntoIterator<Item = P>) -> Result<Self> {
         Self::from_inputs(
             paths
@@ -485,7 +473,7 @@ impl Catalog {
         crate::layout::derive_key(&self.db, id, arch)
     }
     pub fn vtable(&self, id: EntityId, arch: Architecture) -> Result<Vtable> {
-        self.db.vtable_key(id, arch)
+        self.db.vtable_bound(&id.into(), arch)
     }
     pub(crate) fn bound_vtable(
         &self,

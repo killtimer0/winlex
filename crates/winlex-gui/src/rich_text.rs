@@ -89,9 +89,7 @@ impl ViewState {
 
 impl Content {
     pub fn new(text: String) -> Self {
-        let mut body = Rendered::default();
-        body.text = text;
-        body.into()
+        Rendered::from(text).into()
     }
 }
 
@@ -116,12 +114,15 @@ pub fn region_at(regions: &[Region], range: std::ops::Range<usize>) -> Option<&R
     })
 }
 
+/// The character index under a client-area point, if the point is in the text.
+fn char_index(hwnd: HWND, point: &POINT) -> Option<usize> {
+    let index = send_ref(hwnd, EM_CHARFROMPOS, 0, point) as i32;
+    (index >= 0).then_some(index as usize)
+}
+
 pub fn region_at_point(hwnd: HWND, content: &Content, point: POINT) -> Option<&Region> {
-    let index = send_ref(hwnd, EM_CHARFROMPOS, 0, &point) as i32;
-    if index < 0 {
-        return None;
-    }
-    region_at(&content.regions, index as usize..index as usize)
+    let index = char_index(hwnd, &point)?;
+    region_at(&content.regions, index..index)
 }
 
 enum ContextAction {
@@ -162,18 +163,21 @@ pub fn context_menu(
         unsafe {
             ScreenToClient(hwnd, &mut local);
         }
-        let index = send_ref(hwnd, EM_CHARFROMPOS, 0, &local) as i32;
-        if index >= 0 {
-            mouse_region = region_at(regions, index as usize..index as usize);
+        let index = char_index(hwnd, &local);
+        if let Some(index) = index {
+            mouse_region = region_at(regions, index..index);
         }
         let selected_link = mouse_region.is_some_and(|region| {
             selection.cpMin as usize <= region.range.start
                 && region.range.end <= selection.cpMax as usize
         });
-        if index >= 0 && !(selection.cpMin..selection.cpMax).contains(&index) && !selected_link {
+        if let Some(index) = index
+            && !(selection.cpMin..selection.cpMax).contains(&(index as i32))
+            && !selected_link
+        {
             selection = CHARRANGE {
-                cpMin: index,
-                cpMax: index,
+                cpMin: index as i32,
+                cpMax: index as i32,
             };
             send_ref(hwnd, EM_EXSETSEL, 0, &selection);
         }
@@ -336,18 +340,10 @@ unsafe extern "system" fn procedure(
                 focus(hwnd);
                 view.restore(hwnd);
             }
-            WM_CONTEXTMENU => return send(GetParent(hwnd), msg, hwnd as usize, l),
-            WM_KEYDOWN
-                if w == VK_APPS as usize
-                    || w == VK_F10 as usize && GetKeyState(VK_SHIFT as i32) < 0 =>
-            {
-                return send(GetParent(hwnd), WM_CONTEXTMENU, hwnd as usize, -1);
-            }
-            WM_KEYUP
-                if w == VK_APPS as usize
-                    || w == VK_F10 as usize && GetKeyState(VK_SHIFT as i32) < 0 =>
-            {
-                return 0;
+            WM_CONTEXTMENU | WM_KEYDOWN | WM_KEYUP => {
+                if let Some(result) = forward_context_menu(hwnd, msg, w, l) {
+                    return result;
+                }
             }
             WM_MOUSEWHEEL if w & 0xffff == 0 && GetKeyState(VK_MENU as i32) >= 0 => {
                 let delta = (w >> 16) as i16;
@@ -644,16 +640,14 @@ pub fn set_underline(
         .and_then(|document| unsafe { document.GetSelection().ok() })
         .and_then(|selection| selection.cast::<ITextSelection2>().ok());
     let result = if let Some(selection) = selection {
-        let result = (|| unsafe {
+        (|| unsafe {
             selection.SetRange(target.cpMin, target.cpMax)?;
             ensure!(
                 send_ref(hwnd, EM_SETCHARFORMAT, SCF_SELECTION as usize, &format) != 0,
                 "Set declaration underline failed"
             );
             Ok(())
-        })();
-        let restored = unsafe { selection.SetRange(saved.cpMin, saved.cpMax) };
-        result.and(restored.map_err(Into::into))
+        })()
     } else {
         // RichEdit20 lacks TOM2; keep our own caret hide balanced.
         let hidden = unsafe { HideCaret(hwnd) } != 0;
@@ -1394,8 +1388,12 @@ mod tests {
                 ..Default::default()
             },
         ));
-        let rendered =
-            winlex_format::declaration::render(&catalog, entity.id, Architecture::X64).unwrap();
+        let rendered = winlex_format::declaration::render_target(
+            &catalog,
+            &entity.id.into(),
+            Architecture::X64,
+        )
+        .unwrap();
         let body = rendered.text.clone();
         let content = Content::from(rendered);
         let fixture = Editor::new(WS_POPUP | WS_VISIBLE, crate::layout::rect(0, 0, 900, 600));

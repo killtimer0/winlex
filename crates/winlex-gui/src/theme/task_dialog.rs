@@ -75,7 +75,7 @@ fn dark() -> bool {
 }
 
 struct Palette {
-    theme: HTHEME,
+    theme: Theme,
     main: COLORREF,
     footer: COLORREF,
     instruction: COLORREF,
@@ -85,7 +85,7 @@ struct Palette {
 impl Palette {
     fn fallback() -> Self {
         Self {
-            theme: 0,
+            theme: Theme::empty(),
             main: super::rgb(0x2c2c2c),
             footer: super::rgb(0x202020),
             instruction: super::rgb(0x99ebff),
@@ -94,13 +94,11 @@ impl Palette {
     }
 
     fn new() -> Self {
-        let theme = if super::windows11() {
-            unsafe { OpenThemeData(ptr::null_mut(), w!("DarkMode_Explorer::TaskDialog")) }
-        } else {
-            0
-        };
         let mut palette = Self::fallback();
-        palette.theme = theme;
+        if super::windows11() {
+            palette.theme = Theme::open(ptr::null_mut(), w!("DarkMode_Explorer::TaskDialog"));
+        }
+        let theme = palette.theme.raw();
         if theme != 0 {
             unsafe {
                 query_color(theme, TDLG_PRIMARYPANEL, TMT_FILLCOLOR, &mut palette.main);
@@ -117,15 +115,6 @@ impl Palette {
         palette
     }
 }
-impl Drop for Palette {
-    fn drop(&mut self) {
-        if self.theme != 0 {
-            unsafe {
-                CloseThemeData(self.theme);
-            }
-        }
-    }
-}
 
 unsafe fn query_color(theme: HTHEME, part: i32, property: u32, color: &mut COLORREF) {
     let mut candidate = *color;
@@ -138,16 +127,9 @@ fn palette<T>(f: impl FnOnce(&Palette) -> T) -> T {
     let snapshot = cached.unwrap_or_else(|| {
         // OpenThemeData/GetThemeColor may reenter window procedures. Neither
         // palette creation nor use may retain a RefCell borrow across native APIs.
-        if PALETTE_LOADING.with(|loading| loading.replace(true)) {
+        let Some(_guard) = super::Reentry::enter(&PALETTE_LOADING) else {
             return Rc::new(Palette::fallback());
-        }
-        struct Loading;
-        impl Drop for Loading {
-            fn drop(&mut self) {
-                PALETTE_LOADING.with(|loading| loading.set(false));
-            }
-        }
-        let _loading = Loading;
+        };
         let epoch = PALETTE_EPOCH.with(Cell::get);
         let snapshot = Rc::new(Palette::new());
         if PALETTE_EPOCH.with(Cell::get) == epoch {
@@ -189,8 +171,8 @@ unsafe extern "system" fn theme_color(
                     | TDLG_EXPANDEDFOOTERAREA
             ) {
                 let result = palette(|p| {
-                    if p.theme != 0 {
-                        original(p.theme, part, state, property, color)
+                    if p.theme.raw() != 0 {
+                        original(p.theme.raw(), part, state, property, color)
                     } else {
                         *color = p.text;
                         S_OK
@@ -249,16 +231,9 @@ fn install_titlebar(hwnd: HWND, shell: bool) {
 }
 
 fn refresh(hwnd: HWND, shell: bool, policy: bool) {
-    if REFRESHING.with(|refreshing| refreshing.replace(true)) {
+    let Some(_guard) = super::Reentry::enter(&REFRESHING) else {
         return;
-    }
-    struct Refreshing;
-    impl Drop for Refreshing {
-        fn drop(&mut self) {
-            REFRESHING.with(|refreshing| refreshing.set(false));
-        }
-    }
-    let _refreshing = Refreshing;
+    };
     if policy {
         super::api::refresh_policy();
         super::refresh_palette();
@@ -279,14 +254,7 @@ fn refresh(hwnd: HWND, shell: bool, policy: bool) {
         }
     }
     super::api::titlebar(hwnd, super::is_dark());
-    unsafe {
-        RedrawWindow(
-            hwnd,
-            ptr::null(),
-            ptr::null_mut(),
-            RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_FRAME,
-        );
-    }
+    super::repaint(hwnd);
 }
 
 /// Call on TDN_DIALOG_CONSTRUCTED, TDN_CREATED and TDN_NAVIGATED with a live guard.
@@ -326,19 +294,8 @@ unsafe extern "system" fn attach_child(hwnd: HWND, _: isize) -> BOOL {
         "button" | "ccpushbutton" => {
             // TaskDialog uses CCPushButton on Win10, not necessarily WC_BUTTON.
             // Opt in before changing the theme; leave all state/input native.
-            let enabled = dark();
-            super::api::allow_window(hwnd, enabled);
-            unsafe {
-                SetWindowTheme(
-                    hwnd,
-                    if enabled {
-                        w!("DarkMode_Explorer")
-                    } else {
-                        ptr::null()
-                    },
-                    ptr::null(),
-                );
-            }
+            super::api::allow_window(hwnd, dark());
+            super::set_native_theme(hwnd, "DarkMode_Explorer", None);
         }
         _ => {}
     }
@@ -578,8 +535,8 @@ mod tests {
             return;
         }
         clear_palette();
-        let theme = unsafe { OpenThemeData(ptr::null_mut(), w!("Button")) };
-        assert_ne!(theme, 0);
+        let theme = Theme::open(ptr::null_mut(), w!("Button"));
+        assert_ne!(theme.raw(), 0);
         let mut initial = Palette::fallback();
         initial.theme = theme;
         PALETTE.with(|value| *value.borrow_mut() = Some(Rc::new(initial)));
@@ -589,7 +546,7 @@ mod tests {
             assert!(
                 unsafe {
                     GetThemeColor(
-                        snapshot.theme,
+                        snapshot.theme.raw(),
                         BP_PUSHBUTTON,
                         PBS_NORMAL,
                         TMT_TEXTCOLOR as i32,

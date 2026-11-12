@@ -33,7 +33,7 @@ impl Find {
             ),
             (FIND_PREVIOUS, IDS_FIND_PREVIOUS, w!("BUTTON"), WS_TABSTOP),
             (FIND_NEXT, IDS_FIND_NEXT, w!("BUTTON"), WS_TABSTOP),
-            (FIND_CLOSE, IDS_FIND_CLOSE, w!("BUTTON"), WS_TABSTOP),
+            (FIND_CLOSE, IDS_CLOSE, w!("BUTTON"), WS_TABSTOP),
             (
                 FIND_CASE,
                 IDS_FIND_CASE,

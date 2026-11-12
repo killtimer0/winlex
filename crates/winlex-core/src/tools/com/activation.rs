@@ -6,6 +6,7 @@
 use super::{
     Guid,
     typelib::{self, TypeInfo},
+    wide,
 };
 use serde::{Deserialize, Serialize};
 use std::{ffi::c_void, fmt, ptr};
@@ -302,10 +303,6 @@ fn hstring() -> Option<Hstring> {
             delete: std::mem::transmute::<unsafe extern "system" fn() -> isize, Delete>(delete),
         })
     }
-}
-
-fn wide(value: &str) -> Vec<u16> {
-    value.encode_utf16().chain(Some(0)).collect()
 }
 
 #[cfg(test)]

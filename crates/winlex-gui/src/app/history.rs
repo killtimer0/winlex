@@ -118,18 +118,19 @@ impl History {
         };
         (index < self.entries.len()).then_some(index)
     }
-    fn save(&mut self, entry: Entry) {
-        if let Some(current) = self.cursor.and_then(|i| self.entries.get_mut(i))
-            && current.same_location(&entry)
-        {
-            *current = entry;
+    /// Replace the current entry when the new location is the same one.
+    fn save(&mut self, entry: &Entry) -> bool {
+        let Some(current) = self.cursor.and_then(|i| self.entries.get_mut(i)) else {
+            return false;
+        };
+        if !current.same_location(entry) {
+            return false;
         }
+        *current = entry.clone();
+        true
     }
     fn visit(&mut self, entry: Entry) {
-        if let Some(index) = self.cursor
-            && self.entries[index].same_location(&entry)
-        {
-            self.entries[index] = entry;
+        if self.save(&entry) {
             return;
         }
         self.entries
@@ -190,7 +191,7 @@ pub(super) fn content_activation(ctx: &Context, content: &super::content::Conten
         if active {
             history.visit(entry)
         } else {
-            history.save(entry)
+            history.save(&entry);
         }
     });
 }
@@ -251,19 +252,19 @@ pub(super) fn navigate(ctx: &Context, direction: Direction) {
             Some((index, history.entries[index].clone()))
         });
         let Some((index, entry)) = target else { break };
-        if matches!(entry.target, Target::Live(_)) {
-            if let Some(content) = workspace::content_by_id(ctx, entry.document) {
-                let _scope = Scope::begin(ctx);
-                workspace::show_document(ctx, content.hwnd());
-                content.focus();
-                workspace::with_history(ctx, |history| history.arrived(index, content.id()));
-                break;
+        let target = match entry.target {
+            Target::Live(_) => {
+                if let Some(content) = workspace::content_by_id(ctx, entry.document) {
+                    let _scope = Scope::begin(ctx);
+                    workspace::show_document(ctx, content.hwnd());
+                    content.focus();
+                    workspace::with_history(ctx, |history| history.arrived(index, content.id()));
+                    break;
+                }
+                workspace::with_history(ctx, |history| history.remove(index));
+                continue;
             }
-            workspace::with_history(ctx, |history| history.remove(index));
-            continue;
-        }
-        let Target::Declaration(target) = entry.target else {
-            unreachable!()
+            Target::Declaration(target) => target,
         };
         let Some(snapshot) = target.catalog.upgrade() else {
             workspace::with_history(ctx, |history| history.remove(index));

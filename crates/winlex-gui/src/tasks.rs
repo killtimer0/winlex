@@ -451,7 +451,7 @@ mod tests {
                 .iter()
                 .any(|region| matches!(&region.kind,
                     winlex_format::declaration::RegionKind::Number(number)
-                    if number.entity == entity && number.value == 24
+                    if number.value == 24
                         && number.unit == Some("bytes")))
         );
 

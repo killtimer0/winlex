@@ -1,8 +1,7 @@
 use crate::SCHEMA;
 use std::{ffi::OsString, fmt::Write as _, io::Write};
 use winlex_core::tools::com::{
-    self, Attribute, Field, Group, GroupKind, Report, Request, ResolvedKind, TargetKind, Views,
-    Warning,
+    self, Field, Group, GroupKind, Report, Request, ResolvedKind, TargetKind, Views, Warning,
 };
 
 const HELP: &str = "Usage: winlex com TARGET [options]
@@ -18,18 +17,9 @@ registry. Both machine and user hives are read. A GUID is checked against all
 four registration kinds instead of guessing one.
 ";
 
-#[derive(Debug)]
-struct Options {
-    text: String,
-    kind: TargetKind,
-    views: Views,
-    json: bool,
-}
-
-fn parse(args: &[OsString]) -> Result<Options, String> {
+fn parse(args: &[OsString]) -> Result<Request, String> {
     let mut kind = TargetKind::Auto;
     let mut views = Views::Both;
-    let mut json = false;
     let mut text = None;
     let mut args = args.iter();
     while let Some(arg) = args.next() {
@@ -51,46 +41,34 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
                     .ok_or("argument must be valid Unicode")?;
                 views = Views::parse(value).ok_or("--view must be auto, 32, 64 or both")?;
             }
-            "--json" => json = true,
+            "--json" => {}
             _ if value.starts_with("--") => return Err(format!("unknown option {value}")),
             _ if text.is_some() => return Err(format!("unexpected argument {value}")),
             _ => text = Some(value.to_owned()),
         }
     }
     let text = text.ok_or("missing target")?;
-    Ok(Options {
+    Ok(Request {
         text,
         kind,
         views,
-        json,
     })
 }
 
 pub(super) fn run(args: &[OsString], out: &mut dyn Write, err: &mut dyn Write) -> u8 {
-    if matches!(args, [arg] if arg == "--help" || arg == "-h") {
-        return if out.write_all(HELP.as_bytes()).is_ok() {
-            0
-        } else {
-            4
-        };
+    if let Some(code) = crate::help(args, out, HELP) {
+        return code;
     }
     let json = args.iter().any(|arg| arg == "--json");
-    let options = match parse(args) {
-        Ok(options) => options,
+    let request = match parse(args) {
+        Ok(request) => request,
         Err(error) => return crate::error(out, err, json, 2, "invalid_arguments", &error),
     };
-    let report = com::query(
-        &com::registry::Live,
-        &Request {
-            text: options.text,
-            kind: options.kind,
-            views: options.views,
-        },
-    );
+    let report = com::query(&com::registry::Live, &request);
     let failed = report.kind.is_none();
-    let written = if options.json {
-        serde_json::to_writer_pretty(
-            &mut *out,
+    let written = if json {
+        crate::write_json(
+            out,
             &serde_json::json!({
                 "schema": SCHEMA,
                 "ok": !failed,
@@ -98,8 +76,6 @@ pub(super) fn run(args: &[OsString], out: &mut dyn Write, err: &mut dyn Write) -
                 "result": report,
             }),
         )
-        .map_err(std::io::Error::other)
-        .and_then(|_| writeln!(out))
     } else {
         write!(out, "{}", render(&report))
     };
@@ -147,16 +123,9 @@ fn render_group(out: &mut String, group: &Group, depth: usize) {
 
 fn render_field(out: &mut String, field: &Field, depth: usize) {
     let indent = "  ".repeat(depth);
-    let name = attribute_name(field.attribute);
+    let name = field.attribute.name();
     let padded = " ".repeat(name.len());
-    // Identical values from both hives stay unannotated; a user-only
-    // registration is worth marking because machine registrations are typical.
-    let annotate = field.values.len() > 1
-        || field
-            .values
-            .iter()
-            .flat_map(|value| &value.sources)
-            .all(|source| source.origin == com::Origin::User);
+    let annotate = winlex_format::annotate_sources(field);
     for (index, value) in field.values.iter().enumerate() {
         let label = if index == 0 { name } else { &padded };
         let _ = write!(out, "{indent}{label}: ");
@@ -187,10 +156,6 @@ fn group_kind_name(kind: GroupKind) -> &'static str {
         GroupKind::TypeLibLocale => "Locale",
         GroupKind::AppId => "AppID",
     }
-}
-
-fn attribute_name(attribute: Attribute) -> &'static str {
-    attribute.name()
 }
 
 fn view_name(view: com::View) -> &'static str {
@@ -228,8 +193,9 @@ fn warning_text(warning: &Warning) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use winlex_core::tools::com::Attribute;
 
-    fn parse_args(args: &[&str]) -> Result<Options, String> {
+    fn parse_args(args: &[&str]) -> Result<Request, String> {
         parse(&args.iter().map(OsString::from).collect::<Vec<_>>())
     }
 
@@ -239,7 +205,6 @@ mod tests {
         assert_eq!(options.text, "Shell.Application");
         assert_eq!(options.kind, TargetKind::Auto);
         assert_eq!(options.views, Views::Both);
-        assert!(!options.json);
         assert_eq!(
             parse_args(&["x", "--view", "32"]).unwrap().views,
             Views::X86

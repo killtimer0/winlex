@@ -229,11 +229,7 @@ pub fn run(
         _ => None,
     };
     if let Some(text) = immediate {
-        return if out.write_all(text.as_bytes()).is_ok() {
-            0
-        } else {
-            4
-        };
+        return emit(out, text);
     }
     let o = match parse(&args) {
         Ok(v) => v,
@@ -276,9 +272,9 @@ pub fn run(
                 Query::Matches(result)
             }
             Command::Show => Query::Show(select_target(&db, selector, o.arch, false)?),
-            Command::Layout => {
-                Query::Layout(db.layout(select(&db, selector, o.arch, true)?, o.arch.unwrap())?)
-            }
+            Command::Layout => Query::Layout(
+                db.layout(db.select_entity(selector, o.arch, true)?, o.arch.unwrap())?,
+            ),
             Command::Vtable => Query::Vtable(db.vtable_target(
                 &select_target(&db, selector, o.arch, true)?,
                 o.arch.unwrap(),
@@ -288,7 +284,7 @@ pub fn run(
                 o.arch.unwrap(),
             )?),
             Command::References => {
-                let target = select(&db, selector, o.arch, true)?;
+                let target = db.select_entity(selector, o.arch, true)?;
                 let arch = o.arch.unwrap();
                 let mut results = db.references(target, arch, None)?;
                 let page = page(results.by_ref(), o.offset, o.limit)?;
@@ -322,9 +318,7 @@ pub fn run(
             "command": o.command.as_str(),
             "result": result,
         });
-        serde_json::to_writer_pretty(&mut *out, &response)
-            .map_err(std::io::Error::other)
-            .and_then(|_| writeln!(out))
+        write_json(out, &response)
     } else {
         match text::render(&result, &db, o.arch) {
             Ok(text) => write!(out, "{text}"),
@@ -332,6 +326,25 @@ pub fn run(
         }
     };
     finish_output(written, err, 0)
+}
+
+/// Handle a lone `--help`/`-h` before option parsing; `None` continues normally.
+fn help(args: &[OsString], out: &mut dyn Write, text: &str) -> Option<u8> {
+    matches!(args, [arg] if arg == "--help" || arg == "-h").then(|| emit(out, text))
+}
+
+fn emit(out: &mut dyn Write, text: &str) -> u8 {
+    if out.write_all(text.as_bytes()).is_ok() {
+        0
+    } else {
+        4
+    }
+}
+
+fn write_json(out: &mut dyn Write, value: &Value) -> std::io::Result<()> {
+    serde_json::to_writer_pretty(&mut *out, value)
+        .map_err(std::io::Error::other)
+        .and_then(|_| writeln!(out))
 }
 
 fn finish_output(written: std::io::Result<()>, err: &mut dyn Write, exit: u8) -> u8 {
@@ -415,19 +428,10 @@ fn select_target(
             arch.ok_or_else(|| winlex_core::Error::msg("instance query requires --arch"))?,
         )
     } else {
-        Ok(select(db, expression, arch, types_only)?.into())
+        Ok(db.select_entity(expression, arch, types_only)?.into())
     }
 }
 
-/// Resolve a definition selector (instances use the shared closed-type parser).
-pub fn select(
-    db: &Catalog,
-    s: &str,
-    arch: Option<Architecture>,
-    types_only: bool,
-) -> winlex_core::Result<winlex_core::EntityId> {
-    db.select_entity(s, arch, types_only)
-}
 fn error(
     out: &mut dyn Write,
     err: &mut dyn Write,
@@ -585,23 +589,23 @@ mod tests {
 
     #[test]
     fn type_selection_uses_the_same_category_for_names_and_tokens() {
-        let db = Catalog::open(metadata_path()).unwrap();
+        let db = Catalog::open_many([metadata_path()]).unwrap();
         let name = "Windows.Win32.Security.SECURITY_ATTRIBUTES";
-        let ty = select(&db, name, None, true).unwrap();
+        let ty = db.select_entity(name, None, true).unwrap();
         assert!(matches!(
             db.declaration(ty, None).unwrap(),
             winlex_core::Declaration::Type(_)
         ));
-        assert_eq!(select(&db, name, None, false).unwrap(), ty);
+        assert_eq!(db.select_entity(name, None, false).unwrap(), ty);
         for token in [format!("0x{:08X}", ty.token), ty.to_string()] {
-            assert_eq!(select(&db, &token, None, true).unwrap(), ty);
+            assert_eq!(db.select_entity(&token, None, true).unwrap(), ty);
         }
 
         let name = "Windows.Win32.Security.SECURITY_ATTRIBUTES.nLength";
-        let field = select(&db, name, None, false).unwrap();
+        let field = db.select_entity(name, None, false).unwrap();
         let token = format!("0x{:08X}", field.token);
-        assert_eq!(select(&db, &token, None, false).unwrap(), field);
-        assert!(select(&db, &token, None, true).is_err());
-        assert!(select(&db, name, None, true).is_err());
+        assert_eq!(db.select_entity(&token, None, false).unwrap(), field);
+        assert!(db.select_entity(&token, None, true).is_err());
+        assert!(db.select_entity(name, None, true).is_err());
     }
 }
