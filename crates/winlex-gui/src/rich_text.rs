@@ -2,12 +2,14 @@
 use crate::native::*;
 use anyhow::{Context, ensure};
 use std::{mem::size_of, sync::OnceLock};
+#[cfg(test)]
+use windows::Win32::UI::Controls::RichEdit::{CFE_UNDERLINE, SCF_SELECTION};
 use windows::Win32::UI::Controls::RichEdit::{
-    CFE_UNDERLINE, CFM_COLOR, CFM_FACE, CFM_SIZE, CFM_UNDERLINE, CHARFORMAT2W, CHARFORMATW,
-    CHARRANGE, EDITSTREAM, EM_EXGETSEL, EM_EXSETSEL, EM_GETCHARFORMAT, EM_GETOLEINTERFACE,
-    EM_GETSELTEXT, EM_GETZOOM, EM_SETBKGNDCOLOR, EM_SETCHARFORMAT, EM_SETPARAFORMAT,
-    EM_SETSCROLLPOS, EM_SETZOOM, EM_STREAMIN, IRichEditOle, ITextDocument, PARAFORMAT, PARAFORMAT2,
-    PFM_LINESPACING, PFM_RIGHTINDENT, PFM_STARTINDENT, SCF_ALL, SCF_SELECTION, SF_RTF,
+    CFM_COLOR, CFM_FACE, CFM_SIZE, CFM_UNDERLINE, CHARFORMAT2W, CHARFORMATW, CHARRANGE, EDITSTREAM,
+    EM_EXGETSEL, EM_EXSETSEL, EM_GETCHARFORMAT, EM_GETOLEINTERFACE, EM_GETSELTEXT, EM_GETZOOM,
+    EM_SETBKGNDCOLOR, EM_SETCHARFORMAT, EM_SETPARAFORMAT, EM_SETSCROLLPOS, EM_SETZOOM, EM_STREAMIN,
+    IRichEditOle, ITextDocument, PARAFORMAT, PARAFORMAT2, PFM_LINESPACING, PFM_RIGHTINDENT,
+    PFM_STARTINDENT, SCF_ALL, SF_RTF,
 };
 use windows_core::Interface;
 use winlex_core::DeclarationTarget;
@@ -270,8 +272,6 @@ pub fn create(parent: HWND, id: u16) -> anyhow::Result<HWND> {
     // Keep the module loaded for the lifetime of every control.
     static LOADED: OnceLock<Result<(), u32>> = OnceLock::new();
     static MODERN: OnceLock<Result<(), u32>> = OnceLock::new();
-    // RichEdit 2.0 does not expose ITextDocument; both engines share the same
-    // character-format paths.
     let modern = crate::theme::supported() && load_module(&MODERN, "msftedit.dll").is_ok();
     let class = if modern {
         w!("RICHEDIT50W")
@@ -603,65 +603,40 @@ fn syntax_enabled() -> bool {
 }
 
 /// Toggle underline on one symbol without changing its semantic color.
-/// Selection and scroll position are restored so hover feedback never moves the
-/// reading position or collapses the user's selection.
+/// An independent TOM range leaves the user's selection and reading position alone.
 pub fn set_underline(
     hwnd: HWND,
     range: &std::ops::Range<usize>,
     enabled: bool,
 ) -> anyhow::Result<()> {
-    use windows::Win32::UI::Controls::RichEdit::ITextSelection2;
+    use windows::Win32::UI::Controls::RichEdit::{tomNone, tomSingle};
 
     ensure!(range.start < range.end, "Empty underline range");
-    let scroll = scroll::position(hwnd);
-    let mut saved = CHARRANGE::default();
-    send_mut(hwnd, EM_EXGETSEL, 0, &mut saved);
-    let format = CHARFORMAT2W {
-        Base: CHARFORMATW {
-            cbSize: size_of::<CHARFORMAT2W>() as u32,
-            dwMask: CFM_UNDERLINE,
-            dwEffects: if enabled {
-                CFE_UNDERLINE
-            } else {
-                Default::default()
-            },
-            ..Default::default()
-        },
-        ..Default::default()
-    };
-    let target = CHARRANGE {
-        cpMin: i32::try_from(range.start)?,
-        cpMax: i32::try_from(range.end)?,
-    };
+    let start = i32::try_from(range.start)?;
+    let end = i32::try_from(range.end)?;
     let mut ole = None::<IRichEditOle>;
     send(hwnd, EM_GETOLEINTERFACE, 0, &mut ole as *mut _ as isize);
-    let selection = ole
-        .and_then(|ole| ole.cast::<ITextDocument>().ok())
-        .and_then(|document| unsafe { document.GetSelection().ok() })
-        .and_then(|selection| selection.cast::<ITextSelection2>().ok());
-    let result = if let Some(selection) = selection {
-        (|| unsafe {
-            selection.SetRange(target.cpMin, target.cpMax)?;
-            ensure!(
-                send_ref(hwnd, EM_SETCHARFORMAT, SCF_SELECTION as usize, &format) != 0,
-                "Set declaration underline failed"
-            );
-            Ok(())
-        })()
-    } else {
-        // RichEdit20 lacks TOM2; keep our own caret hide balanced.
-        let hidden = unsafe { HideCaret(hwnd) } != 0;
-        send_ref(hwnd, EM_EXSETSEL, 0, &target);
-        let applied = send_ref(hwnd, EM_SETCHARFORMAT, SCF_SELECTION as usize, &format) != 0;
-        if hidden {
-            unsafe { ShowCaret(hwnd) };
-        }
-        ensure!(applied, "Set declaration underline failed");
-        Ok(())
-    };
-    send_ref(hwnd, EM_EXSETSEL, 0, &saved);
-    send_ref(hwnd, EM_SETSCROLLPOS, 0, &scroll);
-    result
+    let document = ole
+        .context("Get declaration RichEdit object")?
+        .cast::<ITextDocument>()?;
+    let font = unsafe { document.Range(start, end)?.GetFont()? };
+    // TOM rejects font changes in read-only controls. Only this synchronous
+    // formatting operation is writable; restore read-only before returning errors.
+    let readonly = unsafe { GetWindowLongW(hwnd, GWL_STYLE) } & ES_READONLY != 0;
+    if readonly {
+        ensure!(
+            send(hwnd, EM_SETREADONLY, 0, 0) != 0,
+            "Unlock declaration formatting failed"
+        );
+    }
+    let result = unsafe { font.SetUnderline(if enabled { tomSingle.0 } else { tomNone.0 }) };
+    if readonly {
+        ensure!(
+            send(hwnd, EM_SETREADONLY, 1, 0) != 0,
+            "Restore read-only declaration failed"
+        );
+    }
+    result.context("Set declaration underline failed")
 }
 
 fn stream_in(hwnd: HWND, data: &[u8]) -> anyhow::Result<()> {
@@ -859,6 +834,35 @@ mod tests {
 
     #[test]
     fn hover_underline_preserves_plain_gaps_and_single_selection() {
+        use windows::Win32::UI::Controls::RichEdit::{
+            EM_SETEVENTMASK, EN_SELCHANGE, ENM_SELCHANGE,
+        };
+
+        fn underline(fixture: &Editor, range: &std::ops::Range<usize>, enabled: bool) {
+            let view = ViewState::capture(fixture.1);
+            let changes = std::cell::RefCell::new(Vec::new());
+            let observer = |_: HWND, message, _: usize, l: isize| {
+                if message == WM_NOTIFY {
+                    let header = unsafe { &*(l as *const NMHDR) };
+                    if header.hwndFrom == fixture.1 && header.code == EN_SELCHANGE {
+                        changes.borrow_mut().push(ViewState::capture(fixture.1));
+                    }
+                }
+                None
+            };
+            let callback =
+                unsafe { crate::test_support::observe_messages(fixture.0, 1, &observer) };
+            let result = set_underline(fixture.1, range, enabled);
+            unsafe { remove_subclass(fixture.0, callback, 1) };
+            result.unwrap();
+            assert!(
+                changes.borrow().iter().all(|state| *state == view),
+                "hover changed the reading state during selection notifications: {:?}",
+                changes.borrow()
+            );
+            assert_eq!(ViewState::capture(fixture.1), view);
+        }
+
         let mut rendered = Rendered::default();
         let target = EntityId {
             source_id: 0,
@@ -908,6 +912,7 @@ mod tests {
             set_bounds(fixture.1, crate::layout::rect(0, 0, 750, 500)).unwrap();
             focus(fixture.1);
             set_content(fixture.1, &content).unwrap();
+            send(fixture.1, EM_SETEVENTMASK, 0, ENM_SELCHANGE as isize);
             for mode in [1, 2] {
                 crate::theme::set_mode(mode);
                 fixture.select(3, 9);
@@ -923,7 +928,7 @@ mod tests {
                     fixture.select(3, 9);
                     send_ref(fixture.1, EM_SETSCROLLPOS, 0, &scroll);
                     assert_eq!(ViewState::capture(fixture.1), view);
-                    set_underline(fixture.1, &range, true).unwrap();
+                    underline(&fixture, &range, true);
                     assert_eq!(ViewState::capture(fixture.1), view);
                     assert_eq!(unsafe { GetFocus() }, fixture.1);
                     let mut selected = [0u16; 32];
@@ -948,7 +953,7 @@ mod tests {
                             .dwEffects
                             .contains(CFE_UNDERLINE)
                     );
-                    set_underline(fixture.1, &range, false).unwrap();
+                    underline(&fixture, &range, false);
                     fixture.select(range.start as i32, range.end as i32);
                     assert!(
                         !fixture

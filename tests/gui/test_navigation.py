@@ -334,6 +334,69 @@ def test_last_reference_glyph_and_trailing_line_space_have_precise_hit_bounds(la
                 n.send(editor, win32con.WM_NULL)
 
 
+@pytest.mark.interactive
+@pytest.mark.parametrize("theme", ["light", "dark"])
+def test_real_ctrl_hover_preserves_scrolled_reading_state(launch, settings, profile, theme):
+    import re
+    import winreg
+    from support.input_state import InputState
+
+    profile.set("Theme", winreg.REG_SZ, theme)
+    with InputState() as inputs:
+        app = launch([settings[1]])
+        with real_foreground(app, inputs):
+            app.query("Windows.Win32.Graphics.Gdi.Apis")
+            source = app.open_row()
+            editor = n.get_item(source, 1203)
+            n.wait(lambda: "HDC" in n.rich_edit_text(editor), "loaded Gdi declaration", 45)
+            body = n.rich_edit_text(editor)
+            indices = [len(body[:match.start()].encode("utf-16-le")) // 2
+                       for match in re.finditer(r"\bHDC\b", body) if match.start() > 10000]
+            assert indices
+            app.focus(editor)
+            editor_selection(app, editor, (0, 6))
+            line = n.send(editor, win32con.WM_USER + 54, 0, indices[0])
+            n.send(editor, win32con.EM_LINESCROLL, 0, line - 1)
+            document = n.rich_edit_document(editor)
+            with n.window_dpi_context(app.frame):
+                _, _, width, height = n.rectangle(editor, client=True)
+                visible = []
+                for index in indices:
+                    span = document.Range(index, index + 3)
+                    x, y = span.GetPoint(32 | 256 | 512)
+                    if y >= height:
+                        break
+                    if 0 <= x < width - 20 and 0 <= y < height - 20:
+                        screen = character_point(app, editor, index + 1)
+                        visible.append((span, (n.c.c_short(screen & 0xffff).value,
+                                               n.c.c_short(screen >> 16).value)))
+                    if len(visible) == 2:
+                        break
+            assert len(visible) == 2, "need two visible references after scrolling"
+            top = n.send(editor, win32con.EM_GETFIRSTVISIBLELINE)
+            assert top > 0
+            selection = editor_selection(app, editor)
+            colors = [span.Font.ForeColor for span, _ in visible]
+            inputs.state["held"].append(win32con.VK_CONTROL)
+            inputs.save()
+            auto.PressKey(win32con.VK_CONTROL, waitTime=0)
+            try:
+                for current in (0, 1, 0, 1):
+                    auto.MoveTo(*visible[current][1])
+                    n.wait(lambda: visible[current][0].Font.Underline == 1,
+                           "Ctrl-hover underlines the reference")
+                    assert visible[1 - current][0].Font.Underline == 0
+                    assert editor_selection(app, editor) == selection
+                    assert n.send(editor, win32con.EM_GETFIRSTVISIBLELINE) == top
+                    assert [span.Font.ForeColor for span, _ in visible] == colors
+            finally:
+                auto.ReleaseKey(win32con.VK_CONTROL, waitTime=0)
+            n.wait(lambda: all(span.Font.Underline == 0 for span, _ in visible),
+                   "Ctrl release clears hover formatting")
+            n.send(editor, win32con.WM_CHAR, ord("X"))
+            assert n.rich_edit_text(editor) == body, "hover must preserve read-only editing"
+
+
 @pytest.mark.parametrize("gesture", ["ctrl-click", "mouse-context-menu"])
 @pytest.mark.interactive
 def test_real_unfocused_scrolled_reference_navigates_on_first_gesture(launch, settings, gesture):
