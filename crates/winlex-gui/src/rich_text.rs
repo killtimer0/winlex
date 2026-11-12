@@ -5,11 +5,11 @@ use std::{mem::size_of, sync::OnceLock};
 #[cfg(test)]
 use windows::Win32::UI::Controls::RichEdit::{CFE_UNDERLINE, SCF_SELECTION};
 use windows::Win32::UI::Controls::RichEdit::{
-    CFM_COLOR, CFM_FACE, CFM_SIZE, CFM_UNDERLINE, CHARFORMAT2W, CHARFORMATW, CHARRANGE, EDITSTREAM,
-    EM_EXGETSEL, EM_EXSETSEL, EM_GETCHARFORMAT, EM_GETOLEINTERFACE, EM_GETSELTEXT, EM_GETZOOM,
-    EM_SETBKGNDCOLOR, EM_SETCHARFORMAT, EM_SETPARAFORMAT, EM_SETSCROLLPOS, EM_SETZOOM, EM_STREAMIN,
-    IRichEditOle, ITextDocument, PARAFORMAT, PARAFORMAT2, PFM_LINESPACING, PFM_RIGHTINDENT,
-    PFM_STARTINDENT, SCF_ALL, SF_RTF,
+    CFM_BOLD, CFM_CHARSET, CFM_COLOR, CFM_FACE, CFM_ITALIC, CFM_SIZE, CFM_UNDERLINE, CHARFORMAT2W,
+    CHARFORMATW, CHARRANGE, EDITSTREAM, EM_EXGETSEL, EM_EXSETSEL, EM_GETCHARFORMAT,
+    EM_GETOLEINTERFACE, EM_GETSELTEXT, EM_GETZOOM, EM_SETBKGNDCOLOR, EM_SETCHARFORMAT,
+    EM_SETPARAFORMAT, EM_SETSCROLLPOS, EM_SETZOOM, EM_STREAMIN, IRichEditOle, ITextDocument,
+    PARAFORMAT, PARAFORMAT2, PFM_LINESPACING, PFM_RIGHTINDENT, PFM_STARTINDENT, SCF_ALL, SF_RTF,
 };
 use windows_core::Interface;
 use winlex_core::DeclarationTarget;
@@ -271,18 +271,11 @@ fn copy_text(hwnd: HWND, value: &str) -> anyhow::Result<()> {
 pub fn create(parent: HWND, id: u16) -> anyhow::Result<HWND> {
     // Keep the module loaded for the lifetime of every control.
     static LOADED: OnceLock<Result<(), u32>> = OnceLock::new();
-    static MODERN: OnceLock<Result<(), u32>> = OnceLock::new();
-    let modern = crate::theme::supported() && load_module(&MODERN, "msftedit.dll").is_ok();
-    let class = if modern {
-        w!("RICHEDIT50W")
-    } else {
-        load_module(&LOADED, "riched20.dll").context("Load RichEdit")?;
-        w!("RichEdit20W")
-    };
+    load_module(&LOADED, "riched20.dll").context("Load RichEdit")?;
     let hwnd = unsafe {
         child(
             parent,
-            class,
+            w!("RichEdit20W"),
             &[0],
             WS_TABSTOP
                 | WS_VSCROLL
@@ -360,11 +353,6 @@ unsafe extern "system" fn procedure(
                 }
                 return 0;
             }
-            // Modern RichEdit changes its internal rendering DPI during the
-            // BEFORE notification. Own scaling in prepare() for both engines
-            // and awareness modes, including controls created on a secondary
-            // monitor, instead of compounding native DPI scaling with zoom.
-            WM_DPICHANGED_BEFOREPARENT | WM_DPICHANGED_AFTERPARENT => return 0,
             WM_NCDESTROY => {
                 remove_subclass(hwnd, Some(procedure), id);
                 drop(Box::from_raw(data as *mut EditorState));
@@ -577,10 +565,12 @@ fn replace(hwnd: HWND, content: &Content) -> anyhow::Result<()> {
     };
     if !colored || result.is_err() {
         set_text(hwnd, &content.text);
+        // Plain replacement inherits the control default, not the imported body font.
         let plain = CHARFORMAT2W {
             Base: CHARFORMATW {
                 cbSize: size_of::<CHARFORMAT2W>() as u32,
-                dwMask: CFM_COLOR | CFM_UNDERLINE,
+                dwMask: CFM_COLOR | CFM_UNDERLINE | CFM_BOLD | CFM_ITALIC | CFM_CHARSET,
+                bCharSet: windows::Win32::Graphics::Gdi::DEFAULT_CHARSET,
                 crTextColor: windows::Win32::Foundation::COLORREF(crate::theme::color(
                     COLOR_WINDOWTEXT,
                 )),
@@ -879,93 +869,66 @@ mod tests {
             position += 16;
         }
         let content = Content::from(rendered);
-        for modern in [true, false] {
-            let fixture = if modern {
-                Editor::new(
-                    WS_POPUP | WS_VISIBLE,
-                    crate::layout::rect(-10000, -10000, 900, 600),
-                )
-            } else {
-                static LEGACY: OnceLock<Result<(), u32>> = OnceLock::new();
-                load_module(&LEGACY, "riched20.dll").unwrap();
-                let parent = unsafe {
-                    test_window(
-                        w!("STATIC"),
-                        std::ptr::null(),
-                        WS_POPUP | WS_VISIBLE,
-                        crate::layout::rect(-10000, -10000, 900, 600),
-                    )
-                };
-                let editor = unsafe {
-                    child(
-                        parent,
-                        w!("RichEdit20W"),
-                        &[0],
-                        WS_VISIBLE | ES_MULTILINE as u32 | ES_READONLY as u32 | WS_VSCROLL,
-                        1,
-                    )
-                }
-                .unwrap();
-                send(editor, EM_SETLIMITTEXT, 0x7ffffffe, 0);
-                Editor(parent, editor)
-            };
-            set_bounds(fixture.1, crate::layout::rect(0, 0, 750, 500)).unwrap();
-            focus(fixture.1);
-            set_content(fixture.1, &content).unwrap();
-            send(fixture.1, EM_SETEVENTMASK, 0, ENM_SELCHANGE as isize);
-            for mode in [1, 2] {
-                crate::theme::set_mode(mode);
+        let fixture = Editor::new(
+            WS_POPUP | WS_VISIBLE,
+            crate::layout::rect(-10000, -10000, 900, 600),
+        );
+        set_bounds(fixture.1, crate::layout::rect(0, 0, 750, 500)).unwrap();
+        focus(fixture.1);
+        set_content(fixture.1, &content).unwrap();
+        send(fixture.1, EM_SETEVENTMASK, 0, ENM_SELCHANGE as isize);
+        for mode in [1, 2] {
+            crate::theme::set_mode(mode);
+            fixture.select(3, 9);
+            send(fixture.1, EM_LINESCROLL, 0, 30);
+            let view = ViewState::capture(fixture.1);
+            let scroll = scroll::position(fixture.1);
+            let samples = [
+                content.regions[0].range.clone(),
+                content.regions[content.regions.len() / 2].range.clone(),
+                content.regions[content.regions.len() - 1].range.clone(),
+            ];
+            for range in samples {
                 fixture.select(3, 9);
-                send(fixture.1, EM_LINESCROLL, 0, 30);
-                let view = ViewState::capture(fixture.1);
-                let scroll = scroll::position(fixture.1);
-                let samples = [
-                    content.regions[0].range.clone(),
-                    content.regions[content.regions.len() / 2].range.clone(),
-                    content.regions[content.regions.len() - 1].range.clone(),
-                ];
-                for range in samples {
-                    fixture.select(3, 9);
-                    send_ref(fixture.1, EM_SETSCROLLPOS, 0, &scroll);
-                    assert_eq!(ViewState::capture(fixture.1), view);
-                    underline(&fixture, &range, true);
-                    assert_eq!(ViewState::capture(fixture.1), view);
-                    assert_eq!(unsafe { GetFocus() }, fixture.1);
-                    let mut selected = [0u16; 32];
-                    assert_eq!(
-                        send(fixture.1, EM_GETSELTEXT, 0, selected.as_mut_ptr() as isize),
-                        6
-                    );
-                    assert_eq!(String::from_utf16(&selected[..6]).unwrap(), "Target");
-                    fixture.select(range.start as i32, range.end as i32);
-                    assert!(
-                        fixture
-                            .character_format()
-                            .Base
-                            .dwEffects
-                            .contains(CFE_UNDERLINE)
-                    );
-                    fixture.select(range.start as i32 - 1, range.start as i32);
-                    assert!(
-                        !fixture
-                            .character_format()
-                            .Base
-                            .dwEffects
-                            .contains(CFE_UNDERLINE)
-                    );
-                    underline(&fixture, &range, false);
-                    fixture.select(range.start as i32, range.end as i32);
-                    assert!(
-                        !fixture
-                            .character_format()
-                            .Base
-                            .dwEffects
-                            .contains(CFE_UNDERLINE)
-                    );
-                }
-                send(fixture.1, WM_CHAR, b'X' as usize, 0);
-                assert_eq!(text(fixture.1).replace("\r\n", "\r"), content.text);
+                send_ref(fixture.1, EM_SETSCROLLPOS, 0, &scroll);
+                assert_eq!(ViewState::capture(fixture.1), view);
+                underline(&fixture, &range, true);
+                assert_eq!(ViewState::capture(fixture.1), view);
+                assert_eq!(unsafe { GetFocus() }, fixture.1);
+                let mut selected = [0u16; 32];
+                assert_eq!(
+                    send(fixture.1, EM_GETSELTEXT, 0, selected.as_mut_ptr() as isize),
+                    6
+                );
+                assert_eq!(String::from_utf16(&selected[..6]).unwrap(), "Target");
+                fixture.select(range.start as i32, range.end as i32);
+                assert!(
+                    fixture
+                        .character_format()
+                        .Base
+                        .dwEffects
+                        .contains(CFE_UNDERLINE)
+                );
+                fixture.select(range.start as i32 - 1, range.start as i32);
+                assert!(
+                    !fixture
+                        .character_format()
+                        .Base
+                        .dwEffects
+                        .contains(CFE_UNDERLINE)
+                );
+                underline(&fixture, &range, false);
+                fixture.select(range.start as i32, range.end as i32);
+                assert!(
+                    !fixture
+                        .character_format()
+                        .Base
+                        .dwEffects
+                        .contains(CFE_UNDERLINE)
+                );
             }
+            send(fixture.1, WM_CHAR, b'X' as usize, 0);
+            assert_eq!(text(fixture.1).replace("\r\n", "\r"), content.text);
         }
         crate::theme::set_mode(0);
     }
@@ -1140,7 +1103,26 @@ mod tests {
                 ));
                 assert!(!bitmap.0.is_null());
                 let old = SelectObject(dc, bitmap.0);
-                send(hwnd, WM_PRINTCLIENT, dc as usize, PRF_CLIENT as isize);
+                // RichEdit20 does not render WM_PRINTCLIENT into a supplied DC.
+                use windows::Win32::UI::Controls::RichEdit::{EM_FORMATRANGE, FORMATRANGE};
+                let page = windows::Win32::Foundation::RECT {
+                    left: 0,
+                    top: 0,
+                    right: MulDiv(area.right, 1440, GetDeviceCaps(dc, LOGPIXELSX as i32)),
+                    bottom: MulDiv(area.bottom, 1440, GetDeviceCaps(dc, LOGPIXELSY as i32)),
+                };
+                let format = FORMATRANGE {
+                    hdc: windows::Win32::Graphics::Gdi::HDC(dc),
+                    hdcTarget: windows::Win32::Graphics::Gdi::HDC(dc),
+                    rc: page,
+                    rcPage: page,
+                    chrg: CHARRANGE {
+                        cpMin: 0,
+                        cpMax: -1,
+                    },
+                };
+                send_ref(hwnd, EM_FORMATRANGE, 1, &format);
+                send(hwnd, EM_FORMATRANGE, 0, 0);
                 GdiFlush();
                 let rgb = (color & 255) << 16 | (color & 0xff00) | (color >> 16 & 255);
                 let count = std::slice::from_raw_parts(
