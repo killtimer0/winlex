@@ -7,7 +7,7 @@ import win32gui
 import uiautomation as auto
 
 from support import native as n
-from support.input_state import foreground as real_foreground
+from support.input_state import InputState, foreground as real_foreground
 from test_context import character_point, dismiss, find_popup, popup, select_text, selection_packed, wait_closed
 
 
@@ -59,6 +59,25 @@ def destination(app, source, name, architecture):
     return doc
 
 
+def ctrl_click(app, inputs, doc, index):
+    editor = n.get_item(doc, 1203)
+    activate(app, doc)
+    app.focus(editor)
+    with n.window_dpi_context(app.frame):
+        position(app, editor, index)
+        point = character_point(app, editor, index)
+        assert win32gui.GetForegroundWindow() == app.frame, "Application lost foreground"
+        inputs.state["held"].append(win32con.VK_CONTROL)
+        inputs.save()
+        try:
+            auto.PressKey(win32con.VK_CONTROL, waitTime=0)
+            inputs.click(n.c.c_short(point & 0xffff).value, n.c.c_short(point >> 16).value)
+        finally:
+            auto.ReleaseKey(win32con.VK_CONTROL, waitTime=0)
+            inputs.state["held"].remove(win32con.VK_CONTROL)
+            inputs.save()
+
+
 def pin_active_tab(app):
     page = next(page for page in app._tabs() if page.GetSelectionItemPattern().IsSelected)
     rect = page.BoundingRectangle
@@ -95,75 +114,97 @@ def follow_caret(app, doc, index):
     choose_reference(editor)
 
 
+@pytest.mark.interactive
 def test_ctrl_click_reuses_explicitly_fixed_architecture_links(launch, settings, profile):
     app = launch([settings[1]])
-    app.query("Windows.Win32.Storage.FileSystem.CreateFileW")
-    source = app.open_row()
-    targets = {}
-    for architecture, size in (("x64", "24 bytes"), ("x86", "12 bytes"), ("x64", "24 bytes")):
-        app.choose(source, architecture)
-        index = reference(app, source, "SECURITY_ATTRIBUTES") + 3
-        n.send(app.frame, win32con.WM_SYSCOLORCHANGE)
-        editor = n.get_item(source, 1203)
-        n.send(editor, win32con.EM_LINESCROLL, 0, 100)
-        before = (n.window_text(app.search), [row.Name for row in app.rows()],
-                  app.selected_row(), profile.get("PreferredArchitecture"))
-        click(app, source, index)
-        target = destination(app, source, "SECURITY_ATTRIBUTES", architecture)
-        n.wait(lambda: size in app.content(target), "architecture-specific layout", 45)
-        assert "Windows.Win32.Security" in n.window_text(n.get_item(target, 1209))
-        if architecture in targets:
-            assert target == targets[architecture]
+    with InputState() as inputs, real_foreground(app, inputs):
+        app.query("Windows.Win32.Storage.FileSystem.CreateFileW")
+        source = app.open_row()
+        targets = {}
+        for architecture, size in (("x64", "24 bytes"), ("x86", "12 bytes"), ("x64", "24 bytes")):
+            app.choose(source, architecture)
+            index = reference(app, source, "SECURITY_ATTRIBUTES") + 3
+            n.send(app.frame, win32con.WM_SYSCOLORCHANGE)
+            editor = n.get_item(source, 1203)
+            n.send(editor, win32con.EM_LINESCROLL, 0, 100)
+            before = (n.window_text(app.search), [row.Name for row in app.rows()],
+                      app.selected_row(), profile.get("PreferredArchitecture"))
+            ctrl_click(app, inputs, source, index)
+            target = destination(app, source, "SECURITY_ATTRIBUTES", architecture)
+            n.wait(lambda: size in app.content(target), "architecture-specific layout", 45)
+            assert "Windows.Win32.Security" in n.window_text(n.get_item(target, 1209))
+            if architecture in targets:
+                assert target == targets[architecture]
+            else:
+                assert sum(value.startswith(("Preview · ", "预览 · "))
+                           for value in app.tab_descriptions()) == 1
+                pin_active_tab(app)
+            targets[architecture] = target
+            assert source in app.documents()
+            assert len(app.documents()) == 1 + len(targets)
             assert not any(value.startswith(("Preview · ", "预览 · "))
                            for value in app.tab_descriptions())
-        else:
-            assert sum(value.startswith(("Preview · ", "预览 · "))
-                       for value in app.tab_descriptions()) == 1
-            pin_active_tab(app)
-        targets[architecture] = target
-        assert source in app.documents()
-        assert len(app.documents()) == 1 + len(targets)
-        assert not any(value.startswith(("Preview · ", "预览 · "))
-                       for value in app.tab_descriptions())
-        assert before == (n.window_text(app.search), [row.Name for row in app.rows()],
-                          app.selected_row(), profile.get("PreferredArchitecture"))
-    app.query("CloseHandle")
-    preview = app.preview_row()
-    assert preview not in [source, *targets.values()]
-    assert "CreateFileW(" in app.content(source)
-    app.choose(preview, "x86")
-    preferred = profile.get("PreferredArchitecture")
-    assert app.choice(source) == "x64" and app.choice(preview) == "x86"
-    follow_caret(app, source, reference(app, source, "SECURITY_ATTRIBUTES") + 3)
-    assert destination(app, source, "SECURITY_ATTRIBUTES", "x64") == targets["x64"]
-    assert profile.get("PreferredArchitecture") == preferred
-    assert n.window_text(app.search) == "CloseHandle"
+            assert before == (n.window_text(app.search), [row.Name for row in app.rows()],
+                              app.selected_row(), profile.get("PreferredArchitecture"))
+        app.query("CloseHandle")
+        preview = app.preview_row()
+        assert preview not in [source, *targets.values()]
+        assert "CreateFileW(" in app.content(source)
+        app.choose(preview, "x86")
+        preferred = profile.get("PreferredArchitecture")
+        assert app.choice(source) == "x64" and app.choice(preview) == "x86"
+        follow_caret(app, source, reference(app, source, "SECURITY_ATTRIBUTES") + 3)
+        assert destination(app, source, "SECURITY_ATTRIBUTES", "x64") == targets["x64"]
+        assert profile.get("PreferredArchitecture") == preferred
+        assert n.window_text(app.search) == "CloseHandle"
 
 
+@pytest.mark.interactive
 def test_link_clicks_keep_selection_and_require_a_complete_ctrl_gesture(launch, settings):
     app = launch([settings[1]])
-    app.query("CreateFileW")
-    source = app.open_row()
-    editor = n.get_item(source, 1203)
-    index = reference(app, source, "SECURITY_ATTRIBUTES")
-    click(app, source, index + 3, control=False)
-    selection = selection_packed(editor)
-    assert selection & 0xffff == selection >> 16
-    with n.window_dpi_context(app.frame):
-        point = position(app, editor, index + 3)
-        n.send(editor, win32con.WM_LBUTTONDBLCLK, win32con.MK_LBUTTON, point)
-        n.send(editor, win32con.WM_LBUTTONUP, 0, point)
+    with InputState() as inputs, real_foreground(app, inputs):
+        app.query("CreateFileW")
+        source = app.open_row()
+        editor = n.get_item(source, 1203)
+        index = reference(app, source, "SECURITY_ATTRIBUTES")
+        click(app, source, index + 3, control=False)
         selection = selection_packed(editor)
-        assert selection & 0xffff == index
-        assert selection >> 16 == index + len("SECURITY_ATTRIBUTES")
+        assert selection & 0xffff == selection >> 16
+        with n.window_dpi_context(app.frame):
+            point = position(app, editor, index + 3)
+            n.send(editor, win32con.WM_LBUTTONDBLCLK, win32con.MK_LBUTTON, point)
+            n.send(editor, win32con.WM_LBUTTONUP, 0, point)
+            selection = selection_packed(editor)
+            assert selection & 0xffff == index
+            assert selection >> 16 == index + len("SECURITY_ATTRIBUTES")
 
-        # A release alone, or Ctrl added only on release, is not a link click.
-        n.send(editor, win32con.WM_LBUTTONUP, win32con.MK_CONTROL, point)
-        n.send(editor, win32con.WM_LBUTTONDOWN, win32con.MK_LBUTTON, point)
-        n.send(editor, win32con.WM_LBUTTONUP, win32con.MK_CONTROL, point)
-    n.send(app.frame, win32con.WM_NULL)
-    assert app.documents() == [source]
-    assert app.active_document() == source
+            screen = character_point(app, editor, index + 3)
+            x, y = n.c.c_short(screen & 0xffff).value, n.c.c_short(screen >> 16).value
+            # A release alone, or Ctrl added only after mouse-down, is not a link click.
+            for press in (False, True):
+                assert win32gui.GetForegroundWindow() == app.frame, "Application lost foreground"
+                auto.MoveTo(x, y, waitTime=0)
+                if press:
+                    inputs.state["held"].append("mouse")
+                    inputs.save()
+                    auto.PressMouse(x, y)
+                inputs.state["held"].append(win32con.VK_CONTROL)
+                inputs.save()
+                try:
+                    auto.PressKey(win32con.VK_CONTROL)
+                    auto.ReleaseMouse()
+                    if press:
+                        inputs.state["held"].remove("mouse")
+                        inputs.save()
+                finally:
+                    auto.ReleaseKey(win32con.VK_CONTROL, waitTime=0)
+                    inputs.state["held"].remove(win32con.VK_CONTROL)
+                    inputs.save()
+                n.send(app.frame, win32con.WM_NULL)
+                assert app.documents() == [source]
+                assert app.active_document() == source
+        ctrl_click(app, inputs, source, index + 3)
+        assert destination(app, source, "SECURITY_ATTRIBUTES", "x86") != source
 
 
 @pytest.mark.parametrize("keyboard", [False, True], ids=["right-click", "apps-key"])
@@ -185,46 +226,50 @@ def test_reference_context_menu_navigates_from_mouse_or_caret(launch, settings, 
     assert app.tab_descriptions()[0].startswith(("Preview · ", "预览 · "))
 
 
+@pytest.mark.interactive
 def test_reference_activates_fixed_target_without_pinning_or_rebinding_source_preview(launch, settings):
     app = launch([settings[1]])
-    app.query("Windows.Win32.Security.SECURITY_ATTRIBUTES")
-    target = app.open_row()
-    n.wait(lambda: "SECURITY_ATTRIBUTES" in app.content(target), "fixed target declaration", 45)
-    app.query("CreateFileW")
-    source = app.preview_row()
-    index = reference(app, source, "SECURITY_ATTRIBUTES") + 3
-    body = app.content(source)
-    descriptions = app.tab_descriptions()
-    assert sum(text.startswith(("Preview · ", "预览 · ")) for text in descriptions) == 1
-    click(app, source, index)
-    assert destination(app, source, "SECURITY_ATTRIBUTES", "x86") == target
-    assert set(app.documents()) == {source, target}
-    assert app.content(source) == body
-    assert app.tab_descriptions() == descriptions
-    app.query("CloseHandle")
-    assert app.preview_row() == source
-    assert "SECURITY_ATTRIBUTES" in app.content(target)
+    with InputState() as inputs, real_foreground(app, inputs):
+        app.query("Windows.Win32.Security.SECURITY_ATTRIBUTES")
+        target = app.open_row()
+        n.wait(lambda: "SECURITY_ATTRIBUTES" in app.content(target), "fixed target declaration", 45)
+        app.query("CreateFileW")
+        source = app.preview_row()
+        index = reference(app, source, "SECURITY_ATTRIBUTES") + 3
+        body = app.content(source)
+        descriptions = app.tab_descriptions()
+        assert sum(text.startswith(("Preview · ", "预览 · ")) for text in descriptions) == 1
+        ctrl_click(app, inputs, source, index)
+        assert destination(app, source, "SECURITY_ATTRIBUTES", "x86") == target
+        assert set(app.documents()) == {source, target}
+        assert app.content(source) == body
+        assert app.tab_descriptions() == descriptions
+        app.query("CloseHandle")
+        assert app.preview_row() == source
+        assert "SECURITY_ATTRIBUTES" in app.content(target)
 
 
+@pytest.mark.interactive
 def test_primitives_unresolved_types_and_whitespace_have_no_navigation(launch, settings):
     app = launch([settings[1]])
-    app.query("Windows.Win32.Security.SECURITY_ATTRIBUTES")
-    source = app.open_row()
-    editor = n.get_item(source, 1203)
-    primitive = reference(app, source, "uint32")
-    unresolved = reference(app, source, "ValueType")
-    text = app.content(source).replace("\r\n", "\r")
-    space = text.index("uint32") - 1
-    assert text[space].isspace()
-    whitespace = len(text[:space].encode("utf-16-le")) // 2
-    for index in (primitive + 2, unresolved + 3, whitespace):
-        click(app, source, index)
-        assert app.documents() == [source]
-        _, items = popup(app, editor, keyboard=True)
-        assert items == [2074]
-        dismiss(editor)
-        n.send(editor, win32con.WM_NULL)
-        assert app.documents() == [source]
+    with InputState() as inputs, real_foreground(app, inputs):
+        app.query("Windows.Win32.Security.SECURITY_ATTRIBUTES")
+        source = app.open_row()
+        editor = n.get_item(source, 1203)
+        primitive = reference(app, source, "uint32")
+        unresolved = reference(app, source, "ValueType")
+        text = app.content(source).replace("\r\n", "\r")
+        space = text.index("uint32") - 1
+        assert text[space].isspace()
+        whitespace = len(text[:space].encode("utf-16-le")) // 2
+        for index in (primitive + 2, unresolved + 3, whitespace):
+            ctrl_click(app, inputs, source, index)
+            assert app.documents() == [source]
+            _, items = popup(app, editor, keyboard=True)
+            assert items == [2074]
+            dismiss(editor)
+            n.send(editor, win32con.WM_NULL)
+            assert app.documents() == [source]
 
 
 @pytest.mark.parametrize("reload", [True, False], ids=["reload", "unload-reopen"])
@@ -235,7 +280,7 @@ def test_navigation_uses_source_snapshot_not_current_catalog(launch, settings, r
     app.query("CreateFileW")
     source = app.open_row()
     index = reference(app, source, "SECURITY_ATTRIBUTES") + 2
-    click(app, source, index)
+    follow_caret(app, source, index)
     old_target = destination(app, source, "SECURITY_ATTRIBUTES", "x86")
     pin_active_tab(app)
     app.command(1021)
@@ -352,7 +397,6 @@ def test_real_ctrl_hover_preserves_scrolled_reading_state(launch, settings, prof
             body = n.rich_edit_text(editor)
             indices = [len(body[:match.start()].encode("utf-16-le")) // 2
                        for match in re.finditer(r"\bHDC\b", body) if match.start() > 10000]
-            assert indices
             app.focus(editor)
             editor_selection(app, editor, (0, 6))
             line = n.send(editor, win32con.WM_USER + 54, 0, indices[0])
@@ -632,7 +676,9 @@ def test_real_ctrl_click_and_drag_do_not_confuse_navigation_with_selection(launc
                     hold(win32con.VK_CONTROL)
                 hold("mouse")
                 # Real RichEdit tracking consumes queued input; SendMessage drags do not model it.
-                time.sleep(.1)
+                n.wait(lambda: capture() == editor
+                       and win32api.GetAsyncKeyState(win32con.VK_LBUTTON) & 0x8000,
+                       "drag mouse-down captured")
                 foreground()
                 auto.MoveTo(*(far if return_to_origin else last))
                 n.wait(lambda: foreground() and (lambda value: value & 0xffff != value >> 16)(
@@ -645,7 +691,6 @@ def test_real_ctrl_click_and_drag_do_not_confuse_navigation_with_selection(launc
                     auto.MoveTo(*first)
                     n.wait(lambda: foreground() and selection_packed(editor) != far_selection,
                            "native drag processes return to original down point")
-                time.sleep(.1)
                 foreground()
                 release("mouse")
                 if control:
@@ -726,7 +771,6 @@ def test_real_ctrl_click_and_drag_do_not_confuse_navigation_with_selection(launc
             activate(app, source)
             app.focus(editor)
 
-            time.sleep(double_click_seconds + .05)
             foreground()
             editor_selection(app, editor, (start + 3, start + 3))
             selection = selection_packed(editor)

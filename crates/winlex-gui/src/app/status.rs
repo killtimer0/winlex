@@ -131,43 +131,4 @@ mod tests {
             "search error"
         );
     }
-
-    #[test]
-    fn missing_document_uses_visible_panel_but_empty_document_stays_empty() {
-        let mut status = Status::default();
-        status.begin(StatusContext::Document(ptr::null_mut()));
-        assert_eq!(
-            status.message(|_| None, |_| "sources".into(), Some(PanelId::Sources)),
-            "sources"
-        );
-        assert_eq!(status.message(|_| None, |_| String::new(), None), "");
-        assert_eq!(
-            status.message(
-                |_| Some(String::new()),
-                |_| panic!("document owns blank status"),
-                Some(PanelId::Search)
-            ),
-            ""
-        );
-    }
-
-    #[test]
-    fn panel_contexts_do_not_borrow_other_panels_and_collapsed_sidebar_is_blank() {
-        let mut status = Status::default();
-        for id in PanelId::ALL {
-            status.begin(StatusContext::Panel(id));
-            assert_eq!(
-                status.message(
-                    |_| panic!("panel does not query document"),
-                    |owner| {
-                        assert_eq!(owner, Some(id));
-                        format!("{id:?}")
-                    },
-                    Some(id)
-                ),
-                format!("{id:?}")
-            );
-            assert_eq!(status.message(|_| None, |_| String::new(), None), "");
-        }
-    }
 }

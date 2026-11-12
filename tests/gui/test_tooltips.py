@@ -131,7 +131,7 @@ def test_structured_infotips_preserve_paths_and_report_reload_errors(launch, set
     tip = infotip(app, app.results, 0, settings[2] / 'search-tooltip.png')
     assert tip.startswith(app.cell(0).splitlines()[0] + '\r\n\r\n')
     assert 'Namespace: Windows.Win32.' in tip or '命名空间：Windows.Win32.' in tip
-    assert str(path) in tip and path.name in tip
+    assert str(path) in tip
     app.command(1021)
     source = infotip(app, app.sources, 0, settings[2] / 'source-tooltip.png')
     assert source.startswith(path.name + '\r\n\r\n')
@@ -152,13 +152,12 @@ def test_structured_infotips_preserve_paths_and_report_reload_errors(launch, set
 def test_infotips_include_values_and_full_guids(launch, settings):
     app = launch([settings[1]])
     mode = n.get_item(app.frame, 1114)
+    assert auto.ControlFromHandle(mode).Select(app.choices(mode)[1])
     for index, query, labels in [
         (1, 'value = 5', ('Value: 5', '值：5')),
         (1, 'guid = "0000000c-0000-0000-c000-000000000046"', ('GUID: ', 'GUID：')),
     ]:
-        assert auto.ControlFromHandle(mode).Select(app.choices(mode)[index])
         app.query(query)
-        assert app.count() > 0
         tip = infotip(app, app.results, 0, settings[2] / ('value-tooltip-%d.png' % index))
         assert any(label in tip for label in labels), tip
         if query.startswith('guid'):

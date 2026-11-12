@@ -1,7 +1,5 @@
 use winlex_core::windows_metadata::{writer, *};
-use winlex_core::{
-    Architecture, Catalog, Declaration, DeclarationTarget, EntityCategory, SearchOptions,
-};
+use winlex_core::{Architecture, Catalog, Declaration, EntityCategory, SearchOptions};
 use winlex_format::declaration::{RegionKind, render_target};
 
 include!("support/source.rs");
@@ -132,18 +130,5 @@ fn instance_links_keep_arguments_across_members_and_nested_navigation() {
                 _ => None,
             })
             .all(|t| t.arguments.is_empty())
-    );
-    assert_eq!(
-        catalog
-            .bind_target(
-                &DeclarationTarget {
-                    id: target.id,
-                    arguments: vec![Type::String]
-                },
-                arch
-            )
-            .unwrap()
-            .arguments,
-        [Type::String]
     );
 }

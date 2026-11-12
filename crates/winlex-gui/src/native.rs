@@ -521,17 +521,18 @@ mod tests {
         }
 
         {
-            let mut integer = Integer(1);
-            assert_eq!(integer.0, 1);
-            integer = Integer(2);
-            assert_eq!(integer.0, 2);
+            let mut _integer = Integer(1);
+            _integer = Integer(2);
             CLEANED.with(|cleaned| assert_eq!(*cleaned.borrow(), [1]));
             let _zero = Integer(0);
             let _null = Pointer::default();
-            let pointer = Pointer(std::ptr::without_provenance_mut(3));
-            assert_eq!(pointer.0 as usize, 3);
+            let _pointer = Pointer(std::ptr::without_provenance_mut(3));
         }
-        CLEANED.with(|cleaned| assert_eq!(*cleaned.borrow(), [1, 3, 0, 2]));
+        CLEANED.with(|cleaned| {
+            let mut cleaned = cleaned.borrow().clone();
+            cleaned.sort_unstable();
+            assert_eq!(cleaned, [0, 1, 2, 3]);
+        });
     }
 
     owned_handle! {

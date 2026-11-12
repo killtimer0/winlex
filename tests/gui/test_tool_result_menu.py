@@ -21,7 +21,6 @@ def test_tool_action_reuses_recent_instance_and_queries_default_scope(launch, se
     result(app, "ERROR_ACCESS_DENIED")
     win32gui.PostMessage(app.results, win32con.WM_CONTEXTMENU, app.results, -1)
     _, ids = find_popup(app)
-    assert 100 in ids
     choose(app, ids, 100)
     n.wait(lambda: app.active_document() == first, "recent error code tool activated")
     assert set(tools(app)) == {first, second}

@@ -139,10 +139,9 @@ def test_arrow_keys_only_move_the_selection(launch, settings):
 
     app.focus(app.results)
     select_result(app, 0)
-    first = app.selected_row()
     win32gui.PostMessage(app.results, win32con.WM_KEYDOWN, win32con.VK_DOWN, 1)
     win32gui.PostMessage(app.results, win32con.WM_KEYUP, win32con.VK_DOWN, -1073741823)
-    n.wait(lambda: app.selected_row() == first + 1, "selection moved")
+    n.wait(lambda: app.selected_row() == 1, "selection moved")
 
     assert len(app.documents()) == 1
     assert app.active_document() == doc
@@ -156,7 +155,6 @@ def test_arrow_keys_only_move_the_selection(launch, settings):
 def test_pinning_and_open_commands_preserve_documents_and_focus(launch, settings, double_click, pointer):
     app = launch([settings[1]])
     app.query("CreateFileW")
-    app.focus(app.results)
     doc = app.preview_row()
     n.wait(lambda: "CreateFileW(" in app.content(doc), "declaration before pinning", 45)
     pinned_body = app.content(doc)
@@ -170,7 +168,6 @@ def test_pinning_and_open_commands_preserve_documents_and_focus(launch, settings
 
     app.query("CloseHandle")
     name = title(app)
-    app.focus(app.results)
     preview = app.preview_row()
     assert preview != doc and len(app.documents()) == 2
     n.wait(lambda: name in app.content(preview), "preview beside pinned document", 45)

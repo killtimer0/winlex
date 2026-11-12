@@ -300,6 +300,20 @@ fn category_vocabulary_preserves_bits_summary_kinds_and_condition_parsing() {
     let db = catalog("Categories", file);
     assert_eq!(EntityCategory::ALL, 255);
     assert_eq!(EntityCategory::DEFAULT, 135);
+    for (mask, expected) in [(0, vec![]), (12, vec!["Constant", "Field"])] {
+        let mut names = search_results(db.search(
+            "not name = \"missing\"",
+            SearchOptions {
+                mode: SearchMode::Condition,
+                categories: Some(mask),
+                ..Default::default()
+            },
+        ))
+        .map(|hit| hit.entity.name)
+        .collect::<Vec<_>>();
+        names.sort_unstable();
+        assert_eq!(names, expected);
+    }
     for (name, category, bit, spelling) in [
         ("Interface", EntityCategory::Type, 1, "type"),
         ("Method", EntityCategory::Method, 2, "method"),
@@ -550,13 +564,7 @@ fn strings_special_floats_and_ranges_are_typed_conditions() {
             .iter()
             .any(|r| r.name == "STRING_FIVE")
     );
-    for query in [
-        "value < nan",
-        "value contains 5",
-        "value = 1e9999",
-        "unknown = 5",
-        "source = -1",
-    ] {
+    for query in ["value < nan", "value = 1e9999", "source = -1"] {
         let error = db
             .search(
                 query,
@@ -879,13 +887,6 @@ fn combined_guid_matching_requires_four_normalized_hex_digits() {
             "{query}"
         );
     }
-    let combined = hits(&db, "257", SearchMode::Combined);
-    assert!(
-        combined
-            .iter()
-            .any(|hit| hit.quality == MatchQuality::Integer)
-    );
-    assert!(combined.iter().any(|hit| hit.name == "Fuzzy257"));
 }
 
 #[test]

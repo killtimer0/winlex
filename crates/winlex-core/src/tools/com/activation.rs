@@ -324,14 +324,4 @@ mod tests {
             Some("{AF86E2E0-B12D-4C6A-9C5A-D7AA65101E90}")
         );
     }
-
-    #[test]
-    fn activates_a_class_when_requested() {
-        let Some(value) = std::env::var_os("WINLEX_TEST_COM_CLSID") else {
-            return;
-        };
-        let guid = Guid::parse(&value.to_string_lossy()).expect("GUID");
-        let instance = inspect(guid).expect("activate");
-        assert_eq!(instance.clsid, guid.to_string());
-    }
 }

@@ -120,7 +120,6 @@ def test_source_context_menu_copies_full_native_path(launch, settings, mouse):
     app.focus(app.sources)
     if mouse:
         wait_clipboard_available()
-    if mouse:
         with n.window_dpi_context(app.frame):
             left, top, right, bottom = app.item_rect(1, app.sources)
             x, y = win32gui.ClientToScreen(app.sources, (left + 8, (top + bottom) // 2))

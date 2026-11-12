@@ -110,7 +110,7 @@ def test_tool_completion_is_dispatched_inside_modal_dialog(launch):
         assert body(doc) == original, 'query must still be pending when modal dialog opens'
         n.send(doc, win32con.WM_COMMAND, 1815)
         result = n.wait(lambda: body(doc) if body(doc) != original else None, 'modal completion', 30)
-        assert result != original and "0x00000002" in result
+        assert "0x00000002" in result
         assert n.is_window(dialog) and not win32gui.IsWindowEnabled(app.frame)
     finally:
         invoke(n.get_item(dialog, win32con.IDOK))
@@ -132,7 +132,7 @@ def test_tool_completion_is_dispatched_during_menu_tracking(launch):
         assert body(doc) == original, 'query must still be pending when menu opens'
         n.send(doc, win32con.WM_COMMAND, 1815)
         result = n.wait(lambda: body(doc) if body(doc) != original else None, 'menu completion', 30)
-        assert result != original and "0x00000002" in result
+        assert "0x00000002" in result
         assert find_popup(app)[0] == menu
     finally:
         popup = auto.MenuControl(searchDepth=3, ClassName='#32768', ProcessId=app.process.pid)

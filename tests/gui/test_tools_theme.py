@@ -38,6 +38,8 @@ def test_tool_empty_and_populated_result_follow_theme(launch, profile, settings)
 def test_unsupported_appearance_retains_preference_and_native_tool_behavior(launch, profile, preference):
     profile.set('Language', winreg.REG_SZ, 'en-US')
     profile.set('Theme', winreg.REG_SZ, preference)
+    saved = profile.preferences()
+    expected = (saved[0], saved[1] | 8, saved[2])
     app = launch()
     results = app.results
     doc = tool(app)
@@ -59,7 +61,7 @@ def test_unsupported_appearance_retains_preference_and_native_tool_behavior(laun
     if not checkbox.GetTogglePattern().ToggleState:
         checkbox.GetTogglePattern().Toggle()
     app.close_settings(sheet)
-    assert profile.preferences() == ('en-US', 15, preference)
+    assert profile.preferences() == expected
     for notification in (win32con.WM_SETTINGCHANGE, win32con.WM_SYSCOLORCHANGE, 0x031a):
         n.send(app.frame, notification)
     assert body(doc) == original and app.active_document() == doc
@@ -67,11 +69,11 @@ def test_unsupported_appearance_retains_preference_and_native_tool_behavior(laun
     assert all(n.is_visible(control) and enabled(control) for control in controls)
     assert n.send(results, 0x1000) == system_color(win32con.COLOR_WINDOW)
     assert '0x00000057' in query(app, doc, '87')
-    assert profile.preferences() == ('en-US', 15, preference)
+    assert profile.preferences() == expected
     restarted = launch()
     sheet = restarted.settings()
     appearance = n.get_item(restarted.settings_page(sheet, 0), 1301)
     assert len(restarted.choices(appearance)) == 1 and not enabled(appearance)
     restarted.close_settings(sheet)
-    assert profile.preferences() == ('en-US', 15, preference)
+    assert profile.preferences() == expected
     assert '0x00000005' in query(restarted, tool(restarted), '5')

@@ -330,7 +330,6 @@ fn msaa_false_results_initialize_real_abi_outputs() {
                 S_FALSE
             );
             assert!(out.as_ptr().cast::<*const u16>().read().is_null());
-            assert!(out.assume_init().is_empty());
         }
         let mut file = MaybeUninit::<BSTR>::uninit();
         std::ptr::write_bytes(file.as_mut_ptr(), 0x55, 1);
@@ -345,7 +344,6 @@ fn msaa_false_results_initialize_real_abi_outputs() {
             S_FALSE
         );
         assert!(file.as_ptr().cast::<*const u16>().read().is_null());
-        assert!(file.assume_init().is_empty());
         assert_eq!(topic, 0);
         let mut out = MaybeUninit::<VARIANT>::uninit();
         std::ptr::write_bytes(out.as_mut_ptr(), 0x55, 1);

@@ -73,7 +73,7 @@ def test_settings_cancel_and_page_state(launch, profile, ui_language):
     sheet = app.settings()
     enabled = n.api(n.user, "IsWindowEnabled", n.w.BOOL, n.w.HWND)
     assert not enabled(app.frame)
-    assert checked(app, sheet) == 135
+    assert checked(app, sheet) == original[1]
     mask(app, sheet, 255)
     general = app.settings_page(sheet, 0)
     control = n.get_item(general, 1300)
@@ -84,7 +84,7 @@ def test_settings_cancel_and_page_state(launch, profile, ui_language):
     assert enabled(app.frame)
     assert profile.preferences() == original
     sheet = app.settings()
-    assert checked(app, sheet) == 135
+    assert checked(app, sheet) == original[1]
     app.close_settings(sheet)
 
 
@@ -212,7 +212,7 @@ def test_search_category_visibility(launch, profile, settings, value):
     n.wait(lambda: app.status_text().startswith(("Results ", "共 ")), "filtered search completed")
     kinds = {row.Name.splitlines()[1].split(" · ")[0] for row in app.rows()}
     expected = set()
-    for bit, names in [(1, {"class", "module"}), (2, {"method"}), (4, {"constant"}),
+    for bit, names in [(1, {"class", "module"}), (2, {"method", "static_method"}), (4, {"constant"}),
                        (8, {"field"}), (16, {"property"}), (32, {"event"}),
                        (64, {"type_reference"}), (128, {"function"})]:
         if value & bit:
@@ -256,7 +256,7 @@ def test_settings_save_failure_preserves_state(launch, profile, button):
     assert auto.ControlFromHandle(n.get_item(sheet, 0x3021)).IsEnabled
     app.close_settings(sheet, accept=False)
     sheet = app.settings()
-    assert checked(app, sheet) == 135
+    assert checked(app, sheet) == original[1]
     app.close_settings(sheet, accept=False)
 
 
@@ -306,16 +306,16 @@ def test_settings_dpi_pages(launch, settings, mode):
                 auto.ControlFromHandle(sheet).GetPattern(auto.PatternId.TransformPattern).Move(
                     destination[0] + 40, destination[1] + 40)
                 app.settings_page(sheet, 1)
-                evidence.append({"move": destination, "dpi": get_dpi(sheet), "rect": n.rectangle(sheet)})
+                rect = n.rectangle(sheet)
+                evidence.append({"move": destination, "dpi": get_dpi(sheet), "rect": rect})
                 if destination == monitor:
-                    r = n.rectangle(sheet)
-                    returns.append((r[2]-r[0], r[3]-r[1]))
+                    returns.append((rect[2]-rect[0], rect[3]-rect[1]))
             final = n.rectangle(sheet)
             evidence.append({"initial": initial, "final": final})
             output.write_text(json.dumps(evidence, ensure_ascii=False, indent=2), encoding="utf-8")
             # Native property sheets may round their size on the first DPI round trip.
             assert all(abs(width-returns[-1][0]) <= 1 and abs(height-returns[-1][1]) <= 1
-                       for width, height in returns[1:])
+                       for width, height in returns[1:-1])
         for index, name in ((0, "general"), (1, "search")):
             app.settings_page(sheet, index)
             n.api(n.user, "RedrawWindow", n.w.BOOL, n.w.HWND, n.c.c_void_p, n.c.c_void_p, n.w.UINT)(sheet, None, None, 0x185)

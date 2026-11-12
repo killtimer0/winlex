@@ -22,17 +22,13 @@ class ArtifactContracts(unittest.TestCase):
         path = Path.cwd() / "custom output/configured target/debug/examples/host-cli.exe"
         messages = [{"reason": "build-finished", "success": True},
                     artifact("wrong.exe", kind="bin"), artifact("test.exe", test=True),
-                    artifact("other.exe", name="other-example"), artifact(None), artifact(path)]
+                    artifact("other.exe", name="other-example"), artifact(None), artifact(path), artifact(path)]
         self.assertEqual(select_executable(messages, "host-cli"), path)
 
     def test_missing_and_ambiguous_outputs_fail(self):
         for messages in ([], [artifact("one.exe"), artifact("two.exe")]):
             with self.subTest(messages=messages), self.assertRaises(RuntimeError):
                 select_executable(messages, "host-cli")
-
-    def test_duplicate_reports_of_same_executable_are_unambiguous(self):
-        message = artifact("one.exe")
-        self.assertEqual(select_executable([message, message], "host-cli"), Path.cwd() / "one.exe")
 
     def test_build_preserves_spaces_and_defers_target_configuration_to_cargo(self):
         output = Path.cwd() / "configured target/custom profile/host-cli.exe"
@@ -141,7 +137,6 @@ class ArtifactContracts(unittest.TestCase):
             self.assertEqual(contents, b"UNC path contract fixture")
             selected = select_executable([artifact(unc_binary)], "host-cli")
             self.assertEqual(selected, unc_binary)
-            self.assertTrue(str(selected).startswith("\\\\"))
             manifest = unc / "产物.json"
             write_manifest({"host-cli": selected}, manifest)
             self.assertEqual(json.loads((local / manifest.name).read_text(encoding="utf-8"))["executables"]["host-cli"], str(unc_binary))

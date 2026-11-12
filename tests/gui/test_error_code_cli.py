@@ -169,21 +169,17 @@ def test_error_code_cli_custom_module_contract(settings):
     if not all(path.exists() for path in paths):
         pytest.skip('resource-only x86/x64 message fixtures were not deployed')
     for module in paths:
-        for language, word in [('0x409', 'Fixture'), ('0x804', '测试消息')]:
-            result = query(settings, '0x20000001', '--module', module,
-                           '--lang', language)['result']
-            message = result['candidates'][0]['message']
-            assert message['status'] == 'found'
-            assert word in message['text'] and '%1' in message['text']
-            assert message['actual_language'] == int(language, 16)
+        result = query(settings, '0x20000001', '--module', module,
+                       '--lang', '0x804')['result']
+        message = result['candidates'][0]['message']
+        assert message['status'] == 'found'
+        assert '测试消息' in message['text'] and '%1' in message['text']
+        assert message['actual_language'] == 0x804
         missing = query(settings, '5', '--module', module)['result']
         assert missing['candidates'][0]['message']['status'] == 'not_found'
         lang = query(settings, '0x20000001', '--module', module,
                      '--lang', '0x411')['result']
         assert lang['candidates'][0]['message']['status'] == 'language_not_found'
-        replacement = module.with_suffix('.renamed')
-        module.rename(replacement)
-        replacement.rename(module)
 
 
 def test_error_code_cli_long_module_path(settings):

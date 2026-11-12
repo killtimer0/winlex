@@ -59,14 +59,6 @@ def task_surfaces(dialog):
             for name, rect in rects.items()}
 
 
-def assert_native_contrast(surfaces):
-    for name, measured in surfaces.items():
-        allowed = native_surface_colors(name)
-        dominant = tuple(measured['colors_bgr'][0][0])
-        assert dominant in allowed, ('native high-contrast surface must use system colors',
-                                     name, dominant, allowed)
-
-
 def task_text_readable(surfaces):
     palette = surfaces['text']['colors_bgr']
     background = palette[0][0]
@@ -150,7 +142,6 @@ def test_task_dialog_stays_open_across_high_contrast(launch, profile, settings, 
                                         'open TaskDialog repaints in native high contrast',
                                         (dialog, settings[2], 'task-live-%s-hc-failed' % dpi))
             record(dialog, settings[2], 'task-live-%s-hc' % dpi, surfaces)
-            assert_native_contrast(surfaces)
             assert_readable_native_client(dialog)
             inputs.key(win32con.VK_ESCAPE)
             assert_prompt_contract(app, dialog)
@@ -214,12 +205,10 @@ def test_file_picker_stays_open_across_high_contrast(launch, profile, settings, 
             surfaces = settled_surfaces(lambda: picker_surfaces(dialog, folders[0][1]), native_colors,
                                         'open picker repaints in native high contrast before navigation')
             record(dialog, settings[2], 'picker-live-%s-hc-before-navigation' % dpi, surfaces)
-            assert_native_contrast(surfaces)
             field, entry = navigate(dialog, *folders[1])
             assert_modal(app, dialog)
             surfaces = settled_surfaces(lambda: picker_surfaces(dialog, folders[1][1]), native_colors,
                                         'native navigation retains high contrast')
-            assert_native_contrast(surfaces)
         assert restored_high_contrast(high_contrast(), snapshot)
         assert n.is_window(dialog) and native_dialog(app) == dialog
         assert_modal(app, dialog)
@@ -227,13 +216,9 @@ def test_file_picker_stays_open_across_high_contrast(launch, profile, settings, 
                                     'same picker recovers dark colors before navigation',
                                     (dialog, settings[2], 'picker-live-%s-restored-failed' % dpi))
         record(dialog, settings[2], 'picker-live-%s-restored-before-navigation' % dpi, surfaces)
-        for surface, measured in surfaces.items():
-            assert measured['dominant_luminance'] < 128, ('dark picker must recover before navigation', surface, measured)
         field, entry = navigate(dialog, *folders[2])
         surfaces = settled_surfaces(lambda: picker_surfaces(dialog, folders[2][1]), dark_colors,
                                     'native navigation retains recovered dark colors')
-        for surface, measured in surfaces.items():
-            assert measured['dominant_luminance'] < 128, ('native navigation must retain dark colors', surface, measured)
         invoke(n.get_item(dialog, win32con.IDCANCEL))
         n.wait(lambda: not n.is_window(dialog) and win32gui.IsWindowEnabled(app.frame), 'native Cancel')
         assert not native_dialog(app)

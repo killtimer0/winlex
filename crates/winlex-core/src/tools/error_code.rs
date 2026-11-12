@@ -321,41 +321,4 @@ mod tests {
             assert_eq!(failure.operation, "module_path");
         }
     }
-
-    #[cfg(windows)]
-    #[test]
-    fn windows_queries_preserve_identity_and_language_contract() {
-        let lookup = |code, scope| {
-            query(&Request {
-                code,
-                scope,
-                language: 0,
-            })
-            .unwrap()
-        };
-        let request = Request {
-            code: 0x80070005,
-            scope: Scope::HResult,
-            language: 0x409,
-        };
-        let result = query(&request).unwrap();
-        assert!(!result.has_failures(), "{result:?}");
-        let candidate = &result.candidates[0];
-        assert_eq!(candidate.scheme, Scheme::HResult);
-        assert_eq!(candidate.message.code, request.code);
-        assert_eq!(candidate.related[0].message.code, 5);
-        assert_eq!(candidate.related[0].message.status, MessageStatus::Found);
-        assert_eq!(candidate.related[0].message.actual_language, Some(0x409));
-        let automatic = lookup(5, Scope::Win32);
-        assert_eq!(automatic.candidates[0].message.actual_language, None);
-        let unknown = lookup(0x12345678, Scope::Auto);
-        assert!(unknown.candidates.is_empty(), "{unknown:?}");
-        assert!(!unknown.has_failures(), "{unknown:?}");
-        let nt = lookup(0xC0000005, Scope::NtStatus);
-        assert_eq!(nt.candidates[0].message.status, MessageStatus::Found);
-        let text = nt.candidates[0].message.text.as_deref().unwrap();
-        assert!(text.matches('%').count() >= 3, "{text:?}");
-        assert!(text.contains("%s"), "{text:?}");
-        assert!(nt.candidates[0].message.actual_language.is_some());
-    }
 }

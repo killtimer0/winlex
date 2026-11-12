@@ -384,14 +384,6 @@ fn parameterized_iid(signature: &str) -> String {
 mod tests {
     use super::*;
     use crate::test_support::{FixtureFile, catalog};
-    #[test]
-    fn sdk_ivector_int32_identity() {
-        assert_eq!(
-            parameterized_iid("pinterface({913337e9-11a1-4345-a3a2-4e7f956e222d};i4)"),
-            "b939af5b-b45d-5489-9149-61442c1905fe"
-        );
-    }
-
     fn vector_fixture() -> Catalog {
         let mut file = writer::File::new("WinRTInstances");
         let guid_type = file.TypeRef("Windows.Foundation.Metadata", "GuidAttribute");

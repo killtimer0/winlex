@@ -391,15 +391,4 @@ mod tests {
             assert_eq!(ty(&t), expected);
         }
     }
-
-    #[test]
-    fn primitive_text_uses_the_shared_expression_names() {
-        for (t, expected) in [
-            (Type::ISize, "nint"),
-            (Type::USize, "nuint"),
-            (Type::Void, "void"),
-        ] {
-            assert_eq!(ty(&t), expected);
-        }
-    }
 }

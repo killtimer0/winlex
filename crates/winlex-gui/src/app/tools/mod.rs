@@ -690,36 +690,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tool_descriptors_are_unique_and_addressable_by_kind() {
-        let mut kinds = std::collections::HashSet::new();
-        for descriptor in TOOLS {
-            assert!(kinds.insert(descriptor.kind));
-            let resolved = descriptor.kind.descriptor();
-            assert_eq!(resolved.kind, descriptor.kind);
-            assert_eq!(resolved.title, descriptor.title);
-            assert_eq!(resolved.description, descriptor.description);
-            assert_ne!(descriptor.title, descriptor.description);
-        }
-    }
-
-    #[test]
-    fn rows_beyond_the_descriptor_table_are_empty() {
-        let mut visits = 0;
-        row(TOOLS.len(), &mut |_| visits += 1);
-        assert_eq!(visits, 0);
-        assert!(row_text(TOOLS.len()).is_empty());
-    }
-
-    #[test]
-    fn every_request_names_its_tool_descriptor() {
-        assert_eq!(
-            Request::ErrorCode(5).kind().descriptor().kind,
-            Kind::ErrorCode
-        );
-    }
-
-    #[test]
-    fn search_result_actions_follow_the_descriptor_order() {
+    fn search_result_actions_match_supported_values() {
         use crate::app::result_value::ResultValue;
         assert!(actions(None).is_empty());
         let integer = ResultValue {

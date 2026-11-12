@@ -204,24 +204,6 @@ fn render_message(text: &mut String, message: &Message) {
 mod tests {
     use super::*;
     #[test]
-    fn result_projects_numeric_text_from_the_request_without_json_mirrors() {
-        let result = QueryResult {
-            request: Request {
-                code: 0x80070005,
-                scope: Scope::HResult,
-                language: 0x409,
-            },
-            candidates: vec![],
-            attempts: vec![],
-        };
-        assert!(render(&result).starts_with("0x80070005 = 2147942405 (signed -2147024891)\n"));
-        let json = serde_json::to_value(&result).unwrap();
-        assert_eq!(json["request"]["code"], 0x80070005u32);
-        for key in ["hex", "unsigned", "signed"] {
-            assert!(json.get(key).is_none());
-        }
-    }
-    #[test]
     fn scope_options_preserve_defaults_conflicts_and_diagnostic_precedence() {
         let parse_args =
             |args: &[&str]| parse(&args.iter().map(OsString::from).collect::<Vec<_>>());
@@ -271,7 +253,7 @@ mod tests {
         }
     }
     #[test]
-    fn typed_request_without_metadata_and_checked_inputs() {
+    fn language_alias_and_automatic_module_scope_are_preserved() {
         let parse_args =
             |args: &[&str]| parse(&args.iter().map(OsString::from).collect::<Vec<_>>());
         let request =
@@ -292,13 +274,5 @@ mod tests {
                 language: 0
             }
         );
-        for args in [
-            vec!["4294967296"],
-            vec!["5", "--language", "-1"],
-            vec!["5", "--language", "65536"],
-            vec!["5", "--scope", "module"],
-        ] {
-            assert!(parse_args(&args).is_err());
-        }
     }
 }

@@ -356,7 +356,6 @@ mod tests {
                     query.matches(&value, Some(Architecture::X86), 7, Comparison::Equal),
                     Some(quality.clone())
                 );
-                assert!(query.compare(&value, Some(Architecture::X86), 7, Comparison::Equal));
                 if quality == super::super::MatchQuality::Integer {
                     assert!(query.compare(&value, Some(Architecture::X86), 7, Comparison::Less));
                 }

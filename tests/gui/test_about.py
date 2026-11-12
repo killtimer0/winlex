@@ -81,7 +81,7 @@ def test_about_content_modality_and_dpi(launch, profile, settings, language, mod
     for index in range(len(n.monitors())):
         sizes = [(e['bounds'][2] - e['bounds'][0], e['bounds'][3] - e['bounds'][1])
                  for e in evidence[index::len(n.monitors())]]
-        assert all(abs(w-sizes[-1][0]) <= 1 and abs(h-sizes[-1][1]) <= 1 for w, h in sizes[1:])
+        assert all(abs(w-sizes[-1][0]) <= 1 and abs(h-sizes[-1][1]) <= 1 for w, h in sizes[1:-1])
     (settings[2] / ('about-%s-%s.json' % (language, mode))).write_text(json.dumps(evidence), encoding='utf-8')
     key = win32con.VK_RETURN if language == 'en-US' else win32con.VK_ESCAPE
     win32gui.PostMessage(n.get_item(dialog, 1), win32con.WM_KEYDOWN, key, 0)

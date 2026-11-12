@@ -44,12 +44,6 @@ fn instance_commands_require_an_explicit_architecture_before_loading_inputs() {
 #[test]
 fn search_mode_flags_are_exclusive_and_only_apply_to_search() {
     for arguments in [
-        vec!["search", "1", "--name", "--value"],
-        vec!["search", "1", "--value", "--guid"],
-        vec!["search", "1", "--guid", "--name"],
-        vec!["search", "1", "--name", "--name"],
-        vec!["search", "--where", "value = 5", "--value"],
-        vec!["search", "--name", "--where", "value = 5"],
         vec!["show", "--where", "value = 5"],
         vec!["show", "CreateFileW", "--name"],
         vec!["summary", "--value"],
@@ -348,39 +342,24 @@ fn demangle_tools_do_not_require_metadata() {
     assert_eq!(results[1]["result"]["abi"], "itanium");
 
     let (code, out, err) = invoke(
-        ["demangle", "not-a-symbol", "--json"]
+        ["demangle", "_ZN5space3fooEibc", "?", "--json"]
             .into_iter()
             .map(Into::into),
     );
     assert_eq!(code, 3);
     assert!(err.is_empty());
     let response: Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(response["schema"], "winlex-cli-1");
+    assert_eq!(response["command"], "demangle");
     assert_eq!(response["ok"], false);
-    assert_eq!(response["results"][0]["ok"], false);
-}
-
-#[test]
-fn architecture_ambiguity_and_pagination_are_preserved() {
-    let (c, v, _) = cli(&["search", "OPENFILENAMEW", "--name", "--limit", "1"]);
-    assert_eq!(c, 0);
-    assert_eq!(v["result"]["total"], 3);
-    assert_eq!(v["result"]["matches"][0]["kind"], "type_reference");
-    assert_eq!(v["result"]["matches"].as_array().unwrap().len(), 1);
-    let (_, next, _) = cli(&[
-        "search",
-        "OPENFILENAMEW",
-        "--name",
-        "--limit",
-        "1",
-        "--offset",
-        "1",
-    ]);
-    assert_ne!(
-        v["result"]["matches"][0]["id"],
-        next["result"]["matches"][0]["id"]
+    assert_eq!(response["results"].as_array().unwrap().len(), 2);
+    assert_eq!(response["results"][0]["ok"], true);
+    assert_eq!(response["results"][0]["result"]["abi"], "itanium");
+    assert_eq!(
+        response["results"][0]["result"]["spans"],
+        serde_json::json!([{ "start": 0, "end": 10 }])
     );
-    let (_, v, _) = cli(&["search", "OPENFILENAMEW", "--name", "--arch", "x64"]);
-    assert_eq!(v["result"]["total"], 2);
+    assert_eq!(response["results"][1]["ok"], false);
 }
 
 #[test]

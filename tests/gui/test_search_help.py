@@ -40,7 +40,8 @@ def test_search_help_readonly_resize_and_dpi(launch, profile, language, mode):
         assert after_edit[:2] == before_edit[:2]
         assert (after_edit[2] - before_edit[2], after_edit[3] - before_edit[3]) == (120, 80)
         assert (after_button[0] - before_button[0], after_button[1] - before_button[1]) == (120, 80)
-    for monitor in n.monitors() * 2:
+    monitors = n.monitors()
+    for monitor in monitors * (2 if len(monitors) > 1 else 1):
         with n.window_dpi_context(dialog):
             auto.ControlFromHandle(dialog).GetPattern(auto.PatternId.TransformPattern).Move(
                 monitor[0] + 40, monitor[1] + 40)

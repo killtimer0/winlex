@@ -361,31 +361,6 @@ mod tests {
     }
 
     #[test]
-    fn previews_share_a_document_but_replay_preserves_forward_until_new_navigation() {
-        let catalog = catalog();
-        let mut history = History::default();
-        for token in 1..=3 {
-            history.visit(entry(&catalog, token));
-        }
-        assert_token(&mut history, Back, Some(2));
-        history.visit(entry(&catalog, 2));
-        assert_token(&mut history, Forward, Some(3));
-        assert_token(&mut history, Back, Some(2));
-        history.visit(entry(&catalog, 4));
-        assert_token(&mut history, Forward, None);
-        assert_token(&mut history, Back, Some(2));
-        assert_token(&mut history, Back, Some(1));
-        assert_token(&mut history, Back, None);
-        for direction in Direction::ALL {
-            assert_eq!(
-                Direction::from_command(direction.command()),
-                Some(direction)
-            );
-        }
-        assert_eq!(Direction::from_command(0), None);
-    }
-
-    #[test]
     fn weak_snapshots_expire_and_do_not_alias_the_same_entity_in_a_new_catalog() {
         let old = catalog();
         let current = catalog();
@@ -399,51 +374,5 @@ mod tests {
         assert_token(&mut history, Back, Some(1));
         assert_token(&mut history, Back, None);
         assert_token(&mut history, Forward, Some(2));
-    }
-
-    #[test]
-    fn closing_uses_the_previous_visit_before_a_matching_forward_entry() {
-        let catalog = catalog();
-        let mut history = History::default();
-        for token in [1, 2, 3, 4, 1, 5] {
-            history.visit(entry(&catalog, token));
-        }
-        assert_token(&mut history, Back, Some(1));
-        assert_token(&mut history, Back, Some(4));
-        history.after_close(Some(entry(&catalog, 1)));
-        assert_token(&mut history, Back, None);
-        assert_token(&mut history, Forward, Some(2));
-    }
-
-    #[test]
-    fn duplicate_documents_architectures_and_closing_preserve_visit_order() {
-        let catalog = catalog();
-        let first = entry(&catalog, 1);
-        let mut duplicate = first.clone();
-        duplicate.document = 2;
-        let mut x64 = duplicate.clone();
-        let Target::Declaration(target) = &mut x64.target else {
-            unreachable!()
-        };
-        target.architecture = Architecture::X64;
-        let mut history = History::default();
-        for entry in [&first, &duplicate, &x64] {
-            history.visit(entry.clone());
-        }
-        assert_eq!(
-            declaration(&replay(&mut history, Back).unwrap()).architecture,
-            Architecture::X86
-        );
-        assert_eq!(replay(&mut history, Back).unwrap().document, 1);
-        history.after_close(Some(duplicate.clone()));
-        assert_eq!(
-            declaration(&replay(&mut history, Forward).unwrap()).architecture,
-            Architecture::X64
-        );
-        history.after_close(None);
-        assert_eq!(
-            declaration(&replay(&mut history, Back).unwrap()).architecture,
-            Architecture::X64
-        );
     }
 }

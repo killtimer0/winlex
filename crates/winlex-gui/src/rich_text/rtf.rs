@@ -78,9 +78,9 @@ mod tests {
     use winlex_format::declaration::{Region, SymbolRole};
 
     #[test]
-    fn type_coloring_uses_semantics_not_identifier_spelling() {
-        let text = "// 😀\rGuid int32;\rusize string;\rstring Guid;";
-        let regions: Vec<_> = ["Guid int32", "usize string", "string Guid"]
+    fn symbol_coloring_uses_semantic_roles_not_identifier_spelling() {
+        let text = "// 😀\rGuid int32;\rusize string;\rstring Guid;\rRun value";
+        let mut regions: Vec<_> = ["Guid int32", "usize string", "string Guid"]
             .into_iter()
             .map(|declaration| {
                 let byte_start = text.find(declaration).unwrap();
@@ -89,34 +89,23 @@ mod tests {
                 Region::symbol(start..start + ty.encode_utf16().count(), SymbolRole::Type)
             })
             .collect();
+        let start = text[..text.find("Run value").unwrap()]
+            .encode_utf16()
+            .count();
+        regions.extend([
+            Region::symbol(start..start + 3, SymbolRole::Method),
+            Region::symbol(start + 4..start + 9, SymbolRole::Member),
+        ]);
         let output = render(text, &regions);
         let body = String::from_utf8(output).unwrap();
         assert!(body.contains(r"\cf5 Guid\cf0  int32;"));
         assert!(body.contains(r"\cf5 usize\cf0  string;"));
         assert!(body.contains(r"\cf5 string\cf0  Guid;"));
+        assert!(body.contains(r"\cf6 Run\cf0  \cf7 value\cf0 "));
     }
 
     #[test]
-    fn symbol_roles_use_distinct_palette_slots_in_both_themes() {
-        let text = "Guid Run value";
-        let regions = [
-            Region::symbol(0..4, SymbolRole::Type),
-            Region::symbol(5..8, SymbolRole::Method),
-            Region::symbol(9..14, SymbolRole::Member),
-        ];
-        let light = render(text, &regions);
-        let body = String::from_utf8(light.clone()).unwrap();
-        assert!(body.contains(r"\cf5 Guid\cf0  \cf6 Run\cf0  \cf7 value\cf0 "));
-        assert_eq!(
-            themed(&light, true)
-                .strip_prefix(DARK_HEADER.as_slice())
-                .unwrap(),
-            light.strip_prefix(LIGHT_HEADER).unwrap()
-        );
-    }
-
-    #[test]
-    fn syntax_tokens_use_the_same_palette_slots_in_both_themes() {
+    fn syntax_tokens_use_their_palette_slots() {
         let light = render("const x = 42; \"😀\" // int\r", &[]);
         let expected = concat!(
             r"\cf1 const\cf0  x = \cf4 42\cf0 ; ",
@@ -125,12 +114,6 @@ mod tests {
         );
         assert_eq!(
             light.strip_prefix(LIGHT_HEADER).unwrap(),
-            expected.as_bytes()
-        );
-        assert_eq!(
-            themed(&light, true)
-                .strip_prefix(DARK_HEADER.as_slice())
-                .unwrap(),
             expected.as_bytes()
         );
     }

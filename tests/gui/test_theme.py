@@ -78,6 +78,7 @@ def test_settings_apply_theme_without_closing(launch, profile):
 def test_theme_switch_persistence_and_dialogs(launch, profile, settings, language, dpi):
     profile.set('Language', winreg.REG_SZ, language)
     profile.set('Theme', winreg.REG_SZ, 'dark')
+    original = profile.preferences()
     app = launch(dpi=dpi)
     assert dark_background(app.search)
     for opener in (open_about, open_help):
@@ -97,13 +98,13 @@ def test_theme_switch_persistence_and_dialogs(launch, profile, settings, languag
     screenshot(sheet, settings[2] / ('dark-%s-%s-settings.png' % (language, dpi)))
     select_theme(page, 1)
     app.close_settings(sheet, accept=False)
-    assert profile.preferences() == (language, 7, 'dark')
+    assert profile.preferences() == original
     assert dark_background(app.search)
     sheet = app.settings()
     page = app.settings_page(sheet, 0)
     select_theme(page, 1)
     app.close_settings(sheet)
-    assert profile.preferences() == (language, 7, 'light')
+    assert profile.preferences() == (*original[:2], 'light')
     assert not dark_background(app.search)
     sheet = app.settings()
     page = app.settings_page(sheet, 0)
@@ -111,10 +112,10 @@ def test_theme_switch_persistence_and_dialogs(launch, profile, settings, languag
     select_theme(page, 2)
     app.close_settings(sheet)
     assert dark_background(app.search)
-    assert profile.preferences() == (language, 7, 'dark')
+    assert profile.preferences() == original
     n.send(app.frame, win32con.WM_SETTINGCHANGE, 0, 0)
     assert dark_background(app.search)
-    assert profile.preferences() == (language, 7, 'dark')
+    assert profile.preferences() == original
     restarted = launch(dpi=dpi)
     assert dark_background(restarted.search)
 
@@ -145,6 +146,7 @@ def test_theme_change_preserves_document(launch, profile, settings):
 def test_system_theme_uses_windows_preference(launch, profile):
     profile.set('Language', winreg.REG_SZ, 'en-US')
     profile.set('Theme', winreg.REG_SZ, 'system')
+    original = profile.preferences()
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
                             r'Software\Microsoft\Windows\CurrentVersion\Themes\Personalize') as key:
@@ -157,7 +159,7 @@ def test_system_theme_uses_windows_preference(launch, profile):
     page = app.settings_page(sheet, 0)
     assert selected_index(app, n.get_item(page, 1301)) == 0
     app.close_settings(sheet)
-    assert profile.preferences() == ('en-US', 7, 'system')
+    assert profile.preferences() == original
 
 
 @modern_theme

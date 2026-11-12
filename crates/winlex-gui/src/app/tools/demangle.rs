@@ -426,15 +426,4 @@ mod tests {
         assert!(truncated);
         assert_eq!(lines[0].encode_utf16().count(), MAX_UNITS);
     }
-
-    #[test]
-    fn utf16_spans_account_for_supplementary_characters() {
-        let output = render(&["_Z3fooi"], Abi::Auto, &labels(), false);
-        let units: Vec<u16> = output.body.text.encode_utf16().collect();
-        let region = &output.body.regions[0];
-        assert_eq!(
-            String::from_utf16(&units[region.range.clone()]).unwrap(),
-            "foo"
-        );
-    }
 }

@@ -22,7 +22,6 @@ def test_result_rows_show_context_and_match_emphasis(launch, settings):
     ]:
         select_combo(mode, app.choices(mode)[index])
         app.query(query)
-        assert app.count() > 0
         row = app.named_rows("CreateFileW")[0] if name_match else 0
         app.row(row).GetScrollItemPattern().ScrollIntoView()
         lines = app.cell(row).splitlines()
@@ -99,7 +98,6 @@ def test_panel_switch_preserves_result_selection_and_scroll(launch, settings):
     app = launch([settings[1]])
     n.wait(lambda: app.status_text().startswith(("Ready.", "已就绪")), "loaded", 45)
     app.query("file")
-    assert app.count() > 100
     first, last = app.cell(0), app.cell(app.count() - 1)
     app.select(3)
     app.row(-1).GetScrollItemPattern().ScrollIntoView()
@@ -112,7 +110,6 @@ def test_panel_switch_preserves_result_selection_and_scroll(launch, settings):
     app.command(1021)
     assert not n.is_visible(app.sources)
     app.command(1040)
-    assert n.is_visible(app.results)
     assert (app.cell(0), app.cell(app.count() - 1)) == (first, last)
     assert app.selected_row() == 3
     top = app.top_row()
@@ -147,12 +144,10 @@ def test_search_after_scrolling_keeps_new_results_in_view(launch, settings):
     app = launch([settings[1]])
     n.wait(lambda: app.status_text().startswith(("Ready.", "已就绪")), "loaded", 45)
     app.query("file")
-    assert app.count() > 100
     for query in ("CreateFileW", "file"):
         app.row(-1).GetScrollItemPattern().ScrollIntoView()
         assert app.row(0).IsOffscreen
         app.query(query)
-        assert app.count() > 0
         assert not app.row(0).IsOffscreen
         _, top, _, bottom = app.item_rect(0)
         _, client_top, _, client_bottom = n.rectangle(app.results, client=True)

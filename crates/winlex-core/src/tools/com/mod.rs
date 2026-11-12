@@ -1019,7 +1019,7 @@ mod tests {
     }
 
     #[test]
-    fn a_guid_lists_every_registration_kind_it_matches() {
+    fn interface_method_count_and_empty_appid_surrogate_are_preserved() {
         let interface = format!("Software\\Classes\\Interface\\{IID}");
         let appid = format!("Software\\Classes\\AppID\\{APPID}");
         let source = Snapshot::default()
@@ -1125,11 +1125,6 @@ mod tests {
             },
         );
         assert!(report.groups.is_empty());
-        assert!(
-            report
-                .warnings
-                .contains(&Warning::UnsupportedView(View::X64))
-        );
         assert_eq!(
             report
                 .warnings

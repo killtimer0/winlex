@@ -194,35 +194,6 @@ mod tests {
     use winlex_core::EntityId;
 
     #[test]
-    fn tool_completion_keeps_document_ticket_and_input_identity() {
-        let ticket = Ticket::new(17);
-        run(
-            Job::Tool {
-                document: 23,
-                job: tools::Job::Languages {
-                    path: PathBuf::new(),
-                },
-            },
-            &ticket,
-            &|completion| {
-                let Completion::Tool {
-                    id,
-                    document,
-                    completion: tools::Completion::Languages { path, result },
-                } = completion
-                else {
-                    panic!("expected tool language completion");
-                };
-                assert_eq!(id, 17);
-                assert_eq!(document, 23);
-                assert!(path.as_os_str().is_empty());
-                assert!(result.is_err());
-                Ok(())
-            },
-        );
-    }
-
-    #[test]
     fn cancelled_tool_job_does_not_publish() {
         let ticket = Ticket::new(1);
         ticket.cancel();
@@ -481,6 +452,27 @@ mod tests {
         };
         assert_eq!(id, 4);
         assert!(result.unwrap().is_none());
+
+        submit(
+            5,
+            Job::Tool {
+                document: 23,
+                job: tools::Job::Languages {
+                    path: PathBuf::new(),
+                },
+            },
+        );
+        let Completion::Tool {
+            id,
+            document,
+            completion: tools::Completion::Languages { path, result },
+        } = receive()
+        else {
+            panic!("expected tool language completion");
+        };
+        assert_eq!((id, document), (5, 23));
+        assert!(path.as_os_str().is_empty());
+        assert!(result.is_err());
     }
 
     #[test]

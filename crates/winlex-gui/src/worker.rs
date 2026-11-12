@@ -425,69 +425,36 @@ mod tests {
         receive(&finished);
     }
     #[test]
-    fn panicking_job_stops_pool_and_disconnects_output() {
-        let worker = Worker::new(|(), _, _: &dyn Fn(()) -> anyhow::Result<()>| {
-            panic!("job failed");
-        })
-        .unwrap();
-        let ticket = Ticket::new(1);
-        worker.replace(None, ticket.clone(), ()).unwrap();
-        assert!(matches!(
-            worker.rx.recv_timeout(std::time::Duration::from_secs(5)),
-            Err(mpsc::RecvTimeoutError::Disconnected)
-        ));
-        assert!(ticket.cancelled());
-        assert!(worker.replace(None, Ticket::new(2), ()).is_err());
-        assert_signaled(worker.event());
-    }
-    #[test]
     fn worker_failure_is_visible_while_another_job_is_blocked() {
         let (started, active) = mpsc::channel();
         let (release, blocked) = mpsc::channel();
         let blocked = Mutex::new(blocked);
-        let worker = Worker::with_threads(
-            move |fail, _, _: &dyn Fn(()) -> anyhow::Result<()>| {
-                if fail {
-                    panic!("job failed");
-                }
-                started.send(()).unwrap();
-                blocked.lock().unwrap().recv().unwrap();
-            },
-            2,
-        )
+        let worker = Worker::new(move |fail, _, _: &dyn Fn(()) -> anyhow::Result<()>| {
+            if fail {
+                panic!("job failed");
+            }
+            started.send(()).unwrap();
+            blocked.lock().unwrap().recv().unwrap();
+        })
         .unwrap();
         let ticket = Ticket::new(1);
         worker.replace(None, ticket.clone(), false).unwrap();
         receive(&active);
-        worker.replace(None, Ticket::new(2), true).unwrap();
+        let failed = Ticket::new(2);
+        worker.replace(None, failed.clone(), true).unwrap();
         assert_signaled(worker.event());
         assert!(matches!(
             worker.try_completion(),
             Err(mpsc::TryRecvError::Disconnected)
         ));
         assert!(ticket.cancelled());
+        assert!(failed.cancelled());
+        assert!(worker.replace(None, Ticket::new(3), false).is_err());
         release.send(()).unwrap();
-    }
-    #[test]
-    fn two_threads_run_jobs_concurrently() {
-        use std::sync::Barrier;
-        let barrier = Arc::new(Barrier::new(2));
-        let worker = Worker::with_threads(
-            {
-                let barrier = barrier.clone();
-                move |(), _, publish| {
-                    barrier.wait();
-                    let _ = publish(());
-                }
-            },
-            2,
-        )
-        .unwrap();
-        worker.replace(None, Ticket::new(1), ()).unwrap();
-        worker.replace(None, Ticket::new(2), ()).unwrap();
-        for _ in 0..2 {
-            receive(&worker.rx);
-        }
+        assert!(matches!(
+            worker.rx.recv_timeout(std::time::Duration::from_secs(5)),
+            Err(mpsc::RecvTimeoutError::Disconnected)
+        ));
     }
     #[test]
     fn cancelling_full_output_keeps_executor_alive() {

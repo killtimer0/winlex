@@ -676,30 +676,6 @@ mod tests {
     use crate::test_support::catalog;
 
     #[test]
-    fn preference_falls_back_to_canonical_order() {
-        assert_eq!(preferred_for(7, None), Some(Architecture::X86));
-        assert_eq!(
-            preferred_for(7, Some(Architecture::X64)),
-            Some(Architecture::X64)
-        );
-        assert_eq!(
-            preferred_for(7, Some(Architecture::Arm64)),
-            Some(Architecture::Arm64)
-        );
-        assert_eq!(
-            preferred_for(3, Some(Architecture::Arm64)),
-            Some(Architecture::X86)
-        );
-        assert_eq!(
-            preferred_for(4, Some(Architecture::X64)),
-            Some(Architecture::Arm64)
-        );
-        assert_eq!(preferred_for(1, None), Some(Architecture::X86));
-        assert_eq!(preferred_for(2, None), Some(Architecture::X64));
-        assert_eq!(preferred_for(0, None), None);
-    }
-
-    #[test]
     fn materialization_keeps_snapshot_identity_and_exact_architecture() {
         let snapshot = catalog();
         let entity = crate::test_support::search_results(

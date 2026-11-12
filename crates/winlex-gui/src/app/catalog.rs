@@ -721,18 +721,20 @@ mod tests {
             row
         };
         let mut results = vec![tagged("first"), tagged("second")];
-        let mut tracked = [1, 0, 1, -1];
+        let mut tracked = [1, 0, 1, 0];
         for label in ["third", "fourth"] {
             let mut batch = vec![tagged(label), hit(1, 120)];
             merge_results(&mut results, &mut batch, &mut tracked);
-            for (index, expected) in tracked[..3].iter().zip(["second", "first", "second"]) {
+            for (index, expected) in tracked.iter().zip(["second", "first", "second", "first"]) {
                 assert_eq!(
                     String::from_utf16(&results[*index as usize].display.title).unwrap(),
                     expected
                 );
             }
-            assert_eq!(tracked[3], -1);
         }
+        let mut missing = [-1; 4];
+        merge_results(&mut results, &mut vec![hit(99, 200)], &mut missing);
+        assert_eq!(missing, [-1; 4]);
         let equal: Vec<_> = results
             .iter()
             .filter(|row| row.matched.id.token == 10)
@@ -741,19 +743,6 @@ mod tests {
         assert_eq!(equal, ["first", "second", "third", "fourth"]);
     }
 
-    #[test]
-    fn merge_preserves_selection_focus_mark_and_scroll_rows() {
-        let mut results = vec![hit(10, 100), hit(20, 80), hit(30, 60)];
-        let mut batch = vec![hit(1, 100), hit(2, 70), hit(3, 120)];
-        let mut tracked = [1, 2, 1, 0];
-        merge_results(&mut results, &mut batch, &mut tracked);
-        for (index, token) in tracked.into_iter().zip([20, 30, 20, 10]) {
-            assert_eq!(results[index as usize].matched.id.token, token);
-        }
-        let mut missing = [-1; 4];
-        merge_results(&mut results, &mut vec![hit(99, 200)], &mut missing);
-        assert_eq!(missing, [-1; 4]);
-    }
     #[test]
     fn late_search_results_cannot_overwrite_new_search_or_load_failure() {
         let mut session = Session::new(true);

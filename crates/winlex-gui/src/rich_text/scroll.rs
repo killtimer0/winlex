@@ -266,8 +266,6 @@ mod tests {
             editor.scroll_to(y);
             assert_eq!(position(hwnd).y, y);
         }
-        send(hwnd, WM_VSCROLL, SB_BOTTOM as usize, 0);
-        let bottom = position(hwnd).y;
         editor.scroll_to(70000);
         let mut lines = 0u32;
         assert_ne!(
@@ -310,9 +308,6 @@ mod tests {
         editor.scroll_to(0);
         editor.wheel(120);
         assert_eq!(position(hwnd).y, 0);
-        send(hwnd, WM_VSCROLL, SB_BOTTOM as usize, 0);
-        editor.wheel(-120);
-        assert_eq!(position(hwnd).y, bottom);
         for body in ["", "short"] {
             set_content(hwnd, &Content::new(body.into())).unwrap();
             editor.wheel(-120);

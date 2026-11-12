@@ -21,7 +21,6 @@ def test_reload_keeps_old_document_snapshot(launch, settings):
     app.command(1044)
     n.wait(lambda: n.is_visible(n.get_item(entity, 1204)), "earlier snapshot", 45)
     assert n.send(editor, win32con.EM_GETSEL) == (8 << 16) | 2
-    app.command(1040)
     app.query("CreateFileW")
     current = app.open_row()
     assert current != entity

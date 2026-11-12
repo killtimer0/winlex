@@ -32,7 +32,6 @@ def test_same_name_sources_open_and_unload_independently_with_failed_load_rollba
     n.wait(lambda: "failed" in app.status_text() or "失败" in app.status_text(), "load rollback", 45)
     assert profile.get("AutoLoad") == saved
     assert app.count(app.sources) == 2
-    app.command(1040)
     app.query("CreateFileW")
     assert app.named_rows("CreateFileW") == [0, 1]
     app.command(1021)

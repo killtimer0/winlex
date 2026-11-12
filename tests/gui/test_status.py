@@ -57,7 +57,7 @@ def test_search_completion_does_not_replace_other_panel_or_tool_status(launch, s
     app.command(1040)
     auto.ControlFromHandle(app.search).GetValuePattern().SetValue('ERROR_ACCESS_DENIED')
     app.focus(n.get_item(doc, 1810))
-    n.wait(lambda: app.count() and app.named_rows("ERROR_ACCESS_DENIED"), "second search completed", 45)
+    n.wait(lambda: app.named_rows("ERROR_ACCESS_DENIED"), "second search completed", 45)
     assert app.status_text() == ready
     auto.ControlFromHandle(n.get_item(doc, 1810)).GetValuePattern().SetValue('5')
     app.command(1815, doc)

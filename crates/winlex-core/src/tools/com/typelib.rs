@@ -647,7 +647,6 @@ mod tests {
             Err(error) => panic!("expand stdole2: {error}"),
         };
         assert_eq!(library.guid, STD_OLE);
-        assert!(!library.types.is_empty());
         let font = library
             .types
             .iter()

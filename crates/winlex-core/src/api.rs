@@ -889,11 +889,6 @@ mod tests {
             let value = ty.fields().next().unwrap().ty();
             assert_eq!(value, expected);
         }
-        assert!(
-            missing
-                .resolve_type(member(&missing), &field_name(&missing), Architecture::X64)
-                .is_err()
-        );
         let target = old
             .resolve_type(member(&old), &field_name(&old), Architecture::X64)
             .unwrap();

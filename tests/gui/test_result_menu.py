@@ -7,7 +7,6 @@ import win32api
 import win32gui
 import win32con
 import win32process
-import uiautomation as auto
 
 from support import native as n
 from support.session import select_combo
@@ -42,8 +41,6 @@ def select_result(app, row, control=None):
 
 
 def result(app, name):
-    if not n.is_visible(app.results):
-        app.command(1040)
     app.query(name)
     row = app.named_rows(name)[0]
     select_result(app, row)
@@ -63,7 +60,7 @@ def choose(app, ids, command):
 @pytest.mark.parametrize("query,condition,expected", [
     ("ERROR_ACCESS_DENIED", False, {1, 2, 3, 4, 5, 100}),
     ("CreateFileW", False, {1, 2, 3}),
-    ('guid = "0000000c-0000-0000-c000-000000000046"', True, {1, 2, 3, 4}),
+    ('guid = "0000000c-0000-0000-c000-000000000046"', True, {1, 2, 3, 4, 100}),
 ], ids=["integer", "method", "guid"])
 def test_result_menu_actions_available_by_result_kind(launch, settings, query, condition, expected):
     app = launch([settings[1]])
@@ -71,9 +68,7 @@ def test_result_menu_actions_available_by_result_kind(launch, settings, query, c
         mode = n.get_item(app.frame, 1114)
         select_combo(mode, app.choices(mode)[1])
         app.query(query)
-        assert app.count() > 0
         app.select(0)
-        app.focus(app.results)
     else:
         result(app, query)
     _, ids = popup(app, app.results, keyboard=True)
@@ -149,10 +144,8 @@ def test_result_right_click_preserves_document_and_new_window_duplicates(launch,
     choose(app, ids, 1)
     opened = app.wait_document("result opened", "ERROR_ACCESS_DENIED")
     assert opened != original
-    app.focus(app.results)
     _, ids = popup(app, app.results, keyboard=True)
     choose(app, ids, 2)
-    duplicate = n.wait(lambda: app.active_document() if app.active_document() not in (original, opened)
-                       and app.active_document() in app.documents() else None, "duplicate document")
-    assert duplicate != opened
+    n.wait(lambda: doc if (doc := app.active_document()) not in (original, opened)
+           and doc in app.documents() else None, "duplicate document")
     assert original in app.documents() and app.content(original) == content

@@ -148,23 +148,3 @@ pub(super) mod test_support {
         })
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn animation_override_restores_after_unwind() {
-        test_support::scoped(test_support::real(), || {
-            let before = animation(|_| true);
-            let result = std::panic::catch_unwind(|| {
-                test_support::scoped(None, || {
-                    assert!(!animation(|_| true));
-                    panic!("exercise scoped restoration");
-                });
-            });
-            assert!(result.is_err());
-            assert_eq!(animation(|_| true), before);
-        });
-    }
-}

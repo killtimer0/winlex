@@ -13,7 +13,6 @@ def test_native_picker_cancel_keeps_application_state(launch, profile, settings,
         assert app.count() > 0
     app.command(1021)
     n.wait(lambda: app.count(app.sources) == int(loaded), 'source state before picker', 45)
-    source_count = app.count(app.sources)
     app.command(1040)
     before = (app.status_text(), app.count())
     first = app.cell(0) if loaded else None
@@ -32,7 +31,7 @@ def test_native_picker_cancel_keeps_application_state(launch, profile, settings,
         assert app.cell(0) == first
     assert profile.get("AutoLoad") is None
     app.command(1021)
-    assert app.count(app.sources) == source_count
+    assert app.count(app.sources) == int(loaded)
 
 
 def test_module_picker_uses_system_dialog_and_cancel_preserves_request(launch):

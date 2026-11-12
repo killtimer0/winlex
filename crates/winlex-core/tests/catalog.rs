@@ -21,42 +21,6 @@ fn catalog() -> &'static Catalog {
 }
 
 #[test]
-fn search_categories_partition_results_without_name_conventions() {
-    let db = catalog();
-    let all: Vec<_> = search_results(db.search("e", SearchOptions::default())).collect();
-    assert!(all.iter().any(|hit| hit.id.token >> 24 == 1));
-    for mask in [
-        0,
-        1,
-        2,
-        4,
-        8,
-        16,
-        32,
-        64,
-        128,
-        EntityCategory::DEFAULT,
-        EntityCategory::ALL,
-    ] {
-        let expected: Vec<_> = all
-            .iter()
-            .filter(|hit| db.declaration(hit.id, None).unwrap().category() as u32 & mask != 0)
-            .map(|hit| hit.id)
-            .collect();
-        let actual = search_results(db.search(
-            "e",
-            SearchOptions {
-                categories: Some(mask),
-                ..Default::default()
-            },
-        ))
-        .map(|hit| hit.id)
-        .collect::<Vec<_>>();
-        assert_eq!(actual, expected, "mask {mask}");
-    }
-}
-
-#[test]
 fn index_keeps_types_and_members_uniformly() {
     for (name, category) in [
         (

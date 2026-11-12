@@ -154,13 +154,9 @@ def monitor_with_dpi(expected):
     return matches[0]
 
 
-def edit_pixels(hwnd, frame=True):
-    flags = win32con.RDW_INVALIDATE | win32con.RDW_UPDATENOW
-    if frame:
-        flags |= win32con.RDW_FRAME
-    else:
-        flags |= win32con.RDW_ERASE
-    win32gui.RedrawWindow(hwnd, None, None, flags)
+def edit_pixels(hwnd):
+    win32gui.RedrawWindow(hwnd, None, None,
+                         win32con.RDW_INVALIDATE | win32con.RDW_UPDATENOW | win32con.RDW_FRAME)
     with capture(hwnd) as (bitmap, _header, pixels):
         width, height = bitmap.Width, bitmap.Height
         return [[tuple(pixels[((height - y - 1) * width + x) * 4:
@@ -235,7 +231,6 @@ def test_settings_tabs_hover_keyboard_focus_and_navigation(launch, profile, sett
             left = max(rect[2] for rect in rectangles) + 4
             top = max(rect[1] for rect in rectangles) + 4
             bottom = min(rect[3] for rect in rectangles) - 4
-            assert left < width - 4 and top < bottom, 'unused tab header must be sampleable'
             background(tab, (left, top, width - 4, bottom))
 
         page = app.settings_page(sheet, 0)

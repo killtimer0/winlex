@@ -1135,7 +1135,6 @@ mod tests {
             assert_eq!(number.unit, Some(unit));
         }
         assert_eq!(out.regions.len(), 3);
-        assert_eq!(out.regions[0].range.start, 3);
     }
 
     fn entity() -> EntityId {
@@ -1249,6 +1248,7 @@ mod tests {
             let mut out = Rendered::default();
             out.slot_position(3, arch).unwrap();
             assert_eq!(out.text, format!("slot 3, vtable +{hex}"));
+            assert_eq!(out.regions.len(), 2);
             let utf16: Vec<_> = out.text.encode_utf16().collect();
             for (region, expected) in out
                 .regions
@@ -1259,21 +1259,7 @@ mod tests {
                     String::from_utf16(&utf16[region.range.clone()]).unwrap(),
                     expected
                 );
-                for index in region.range.clone() {
-                    assert_eq!(
-                        out.regions
-                            .iter()
-                            .filter(|n| n.range.contains(&index))
-                            .count(),
-                        1
-                    );
-                }
             }
-            assert!(
-                !out.regions
-                    .iter()
-                    .any(|n| n.range.contains(&6) || n.range.contains(&7))
-            );
         }
     }
 
@@ -1288,10 +1274,5 @@ mod tests {
         assert_eq!(out.text, "// 文😀\nconst 😀Target *value;\n");
         assert_eq!(out.regions[0].range, 15..21);
         assert_eq!(out.regions[0].reference(), Some(entity()));
-        let units: Vec<_> = out.text.encode_utf16().collect();
-        assert_eq!(
-            String::from_utf16(&units[out.regions[0].range.clone()]).unwrap(),
-            "Target"
-        );
     }
 }

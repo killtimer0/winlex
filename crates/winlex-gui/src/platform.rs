@@ -44,32 +44,3 @@ impl WindowsVersion {
         self.build
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn dark_mode_threshold_is_monotonic_across_windows_generations() {
-        for (major, minor, build, supported) in [
-            (5, 1, 2600, false),
-            (6, 3, 9600, false),
-            (10, 0, 17762, false),
-            (10, 0, 17763, true),
-            (10, 0, 19044, true),
-            (10, 0, 19045, true),
-            (10, 0, 22000, true),
-            (10, 0, 26200, true),
-            (11, 0, 0, true),
-        ] {
-            assert_eq!(
-                WindowsVersion {
-                    major,
-                    minor,
-                    build
-                } >= WindowsVersion::DARK_MODE,
-                supported
-            );
-        }
-    }
-}

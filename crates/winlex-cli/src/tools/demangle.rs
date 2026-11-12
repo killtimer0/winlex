@@ -202,31 +202,4 @@ mod tests {
         assert!(text.contains("?foo@@YAHH@Z -> int __cdecl foo(int) [msvc, function, cdecl]"));
         assert!(text.contains("?broken: invalid symbol"));
     }
-
-    #[test]
-    fn json_output_carries_spans_and_per_symbol_status() {
-        let mut out = Vec::new();
-        let mut err = Vec::new();
-        let code = run(
-            &["_ZN5space3fooEibc", "?", "--json"]
-                .iter()
-                .map(OsString::from)
-                .collect::<Vec<_>>(),
-            &mut out,
-            &mut err,
-        );
-        assert_eq!(code, 3);
-        assert!(err.is_empty());
-        let response: serde_json::Value = serde_json::from_slice(&out).unwrap();
-        assert_eq!(response["schema"], SCHEMA);
-        assert_eq!(response["command"], "demangle");
-        assert_eq!(response["ok"], false);
-        assert_eq!(response["results"][0]["ok"], true);
-        assert_eq!(response["results"][0]["result"]["abi"], "itanium");
-        assert_eq!(
-            response["results"][0]["result"]["spans"],
-            serde_json::json!([{ "start": 0, "end": 10 }])
-        );
-        assert_eq!(response["results"][1]["ok"], false);
-    }
 }

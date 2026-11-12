@@ -139,7 +139,7 @@ def test_environment_refresh_preserves_open_document(launch, settings):
         assert app.content(doc) == content
         assert n.send(editor, win32con.EM_GETSEL) == (8 << 16) | 2
         controls = [n.get_item(app.frame, id) for id in (1020, 1022, 1044)]
-        assert all(h and n.is_visible(h) for h in controls)
+        assert all(n.is_visible(h) for h in controls)
         rectangles = [n.rectangle(h) for h in controls]
         bounds = n.rectangle(app.sources)
         for i, r in enumerate(rectangles):

@@ -89,7 +89,7 @@ def test_document_find_controls_remain_visible_and_disjoint_when_narrow(launch, 
             assert auto.ControlFromHandle(doc).MoveWindow(x, y, scale(width), scale(720))
             controls = [n.get_item(doc, control) for control in
                         (1224, 1220, 1062, 1061, 1063, 1221, 1222, 1223, 1203)]
-            assert all(control and n.is_visible(control) for control in controls)
+            assert all(n.is_visible(control) for control in controls)
             rectangles = [n.rectangle(control) for control in controls]
             _, _, client_width, client_height = n.rectangle(doc, client=True)
             left, top = win32gui.ClientToScreen(doc, (0, 0))

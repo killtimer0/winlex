@@ -544,48 +544,45 @@ mod tests {
     }
 
     #[test]
-    fn primitive_names_are_shared_by_json_text_and_attribute_annotations() {
-        assert_eq!(signature(&Type::I32)["name"].as_str(), Some("int32"));
-        assert_eq!(signature(&Type::ISize)["name"].as_str(), Some("nint"));
-        assert_eq!(signature(&Type::Void)["name"].as_str(), Some("void"));
-        assert_eq!(value(&Value::ISize(-1))["type"].as_str(), Some("nint"));
-        assert_eq!(value(&Value::F32(1.0))["type"].as_str(), Some("float32"));
-        assert_eq!(attribute_value(&Value::I32(1)), "1 (0x00000001, int32)");
-    }
-
-    #[test]
-    fn integer_projections_preserve_signed_values_and_storage_widths() {
-        for (input, decimal, hex, bits) in [
-            (Value::I8(-1), "-1", "0xff", 8),
-            (Value::U8(255), "255", "0xff", 8),
-            (Value::I16(-32768), "-32768", "0x8000", 16),
-            (Value::U16(1), "1", "0x0001", 16),
-            (Value::I32(-1), "-1", "0xffffffff", 32),
-            (Value::U32(u32::MAX), "4294967295", "0xffffffff", 32),
+    fn numeric_projections_preserve_types_signed_values_and_storage_widths() {
+        for (input, ty, decimal, hex, bits) in [
+            (Value::I8(-1), "int8", "-1", "0xff", 8),
+            (Value::U8(255), "uint8", "255", "0xff", 8),
+            (Value::I16(-32768), "int16", "-32768", "0x8000", 16),
+            (Value::U16(1), "uint16", "1", "0x0001", 16),
+            (Value::I32(-1), "int32", "-1", "0xffffffff", 32),
+            (
+                Value::U32(u32::MAX),
+                "uint32",
+                "4294967295",
+                "0xffffffff",
+                32,
+            ),
             (
                 Value::I64(i64::MIN),
+                "int64",
                 "-9223372036854775808",
                 "0x8000000000000000",
                 64,
             ),
             (
                 Value::U64(u64::MAX),
+                "uint64",
                 "18446744073709551615",
                 "0xffffffffffffffff",
                 64,
             ),
-            (Value::ISize(-1), "-1", "0xffffffffffffffff", 64),
-            (Value::USize(1), "1", "0x0000000000000001", 64),
+            (Value::ISize(-1), "nint", "-1", "0xffffffffffffffff", 64),
+            (Value::USize(1), "nuint", "1", "0x0000000000000001", 64),
         ] {
             let json = value(&input);
+            assert_eq!(json["type"], ty);
             assert_eq!(json["decimal"], decimal);
             assert_eq!(json["hex"], hex);
             assert_eq!(json["bits"], bits);
             assert_eq!(constant(&input), decimal);
-            assert_eq!(
-                attribute_value(&input),
-                format!("{decimal} ({hex}, {})", type_name(&input.ty()))
-            );
+            assert_eq!(attribute_value(&input), format!("{decimal} ({hex}, {ty})"));
         }
+        assert_eq!(value(&Value::F32(1.0))["type"], "float32");
     }
 }

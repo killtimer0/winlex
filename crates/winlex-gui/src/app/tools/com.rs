@@ -995,7 +995,7 @@ mod tests {
     }
 
     #[test]
-    fn differing_view_values_are_annotated_and_identities_are_colored() {
+    fn differing_view_values_are_annotated() {
         let report = Report {
             input: "{00000000-0000-0000-0000-000000000001}".into(),
             kind: Some(ResolvedKind::Guid),
@@ -1028,11 +1028,10 @@ mod tests {
         );
         assert!(output.text.contains("C:\\x86\\a.dll [32-bit machine]"));
         assert!(output.text.contains("C:\\x64\\a.dll [64-bit machine]"));
-        assert!(output.text.trim_end().contains("C:\\x86\\a.dll [32-bit machine]"));
     }
 
     #[test]
-    fn equal_values_appear_once_without_annotations() {
+    fn equal_values_appear_once_without_annotations_and_precede_warnings() {
         let report = Report {
             input: "Example.Object".into(),
             kind: Some(ResolvedKind::ProgId),
@@ -1054,7 +1053,7 @@ mod tests {
             }],
             warnings: vec![],
         };
-        let output = render(&report, &labels(), &[]);
+        let output = render(&report, &labels(), &["cannot tell".into()]);
         assert_eq!(output.text.matches("Description: Example").count(), 1);
         assert!(!output.text.contains("[32-bit"));
         assert!(
@@ -1063,21 +1062,11 @@ mod tests {
                 .trim_end()
                 .starts_with("Example.Object\nProgID Example.Object")
         );
-    }
-
-    #[test]
-    fn warnings_follow_the_groups() {
-        let report = Report {
-            input: "not a target".into(),
-            kind: None,
-            normalized: None,
-            groups: vec![],
-            warnings: vec![Warning::Unrecognized("not a target".into())],
-        };
-        let output = render(&report, &labels(), &["cannot tell".into()]);
-        assert_eq!(
-            output.text.trim_end(),
-            "not a target\n\nWarnings:\n  cannot tell"
+        assert!(
+            output
+                .text
+                .trim_end()
+                .ends_with("\n\nWarnings:\n  cannot tell")
         );
     }
 
