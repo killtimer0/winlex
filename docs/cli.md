@@ -51,7 +51,7 @@ winlex Windows.Win32.winmd Windows.Wdk.winmd show Windows.Wdk.winmd::NtCancelIoF
 `--source SOURCE` 在搜索时过滤来源，在 show/layout/vtable/iid/references 时限定目标来源，不能与目标根部的 `SOURCE::` 同用；实参可单独指定来源。反向引用仍查找所有已加载来源。独立来源中的同名声明不会自动合并。
 跨文件引用所需的依赖须显式加载；非 WinRT 引用要求程序集身份匹配。
 
-受支持核心程序集中的基础引用无需额外加载 CLR 程序集，身份范围与上下文语义见 [foundation.rs](../vendor/windows-metadata/src/reader/foundation.rs)。`System.Guid` 的原生大小为 16 字节、对齐 4 字节，加载 CLR 参考程序集不会改变该 ABI。
+受支持核心程序集中的基础引用无需额外加载 CLR 程序集，支持范围见 [foundation.rs](../vendor/windows-metadata/src/reader/foundation.rs)。
 
 ## 泛型实例
 
@@ -68,7 +68,7 @@ winlex Windows.winmd vtable 'Windows.Foundation.Collections.IMap<string, object>
 `iid` 返回实例 IID 和规范 WinRT 类型签名；实例 `show --json` 保留真实定义 ID，在 `type_arguments` 中单独列出实参。CLI 搜索仍查找元数据定义，不构造实例。
 
 泛型 WinRT `vtable` 返回隐式基接口槽位、方法索引和目标架构下的字节偏移。实例结果另含 IID 与逐方法的标量 ABI：返回 `HRESULT`，元数据返回值变为最后一个 `[out, retval]` 参数，字符串使用 `HSTRING`，接口／委托指针按 IID 标识。x86 使用 `stdcall`，x64／ARM64 使用平台调用约定。
-这是参数层面的 ABI 阅读视图，不描述寄存器分配或完整可编译声明。数组、结构体、运行时类及开放／方法泛型的 ABI 展开不支持；不支持的方法仍保留槽位，并给出原因，不输出猜测的 ABI。泛型值类型布局及 CLR 约束检查不支持。
+这是参数层面的 ABI 阅读视图，不描述寄存器分配或完整可编译声明。数组、结构体、运行时类及开放／方法泛型的 ABI 展开不支持；不支持的方法仍保留槽位，并给出原因。泛型值类型布局及 CLR 约束检查不支持。
 
 ## 错误码查询
 
@@ -192,7 +192,7 @@ winlex Windows.Win32.winmd search --where 'value = nan or value = inf'
 
 声明和类型引用来自输入 WinMD 中保留的元数据。
 
-- 开放泛型的布局/vtable、泛型实例 ABI 及部分 WinRT 字段类型（例如 HSTRING）尚不支持计算。
+- 开放泛型的布局/vtable 及部分 WinRT 字段类型（例如 HSTRING）尚不支持计算；泛型实例的支持范围见[泛型实例](#泛型实例)。
 - 暂不支持 ModuleRef、类型转发和 retargetable 程序集引用。
 - 非零显式偏移、显式大小和灵活数组等尚不支持布局计算。
 

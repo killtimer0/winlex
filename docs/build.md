@@ -59,7 +59,6 @@ Codicon SVG 与生成的 EMF+ 位于 `crates/winlex-gui/res/codicons/`。
 构建目标的最低系统为 x86 的 XP RTM、x64 的 XP x64 / Server 2003，以及 ARM64 的 Windows 10 1809。精确版本号、Rust target 和链接策略见 [inputs/targets.json](../inputs/targets.json)。
 
 兼容库与暗色实现的来源和许可见[第三方声明](../THIRD-PARTY-NOTICES.md)。暗色实现不依赖额外 DLL；外观可用范围见 [GUI 指南](gui.md#界面与设置)。
-系统对话框在 Vista 及以上使用 TaskDialog 和 `IFileOpenDialog`，旧系统使用 MessageBox 和 `GetOpenFileNameW`；现代实现失败不自动回退。
 
 ## README 图片
 
@@ -87,7 +86,7 @@ python -m unittest discover -s tests/scripts -v
 
 `tests/metadata/run.py` 自动构建开发用 CLI，验证布局、泛型及跨源引用，报告写入 `tmp/verify/`。默认使用 Debug 和 Cargo 配置，可用 `--target`、`--target-dir`、`--profile` 覆盖。
 
-验证 GUID 及 COM 结构体的原生布局不受 CLR 参考程序集影响：
+使用 CLR 参考程序集验证基础类型与 COM 结构体的原生布局：
 
 ```powershell
 python tests/metadata/prepare_source.py --foundation-reference
@@ -145,7 +144,7 @@ uv pip compile tests/gui/requirements.txt --python .venv/Scripts/python.exe --py
 
 ### 本机/SSH 调度
 
-目标配置放在 `tests/gui/config/<target>.json`，被 Git 忽略；新增目标时复制模板并修改：
+目标配置放在 `tests/gui/config/<target>.json`，被 Git 忽略；新增目标时复制[配置模板](../tests/gui/config/target.example.json)并修改：
 
 ```powershell
 Copy-Item tests/gui/config/target.example.json tests/gui/config/win10.json
@@ -164,7 +163,7 @@ SSH 配置字段如下：
 | `root` | 目标机上的任务队列与结果目录；本机模式下为调度机目录 |
 | `sftp_drive_root` | SFTP 盘符映射前缀；Bitvise 的 `/C/...` 映射填 `/`，使用原生 Windows 路径的服务省略此字段 |
 
-JSON 中的反斜杠须写成 `\\`，路径也可使用 `/`。修改配置不会移动目标端文件；`script` 和 `root` 应与部署位置及 worker 启动参数一致。
+JSON 中的反斜杠须写成 `\\`，路径也可使用 `/`。`script` 和 `root` 应与目标端部署位置及 worker 启动参数一致。
 目标端部署 `tests/gui/`、被测 EXE 和 WinMD 输入，保留 `tests/gui` 目录结构。配置的目标 Python 应已具备测试依赖。以下操作从调度机执行：
 
 ```powershell
