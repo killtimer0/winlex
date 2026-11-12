@@ -97,6 +97,8 @@ pub enum Icon {
     #[default]
     Misc,
     File,
+    Error,
+    String,
 }
 fn kind_entry(kind: &str) -> Option<(Icon, u16)> {
     KINDS
@@ -146,6 +148,8 @@ const ICONS: &[(u16, u32)] = &[
     (IDR_SYMBOL_REFERENCE, 0x666666),
     (IDR_SYMBOL_MISC, 0x666666),
     (IDR_FILE, 0x666666),
+    (IDR_ERROR, 0x996633),
+    (IDR_SYMBOL_STRING, 0x993366),
 ];
 
 fn symbol_color(color: u32) -> u32 {
@@ -376,6 +380,8 @@ mod tests {
             include_bytes!("../res/codicons/file.emf"),
             include_bytes!("../res/codicons/search.emf"),
             include_bytes!("../res/codicons/files.emf"),
+            include_bytes!("../res/codicons/error.emf"),
+            include_bytes!("../res/codicons/symbol-string.emf"),
         ];
         for &bytes in assets {
             for size in [16, 20, 24, 32, 48] {

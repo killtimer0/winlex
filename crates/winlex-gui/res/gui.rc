@@ -18,6 +18,8 @@ IDR_SYMBOL_MISC 10 "codicons/symbol-misc.emf"
 IDR_FILE 10 "codicons/file.emf"
 IDR_SEARCH 10 "codicons/search.emf"
 IDR_FILES 10 "codicons/files.emf"
+IDR_ERROR 10 "codicons/error.emf"
+IDR_SYMBOL_STRING 10 "codicons/symbol-string.emf"
 IDR_ACCELERATORS ACCELERATORS
 BEGIN
     "O", LOAD_METADATA, VIRTKEY, CONTROL

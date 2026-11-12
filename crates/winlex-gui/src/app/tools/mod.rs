@@ -359,13 +359,13 @@ pub(super) const TOOLS: &[Descriptor] = &[
         kind: Kind::ErrorCode,
         title: IDS_ERROR_CODE_TOOL,
         description: IDS_ERROR_CODE_DESCRIPTION,
-        icon: Icon::Constant,
+        icon: Icon::Error,
     },
     Descriptor {
         kind: Kind::Demangle,
         title: IDS_DEMANGLE_TOOL,
         description: IDS_DEMANGLE_DESCRIPTION,
-        icon: Icon::Method,
+        icon: Icon::String,
     },
     Descriptor {
         kind: Kind::Com,
