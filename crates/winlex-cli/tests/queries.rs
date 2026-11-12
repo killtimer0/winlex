@@ -4,12 +4,13 @@ use std::{ffi::OsString, path::PathBuf, sync::OnceLock};
 use winlex_core::{Architecture, Catalog, SearchMode, SearchOptions};
 
 include!("../../../tests/rust_search.rs");
+include!("../../../tests/rust_metadata.rs");
 
 fn input() -> PathBuf {
     if let Some(path) = std::env::var_os("WINLEX_TEST_WINMD") {
         return path.into();
     }
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../inputs/Windows.Win32.winmd")
+    metadata_path()
 }
 fn entity_id(v: &Value) -> winlex_core::EntityId {
     winlex_core::EntityId {

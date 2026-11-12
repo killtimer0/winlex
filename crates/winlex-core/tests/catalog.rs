@@ -8,15 +8,14 @@ use std::{
 use winlex_core::{Architecture, Catalog, EntityCategory, SearchMode, SearchOptions, SearchStep};
 
 include!("../../../tests/rust_search.rs");
+include!("../../../tests/rust_metadata.rs");
 
 fn catalog() -> &'static Catalog {
     static DB: OnceLock<Catalog> = OnceLock::new();
     DB.get_or_init(|| {
         let path = std::env::var_os("WINLEX_TEST_WINMD")
             .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../inputs/Windows.Win32.winmd")
-            });
+            .unwrap_or_else(metadata_path);
         Catalog::open_many([path]).unwrap()
     })
 }

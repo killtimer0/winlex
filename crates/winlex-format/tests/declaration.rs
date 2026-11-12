@@ -1,6 +1,7 @@
 use winlex_core::{Architecture, Catalog, SearchMode, SearchOptions};
 
 include!("../../../tests/rust_search.rs");
+include!("../../../tests/rust_metadata.rs");
 include!("support/source.rs");
 
 fn render(catalog: &Catalog, name: &str) -> winlex_format::declaration::Rendered {
@@ -617,10 +618,7 @@ fn parameter_modifiers_preserve_order_and_missing_parameter_names() {
 
 #[test]
 fn declarations_cover_native_signatures_and_architecture_specific_types() {
-    let catalog =
-        Catalog::open_many([std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../inputs/Windows.Win32.winmd")])
-        .unwrap();
+    let catalog = Catalog::open_many([metadata_path()]).unwrap();
     for arch in [Architecture::X86, Architecture::X64, Architecture::Arm64] {
         let render = |name| {
             let entity = first_match(catalog.search(

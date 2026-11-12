@@ -632,8 +632,7 @@ mod tests {
     }
     #[test]
     fn replacement_retains_reload_intent_and_failure_preserves_snapshot() {
-        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../inputs/Windows.Win32.winmd");
+        let fixture = crate::test_support::metadata_path();
         let path =
             std::env::temp_dir().join(format!("Winlex.LoadPlan.{}.winmd", std::process::id()));
         std::fs::copy(fixture, &path).unwrap();

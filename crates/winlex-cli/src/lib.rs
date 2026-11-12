@@ -484,9 +484,7 @@ mod tests {
     use super::*;
     use crate as winlex_cli;
 
-    fn metadata_path() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../inputs/Windows.Win32.winmd")
-    }
+    include!("../../../tests/rust_metadata.rs");
 
     include!("../tests/support/invoke.rs");
 

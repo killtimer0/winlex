@@ -4,6 +4,7 @@ use windows_sys::Win32::UI::Shell::SUBCLASSPROC;
 use winlex_core::Catalog;
 
 include!("../../../tests/rust_search.rs");
+include!("../../../tests/rust_metadata.rs");
 
 // The observer must stay alive and unmoved until this subclass is removed.
 pub(crate) unsafe fn observe_messages<F>(hwnd: HWND, id: usize, observer: &F) -> SUBCLASSPROC
@@ -43,11 +44,7 @@ pub(crate) fn initialize_controls(classes: u32) {
 }
 
 pub(crate) fn catalog() -> Arc<Catalog> {
-    Arc::new(
-        Catalog::open_many([std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../inputs/Windows.Win32.winmd")])
-        .unwrap(),
-    )
+    Arc::new(Catalog::open_many([metadata_path()]).unwrap())
 }
 
 pub(crate) const SURFACE_MARKER: u32 = 0x00123456;

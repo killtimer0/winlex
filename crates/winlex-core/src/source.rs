@@ -8,6 +8,8 @@ mod snapshot_tests {
     use std::sync::Arc;
     use windows_metadata::{FieldAttributes, Type, TypeAttributes, reader, writer};
 
+    include!("../../../tests/rust_metadata.rs");
+
     #[test]
     fn public_key_tokens_preserve_raw_tokens_and_hash_full_keys() {
         for full in [false, true] {
@@ -169,9 +171,7 @@ mod snapshot_tests {
     }
     #[test]
     fn snapshots_share_bytes_and_release_after_last_owner() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../inputs/Windows.Win32.winmd");
-        let input = SourceData::read(path).unwrap();
+        let input = SourceData::read(metadata_path()).unwrap();
         let weak = Arc::downgrade(&input.bytes);
         let first = crate::Catalog::from_inputs([input.clone()]).unwrap();
         let second = crate::Catalog::from_inputs(first.inputs().to_vec()).unwrap();
