@@ -101,3 +101,52 @@ def test_real_search_keyboard(launch, settings):
         assert app.count() > 0
         input_state.key(win32con.VK_TAB)
         n.wait(lambda: app.focused() == app.results, "real Tab reaches results")
+
+
+def test_real_tool_find_keyboard(launch):
+    from support.input_state import foreground
+    from test_tools import edit
+    from test_navigation import editor_selection
+    from test_find import replace_input
+
+    with InputState() as inputs:
+        app = launch()
+        app.command(1800)
+        app.select(1, app.tool_list)
+        app.command(1050)
+        doc = n.wait(lambda: app.active_document(), "demangle tool opened")
+        editor = n.get_item(doc, 1823)
+        replace_input(n.get_item(doc, 1820), "_Z3foov\n_Z3fooi")
+        n.wait(lambda: "foo" in n.rich_edit_text(editor), "demangle result")
+        with foreground(app, inputs):
+            app.focus(n.get_item(doc, 1820))
+            inputs.state["held"].append(win32con.VK_CONTROL)
+            inputs.save()
+            auto.PressKey(win32con.VK_CONTROL, waitTime=0)
+            try:
+                inputs.key(ord("F"))
+            finally:
+                auto.ReleaseKey(win32con.VK_CONTROL, waitTime=0)
+                inputs.state["held"].remove(win32con.VK_CONTROL)
+                inputs.save()
+            find = n.get_item(doc, 1220)
+            n.wait(lambda: n.is_visible(find) and app.focused() == find, "Ctrl+F opens tool find")
+            inputs.disable_ime(find)
+            edit(doc, 1220, "foo")
+            n.wait(lambda: n.rich_edit_document(editor).Selection.Text == "foo", "first match")
+            first = editor_selection(app, editor)
+            inputs.key(win32con.VK_F3)
+            n.wait(lambda: editor_selection(app, editor)[0] > first[0], "F3 finds next")
+            inputs.state["held"].append(win32con.VK_SHIFT)
+            inputs.save()
+            auto.PressKey(win32con.VK_SHIFT, waitTime=0)
+            try:
+                inputs.key(win32con.VK_F3)
+            finally:
+                auto.ReleaseKey(win32con.VK_SHIFT, waitTime=0)
+                inputs.state["held"].remove(win32con.VK_SHIFT)
+                inputs.save()
+            n.wait(lambda: editor_selection(app, editor) == first, "Shift+F3 finds previous")
+            inputs.key(win32con.VK_ESCAPE)
+            n.wait(lambda: not n.is_visible(find) and app.focused() == editor, "Esc returns to result")
+            assert n.window_text(n.get_item(doc, 1820)).replace("\r", "") == "_Z3foov\n_Z3fooi"

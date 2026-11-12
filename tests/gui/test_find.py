@@ -1,10 +1,71 @@
-"""Document find uses native selections without adding navigation visits."""
+"""Body find shares commands across documents and tool results."""
+import pytest
 import win32con
 import win32gui
 import uiautomation as auto
 from support import native as n
 from test_navigation import editor_selection
 from test_history import enabled, HISTORY_BACK
+
+
+def replace_input(hwnd, value):
+    # WM_SETTEXT/ValuePattern does not emit EN_CHANGE for a multiline EDIT.
+    n.send(hwnd, win32con.EM_SETSEL, 0, -1)
+    win32gui.SendMessage(hwnd, win32con.EM_REPLACESEL, 1, value)
+
+
+@pytest.mark.parametrize("row,input_id,result_id,submit_id,value,needle,replacement", [
+    (1, 1820, 1823, None, "_Z3foov\n_Z3fooi", "foo", "_Z3barv"),
+    (2, 1830, 1835, 1833, "{00000000-0000-0000-C000-000000000046}",
+     "00000000-0000-0000-C000-000000000046", "{00020400-0000-0000-C000-000000000046}"),
+], ids=["demangle", "com"])
+def test_tool_find_refreshes_and_preserves_per_window_state(
+        launch, settings, row, input_id, result_id, submit_id, value, needle, replacement):
+    from test_tools import activate, edit, initialize_command_menu
+    from support.session import invoke
+
+    app = launch([settings[1]])
+    app.query("CreateFileW")
+    declaration = app.open_row(app.named_rows("CreateFileW")[0])
+    n.wait(lambda: "CreateFileW" in app.content(declaration), "declaration loaded", 45)
+    app.command(1060)
+    edit(declaration, 1220, "HANDLE")
+    n.wait(lambda: n.window_text(n.get_item(declaration, 1223)).startswith("1/"), "document match")
+    saved = editor_selection(app, n.get_item(declaration, 1203))
+
+    app.command(1800)
+    app.select(row, app.tool_list)
+    app.command(1050)
+    doc = n.wait(lambda: app.active_document() if app.active_document() != declaration else None,
+                 "tool activated")
+    replace_input(n.get_item(doc, input_id), value)
+    if submit_id:
+        invoke(n.get_item(doc, submit_id))
+    editor = n.get_item(doc, result_id)
+    n.wait(lambda: needle in n.rich_edit_text(editor), "tool body populated", 30)
+    initialize_command_menu(app, 1060)
+    assert all(enabled(app, command) for command in (1060, 1061, 1062))
+    app.command(1060)
+    find = n.get_item(doc, 1220)
+    n.wait(lambda: n.is_visible(find) and app.focused() == find, "tool find opened")
+    edit(doc, 1220, needle)
+    n.wait(lambda: n.rich_edit_document(editor).Selection.Text == needle, "tool match")
+    for command in (1061, 1062):
+        app.command(command)
+        assert n.rich_edit_document(editor).Selection.Text == needle
+    assert editor_selection(app, n.get_item(declaration, 1203)) == saved
+    assert n.window_text(n.get_item(declaration, 1220)) == "HANDLE"
+
+    replace_input(n.get_item(doc, input_id), replacement)
+    if submit_id:
+        invoke(n.get_item(doc, submit_id))
+    n.wait(lambda: needle not in n.rich_edit_text(editor), "tool body replaced", 30)
+    n.wait(lambda: n.window_text(n.get_item(doc, 1223)).startswith("0/0"), "find refreshed")
+    assert n.window_text(find) == needle
+    activate(declaration)
+    app.command(1061)
+    assert n.rich_edit_document(n.get_item(declaration, 1203)).Selection.Text == "HANDLE"
+    assert n.window_text(find) == needle
 
 
 def test_document_find_controls_remain_visible_and_disjoint_when_narrow(launch, settings):

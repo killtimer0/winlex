@@ -71,6 +71,7 @@ pub(super) struct Shell {
     status: RefCell<String>,
     body: RefCell<crate::rich_text::Content>,
     plain: RefCell<String>,
+    find: super::find::Find,
     /// Set while the view updates its own controls, so their notifications are
     /// not mistaken for user edits.
     pub(super) setting: Cell<bool>,
@@ -92,6 +93,7 @@ impl Shell {
             status: RefCell::new(status),
             body: RefCell::new(crate::rich_text::Content::new(String::new())),
             plain: RefCell::new(String::new()),
+            find: super::find::Find::default(),
             setting: Cell::new(true),
         }
     }
@@ -121,6 +123,7 @@ impl Shell {
             super::bind(h, m.font);
         }
         self.size_combos(combos);
+        self.find.prepare(m.font);
         let ctx = self.ctx();
         let (system_font, _) = ctx.font_for(ctx.dpi().system());
         ctx.checked(crate::rich_text::prepare(
@@ -183,6 +186,7 @@ impl Shell {
         }
         self.body.replace(content);
         self.plain.replace(copy);
+        self.find.refresh(self.result, false);
         self.set_status(status);
     }
     /// Shared tool layout: inset area and the row gaps above the result.
@@ -209,6 +213,7 @@ impl Shell {
             label,
             layout::take_top(area, metrics.height + metrics.px(4)),
         ));
+        self.find.layout(self.ctx(), area, metrics, positions);
         positions.push((self.result, *area));
         if let Err(error) = place_all(positions) {
             self.set_status(&format!("{error:#}"));
@@ -299,6 +304,7 @@ impl Shell {
     fn create_result(&mut self, hwnd: HWND, id: u16) -> anyhow::Result<()> {
         self.create_label(hwnd, IDS_RESULT_LABEL)?;
         self.result = crate::rich_text::create(hwnd, id)?;
+        self.find.create(hwnd, self.result)?;
         Ok(())
     }
     /// Subclass a single-line tool input for Tab and IME composition handling.
@@ -435,6 +441,20 @@ macro_rules! forward {
 }
 
 impl ToolView {
+    fn shell(&self) -> &Shell {
+        forward!(self, view, view)
+    }
+    pub fn command(&self, id: u16, code: u32) -> bool {
+        let shell = self.shell();
+        let visible = shell.find.visible();
+        if !shell.find.command(shell.result, id, code) {
+            return false;
+        }
+        if shell.find.visible() != visible {
+            self.layout();
+        }
+        true
+    }
     pub fn kind(&self) -> Kind {
         match self {
             Self::ErrorCode(_) => Kind::ErrorCode,
@@ -473,9 +493,30 @@ impl ToolView {
         forward!(self, view, view.status())
     }
     pub fn key(&self, msg: &MSG) -> bool {
+        let shell = self.shell();
+        if shell
+            .find
+            .key(shell.result, msg)
+            .is_some_and(|id| self.command(id, 0))
+        {
+            return true;
+        }
         forward!(self, view, view.key(msg))
     }
     pub fn message(&self, msg: u32, w: usize, l: isize) -> Option<isize> {
+        if msg == WM_COMMAND && self.command(w as u16, (w >> 16) as u32) {
+            return Some(0);
+        }
+        if msg == WM_NOTIFY {
+            let header = unsafe { (l as *const NMHDR).read_unaligned() };
+            let shell = self.shell();
+            if header.hwndFrom == shell.result
+                && header.code == windows::Win32::UI::Controls::RichEdit::EN_SELCHANGE
+            {
+                shell.find.count(shell.result, false);
+                return Some(0);
+            }
+        }
         forward!(self, view, view.message(msg, w, l))
     }
     pub fn destroy(&self) {

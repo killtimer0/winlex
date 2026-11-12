@@ -22,7 +22,7 @@ impl Find {
     pub fn visible(&self) -> bool {
         self.visible.get()
     }
-    pub fn create(&mut self, owner: HWND) -> anyhow::Result<()> {
+    pub fn create(&mut self, owner: HWND, editor: HWND) -> anyhow::Result<()> {
         for (id, label, class, style) in [
             (FIND_LABEL, IDS_FIND, w!("STATIC"), SS_CENTERIMAGE),
             (
@@ -54,11 +54,16 @@ impl Find {
         }
         set_text(self.controls[1], "");
         set_text(self.controls[7], "");
+        use windows::Win32::UI::Controls::RichEdit::{
+            EM_GETEVENTMASK, EM_SETEVENTMASK, ENM_SELCHANGE,
+        };
+        let mask = send(editor, EM_GETEVENTMASK, 0, 0);
+        send(editor, EM_SETEVENTMASK, 0, mask | ENM_SELCHANGE as isize);
         Ok(())
     }
     pub fn prepare(&self, font: HFONT) {
         for &h in &self.controls {
-            super::super::bind(h, font);
+            super::bind(h, font);
         }
     }
     pub fn layout(

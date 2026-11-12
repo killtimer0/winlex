@@ -14,6 +14,7 @@ mod commands;
 mod content;
 mod context;
 mod document;
+mod find;
 mod frame;
 mod help;
 mod history;

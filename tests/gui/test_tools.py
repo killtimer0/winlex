@@ -199,7 +199,7 @@ def test_tool_list_rows_align_after_initialization_and_panel_switches(launch, se
         app.command(1021)
 
 
-def test_tool_host_find_commands_are_disabled_and_harmless(launch):
+def test_tool_find_routes_to_active_result_without_submitting_input(launch):
     app = launch()
     doc = tool(app)
     choose_scope(app, doc, 1)
@@ -209,19 +209,26 @@ def test_tool_host_find_commands_are_disabled_and_harmless(launch):
     edit(doc, 1810, "87")
     app.focus(code)
     status = app.status_text()
-    _, index, menu = history_menu(app)
-    n.send(app.frame, win32con.WM_INITMENUPOPUP, menu, index)
-    app.focus(code)
-    for command in [1060, 1061, 1062]:
-        assert not enabled(app, command)
-        # Disabled find commands must reject even an injected command.
-        n.send(app.frame, win32con.WM_COMMAND, command)
-        assert app.active_document() == doc
-        assert app.focused() == code
-        assert n.window_text(code) == "87"
-        assert body(doc) == original and app.status_text() == status
-        assert not n.get_item(doc, 1220), "host find must not create tool controls"
+    initialize_command_menu(app, 1060)
+    assert all(enabled(app, command) for command in (1060, 1061, 1062))
+    app.command(1060)
+    find = n.get_item(doc, 1220)
+    n.wait(lambda: n.is_visible(find) and app.focused() == find, "tool find opened")
+    edit(doc, 1220, "0x00000005")
+    n.wait(lambda: n.window_text(n.get_item(doc, 1223)).startswith("1/"), "tool result found")
+    for command in (1061, 1062):
+        app.command(command)
+        selected = n.rich_edit_document(n.get_item(doc, 1816)).Selection
+        assert selected.Text == "0x00000005"
+    win32gui.PostMessage(find, win32con.WM_KEYDOWN, win32con.VK_ESCAPE, 1)
+    n.wait(lambda: not n.is_visible(find) and app.focused() == n.get_item(doc, 1816),
+           "tool find dismissed")
+    assert app.active_document() == doc
+    assert n.window_text(code) == "87"
+    assert body(doc) == original and app.status_text() == status
     assert "0x00000057" in query(app, doc, "87")
+    app.command(1060)
+    assert n.window_text(n.get_item(doc, 1223)).startswith("0/0")
 
 
 def test_tool_errno_language_and_scope_switches_are_explicit(launch, settings, ui_language):
@@ -249,10 +256,13 @@ def test_tool_errno_language_and_scope_switches_are_explicit(launch, settings, u
     assert errno_label not in query(app, doc, "2")
 
 
-def test_tool_compact_layout_and_narrow_fallback(launch):
+@pytest.mark.parametrize("find_visible", [False, True])
+def test_tool_compact_layout_and_narrow_fallback(launch, find_visible):
     app = launch()
     doc = tool(app)
     choose_scope(app, doc, 5)
+    if find_visible:
+        app.command(1060)
     with n.window_dpi_context(doc):
         dpi = (n.api(n.user, "GetDpiForWindow", n.w.UINT, n.w.HWND)(doc)
                if hasattr(n.user, "GetDpiForWindow") else 96)
@@ -278,6 +288,9 @@ def test_tool_compact_layout_and_narrow_fallback(launch):
             left, top = win32gui.ClientToScreen(doc, (0, 0))
             controls = [n.get_item(doc, control) for control in
                         (1810, 1811, 1812, 1813, 1814, 1815, 1816, 1818)]
+            if find_visible:
+                controls += [n.get_item(doc, control) for control in
+                             (1220, 1062, 1061, 1063, 1221, 1222)]
             controls += [item.NativeWindowHandle for item in auto.ControlFromHandle(doc).GetChildren()
                          if item.ClassName.lower() == "static" and item.NativeWindowHandle
                          and n.is_visible(item.NativeWindowHandle)]

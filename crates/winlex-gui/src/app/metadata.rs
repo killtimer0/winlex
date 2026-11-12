@@ -1,5 +1,5 @@
 //! Snapshot-bound declaration documents. Catalog changes update only the version hint.
-use super::{bind, catalog, document, history, settings, workspace};
+use super::{bind, catalog, document, find, history, settings, workspace};
 use crate::app::context::Context;
 use crate::{
     layout,
@@ -14,7 +14,6 @@ use std::{
 };
 use winlex_core::{Architecture, Catalog, DeclarationTarget};
 
-mod find;
 mod generic;
 mod info;
 
@@ -521,17 +520,7 @@ impl MetadataView {
         document::track_editor(hwnd, self.editor)?;
         show(self.header, false);
         self.info.create(hwnd, self.editor)?;
-        self.find.create(hwnd)?;
-        use windows::Win32::UI::Controls::RichEdit::{
-            EM_GETEVENTMASK, EM_SETEVENTMASK, ENM_SELCHANGE,
-        };
-        let mask = send(self.editor, EM_GETEVENTMASK, 0, 0);
-        send(
-            self.editor,
-            EM_SETEVENTMASK,
-            0,
-            mask | ENM_SELCHANGE as isize,
-        );
+        self.find.create(hwnd, self.editor)?;
         self.apply_binding()?;
         Ok(())
     }

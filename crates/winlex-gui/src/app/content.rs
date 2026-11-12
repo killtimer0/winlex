@@ -100,6 +100,9 @@ impl Content {
             Self::Tool(v) => v.key(msg),
         }
     }
+    pub fn command(&self, id: u16, code: u32) -> bool {
+        forward!(self, v, v.command(id, code))
+    }
     pub fn destroy(&self) {
         forward!(self, v, v.destroy())
     }
