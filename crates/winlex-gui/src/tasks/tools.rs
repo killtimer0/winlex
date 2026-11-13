@@ -1,7 +1,8 @@
 //! Tool work and results independent of native document controls.
 use std::{
+    fs::File,
     io::Read,
-    os::windows::process::CommandExt,
+    os::windows::{io::FromRawHandle, process::CommandExt},
     path::PathBuf,
     process::{Command, Stdio},
     sync::mpsc,
@@ -84,30 +85,40 @@ struct Response {
     error: Option<String>,
 }
 
+fn activation_pipe() -> std::io::Result<(File, File)> {
+    let (mut read, mut write) = (std::ptr::null_mut(), std::ptr::null_mut());
+    // std's overlapped child pipe uses unnamed NT pipe creation unsupported on XP.
+    // Our dedicated reader thread only needs a synchronous CreatePipe handle.
+    if unsafe {
+        windows_sys::Win32::System::Pipes::CreatePipe(&mut read, &mut write, std::ptr::null(), 0)
+    } == 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    // Neither original handle is inheritable; Command duplicates only its writer.
+    Ok(unsafe { (File::from_raw_handle(read), File::from_raw_handle(write)) })
+}
+
 /// Starts this executable in its hidden activation mode and waits for one JSON
 /// response. The child is terminated when it exceeds the timeout.
 fn inspect_isolated(guid: Guid) -> Result<activation::Instance, ActivationError> {
     let exe = std::env::current_exe().map_err(|error| {
         ActivationError::Failed(format!("Cannot locate the executable: {error}"))
     })?;
+    let (mut stdout, write) = activation_pipe().map_err(|error| {
+        ActivationError::Failed(format!("Cannot create the activation output pipe: {error}"))
+    })?;
     let mut child = Command::new(exe)
         .arg("--inspect-com")
         .arg(guid.to_string())
         .stdin(Stdio::null())
-        .stdout(Stdio::piped())
+        .stdout(write)
         .stderr(Stdio::null())
         .creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW)
         .spawn()
         .map_err(|error| {
             ActivationError::Failed(format!("Cannot start the isolated process: {error}"))
         })?;
-    let Some(mut stdout) = child.stdout.take() else {
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err(ActivationError::Failed(
-            "The isolated process has no output pipe.".into(),
-        ));
-    };
     // Drain the pipe while the child runs; the result can exceed its buffer.
     // The channel keeps the wait bounded if another process inherits the handle.
     let (sender, receiver) = mpsc::channel();
@@ -156,4 +167,55 @@ fn inspect_isolated(guid: Guid) -> Result<activation::Instance, ActivationError>
     response.instance.ok_or_else(|| {
         ActivationError::Failed("The activation response contains no instance.".into())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn activation_output_drains_large_child_responses_and_observes_eof() {
+        let cmd = PathBuf::from(std::env::var_os("SystemRoot").expect("Windows directory"))
+            .join("System32")
+            .join("cmd.exe");
+        for (script, expected_status, expected_output) in [
+            (
+                "for /L %i in (1,1,30000) do @echo x",
+                0,
+                b"x\r\n".repeat(30000),
+            ),
+            ("exit /B 7", 7, Vec::new()),
+        ] {
+            let (mut read, write) = activation_pipe().unwrap();
+            let mut child = Command::new(&cmd)
+                .args(["/D", "/C"])
+                .raw_arg(script)
+                .stdin(Stdio::null())
+                .stdout(write)
+                .stderr(Stdio::null())
+                .creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW)
+                .spawn()
+                .unwrap();
+            let (sender, receiver) = mpsc::channel();
+            let reader = std::thread::spawn(move || {
+                let mut output = Vec::new();
+                sender
+                    .send(read.read_to_end(&mut output).map(|_| output))
+                    .unwrap();
+            });
+            let result = receiver.recv_timeout(Duration::from_secs(10));
+            if result.is_err() {
+                let _ = child.kill();
+            }
+            let status = child.wait().unwrap();
+            let output = result.expect("child output reaches EOF").unwrap();
+            reader.join().unwrap();
+            assert_eq!(status.code(), Some(expected_status));
+            assert!(
+                output == expected_output,
+                "child output differs: {} bytes",
+                output.len()
+            );
+        }
+    }
 }
