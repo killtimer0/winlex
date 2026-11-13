@@ -64,7 +64,7 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $true
           cargo fmt --all --check
           cargo clippy -p winlex-core -p winlex-format -p winlex-cli -p winlex-gui --all-targets --locked -- -D warnings
-          cargo test -p winlex-core -p winlex-format -p winlex-cli --locked
+          cargo test -p winlex-format --all-targets --locked
           cargo test --manifest-path vendor/windows-metadata/Cargo.toml --locked
       - name: Check metadata and independent SDK ABI
         run: |

@@ -144,13 +144,25 @@ class BuildRecordContracts(unittest.TestCase):
 
     def test_source_records_commit_and_dirty_state(self):
         with tempfile.TemporaryDirectory(dir=ROOT / "tmp") as folder:
-            root = Path(folder)
-            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            directory = Path(folder)
+            root = directory / "repo"
+            hooks = directory / "disabled-hooks"
+            hooks.mkdir()
+            user_hooks = directory / "user-hooks"
+            user_hooks.mkdir()
+            (user_hooks / "pre-commit").write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+            user_config = directory / "user.gitconfig"
+            user_config.write_text(
+                '[commit]\n\tgpgsign = true\n[gpg]\n\tprogram = nonexistent-contract-signer\n'
+                f'[core]\n\thooksPath = "{user_hooks.as_posix()}"\n', encoding="utf-8")
+            env = {**os.environ, "GIT_CONFIG_GLOBAL": str(user_config)}
+            git = ["git", "-c", "commit.gpgsign=false", "-c", f"core.hooksPath={hooks.as_posix()}"]
+            subprocess.run([*git, "init", "-q", str(root)], check=True, env=env, timeout=30)
             (root / ".gitignore").write_text("/artifacts/\n", encoding="utf-8")
             (root / "source.rs").write_text("original", encoding="utf-8")
-            subprocess.run(["git", "add", "."], cwd=root, check=True)
-            subprocess.run(["git", "-c", "user.name=Contract", "-c", "user.email=contract@example.invalid",
-                            "commit", "-qm", "fixture"], cwd=root, check=True)
+            subprocess.run([*git, "add", "."], cwd=root, check=True, env=env, timeout=30)
+            subprocess.run([*git, "-c", "user.name=Contract", "-c", "user.email=contract@example.invalid",
+                            "commit", "-qm", "fixture"], cwd=root, check=True, env=env, timeout=30)
             before = record.snapshot(root)["source"]
             self.assertFalse(before["dirty"])
             (root / "artifacts").mkdir()
@@ -173,6 +185,18 @@ class BuildRecordContracts(unittest.TestCase):
                 self.assertIsNone(snapshot["source"])
                 self.assertEqual(snapshot["rustc"], "rust version")
                 self.assertEqual(snapshot["cargo"], "cargo version")
+
+    def test_source_timeout_is_not_reported_as_missing_git(self):
+        for operation in ("rev-parse", "status"):
+            with self.subTest(operation=operation):
+                def command(*args, **kwargs):
+                    if args[:2] == ("git", operation):
+                        raise subprocess.TimeoutExpired(args, 30)
+                    return "revision"
+
+                with patch.object(record, "command", side_effect=command):
+                    with self.assertRaisesRegex(subprocess.TimeoutExpired, operation):
+                        record.snapshot()
 
     def test_records_accept_matching_policy_and_reject_conflicts(self):
         with tempfile.TemporaryDirectory(dir=ROOT / "tmp") as folder:

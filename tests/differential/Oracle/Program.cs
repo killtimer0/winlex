@@ -10,7 +10,8 @@ using var stream = File.OpenRead(args[0]);
 using var pe = new PEReader(stream);
 var r = pe.GetMetadataReader(MetadataReaderOptions.None);
 var provider = new Types(r);
-var attributeProvider = new AttributeTypes(r);
+using var dependencies = new MetadataDependencies(r, args[0], args.Skip(2));
+var attributeProvider = new AttributeTypes(r, dependencies);
 int Token(EntityHandle h) => h.IsNil ? 0 : MetadataTokens.GetToken(h);
 object Identity(StringHandle name, Version version, StringHandle culture, BlobHandle key,
     System.Reflection.AssemblyFlags flags)
@@ -156,34 +157,39 @@ sealed class Types(MetadataReader reader) : ISignatureTypeProvider<JsonNode, int
     public JsonNode GetFunctionPointerType(MethodSignature<JsonNode> s) => Node(new { kind = "function_pointer", signature = Signature(s) });
 }
 
-sealed class AttributeTypes(MetadataReader reader) : ICustomAttributeTypeProvider<string>
+sealed record AttributeType(string Name, MetadataReader Reader = null, EntityHandle Handle = default);
+
+sealed class AttributeTypes(MetadataReader reader, MetadataDependencies dependencies) : ICustomAttributeTypeProvider<AttributeType>
 {
-    public string GetPrimitiveType(PrimitiveTypeCode c) => c.ToString();
-    public string GetSystemType() => "System.Type";
-    public bool IsSystemType(string t) => t == "System.Type";
-    public string GetSZArrayType(string t) => t + "[]";
-    public string GetTypeFromSerializedName(string name) => name;
-    public string GetTypeFromDefinition(MetadataReader r, TypeDefinitionHandle h, byte k) {
-        var t = r.GetTypeDefinition(h); return r.GetString(t.Namespace) + "." + r.GetString(t.Name);
+    readonly Dictionary<AttributeType, PrimitiveTypeCode> enumTypes = new();
+    public AttributeType GetPrimitiveType(PrimitiveTypeCode c) => new(c.ToString());
+    public AttributeType GetSystemType() => new("System.Type");
+    public bool IsSystemType(AttributeType t) => t.Name == "System.Type";
+    public AttributeType GetSZArrayType(AttributeType t) => new(t.Name + "[]");
+    public AttributeType GetTypeFromSerializedName(string name) => new(name);
+    public AttributeType GetTypeFromDefinition(MetadataReader r, TypeDefinitionHandle h, byte k) {
+        var t = r.GetTypeDefinition(h); return new(r.GetString(t.Namespace) + "." + r.GetString(t.Name), r, h);
     }
-    public string GetTypeFromReference(MetadataReader r, TypeReferenceHandle h, byte k) {
-        var t = r.GetTypeReference(h); return r.GetString(t.Namespace) + "." + r.GetString(t.Name);
+    public AttributeType GetTypeFromReference(MetadataReader r, TypeReferenceHandle h, byte k) {
+        var t = r.GetTypeReference(h); return new(r.GetString(t.Namespace) + "." + r.GetString(t.Name), r, h);
     }
-    public PrimitiveTypeCode GetUnderlyingEnumType(string name) {
-        var local = reader.TypeDefinitions.Where(h => GetTypeFromDefinition(reader, h, 0) == name).ToArray();
-        if (local.Length != 1) throw new NotSupportedException($"Cannot independently resolve enum underlying type: {name}");
-        var field = reader.GetTypeDefinition(local[0]).GetFields().Single(h => reader.GetString(reader.GetFieldDefinition(h).Name) == "value__");
-        var signature = reader.GetBlobReader(reader.GetFieldDefinition(field).Signature);
+    public PrimitiveTypeCode GetUnderlyingEnumType(AttributeType type) {
+        if (enumTypes.TryGetValue(type, out var code)) return code;
+        var (r, handle) = dependencies.Resolve(type);
+        var field = r.GetTypeDefinition(handle).GetFields().Single(h => r.GetString(r.GetFieldDefinition(h).Name) == "value__");
+        var signature = r.GetBlobReader(r.GetFieldDefinition(field).Signature);
         signature.ReadSignatureHeader();
-        return (PrimitiveTypeCode)signature.ReadSignatureTypeCode();
+        code = (PrimitiveTypeCode)signature.ReadSignatureTypeCode();
+        enumTypes.Add(type, code);
+        return code;
     }
     public string Name(CustomAttribute a) {
         EntityHandle parent = a.Constructor.Kind == HandleKind.MemberReference
             ? reader.GetMemberReference((MemberReferenceHandle)a.Constructor).Parent
             : reader.GetMethodDefinition((MethodDefinitionHandle)a.Constructor).GetDeclaringType();
         return parent.Kind switch {
-            HandleKind.TypeDefinition => GetTypeFromDefinition(reader, (TypeDefinitionHandle)parent, 0),
-            HandleKind.TypeReference => GetTypeFromReference(reader, (TypeReferenceHandle)parent, 0),
+            HandleKind.TypeDefinition => GetTypeFromDefinition(reader, (TypeDefinitionHandle)parent, 0).Name,
+            HandleKind.TypeReference => GetTypeFromReference(reader, (TypeReferenceHandle)parent, 0).Name,
             _ => "" };
     }
     public bool Selected(CustomAttribute a) => Name(a) is
@@ -198,12 +204,13 @@ sealed class AttributeTypes(MetadataReader reader) : ICustomAttributeTypeProvide
         "Windows.Foundation.Metadata.GuidAttribute" or
         "Windows.Foundation.Metadata.OverloadAttribute" or
         "Windows.Foundation.Metadata.DefaultAttribute";
-    public static object Value(string type, object value) => value switch {
+    public static object Value(AttributeType type, object value) => value switch {
         null => null,
         bool b => b,
         float f => BitConverter.SingleToUInt32Bits(f).ToString("x8"),
         double d => BitConverter.DoubleToUInt64Bits(d).ToString("x16"),
         string s => s,
+        AttributeType t => t.Name,
         IFormattable n => n.ToString(null, CultureInfo.InvariantCulture),
         _ => throw new NotSupportedException($"attribute argument {type}") };
 }

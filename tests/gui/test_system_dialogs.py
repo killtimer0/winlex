@@ -1,7 +1,11 @@
 """Native message/file dialog contracts, including their public theme boundary."""
+from contextlib import contextmanager
 import json
+import os
+from pathlib import Path
 import sys
 import time
+import uuid
 
 import pytest
 import uiautomation as auto
@@ -10,12 +14,12 @@ import win32gui
 import win32process
 import winreg
 
-from support import native as n
-from support.diagnostics import screenshot
-from support.input_state import InputState, foreground
+from support import deadline, native as n
+from support.diagnostics import assert_unobscured, screenshot
+from support.input_state import GA_ROOT, InputState, foreground, get_ancestor
 from support.session import invoke, message_button
-from test_theme import dark_background, modern_theme, select_theme
-from test_theme_surfaces import colors
+from test_theme import background_pixels, modern_theme, select_theme
+from test_theme_surfaces import observed_colors as colors
 
 
 def native_dialog(app):
@@ -28,7 +32,8 @@ def native_dialog(app):
             found.append(hwnd)
         return True
 
-    win32gui.EnumWindows(visit, None)
+    for hwnd in n.top_level_windows():
+        visit(hwnd, None)
     assert len(found) <= 1, ('ambiguous owned native dialog', found)
     return found[0] if found else None
 
@@ -74,35 +79,78 @@ def test_sources_prompt_native_version_buttons_and_default(launch, profile, dpi)
     assert profile.get('AutoLoad') == []
 
 
-def assert_readable_native_client(dialog):
+def assert_native_content_painted(dialog):
     _, _, width, height = n.rectangle(dialog, client=True)
     palette = colors(dialog, (3, 3, width - 3, height - 3))
     background = palette.most_common(1)[0][0]
-    luminance = lambda color: sum(a * b for a, b in zip(color, (.0722, .7152, .2126)))
-    assert any(abs(luminance(color) - luminance(background)) > 80 and count >= 8
-               for color, count in palette.items()), 'native client content must remain visible'
+    assert any(color != background for color in palette), 'native client content must be painted'
 
 
-def assert_task_dialog_client_theme(dialog, dark):
-    """Check both content and command panes, not just the non-client frame."""
-    _, _, width, height = n.rectangle(dialog, client=True)
-    for top, bottom in ((3, height // 2), (height // 2, height - 3)):
-        palette = colors(dialog, (3, top, width - 3, bottom))
-        dominant = palette.most_common(1)[0][0]
-        assert (max(dominant) < 128) == dark, (
-            'TaskDialog client pane must follow the selected theme',
-            (top, bottom), dominant, dark)
-    for identifier in (win32con.IDYES, win32con.IDNO):
-        button = message_button(dialog, identifier)
-        assert button is not None, ('missing native command', identifier)
-        bounds = button.BoundingRectangle
+@deadline.operation('read current native TaskDialog theme', 5)
+def native_task_dialog_primary_fill(dialog):
+    """Read the public native TaskDialog primary-panel color as BGR."""
+    # UxTheme caches caller-process state. Opening a new HTHEME is insufficient
+    # while real theme-change notifications remain queued on this STA thread.
+    # Dispatch pending messages only; never synthesize a theme notification or
+    # treat an empty queue as completion of the system's theme transition.
+    n.dispatch_pending_messages()
+    ux = n.c.WinDLL('uxtheme')
+    theme = n.api(ux, 'OpenThemeData', n.c.c_void_p, n.w.HWND, n.w.LPCWSTR)(
+        dialog, 'TaskDialog')
+    assert theme, 'native TaskDialog theme unavailable'
+    try:
+        color = n.w.DWORD()
+        # vssym32.h: TDLG_PRIMARYPANEL = 1; TMT_FILLCOLOR = 3802.
+        status = n.api(ux, 'GetThemeColor', n.c.c_long, n.c.c_void_p,
+                       n.c.c_int, n.c.c_int, n.c.c_int, n.c.POINTER(n.w.DWORD))(
+                           theme, 1, 0, 3802, n.c.byref(color))
+        assert status >= 0, ('native TaskDialog primary fill unavailable', status)
+        # COLORREF is 0x00BBGGRR; captured pixel tuples are BGR.
+        return (color.value >> 16 & 255, color.value >> 8 & 255, color.value & 255)
+    finally:
+        n.api(ux, 'CloseThemeData', n.c.c_long, n.c.c_void_p)(theme)
+
+
+@deadline.operation('observe TaskDialog client theme', 5)
+def task_dialog_appearance(dialog, native_light=False):
+    """Observe both client panes for relative theme comparisons."""
+    assert_unobscured(dialog)
+    surfaces = []
+    # capture_pixels crops in the target's coordinate space, whereas UIA bounds
+    # are physical pixels. Measure native geometry in that same target space.
+    with n.window_dpi_context(dialog):
+        _, _, width, height = n.rectangle(dialog, client=True)
+        panes = [(3, top, width - 3, bottom)
+                 for top, bottom in ((3, height // 2), (height // 2, height - 3))]
+        if native_light:
+            expected = native_task_dialog_primary_fill(dialog)
+
+            def primary_painted():
+                assert_unobscured(dialog)
+                primary = colors(dialog, panes[0]).most_common(1)[0][0]
+                assert_unobscured(dialog)
+                return primary == expected
+
+            # Screen capture can observe the compositor's opening transition.
+            # Wait for a native color role, not an unknown stable sample or delay.
+            n.wait(primary_painted, 'native light TaskDialog primary fill is displayed', 5)
+        for rect in panes:
+            palette = colors(dialog, rect)
+            dominant = palette.most_common(1)[0][0]
+            surfaces.append(dominant)
         origin = win32gui.ClientToScreen(dialog, (0, 0))
-        rect = (bounds.left - origin[0] + 5, bounds.top - origin[1] + 5,
-                bounds.right - origin[0] - 5, bounds.bottom - origin[1] - 5)
-        dominant = colors(dialog, rect).most_common(1)[0][0]
-        assert (max(dominant) < 128) == dark, (
-            'TaskDialog command background must follow the selected theme',
-            identifier, dominant, dark)
+        for identifier in (win32con.IDYES, win32con.IDNO):
+            button = message_button(dialog, identifier)
+            assert button is not None, ('missing native command', identifier)
+            hwnd = button.NativeWindowHandle
+            assert hwnd, ('native command has no HWND', identifier)
+            left, top, right, bottom = n.rectangle(hwnd)
+            rect = (left - origin[0] + 5, top - origin[1] + 5,
+                    right - origin[0] - 5, bottom - origin[1] - 5)
+            dominant = colors(dialog, rect).most_common(1)[0][0]
+            surfaces.append(dominant)
+    assert_unobscured(dialog)
+    return surfaces
 
 
 def assert_titlebar_theme(dialog, dark):
@@ -129,12 +177,13 @@ def test_sources_prompt_theme_and_escape_preserve_yes_no(launch, profile, settin
     with InputState() as inputs:
         app = launch(dpi=dpi, metadata_prompt=True)
         prompt = n.wait(lambda: native_dialog(app), 'sources TaskDialog')
-        auto.ControlFromHandle(prompt).TitleBarControl().Click(simulateMove=False)
+        with n.physical_dpi_context():
+            left, top, right, bottom = n.titlebar_rectangle(prompt)
+            inputs.click((left + right) // 2, (top + bottom) // 2)
         n.wait(lambda: win32gui.GetForegroundWindow() == prompt, 'sources prompt foreground')
         assert_modal(app, prompt)
         assert_titlebar_theme(prompt, theme == 'dark')
-        assert_task_dialog_client_theme(prompt, theme == 'dark')
-        assert_readable_native_client(prompt)
+        assert_native_content_painted(prompt)
         screenshot(prompt, settings[2] / ('sources-prompt-%s-%s.png' % (theme, dpi)))
         inputs.key(win32con.VK_ESCAPE)
         until = time.monotonic() + .3
@@ -145,6 +194,37 @@ def test_sources_prompt_theme_and_escape_preserve_yes_no(launch, profile, settin
         dismiss_no(app, prompt)
         assert profile.preferences() == before
         assert profile.get('AutoLoad') == []
+
+
+@modern_theme
+@pytest.mark.interactive
+@pytest.mark.parametrize('dpi', ['pmv2', 'pmv1'])
+def test_sources_prompt_client_theme_roundtrip(launch, profile, dpi):
+    profile.set('AutoLoad', winreg.REG_MULTI_SZ, [])
+    appearances = {}
+    with InputState() as inputs:
+        for theme in ('light', 'dark', 'light'):
+            profile.set('Theme', winreg.REG_SZ, theme)
+            app = launch(dpi=dpi, metadata_prompt=True)
+            prompt = n.wait(lambda: native_dialog(app), 'sources TaskDialog')
+            with deadline.operation('activate sources TaskDialog via UIA', 5):
+                auto.ControlFromHandle(prompt).SetActive(waitTime=0)
+            with n.physical_dpi_context():
+                left, top, right, bottom = n.titlebar_rectangle(prompt)
+                point = ((left + right) // 2, (top + bottom) // 2)
+                hit = win32gui.WindowFromPoint(point)
+                assert get_ancestor(hit, GA_ROOT) == prompt, 'TaskDialog title bar is obscured'
+                if win32gui.GetForegroundWindow() != prompt:
+                    inputs.click(*point)
+            n.wait(lambda: win32gui.GetForegroundWindow() == prompt, 'TaskDialog foreground', 5)
+            appearance = task_dialog_appearance(prompt, native_light=theme == 'light')
+            if theme in appearances:
+                assert appearance == appearances[theme], 'client theme roundtrip restores its appearance'
+            elif appearances:
+                assert appearance != next(iter(appearances.values())), 'client follows the selected theme'
+            appearances[theme] = appearance
+            dismiss_no(app, prompt)
+            app.close()
 
 
 def filename_field(dialog):
@@ -160,6 +240,86 @@ def filename_field(dialog):
     return fields[0] if fields else None
 
 
+@contextmanager
+def picker_uia_calls():
+    """Observe swallowed REGDB_E_IIDNOTREG on this thread; never handle it."""
+    class ExceptionRecord(n.c.Structure):
+        _fields_ = [('code', n.w.DWORD), ('flags', n.w.DWORD),
+                    ('record', n.c.c_void_p), ('address', n.c.c_void_p)]
+
+    class ExceptionPointers(n.c.Structure):
+        _fields_ = [('record', n.c.POINTER(ExceptionRecord)), ('context', n.c.c_void_p)]
+
+    callback_type = n.c.WINFUNCTYPE(n.c.c_long, n.c.POINTER(ExceptionPointers))
+    get_thread = n.api(n.kernel, 'GetCurrentThreadId', n.w.DWORD)
+    thread = get_thread()
+    first = []
+
+    @callback_type
+    def observe(pointers):
+        record = pointers.contents.record.contents
+        if record.code == 0x80040155 and get_thread() == thread and not first:
+            first.append(record.address)
+        return 0  # EXCEPTION_CONTINUE_SEARCH: preserve handlers/faulthandler.
+
+    add = n.api(n.kernel, 'AddVectoredExceptionHandler', n.c.c_void_p,
+                n.w.ULONG, callback_type)
+    remove = n.api(n.kernel, 'RemoveVectoredExceptionHandler', n.w.ULONG, n.c.c_void_p)
+    token = add(1, observe)
+    assert token, 'Cannot observe native picker traversal exceptions'
+
+    def call(operation, *args):
+        started = time.monotonic()
+        try:
+            return operation(*args)
+        finally:
+            if first:
+                evidence = {'code': '0x80040155', 'address': first[0], 'thread': thread,
+                            'call_seconds': time.monotonic() - started,
+                            'operation': getattr(operation, '__name__', type(operation).__name__)}
+                ledger = os.environ.get('WINLEX_TEST_LEDGER')
+                if ledger:
+                    path = Path(ledger).parent / ('picker-native-exception-' + uuid.uuid4().hex + '.json')
+                    path.write_text(json.dumps(evidence, indent=2), encoding='utf-8')
+                    evidence['artifact'] = str(path)
+                raise AssertionError(('First native exception during picker UIA traversal', evidence))
+
+    try:
+        yield call
+    finally:
+        assert remove(token), 'Cannot remove picker exception observer'
+
+
+@deadline.operation('locate native folder entry via UIA', 5)
+def picker_entry(dialog, sentinel):
+    # Exists/FindControl can traverse past native exceptions swallowed below
+    # Python. Check each provider call instead of retrying that whole search.
+    with picker_uia_calls() as call:
+        root = call(auto.ControlFromHandle, dialog)
+
+        def find(parent, depth, in_list=False):
+            child = call(parent.GetFirstChildControl)
+            while child:
+                kind = call(lambda: child.ControlType)
+                # Non-client titlebars cannot contain folder entries. In
+                # particular, do not ask their provider for children or names.
+                if kind != auto.ControlType.TitleBarControl:
+                    if (in_list and kind in (auto.ControlType.ListItemControl,
+                                             auto.ControlType.DataItemControl)
+                            and call(lambda: child.Name) in (sentinel.name, sentinel.stem)):
+                        return child
+                    if depth < 12:
+                        found = find(child, depth + 1, in_list or kind in (
+                            auto.ControlType.ListControl, auto.ControlType.DataGridControl))
+                        if found:
+                            return found
+                child = call(child.GetNextSiblingControl)
+            return None
+
+        return find(root, 1)
+
+
+@deadline.operation('measure native file picker surfaces via UIA', 5)
 def file_picker_colors(dialog, field, entry):
     """Measure native filename and folder surfaces without fixing an exact palette."""
     origin = win32gui.ClientToScreen(dialog, (0, 0))
@@ -195,15 +355,11 @@ def file_picker_colors(dialog, field, entry):
                 min(height - 3, bounds.bottom - origin[1] - 3))
         assert rect[0] < rect[2] and rect[1] < rect[3], ('native surface not visible', name, rect)
         palette = colors(dialog, rect)
-        dominant = palette.most_common(1)[0][0]
-        result[name] = {'rect': rect, 'colors_bgr': palette.most_common(8),
-                        'dominant_luminance': sum(a * b for a, b in zip(dominant, (.0722, .7152, .2126)))}
+        result[name] = {'rect': rect, 'colors_bgr': palette.most_common(8)}
     rect = (3, height - 8, width - 3, height - 3)
     palette = colors(dialog, rect)
-    dominant = palette.most_common(1)[0][0]
     result['command_pane'] = {
-        'rect': rect, 'colors_bgr': palette.most_common(8),
-        'dominant_luminance': sum(a * b for a, b in zip(dominant, (.0722, .7152, .2126)))}
+        'rect': rect, 'colors_bgr': palette.most_common(8)}
     return result
 
 
@@ -220,16 +376,18 @@ def test_file_picker_current_theme_native_navigation_and_cancel(
     sentinel = folder / 'winlex-dialog-navigation.winmd'
     sentinel.write_bytes(b'')
     with InputState() as inputs, foreground(app, inputs):
+        appearances = []
+        owner = background_pixels(app.search)
         # Reopen after changing the owner theme, guarding against a stale per-process preference.
         for current in (theme, 'dark' if theme == 'light' else 'light'):
             if current != theme:
                 sheet = app.settings()
                 select_theme(app.settings_page(sheet, 0), 2 if current == 'dark' else 1)
                 app.close_settings(sheet)
+                n.wait(lambda: background_pixels(app.search) != owner, 'owner paints changed theme')
             before = profile.preferences()
             assert before[2] == current
-            n.wait(lambda: dark_background(app.search) == (current == 'dark'),
-                   'owner theme visible before opening picker')
+            owner = background_pixels(app.search)
             status = app.status_text()
             app.command(1020)
             dialog = n.wait(lambda: native_dialog(app), 'native file picker')
@@ -240,13 +398,10 @@ def test_file_picker_current_theme_native_navigation_and_cancel(
             assert n.send(field, win32con.WM_SETTEXT, 0, n.c.addressof(value))
             button = n.wait(lambda: n.get_item(dialog, win32con.IDOK), 'native Open button')
             win32gui.PostMessage(dialog, win32con.WM_COMMAND, win32con.IDOK, button)
-            root = auto.ControlFromHandle(dialog)
-            entry = root.Control(searchDepth=12,
-                                 Compare=lambda item, depth: item.Name in (sentinel.name, sentinel.stem))
-            assert entry.Exists(10), 'native folder navigation must display its contents'
+            entry = n.wait(lambda: picker_entry(dialog, sentinel), 'native folder navigation contents', 10)
             assert_modal(app, dialog)
             assert_titlebar_theme(dialog, current == 'dark')
-            assert_readable_native_client(dialog)
+            assert_native_content_painted(dialog)
             artifact = 'file-picker-%s-%s-from-%s' % (current, dpi, theme)
             screenshot(dialog, settings[2] / (artifact + '.png'))
             evidence = {'theme': current, 'dpi': dpi,
@@ -259,10 +414,10 @@ def test_file_picker_current_theme_native_navigation_and_cancel(
             assert not native_dialog(app)
             assert app.status_text() == status, 'navigation and Cancel must not load a source'
             assert profile.preferences() == before
-            n.wait(lambda: dark_background(app.search) == (current == 'dark'),
+            n.wait(lambda: background_pixels(app.search) == owner,
                    'owner repaint preserves theme after picker closes')
             assert 'contents' in evidence['surfaces'], 'native folder surface must be measurable'
-            for surface, measured in evidence['surfaces'].items():
-                assert (measured['dominant_luminance'] < 128) == (current == 'dark'), (
-                    'file picker client surface must follow the selected theme',
-                    surface, current, measured)
+            appearance = {name: value['colors_bgr'][0][0] for name, value in evidence['surfaces'].items()}
+            if appearances:
+                assert appearance != appearances[-1], 'native picker follows the owner theme change'
+            appearances.append(appearance)

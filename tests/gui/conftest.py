@@ -1,9 +1,9 @@
 import hashlib
 import json
+import os
 import platform
 import struct
 import sys
-import time
 import importlib.metadata
 from pathlib import Path
 
@@ -18,6 +18,7 @@ from support.session import Session, invoke, message_button
 from support.pe import is_64_bit
 from support import native as n
 from support.diagnostics import screenshot
+from support import deadline, lifecycle
 from support.artifacts import finish_fixtures
 from support.paths import extended
 
@@ -28,78 +29,42 @@ def pytest_addoption(parser):
     parser.addoption("--artifacts", default="tmp/gui-tests")
     parser.addoption("--language", default="en-US", choices=[option.name for option in LANGUAGES])
     parser.addoption("--dpi", default="auto")
+    parser.addoption('--hc-theme', help='Explicit .theme appearance expected by real high-contrast tests')
     parser.addoption("--real-input", action="store_true",
                      help="Run only interactive input/screen tests on the current desktop")
 
 
 def pytest_configure(config):
+    config.pluginmanager.register(lifecycle, 'winlex-lifecycle')
     config.addinivalue_line("markers", "interactive: requires an exclusive active input desktop")
+    config.addinivalue_line('markers', 'phase_timeout(seconds): maximum call duration for a long behavioral scenario')
+    output = Path(config.getoption('--artifacts'))
+    output.mkdir(parents=True, exist_ok=True)
+    deadline.configure(output)
+    deadline.phase('collection', 'collection', 30)
 
 
+def pytest_unconfigure(config):
+    deadline.close()
+
+
+@pytest.hookimpl(hookwrapper=True, tryfirst=True)
 def pytest_collection_modifyitems(config, items):
     interactive = config.getoption("--real-input")
     selected, deselected = [], []
+    excluded_path = os.environ.get('WINLEX_TEST_EXCLUDE')
+    excluded = set(json.loads(Path(excluded_path).read_text(encoding='utf-8'))) if excluded_path else set()
     for item in items:
-        target = selected if bool(item.get_closest_marker("interactive")) == interactive else deselected
+        target = selected if (bool(item.get_closest_marker("interactive")) == interactive
+                              and item.nodeid not in excluded) else deselected
         target.append(item)
     items[:] = selected
     config.hook.pytest_deselected(items=deselected)
-
-
-def _phase_started(item, phase):
-    output = Path(item.config.getoption("--artifacts"))
-    output.mkdir(parents=True, exist_ok=True)
-    with (output / "progress.jsonl").open("a", encoding="utf-8") as stream:
-        stream.write(json.dumps({"nodeid": item.nodeid, "phase": phase,
-                                 "start": time.time(), "monotonic": time.monotonic()}) + "\n")
-
-
-@pytest.hookimpl(tryfirst=True)
-def pytest_runtest_setup(item):
-    _phase_started(item, "setup")
-    if not item.get_closest_marker("interactive"):
-        return
-    try:
-        station = win32service.GetProcessWindowStation()
-        station_name = win32service.GetUserObjectInformation(int(station), win32con.UOI_NAME)
-        current = win32service.GetThreadDesktop(win32api.GetCurrentThreadId())
-        active = win32service.OpenInputDesktop(0, False, win32con.DESKTOP_READOBJECTS)
-        try:
-            current_name = win32service.GetUserObjectInformation(int(current), win32con.UOI_NAME)
-            active_name = win32service.GetUserObjectInformation(int(active), win32con.UOI_NAME)
-        finally:
-            active.CloseDesktop()
-        if station_name.lower() != "winsta0" or current_name != active_name:
-            pytest.fail("Interactive tests require the active input desktop", pytrace=False)
-    except Exception as error:
-        pytest.fail("Cannot access the active input desktop: %s" % error, pytrace=False)
-
-
-@pytest.hookimpl(tryfirst=True)
-def pytest_runtest_call(item):
-    _phase_started(item, "call")
-
-
-@pytest.hookimpl(tryfirst=True)
-def pytest_runtest_teardown(item):
-    _phase_started(item, "teardown")
-
-
-@pytest.hookimpl(hookwrapper=True)
-def pytest_runtest_makereport(item, call):
-    outcome = yield
-    report = outcome.get_result()
-    output = Path(item.config.getoption("--artifacts"))
-    output.mkdir(parents=True, exist_ok=True)
-    with (output / "timings.jsonl").open("a", encoding="utf-8") as stream:
-        stream.write(json.dumps({"nodeid": report.nodeid, "phase": report.when,
-                                 "outcome": report.outcome, "duration": report.duration,
-                                 "start": report.start, "stop": report.stop}) + "\n")
-    if report.when == "call":
-        item.test_failed = report.failed
-        if report.failed:
-            captured = "".join("\n\n%s\n%s" % section for section in report.sections)
-            (output / (item.name + "-failure.txt")).write_text(report.longreprtext + captured, encoding="utf-8")
+    # Record the final selection after pytest's -k/-m and other collection
+    # filters, not the larger interactive/noninteractive candidate set.
+    yield
+    (Path(config.getoption('--artifacts')) / 'selection.json').write_text(
+        json.dumps([item.nodeid for item in items]), encoding='utf-8')
 
 
 @pytest.fixture(scope="session")
@@ -116,6 +81,8 @@ def automation_client():
     core = client.UIAutomationCore
     modern = comtypes.client.CreateObject(core.CUIAutomation8, interface=core.IUIAutomation2)
     modern.AutoSetFocus = False
+    modern.ConnectionTimeout = 2000
+    modern.TransactionTimeout = 5000
     assert not modern.AutoSetFocus
     automation = modern.QueryInterface(core.IUIAutomation)
     walker = automation.RawViewWalker
@@ -153,6 +120,19 @@ def settings(request, automation_client):
 
 
 @pytest.fixture
+def hc_appearance(request, settings):
+    from test_theme_compatibility import read_high_contrast_appearance
+
+    path = request.config.getoption('--hc-theme')
+    if not path:
+        pytest.fail('Real high-contrast tests require an explicit --hc-theme file', pytrace=False)
+    appearance = read_high_contrast_appearance(Path(path))
+    (settings[2] / 'hc-appearance-fixture.json').write_text(
+        json.dumps(appearance, indent=2), encoding='utf-8')
+    return appearance
+
+
+@pytest.fixture
 def ui_language(request):
     return language(request.config.getoption("--language"))
 
@@ -170,10 +150,10 @@ def launch(request, settings, profile):
         session = Session(settings[0], profile, arguments, dpi or request.config.getoption("--dpi"))
         sessions.append(session)
         if not metadata_prompt and not arguments and profile.get("Version") == 1 and profile.get("AutoLoad") in (None, []):
-            prompt = auto.WindowControl(searchDepth=3, ClassName="#32770", ProcessId=session.process.pid)
-            assert prompt.Exists(10), "empty-startup metadata guide prompt"
+            prompt = n.wait(lambda: n.find_window(session.process.pid, '#32770', session.frame),
+                            'empty-startup metadata guide prompt', 10)
             invoke(n.wait(lambda: message_button(prompt, win32con.IDNO), 'metadata prompt No button'))
-            n.wait(lambda: not prompt.Exists(0, 0), "metadata guide prompt dismissed")
+            n.wait(lambda: not n.is_window(prompt), "metadata guide prompt dismissed")
         return session
     yield start
     errors = []

@@ -28,10 +28,20 @@ def select_executable(messages, name):
     return Path(paths.pop()).absolute()
 
 
-def build_example(package, name, options):
+def build_example(package, name, options, timeout=300):
     command = ["cargo", "build", "-p", package, "--example", name, "--locked",
                "--message-format=json-render-diagnostics", *options]
-    result = subprocess.run(command, cwd=ROOT, stdout=subprocess.PIPE, text=True, encoding="utf-8")
+    try:
+        result = subprocess.run(command, cwd=ROOT, stdout=subprocess.PIPE, text=True,
+                                encoding="utf-8", timeout=timeout)
+    except subprocess.TimeoutExpired as error:
+        # Keep Cargo's partial output available when the build never finishes.
+        if error.stdout:
+            output = error.stdout
+            if isinstance(output, bytes):
+                output = output.decode("utf-8", errors="replace")
+            print(output, end="", file=sys.stderr)
+        raise
     messages = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
     for message in messages:
         rendered = message.get("message", {}).get("rendered")

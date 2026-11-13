@@ -3,10 +3,10 @@ import uiautomation as auto
 import win32con
 import win32gui
 
-from support import native as n
+from support import deadline, native as n
 from test_context import dismiss, find_popup, popup, popup_window
 from test_result_menu import choose, result
-from test_tools import activate, body, choose_scope, query, tool, tools
+from test_tools import activate, body, choose_scope, edit, query, tool, tools
 
 
 def test_tool_action_reuses_recent_instance_and_queries_default_scope(launch, settings):
@@ -15,8 +15,8 @@ def test_tool_action_reuses_recent_instance_and_queries_default_scope(launch, se
     second = tool(app, new=True)
     activate(first)
     choose_scope(app, first, 5)
-    auto.ControlFromHandle(n.get_item(first, 1813)).GetValuePattern().SetValue(str(settings[2] / "missing.dll"))
-    auto.ControlFromHandle(n.get_item(first, 1812)).GetValuePattern().SetValue('0x0804')
+    edit(first, 1813, str(settings[2] / "missing.dll"))
+    edit(first, 1812, '0x0804')
     query(app, first, "87")
     result(app, "ERROR_ACCESS_DENIED")
     win32gui.PostMessage(app.results, win32con.WM_CONTEXTMENU, app.results, -1)
@@ -26,7 +26,9 @@ def test_tool_action_reuses_recent_instance_and_queries_default_scope(launch, se
     assert set(tools(app)) == {first, second}
     for identifier in (1811, 1812):
         control = n.get_item(first, identifier)
-        assert auto.ControlFromHandle(control).GetValuePattern().Value == app.choices(control)[0]
+        with deadline.operation('read tool default selection via UIA', 5):
+            selected = auto.ControlFromHandle(control).GetValuePattern().Value
+        assert selected == app.choices(control)[0]
     assert n.window_text(n.get_item(first, 1810)) == "0x00000005"
     n.wait(lambda: "0x00000005" in body(first), "error code queried immediately", 30)
 

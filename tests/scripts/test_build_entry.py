@@ -24,11 +24,11 @@ $policy = (Get-Content '{ROOT.as_posix()}/inputs/targets.json' -Raw | ConvertFro
 Initialize-WinlexToolchain {ARCH} $policy
 """
                 result = subprocess.run(["pwsh", "-NoProfile", "-Command", script], cwd=ROOT,
-                                        capture_output=True, text=True, encoding="utf-8", errors="replace")
+                                        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=45)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn(message, result.stdout + result.stderr)
 
-    def run_entry(self, cargo_body, extra=""):
+    def run_entry(self, cargo_body, extra="", timeout=45):
         script = f"""
 $ErrorActionPreference = 'Stop'
 . '{ROOT.as_posix()}/scripts/build-tools.ps1'
@@ -38,7 +38,7 @@ function cargo {{ {cargo_body} }}
 & '{ROOT.as_posix()}/scripts/build.ps1' -Architecture {ARCH} @tools {extra}
 """
         return subprocess.run(["pwsh", "-NoProfile", "-Command", script], cwd=ROOT,
-                              text=True, capture_output=True, encoding="utf-8", errors="replace")
+                              text=True, capture_output=True, encoding="utf-8", errors="replace", timeout=timeout)
 
     def test_real_cargo_compile_error_is_rendered(self):
         with tempfile.TemporaryDirectory(dir=ROOT / "tmp") as folder:
@@ -52,7 +52,7 @@ function cargo {{ {cargo_body} }}
                 'fn main() { old(); compile_error!("contract compile failure"); }\n', encoding="utf-8")
             body = (f"& (Get-Command cargo.exe).Source build --manifest-path '{(directory / 'Cargo.toml').as_posix()}' "
                     "--message-format=json; $global:LASTEXITCODE=$LASTEXITCODE")
-            result = self.run_entry(body)
+            result = self.run_entry(body, timeout=120)
             self.assertNotEqual(result.returncode, 0)
             self.assertRegex(result.stderr, r"warning:[^\n]*contract warning")
             self.assertIn("error: contract compile failure", result.stderr)
@@ -100,7 +100,7 @@ function cargo {{ {body} }}
 if ([Console]::OutputEncoding.CodePage -ne 936) {{ throw 'Console encoding was not restored' }}
 """
             result = subprocess.run(["pwsh", "-NoProfile", "-Command", script], cwd=ROOT,
-                                    capture_output=True)
+                                    capture_output=True, timeout=45)
             self.assertEqual(result.returncode, 0, (result.stdout + result.stderr).decode("utf-8", errors="replace"))
             for name in ("winlex", "winlex-gui"):
                 record = json.loads((directory / f"{name}.exe.build.json").read_text(encoding="utf-8-sig"))

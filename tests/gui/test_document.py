@@ -4,9 +4,10 @@ import pytest
 import win32con
 import win32gui
 import uiautomation as auto
-from support import native as n
+from support import deadline, native as n
 from test_context import select_text, selection_packed
 
+@deadline.operation('set document window state via UIA', 5)
 def window_state(hwnd, state):
     pattern = auto.ControlFromHandle(hwnd).GetPattern(auto.PatternId.WindowPattern)
     assert pattern.SetWindowVisualState(state, waitTime=0)
@@ -15,6 +16,7 @@ def window_state(hwnd, state):
         "requested native window state")
 
 
+@deadline.operation('resize document window via UIA', 5)
 def resize(hwnd, width, height):
     pattern = auto.ControlFromHandle(hwnd).GetPattern(auto.PatternId.TransformPattern)
     assert pattern.Resize(width, height, waitTime=0)
@@ -282,10 +284,11 @@ def test_constant_summary_pseudocode_and_information_copy(launch, settings, copy
     shutil.copyfile(settings[1], path)
     app = launch([path])
     app.query("Windows.Win32.Foundation.WIN32_ERROR.ERROR_ACCESS_DENIED")
+    name = app.cell(0).splitlines()[0]
     matches = json.loads(subprocess.check_output([
         str(settings[0].with_name("winlex.exe")), str(path), "search",
-        app.cell(0).splitlines()[0], "--name", "--json",
-    ], encoding="utf-8"))["result"]["matches"]
+        name, "--name", "--json",
+    ], encoding="utf-8", timeout=30))["result"]["matches"]
     assert len(matches) == 1
     identity = matches[0]["id"]
     entity_id = f'{identity["source_id"]}::0x{identity["token"]:08x}'
@@ -299,8 +302,9 @@ def test_constant_summary_pseudocode_and_information_copy(launch, settings, copy
                            (1205, ("Source:", "来源：")),
                            (1203, ("Declaration", "声明"))]:
         hwnd = n.get_item(doc, control)
-        accessible = auto.ControlFromHandle(hwnd).GetLegacyIAccessiblePattern()
-        assert accessible.Name in names
+        with deadline.operation('read summary accessibility name via UIA', 5):
+            accessible = auto.ControlFromHandle(hwnd).GetLegacyIAccessiblePattern()
+            assert accessible.Name in names
     if not copy:
         return
     button = n.get_item(doc, 1206)
@@ -312,7 +316,8 @@ def test_constant_summary_pseudocode_and_information_copy(launch, settings, copy
             assert app.focused() == button
             wait_clipboard_available()
             sequence = clipboard.GetClipboardSequenceNumber()
-            auto.ControlFromHandle(button).Click()
+            with deadline.operation('open information menu via UIA', 5):
+                auto.ControlFromHandle(button).Click(waitTime=0)
             find_popup(app)
             window = popup_window(app.process.pid)
             assert window, "information menu window"
@@ -325,7 +330,8 @@ def test_constant_summary_pseudocode_and_information_copy(launch, settings, copy
             assert clipboard_text() == value
             assert app.focused() == button
         sequence = clipboard.GetClipboardSequenceNumber()
-        auto.ControlFromHandle(button).Click()
+        with deadline.operation('open information menu via UIA', 5):
+            auto.ControlFromHandle(button).Click(waitTime=0)
         find_popup(app)
         window = popup_window(app.process.pid)
         assert window, "information menu window"

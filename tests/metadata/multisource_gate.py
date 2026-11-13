@@ -50,7 +50,11 @@ def query(files, command, name=None, *options, error=None):
     args.append(command)
     if name is not None:
         args.append(name)
-    p = subprocess.run(args, capture_output=True)
+    try:
+        p = subprocess.run(args, capture_output=True, timeout=30)
+    except subprocess.TimeoutExpired as error:
+        error.add_note(f"Query command/inputs: {error.cmd!r}; stderr: {error.stderr!r}")
+        raise
     data = json.loads(p.stdout)
     if error:
         assert p.returncode and error in data["error"]["message"], data

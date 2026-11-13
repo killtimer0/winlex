@@ -6,21 +6,23 @@ import win32con
 import win32gui
 import winreg
 import uiautomation as auto
-from support import native as n
+from support import deadline, native as n
 from support.session import invoke, select_combo
-from support.diagnostics import capture, screenshot, save_pixels
+from support.diagnostics import capture, save_pixels
 from support.languages import LANGUAGES
 
 
+@deadline.operation('set settings category mask via UIA', 5)
 def mask(app, sheet, value):
     page = app.settings_page(sheet, 1)
     for index in range(8):
         checkbox = auto.ControlFromHandle(n.get_item(page, 1310 + index))
         if checkbox.GetTogglePattern().ToggleState != (value >> index) & 1:
-            checkbox.GetTogglePattern().Toggle()
+            checkbox.GetTogglePattern().Toggle(waitTime=0)
     return page
 
 
+@deadline.operation('read settings category mask via UIA', 5)
 def checked(app, sheet):
     page = app.settings_page(sheet, 1)
     return sum(auto.ControlFromHandle(n.get_item(page, 1310 + index)).GetTogglePattern().ToggleState << index
@@ -64,6 +66,13 @@ def test_settings_apply_tracks_saved_values(launch, profile, ui_language):
     general = app.settings_page(sheet, 0)
     assert auto.ControlFromHandle(n.get_item(general, 1300)).GetValuePattern().Value == alternative.label
     assert checked(app, sheet) == 0
+    mask(app, sheet, 255)
+    invoke(n.get_item(sheet, 0x3021))
+    n.wait(lambda: profile.preferences() == (alternative.name, 255, original[2]),
+           "Apply saves every category bit")
+    app.close_settings(sheet, accept=False)
+    sheet = app.settings()
+    assert checked(app, sheet) == 255
     app.close_settings(sheet, accept=False)
 
 
@@ -159,7 +168,7 @@ def test_settings_keyboard_and_close(launch, profile, action):
     win32gui.PostMessage(first, win32con.WM_KEYUP, win32con.VK_TAB, -1073741823)
     n.wait(lambda: app.focused() == second, "settings Tab order")
     if action == "close":
-        auto.ControlFromHandle(sheet).GetWindowPattern().Close()
+        auto.ControlFromHandle(sheet).GetWindowPattern().Close(waitTime=0)
     else:
         key = win32con.VK_RETURN if action == 'enter' else win32con.VK_ESCAPE
         win32gui.PostMessage(second, win32con.WM_KEYDOWN, key, 1)
@@ -176,7 +185,10 @@ def test_settings_refresh_preserves_document(launch, profile, settings, action):
     doc = app.open_row()
     n.wait(lambda: "CreateFileW(" in app.content(doc), "original declaration", 45)
     body = app.content(doc)
-    auto.ControlFromHandle(app.search).GetValuePattern().SetValue('file')
+    with deadline.operation('set search text before settings refresh', 5):
+        value = auto.ControlFromHandle(app.search).GetValuePattern()
+        assert value.SetValue('file', waitTime=0)
+        n.wait(lambda: value.Value == 'file', 'settings refresh search text updated', 5)
     sheet = app.settings()
     mask(app, sheet, 1)
     if action == "apply":
@@ -243,11 +255,8 @@ def test_settings_save_failure_preserves_state(launch, profile, button):
     sheet = app.settings()
     mask(app, sheet, 0)
     invoke(n.get_item(sheet, button))
-    error_control = auto.WindowControl(searchDepth=3, ClassName='#32770',
-                                       Compare=lambda control, depth: control.ProcessId == app.process.pid
-                                       and control.NativeWindowHandle != sheet)
-    assert error_control.Exists(5)
-    error = error_control.NativeWindowHandle
+    error = n.wait(lambda: n.find_window(app.process.pid, '#32770', sheet), 'settings save error', 5)
+    error_control = auto.ControlFromHandle(error)
     invoke(error_control.ButtonControl())
     n.wait(lambda: not n.is_window(error), "save error dismissed")
     assert n.is_window(sheet)
@@ -266,26 +275,28 @@ def test_settings_dpi_pages(launch, settings, mode):
     evidence = []
     output = settings[2] / ("settings-dpi-" + mode + ".json")
     get_dpi = n.api(n.user, "GetDpiForWindow", n.w.UINT, n.w.HWND) if hasattr(n.user, "GetDpiForWindow") else lambda _h: None
-    for monitor_index, monitor in enumerate(n.monitors()):
+    for monitor in n.monitors():
         with n.window_dpi_context(app.frame):
-            auto.ControlFromHandle(app.frame).GetPattern(auto.PatternId.TransformPattern).Move(
-                monitor[0] + 30, monitor[1] + 30)
+            with deadline.operation('move application frame via UIA', 5):
+                auto.ControlFromHandle(app.frame).GetPattern(auto.PatternId.TransformPattern).Move(
+                    monitor[0] + 30, monitor[1] + 30)
         sheet = app.settings()
         for index in (0, 1, 0, 1):
             page = app.settings_page(sheet, index)
             with n.window_dpi_context(sheet):
                 outer = n.rectangle(page)
                 controls = []
-                for element in auto.ControlFromHandle(page).GetChildren():
-                    control = element.NativeWindowHandle
-                    rect = element.BoundingRectangle
-                    controls.append({
-                        "id": n.get_id(control),
-                        "class": n.class_name(control),
-                        "rect": (rect.left, rect.top, rect.right, rect.bottom),
-                        "text": element.Name,
-                        "font": n.send(control, win32con.WM_GETFONT),
-                    })
+                with deadline.operation('observe settings page children via UIA', 5):
+                    for element in auto.ControlFromHandle(page).GetChildren():
+                        control = element.NativeWindowHandle
+                        rect = element.BoundingRectangle
+                        controls.append({
+                            "id": n.get_id(control),
+                            "class": n.class_name(control),
+                            "rect": (rect.left, rect.top, rect.right, rect.bottom),
+                            "text": element.Name,
+                            "font": n.send(control, win32con.WM_GETFONT),
+                        })
                 evidence.append({
                     "mode": mode,
                     "monitor": monitor,
@@ -303,8 +314,9 @@ def test_settings_dpi_pages(launch, settings, mode):
             initial = n.rectangle(sheet)
             returns = []
             for destination in (list(n.monitors()) + [monitor]) * 3:
-                auto.ControlFromHandle(sheet).GetPattern(auto.PatternId.TransformPattern).Move(
-                    destination[0] + 40, destination[1] + 40)
+                with deadline.operation('move settings sheet via UIA', 5):
+                    auto.ControlFromHandle(sheet).GetPattern(auto.PatternId.TransformPattern).Move(
+                        destination[0] + 40, destination[1] + 40)
                 app.settings_page(sheet, 1)
                 rect = n.rectangle(sheet)
                 evidence.append({"move": destination, "dpi": get_dpi(sheet), "rect": rect})
@@ -316,10 +328,6 @@ def test_settings_dpi_pages(launch, settings, mode):
             # Native property sheets may round their size on the first DPI round trip.
             assert all(abs(width-returns[-1][0]) <= 1 and abs(height-returns[-1][1]) <= 1
                        for width, height in returns[1:-1])
-        for index, name in ((0, "general"), (1, "search")):
-            app.settings_page(sheet, index)
-            n.api(n.user, "RedrawWindow", n.w.BOOL, n.w.HWND, n.c.c_void_p, n.c.c_void_p, n.w.UINT)(sheet, None, None, 0x185)
-            screenshot(sheet, settings[2] / ("settings-" + mode + "-" + str(monitor_index) + "-" + name + ".png"))
         app.close_settings(sheet, accept=False)
     output.write_text(json.dumps(evidence, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -334,7 +342,8 @@ def test_settings_pmv1_initial_paint(launch, settings):
     with n.window_dpi_context(app.frame):
         system_dpi = get_system_dpi()
         frame = auto.ControlFromHandle(app.frame)
-        assert frame.SetTopmost(True)
+        frame.SetActive()
+        n.wait(lambda: win32gui.GetForegroundWindow() == app.frame, "settings first-paint foreground")
         for monitor in n.monitors():
             frame.GetPattern(auto.PatternId.TransformPattern).Move(monitor[0] + 30, monitor[1] + 30)
             if get_dpi(app.frame) != system_dpi:
@@ -342,11 +351,9 @@ def test_settings_pmv1_initial_paint(launch, settings):
         else:
             pytest.skip("no monitor with a different DPI")
     # Do not select pages or render a screenshot before observing the first paint.
-    auto.ControlFromHandle(app.frame).SendKeys('{Alt}fs')
-    sheet_control = auto.WindowControl(searchDepth=3, RegexName='^(Settings|设置)$',
-                                       Compare=lambda item, depth: item.ProcessId == app.process.pid)
-    assert sheet_control.Exists(5)
-    sheet = sheet_control.NativeWindowHandle
+    auto.ControlFromHandle(app.frame).SendKeys('{Alt}fs', waitTime=0)
+    sheet = n.wait(lambda: n.find_window(app.process.pid, '#32770', app.frame), 'settings first paint', 5)
+    sheet_control = auto.ControlFromHandle(sheet)
     assert get_dpi(sheet) != system_dpi
     page = sheet_control.ComboBoxControl(AutomationId='1300').GetParentControl()
     label = page.TextControl().NativeWindowHandle

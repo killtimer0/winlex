@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def command(*args, cwd=None):
-    return subprocess.check_output(args, cwd=cwd, stderr=subprocess.PIPE).decode("utf-8").strip()
+    return subprocess.check_output(args, cwd=cwd, stderr=subprocess.PIPE, timeout=30).decode("utf-8").strip()
 
 
 def snapshot(root=ROOT):

@@ -19,7 +19,11 @@ OUT = ROOT / "tmp/verify/compiler"
 
 def query(command, name, arch):
     cmd = [executable("host-cli"), WINMD, "--json", "--arch", arch, command, name]
-    p = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", check=True)
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", check=True, timeout=30)
+    except subprocess.TimeoutExpired as error:
+        error.add_note(f"Query command/inputs: {error.cmd!r}; stderr: {error.stderr!r}")
+        raise
     return json.loads(p.stdout)["result"]
 
 

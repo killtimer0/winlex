@@ -75,11 +75,11 @@ python scripts/readme-media.py --exe target/x86_64-pc-windows-msvc/debug/winlex-
 运行库测试、静态检查和独立验证：
 
 ```powershell
-cargo test -p winlex-core -p winlex-format -p winlex-cli --locked
+cargo test -p winlex-core -p winlex-format -p winlex-cli --all-targets --locked
 cargo fmt --all --check
 cargo clippy -p winlex-core -p winlex-format -p winlex-cli --all-targets --locked -- -D warnings
 python tests/metadata/run.py
-python -m unittest discover -s tests/metadata -p test_artifacts.py
+python -m unittest discover -s tests/metadata -v
 python -m unittest discover -s tests/differential -v
 python -m unittest discover -s tests/scripts -v
 ```
@@ -120,6 +120,13 @@ python tests/fixtures/build_message_fixtures.py --x86-build "$x86Cli.build.json"
 
 `$x86Cli` 和 `$x64Cli` 为对应 CLI 的完整路径；资源 DLL 写入 `tmp/message-fixtures/`。
 
+GUI 搜索分类测试使用独立的托管 fixture，将它放在被测 WinMD 同目录：
+
+```powershell
+dotnet build tests/gui/fixtures/SearchEntries.csproj -c Debug -o tmp/search-fixtures
+Copy-Item tmp/search-fixtures/SearchEntries.dll inputs/SearchEntries.dll
+```
+
 GUI 测试使用 pytest；普通契约测试默认在独立的非活动桌面执行 UI Automation：
 
 ```powershell
@@ -132,15 +139,20 @@ python tests/gui/resources.py --exe "$guiExe"
 
 `$guiExe` 为构建显示的 GUI 完整路径。`--dpi` 可改为 `pmv1`、`system`、`unaware` 或 `auto`。默认使用 `--desktop isolated`；也可使用 `--desktop current` 在当前桌面运行契约测试。
 结果写入 `tmp/gui-tests/<run-id>/`：`run.json` 和 JUnit 汇总结果，失败时保留无损截图，`progress.jsonl` 与 `timings.jsonl` 用于定位中断或慢阶段；输入来源与 fixture 哈希见 `environment.json` 和 `fixture-hashes.json`。与标准输入相同的 fixture 副本会在收尾时移除，变异或损坏的输入保留。
+操作和测试阶段的期限记录在 `deadlines.jsonl`，阻塞栈直接保存在 `timeout-stacks.log`。先检查 `run.json` 的 `timeout` 操作与栈，再决定修复或调整用例，不以增加整轮 `--timeout` 代替定位。阶段兜底预算和长场景标记见 `tests/gui/support/lifecycle.py`。
+普通失败不停止后续用例。遇到无法返回的调用时，驱动终止并清理当前 worker，将当前用例记为超时失败，再从尚未执行的用例继续；不重跑已完成或超时的用例。续跑证据位于 `continued/`，根目录 JUnit 汇总全部结果。取消、整轮预算耗尽或清理失败时不续跑。
 `--desktop current --real-input` 只选择 `interactive` 交互与屏幕呈现测试，不指定时运行其余用例；可用 `--collect-only -q` 检查选择结果。交互测试须独占已解锁的活动桌面，运行期间不要操作键鼠。独立桌面也不隔离剪贴板等会话共享资源。
+真实高对比测试须通过 `--hc-theme PATH` 显式指定目标机的 `.theme` 预期外观文件，例如 `%SystemRoot%\Resources\Ease of Access Themes\hcblack.theme` 的实际路径。测试记录文件哈希，并在采样前确认文件声明的视觉样式和系统颜色角色；此参数只读取预期，不应用文件或覆盖个性化。系统未在期限内达到该预期时报告夹具应用失败，不据此判定产品绘制错误。该参数不影响非 HC 用例。
+
 XP 目标执行端需有兼容 XP 的 Python 3.8 和 UI Automation 组件；通过 `python -m pip install -r tests/gui/requirements.lock` 安装目标端依赖，不使用开发机的 `.venv` 或 uv 锁文件。
+计划任务使用同目录的 `pythonw.exe` 启动 worker，避免控制台遮挡交互测试；目标 Python 安装须保留该解释器。
 `tests/gui/requirements.txt` 定义目标端直接依赖，`requirements.lock` 固定其 Python 3.8 Windows 传递依赖。在开发机更新清单后重新生成：
 
 ```powershell
 uv pip compile tests/gui/requirements.txt --python .venv/Scripts/python.exe --python-version 3.8 --python-platform windows --no-python-downloads --no-annotate --output-file tests/gui/requirements.lock
 ```
 
-将 `winlex.exe` 与被测 `winlex-gui.exe` 放在同一目录。自定义消息资源测试还需部署 `tmp/message-fixtures/` 中的 `messages-*.dll`、`neutral-*.dll` 和 `empty-*.dll`；缺少可选资源时相应用例跳过。UNC 用例使用测试机自身的管理共享，无权限时跳过。
+将 `winlex.exe` 与被测 `winlex-gui.exe` 放在同一目录。自定义消息资源测试还需将 `tmp/message-fixtures/` 中的 `messages-*.dll`、`neutral-*.dll` 和 `empty-*.dll` 复制到该目录；搜索分类 fixture 放在 `--winmd` 指定输入的同目录。缺少 fixture 时相应用例跳过。UNC 用例使用测试机自身的管理共享，无权限时跳过。
 
 ### 本机/SSH 调度
 

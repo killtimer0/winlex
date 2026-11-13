@@ -2,6 +2,7 @@ import win32con
 import win32gui
 import uiautomation as auto
 from support import native as n
+from support.session import invoke
 from test_tools import activate, initialize_command_menu, tool, visual_state
 from test_about import open_about
 
@@ -58,7 +59,7 @@ def test_topmost_preserves_window_state_and_is_instance_local(launch):
     dialog = open_about(app)
     assert topmost(dialog)
     assert not win32gui.IsWindowEnabled(app.frame)
-    auto.ControlFromHandle(n.get_item(dialog, win32con.IDOK)).GetInvokePattern().Invoke(waitTime=0)
+    invoke(n.get_item(dialog, win32con.IDOK))
     n.wait(lambda: not n.is_window(dialog), "about closed while topmost")
     assert win32gui.IsWindowEnabled(app.frame)
 

@@ -74,13 +74,22 @@ def last_record(path):
 def run_progress(path):
     if (path / "actual" / "progress.jsonl").exists():
         path = path / "actual"
+    attempt = last_record(path / 'attempts.jsonl')
+    if attempt:
+        path = path / attempt['directory']
     started = last_record(path / "progress.jsonl")
     if started is None:
         return None
     completed = last_record(path / "timings.jsonl")
     active = completed is None or any(completed[key] != started[key] for key in ("nodeid", "phase"))
-    return {"nodeid": started["nodeid"], "phase": started["phase"], "active": active,
-            "elapsed": max(0, time.monotonic() - started["monotonic"]) if active else completed["duration"]}
+    result = {"nodeid": started["nodeid"], "phase": started["phase"], "active": active,
+              "elapsed": max(0, time.monotonic() - started["monotonic"]) if active else completed["duration"]}
+    operation = last_record(path / 'deadlines.jsonl')
+    if active and operation and all(operation.get(key) == started[key] for key in ('nodeid', 'phase')):
+        result['operation'] = operation['operation']
+        result['budget'] = operation['budget']
+        result['remaining'] = max(0, operation['deadline'] - time.monotonic())
+    return result
 
 
 def rpc(root, request):
@@ -92,7 +101,21 @@ def rpc(root, request):
             return {"worker_available": False}
         result = json.loads(path.read_text(encoding="utf-8"))
         result["heartbeat_age"] = time.time() - result["heartbeat"]
-        result["worker_available"] = result["heartbeat_age"] < 10
+        result["worker_available"] = result.get('worker_available', True) and result["heartbeat_age"] < 10
+        if result['worker_available']:
+            import support
+            import win32api
+            import win32con
+            import win32event
+            try:
+                process = win32api.OpenProcess(win32con.SYNCHRONIZE, False, result['pid'])
+            except win32api.error:
+                result['worker_available'] = False
+            else:
+                try:
+                    result['worker_available'] = win32event.WaitForSingleObject(process, 0) == win32con.WAIT_TIMEOUT
+                finally:
+                    win32api.CloseHandle(process)
         return result
     if action == "start-worker":
         current = rpc(root, {"action": "capabilities"})
@@ -107,7 +130,10 @@ def rpc(root, request):
         name = "Winlex.Tests." + hashlib.sha256(str(root).casefold().encode()).hexdigest()[:12]
         names = {entry.casefold() for entry in scheduler.Enum()}
         task = scheduler.Activate(name) if (name + ".job").casefold() in names else scheduler.NewWorkItem(name)
-        task.SetApplicationName(sys.executable)
+        interpreter = Path(sys.executable).with_name('pythonw.exe')
+        if not interpreter.is_file():
+            raise FileNotFoundError('Scheduled worker requires windowless Python: ' + str(interpreter))
+        task.SetApplicationName(str(interpreter))
         task.SetParameters(subprocess.list2cmdline([str(Path(__file__).resolve()), "worker", "--root", str(root)]))
         task.SetWorkingDirectory(str(Path(__file__).resolve().parent))
         task.SetFlags(t.TASK_FLAG_RUN_ONLY_IF_LOGGED_ON)
@@ -137,6 +163,9 @@ def rpc(root, request):
         (path / "cancel").touch()
         return {"cancel_requested": True}
     if action == "status":
+        supervisor = path / 'supervisor.json'
+        if supervisor.exists():
+            return json.loads(supervisor.read_text(encoding='utf-8'))
         result = path / "run.json"
         if result.exists():
             return json.loads(result.read_text(encoding="utf-8"))
@@ -157,6 +186,67 @@ def rpc(root, request):
     raise ValueError(action)
 
 
+def supervise_runner(process, path, timeout, started, heartbeat):
+    """Observe the runner; never replay input or take over its cleanup."""
+    from support import deadline
+    plans = {}
+    startup = True
+    while process.poll() is None:
+        heartbeat()
+        now = time.monotonic()
+        operation = last_record(path / 'runner-deadlines.jsonl')
+        if operation and operation.get('phase') != 'startup':
+            startup = False
+        ceiling = started + 15 + timeout
+        if not operation:
+            ceiling = started + 15
+        elif startup:
+            ceiling = started + 15
+        elif operation.get('phase') == 'cleanup-inventory':
+            ceiling = operation['deadline']
+        elif operation.get('phase') == 'cleanup':
+            plan = last_record(path / 'runner-cleanup.jsonl')
+            if plan:
+                ceiling = plans.setdefault(plan['attempt'], plan['deadline'])
+            else:
+                ceiling = min(ceiling, operation['deadline'])
+        overdue = deadline.expired(path / 'runner-deadlines.jsonl', now)
+        if overdue or now > ceiling + .25:
+            reason = 'Runner deadline exceeded'
+            if overdue:
+                reason += ': ' + overdue['operation']
+            break
+        time.sleep(.05)
+    else:
+        if (path / 'run.json').exists():
+            try:
+                report = json.loads((path / 'run.json').read_text(encoding='utf-8'))
+                if isinstance(report, dict) and report.get('cleanup_complete'):
+                    return True
+                reason = 'Runner cleanup incomplete'
+            except (ValueError, OSError) as error:
+                reason = 'Invalid runner cleanup report: ' + str(error)
+        else:
+            reason = 'Runner exited without cleanup report'
+    # Killing the runner only closes its job; it does not establish recovery of
+    # input, profiles or independent watchdogs. Preserve run.json as evidence,
+    # but never let an old success override this authoritative terminal status.
+    killed = False
+    try:
+        if process.poll() is None:
+            process.kill()
+        process.wait(timeout=10)
+        killed = True
+    except (OSError, subprocess.TimeoutExpired) as error:
+        reason += ': ' + str(error)
+    atomic(path / 'supervisor.json', {
+        'state': 'supervisor_failed', 'exit_code': process.returncode,
+        'cleanup_complete': False, 'error': reason, 'runner_terminated': killed,
+        'worker_available': False,
+    })
+    return False
+
+
 def worker(root, once=False):
     from support import native
     import platform
@@ -166,10 +256,10 @@ def worker(root, once=False):
     import win32event
     desktop = win32service.GetThreadDesktop(win32api.GetCurrentThreadId())
     station = win32service.GetProcessWindowStation()
-    station_name = win32service.GetUserObjectInformation(station, win32con.UOI_NAME)
+    station_name = win32service.GetUserObjectInformation(int(station), win32con.UOI_NAME)
     if station_name.lower() != "winsta0":
         raise RuntimeError("Worker must run from an interactive logon")
-    desktop_name = win32service.GetUserObjectInformation(desktop, win32con.UOI_NAME)
+    desktop_name = win32service.GetUserObjectInformation(int(desktop), win32con.UOI_NAME)
     mutex = win32event.CreateMutex(None, False, "Local\\Winlex.Tests.Worker." + desktop_name)
     if win32api.GetLastError() == 183:
         win32api.CloseHandle(mutex)
@@ -197,23 +287,22 @@ def worker(root, once=False):
             command = [sys.executable, str(Path(__file__).with_name("run.py")), "--output", str(path),
                        "--timeout", str(data["timeout"]), "--desktop", data["desktop"], *data["tests"]]
             with (path / "output.log").open("w", encoding="utf-8") as log:
+                started = time.monotonic()
                 process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
                                            env={**os.environ, "PYTHONUTF8": "1"})
                 try:
-                    while process.poll() is None:
-                        atomic(root / "capabilities.json", {**capabilities, "heartbeat": time.time()})
-                        time.sleep(.25)
+                    safe = supervise_runner(process, path, data['timeout'], started,
+                        lambda: atomic(root / 'capabilities.json', {**capabilities, 'heartbeat': time.time()}))
                 except KeyboardInterrupt:
                     (path / "cancel").touch()
-                    try:
-                        process.wait(timeout=20)
-                    except subprocess.TimeoutExpired:
-                        process.kill()
-                        process.wait()
-                    raise
-            if not (path / "run.json").exists():
-                atomic(path / "run.json", {"exit_code": process.returncode, "cleanup_complete": False,
-                                          "error": "Runner exited without cleanup report"})
+                    safe = supervise_runner(process, path, data['timeout'], started,
+                        lambda: atomic(root / 'capabilities.json', {**capabilities, 'heartbeat': time.time()}))
+                    if safe:
+                        raise
+            if not safe:
+                atomic(root / 'capabilities.json', {**capabilities, 'heartbeat': time.time(),
+                    'worker_available': False, 'error': 'Runner cleanup unverified; queue stopped'})
+                return
         if once:
             return
         time.sleep(.25)
@@ -259,7 +348,7 @@ def main():
         else:
             subprocess.run(connection(config, "scp") + [
                 "-r", str(args.source), config["host"] + ":" + transfer_path(config, args.destination),
-            ], check=True)
+            ], check=True, timeout=max(180, args.timeout) + 30)
         print(json.dumps({"deployed": args.destination}))
         return
     request = {"action": args.action, "run_id": args.run_id or uuid.uuid4().hex,
@@ -270,7 +359,15 @@ def main():
         payload = base64.b64encode(json.dumps(request).encode()).decode()
         # Windows OpenSSH target command line; GUI starts only in the worker.
         command = subprocess.list2cmdline([config["python"], config["script"], "rpc", "--root", config["root"], "--request", payload])
-        result = json.loads(subprocess.check_output(connection(config, "ssh") + [config["host"], command], text=True, encoding="utf-8"))
+        # Submission only queues work; watch must allow its full requested wait.
+        # Archive creation and transfers keep the default run budget for large files.
+        timeout = 30
+        if args.action == "watch":
+            timeout += max(0, args.timeout)
+        elif args.action == "collect":
+            timeout += max(180, args.timeout)
+        result = json.loads(subprocess.check_output(connection(config, "ssh") + [config["host"], command],
+                                                   text=True, encoding="utf-8", timeout=timeout))
     if args.action == "collect":
         args.output.mkdir(parents=True, exist_ok=True)
         destination = args.output / (request["run_id"] + ".zip")
@@ -279,7 +376,7 @@ def main():
         else:
             subprocess.run(connection(config, "scp") + [
                 config["host"] + ":" + transfer_path(config, result["archive"]), str(destination),
-            ], check=True)
+            ], check=True, timeout=max(180, args.timeout) + 30)
         result["local_archive"] = str(destination)
     print(json.dumps(result, indent=2))
 

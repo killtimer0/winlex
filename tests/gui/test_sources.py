@@ -110,7 +110,7 @@ def test_source_actions_preserve_identity_and_recover_failed_reload(launch, prof
 @pytest.mark.parametrize('mouse', [False, pytest.param(True, marks=pytest.mark.interactive)],
                          ids=['menu-contract', 'clipboard'])
 def test_source_context_menu_copies_full_native_path(launch, settings, mouse):
-    from test_context import find_popup, popup, wait_closed, clipboard_text, wait_clipboard_available
+    from test_context import dismiss, find_popup, popup, wait_closed, clipboard_text, wait_clipboard_available
     second = settings[2] / "右键来源.winmd"
     shutil.copyfile(settings[1], second)
     app = launch([settings[1], second])
@@ -130,12 +130,11 @@ def test_source_context_menu_copies_full_native_path(launch, settings, mouse):
     assert {1044, 1022, 1052} <= set(ids)
     if mouse:
         actions = [ident for ident in ids if ident and ident != 0xffffffff]
-        auto.SendKeys('{Down %d}{Enter}' % (actions.index(1052) + 1))
+        auto.SendKeys('{Down %d}{Enter}' % (actions.index(1052) + 1), waitTime=0)
     else:
-        menu = auto.MenuControl(searchDepth=3, ClassName='#32768', ProcessId=app.process.pid)
-        win32gui.PostMessage(menu.NativeWindowHandle, win32con.WM_KEYDOWN, win32con.VK_ESCAPE, 1)
-    wait_closed(app.sources)
+        dismiss(app.sources)
     if mouse:
+        wait_closed(app.sources)
         n.wait(lambda: clipboard_text() == str(second), "source path copied")
     assert app.selected_row(app.sources) == int(mouse)
 

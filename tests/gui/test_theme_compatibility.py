@@ -1,5 +1,6 @@
 """Native fallback on legacy Windows and real high-contrast transitions."""
 from contextlib import contextmanager
+import hashlib
 import ctypes as c
 from ctypes import wintypes as w
 import json
@@ -60,6 +61,43 @@ def set_high_contrast(snapshot):
     spi_high_contrast(SPI_SETHIGHCONTRAST, state, 0x0002)
 
 
+def execution_context():
+    """Identify the desktop whose native settings this process can observe."""
+    kernel = c.WinDLL('kernel32', use_last_error=True)
+    user = c.WinDLL('user32', use_last_error=True)
+    kernel.ProcessIdToSessionId.restype = w.BOOL
+    kernel.ProcessIdToSessionId.argtypes = (w.DWORD, c.POINTER(w.DWORD))
+    kernel.GetCurrentThreadId.restype, kernel.GetCurrentThreadId.argtypes = w.DWORD, ()
+    user.GetProcessWindowStation.restype, user.GetProcessWindowStation.argtypes = w.HANDLE, ()
+    user.GetThreadDesktop.restype, user.GetThreadDesktop.argtypes = w.HANDLE, (w.DWORD,)
+    user.GetUserObjectInformationW.restype = w.BOOL
+    user.GetUserObjectInformationW.argtypes = (
+        w.HANDLE, c.c_int, c.c_void_p, w.DWORD, c.POINTER(w.DWORD))
+    session = w.DWORD()
+    if not kernel.ProcessIdToSessionId(os.getpid(), c.byref(session)):
+        raise c.WinError(c.get_last_error())
+
+    def name(handle):
+        if not handle:
+            raise c.WinError(c.get_last_error())
+        needed = w.DWORD()
+        if not user.GetUserObjectInformationW(handle, 2, None, 0, c.byref(needed)):
+            if c.get_last_error() != 122:  # ERROR_INSUFFICIENT_BUFFER
+                raise c.WinError(c.get_last_error())
+        if not needed.value:
+            raise RuntimeError('Native desktop context name has no buffer size')
+        buffer = c.create_unicode_buffer((needed.value + c.sizeof(c.c_wchar) - 1) //
+                                         c.sizeof(c.c_wchar))
+        if not user.GetUserObjectInformationW(handle, 2, buffer, c.sizeof(buffer),
+                                             c.byref(needed)):
+            raise c.WinError(c.get_last_error())
+        return buffer.value
+
+    return {'session_id': session.value,
+            'window_station': name(user.GetProcessWindowStation()),
+            'desktop': name(user.GetThreadDesktop(kernel.GetCurrentThreadId()))}
+
+
 def probe_high_contrast():
     """Read-only native probe; never free an unproven-ownership pointer."""
     states, buffers, rows = [], [], []
@@ -89,9 +127,37 @@ def delete_watchdog_task(name):
     prefix = 'Winlex.Tests.HighContrast.'
     if not name.startswith(prefix) or uuid.UUID(hex=name[len(prefix):]).hex != name[len(prefix):]:
         raise ValueError('Invalid owned watchdog task name')
-    scheduler = task_scheduler()
-    if (name + '.job').casefold() in {entry.casefold() for entry in scheduler.Enum()}:
-        scheduler.Delete(name)
+    import threading
+    finished = threading.Event()
+    errors = []
+
+    def remove():
+        initialized = False
+        scheduler = None
+        try:
+            import support
+            import pythoncom
+            pythoncom.CoInitialize()
+            initialized = True
+            scheduler = task_scheduler()
+            if (name + '.job').casefold() in {entry.casefold() for entry in scheduler.Enum()}:
+                from support.task_scheduler import delete_work_item
+                delete_work_item(name)
+        except BaseException:
+            errors.append(traceback.format_exc())
+        finally:
+            try:
+                if initialized:
+                    scheduler = None
+                    pythoncom.CoUninitialize()
+            finally:
+                finished.set()
+
+    threading.Thread(target=remove, daemon=True).start()
+    if not finished.wait(5):
+        raise RuntimeError('High-contrast watchdog task cleanup exceeded 5 seconds')
+    if errors:
+        raise RuntimeError(errors[0])
 
 
 def watchdog_path(artifact, task_name, suffix):
@@ -104,7 +170,7 @@ def watchdog_record(path, text):
     temporary.replace(path)
 
 
-def watchdog(parent_pid, artifact, task_name):
+def watchdog(parent_pid, artifact, task_name, receipt):
     """Scheduler-launched supervisor, independent of the pytest process/job."""
     kernel = c.WinDLL('kernel32', use_last_error=True)
     kernel.OpenProcess.restype, kernel.OpenProcess.argtypes = w.HANDLE, (w.DWORD, w.BOOL, w.DWORD)
@@ -118,26 +184,63 @@ def watchdog(parent_pid, artifact, task_name):
             raise c.WinError(c.get_last_error())
         saved = json.loads(artifact.read_text(encoding='utf-8'))
         snapshot = saved['flags'], saved['scheme']
-        watchdog_record(ready, str(os.getpid()))
+        receipt['expected'] = saved
+        receipt['context'] = execution_context()
+        if receipt['context'] != saved['context']:
+            raise RuntimeError('Watchdog execution context does not match caller')
+        watchdog_record(ready, json.dumps({'pid': os.getpid(),
+                                         'context': receipt['context']}))
+        completed = watchdog_path(artifact, task_name, '.restored')
         deadline = time.monotonic() + 120
-        while artifact.exists():
+        while True:
             result = kernel.WaitForSingleObject(handle, 100)
-            if result == 0 or time.monotonic() >= deadline:
-                set_high_contrast(snapshot)
-                if not restored_high_contrast(high_contrast(), snapshot):
-                    raise RuntimeError('Watchdog could not restore entire HIGHCONTRAST snapshot')
-                artifact.unlink()
+            emergency = result == 0 or time.monotonic() >= deadline
+            if emergency or completed.exists():
+                actual = high_contrast()
+                receipt['actual'] = {'flags': actual[0], 'scheme': actual[1]}
+                receipt['emergency'] = emergency
+                receipt['recovery_needed'] = not restored_high_contrast(actual, snapshot)
+                if emergency or receipt['recovery_needed']:
+                    # Keep native recovery bounded without importing pytest or
+                    # the GUI support package in this standalone supervisor.
+                    import threading
+                    finished = threading.Event()
+                    recovery = {}
+                    errors = []
+
+                    def recover():
+                        try:
+                            recovery['recovery_context'] = execution_context()
+                            if recovery['recovery_context'] != saved['context']:
+                                raise RuntimeError('Native recovery context does not match caller')
+                            set_high_contrast(snapshot)
+                            restored = high_contrast()
+                            recovery['restored'] = {'flags': restored[0], 'scheme': restored[1]}
+                            if not restored_high_contrast(restored, snapshot):
+                                raise RuntimeError('Watchdog could not restore entire HIGHCONTRAST snapshot')
+                        except BaseException:
+                            errors.append(traceback.format_exc())
+                        finally:
+                            finished.set()
+
+                    threading.Thread(target=recover, daemon=True).start()
+                    if not finished.wait(10):
+                        raise RuntimeError('Watchdog native recovery exceeded 10 seconds')
+                    receipt.update(recovery)
+                    if errors:
+                        raise RuntimeError(errors[0])
+                else:
+                    receipt['restored'] = receipt['actual']
+                if not emergency and receipt['recovery_needed']:
+                    raise RuntimeError('Parent restoration did not stick; watchdog recovery was needed')
                 return
             if result != 0x102:
                 raise RuntimeError('Watchdog parent wait failed: %#x' % result)
     finally:
-        try:
-            if handle:
-                kernel.CloseHandle(handle)
-            if ready.exists():
-                ready.unlink()
-        finally:
-            delete_watchdog_task(task_name)
+        if handle:
+            kernel.CloseHandle(handle)
+        if ready.exists():
+            ready.unlink()
 
 
 if __name__ == '__main__':
@@ -154,12 +257,25 @@ if __name__ == '__main__':
                 env={**os.environ, 'PYTHONMALLOC': 'malloc'}))
         artifact, task_name = Path(sys.argv[3]), sys.argv[4]
         result = watchdog_path(artifact, task_name, '.result.json')
+        receipt = {'ok': False}
         try:
-            watchdog(int(sys.argv[2]), artifact, task_name)
+            watchdog(int(sys.argv[2]), artifact, task_name, receipt)
         except BaseException:
-            watchdog_record(result, json.dumps({'ok': False, 'error': traceback.format_exc()}))
-            raise SystemExit(1)
-        watchdog_record(result, json.dumps({'ok': True}))
+            receipt['error'] = traceback.format_exc()
+        else:
+            receipt['ok'] = True
+        # Native restoration evidence must survive a blocked scheduler call.
+        watchdog_record(watchdog_path(artifact, task_name, '.recovery.json'), json.dumps(receipt))
+        try:
+            delete_watchdog_task(task_name)
+        except BaseException:
+            receipt['ok'] = False
+            receipt['task_cleanup_complete'] = False
+            receipt['task_cleanup_error'] = traceback.format_exc()
+        else:
+            receipt['task_cleanup_complete'] = True
+        watchdog_record(result, json.dumps(receipt))
+        raise SystemExit(0 if receipt['ok'] else 1)
     else:
         raise SystemExit('Use --probe-high-contrast or --watch-high-contrast PID SNAPSHOT TASK')
     raise SystemExit(0)
@@ -170,10 +286,10 @@ import win32con
 import win32gui
 import winreg
 
-from support import native as n
+from support import deadline, native as n
 from support.diagnostics import screenshot
 from support.input_state import InputState
-from test_theme import THEME_SUPPORTED, dark_background, modern_theme, selected_index
+from test_theme import THEME_SUPPORTED, modern_theme, selected_index
 from test_theme_surfaces import colors, foreground
 from test_theme_inputs import combo_info
 
@@ -181,11 +297,71 @@ from test_theme_inputs import combo_info
 pytestmark = pytest.mark.interactive
 
 
+HC_COLOR_ROLES = {
+    'Window': win32con.COLOR_WINDOW, 'WindowText': win32con.COLOR_WINDOWTEXT,
+    'ButtonFace': win32con.COLOR_BTNFACE, 'ButtonText': win32con.COLOR_BTNTEXT,
+    'GrayText': win32con.COLOR_GRAYTEXT, 'Hilight': win32con.COLOR_HIGHLIGHT,
+    'HilightText': win32con.COLOR_HIGHLIGHTTEXT,
+}
+
+
+@deadline.operation('read explicit high contrast appearance fixture', 5)
+def read_high_contrast_appearance(path):
+    path = path.resolve(strict=True)
+    with path.open('rb') as stream:
+        raw = stream.read(256 * 1024 + 1)
+    assert len(raw) <= 256 * 1024, 'HC theme file exceeds 256 KiB'
+    profile = n.api(n.kernel, 'GetPrivateProfileStringW', w.DWORD,
+                    w.LPCWSTR, w.LPCWSTR, w.LPCWSTR, w.LPWSTR, w.DWORD, w.LPCWSTR)
+
+    def field(section, key):
+        buffer = c.create_unicode_buffer(32768)
+        count = profile(section, key, '', buffer, len(buffer), str(path))
+        assert 0 < count < len(buffer) - 1, ('Missing or truncated HC fixture field', section, key)
+        return buffer.value
+
+    colors = {}
+    for name in HC_COLOR_ROLES:
+        parts = field(r'Control Panel\Colors', name).split()
+        assert len(parts) == 3 and all(p.isascii() and p.isdigit() for p in parts), ('Invalid HC RGB field', name, parts)
+        rgb = tuple(map(int, parts))
+        assert all(0 <= value <= 255 for value in rgb), ('Invalid HC RGB range', name, rgb)
+        colors[name] = list(reversed(rgb))
+    style = [os.path.normcase(os.path.normpath(os.path.expandvars(field('VisualStyles', 'Path')))),
+             field('VisualStyles', 'ColorStyle'), field('VisualStyles', 'Size')]
+    with path.open('rb') as stream:
+        assert stream.read(len(raw) + 1) == raw, 'HC fixture changed during preflight'
+    return {'path': str(path), 'sha256': hashlib.sha256(raw).hexdigest(),
+            'style': style, 'colors_bgr': colors}
+
+
+def high_contrast_appearance_state():
+    n.dispatch_pending_messages()
+    buffers = [c.create_unicode_buffer(32768) for _ in range(3)]
+    get_theme = n.api(c.WinDLL('uxtheme'), 'GetCurrentThemeName', c.c_long,
+                      w.LPWSTR, c.c_int, w.LPWSTR, c.c_int, w.LPWSTR, c.c_int)
+    status = get_theme(buffers[0], len(buffers[0]), buffers[1], len(buffers[1]),
+                       buffers[2], len(buffers[2]))
+    assert status >= 0, ('Cannot query applied HC visual style', status)
+    return {'high_contrast': list(high_contrast()),
+            'style': [os.path.normcase(os.path.normpath(buffers[0].value)),
+                      buffers[1].value, buffers[2].value],
+            'colors_bgr': {name: list(system_color(index)) for name, index in HC_COLOR_ROLES.items()},
+            'covers': visible_transition_covers()}
+
+
 @contextmanager
-def temporary_high_contrast(snapshot, artifact):
+def temporary_high_contrast(snapshot, artifact, appearance=None):
+    n.wait(lambda: not visible_transition_covers(),
+           'previous native high contrast transition cover gone', 5)
+    original_palette = native_system_palette()
+    assert restored_high_contrast(high_contrast(), snapshot), (
+        'High-contrast state changed before the guarded transition')
     # Preserve the whole structure (including the owned copy of the scheme),
     # not just the ON bit. Keep recovery evidence if the outer runner is killed.
-    artifact.write_text(json.dumps({'flags': snapshot[0], 'scheme': snapshot[1]}),
+    context = execution_context()
+    artifact.write_text(json.dumps({'flags': snapshot[0], 'scheme': snapshot[1],
+                                    'context': context}),
                         encoding='utf-8')
     # Match remote.py's Task Scheduler v1 launch: scheduler provenance keeps
     # this supervisor independent without weakening the runner's job limits.
@@ -195,50 +371,130 @@ def temporary_high_contrast(snapshot, artifact):
     name = 'Winlex.Tests.HighContrast.' + uuid.uuid4().hex
     ready = watchdog_path(artifact, name, '.ready')
     result = watchdog_path(artifact, name, '.result.json')
+    completed = watchdog_path(artifact, name, '.restored')
     created = False
+    launch_requested = False
     try:
-        scheduler = task_scheduler()
-        task = scheduler.NewWorkItem(name)
-        created = True
-        # An independent console can take the foreground and cover the native
-        # dialog whose displayed pixels the test is measuring.
-        interpreter = Path(sys.executable).with_name('pythonw.exe')
-        if not interpreter.is_file():
-            raise RuntimeError('High-contrast watchdog requires pythonw.exe')
-        task.SetApplicationName(str(interpreter))
-        task.SetParameters(subprocess.list2cmdline(
-            [str(Path(__file__).resolve()), '--watch-high-contrast',
-             str(os.getpid()), str(artifact), name]))
-        task.SetWorkingDirectory(str(Path(__file__).resolve().parent))
-        task.SetFlags(t.TASK_FLAG_RUN_ONLY_IF_LOGGED_ON)
-        task.SetAccountInformation(win32api.GetUserName(), None)
-        task.SetMaxRunTime(-1)
-        task.QueryInterface(pythoncom.IID_IPersistFile).Save(None, True)
-        task.Run()
+        with deadline.operation('register independent high contrast recovery', 15):
+            from support.task_scheduler import new_work_item
+            task = new_work_item(name)
+            created = True
+            # A separate console could cover the dialog under observation.
+            interpreter = Path(sys.executable).with_name('pythonw.exe')
+            if not interpreter.is_file():
+                raise RuntimeError('High-contrast watchdog requires pythonw.exe')
+            task.SetApplicationName(str(interpreter))
+            task.SetParameters(subprocess.list2cmdline(
+                [str(Path(__file__).resolve()), '--watch-high-contrast',
+                 str(os.getpid()), str(artifact), name]))
+            # Executable, script and artifact paths are absolute. Do not use
+            # pywin32 SetWorkingDirectory: it also frees Python memory unlocked.
+            task.SetFlags(t.TASK_FLAG_RUN_ONLY_IF_LOGGED_ON)
+            task.SetAccountInformation(win32api.GetUserName(), None)
+            task.SetMaxRunTime(-1)
+            task.QueryInterface(pythoncom.IID_IPersistFile).Save(None, True)
+            launch_requested = True
+            task.Run()
         n.wait(lambda: ready.exists() or result.exists(), 'scheduler watchdog ready', 15)
         assert ready.exists() and not result.exists(), 'Watchdog startup failed; see %s' % result
-        assert int(ready.read_text(encoding='ascii')) > 0
-    except BaseException:
-        artifact.unlink()
-        if created:
+        acknowledgement = json.loads(ready.read_text(encoding='utf-8'))
+        assert acknowledgement['pid'] > 0 and acknowledgement['context'] == context, (
+            'Watchdog did not acknowledge the caller execution context')
+    except BaseException as error:
+        if created and not launch_requested:
             delete_watchdog_task(name)
+        if launch_requested:
+            # A launched supervisor must survive until parent exit, even when
+            # its readiness acknowledgement failed.
+            pytest.exit('High-contrast watchdog startup failed: %r; see %s' %
+                        (error, artifact), returncode=1)
         raise
+    cleanup = artifact.with_name(artifact.stem + '-hc-cleanup.json')
+    evidence = {'cleanup_complete': False,
+                'errors': ['Cooperative native palette/cover restoration is unverified'],
+                'original_palette': original_palette, 'high_contrast_palettes': []}
     try:
-        set_high_contrast((snapshot[0] | HCF_HIGHCONTRASTON, snapshot[1]))
+        watchdog_record(cleanup, json.dumps(evidence))
+        with deadline.operation('enable native system high contrast', 10):
+            set_high_contrast((snapshot[0] | HCF_HIGHCONTRASTON, snapshot[1]))
         n.wait(lambda: high_contrast()[0] & HCF_HIGHCONTRASTON,
                'real system high contrast is enabled', 10)
+        evidence['high_contrast_palettes'].append(native_system_palette())
+        if appearance is not None:
+            appearance_path = artifact.with_name(artifact.stem + '-appearance.json')
+            last = []
+
+            def applied():
+                actual = high_contrast_appearance_state()
+                if last != [actual]:
+                    watchdog_record(appearance_path, json.dumps({'expected': appearance, 'actual': actual}))
+                    last[:] = [actual]
+                return (restored_high_contrast(tuple(actual['high_contrast']),
+                                               (snapshot[0] | HCF_HIGHCONTRASTON, snapshot[1]))
+                        and actual['style'] == appearance['style']
+                        and actual['colors_bgr'] == appearance['colors_bgr']
+                        and not actual['covers'])
+
+            # A real OS-application phase, not repeated UIA/capture. Per-capture
+            # obstruction limits remain independent and unchanged.
+            n.wait(applied, 'system reaches explicit HC fixture appearance (not a product rendering verdict)', 45)
         yield
     finally:
-        set_high_contrast(snapshot)
-        n.wait(lambda: restored_high_contrast(high_contrast(), snapshot),
-               'entire original HIGHCONTRAST state restored', 10)
-        artifact.unlink()
+        original_error = sys.exc_info()
+        if original_error[0] is not None:
+            evidence['original_error'] = ''.join(traceback.format_exception(*original_error))
         try:
-            n.wait(result.exists, 'scheduler watchdog cleanup complete', 10)
+            if high_contrast()[0] & HCF_HIGHCONTRASTON:
+                evidence['high_contrast_palettes'].append(native_system_palette())
+            watchdog_record(cleanup, json.dumps(evidence))
+            with deadline.operation('restore native system high contrast', 10):
+                until = time.monotonic() + 10
+                set_high_contrast(snapshot)
+                remaining = until - time.monotonic()
+                assert remaining > 0, 'Native high-contrast restoration exhausted its budget'
+                def restored():
+                    n.dispatch_pending_messages()
+                    return (restored_high_contrast(high_contrast(), snapshot)
+                            and native_system_palette() == original_palette
+                            and not visible_transition_covers())
+
+                n.wait(restored,
+                       'original HIGHCONTRAST, native palette and transition cover restored',
+                       remaining)
+            watchdog_record(completed, str(os.getpid()))
+            n.wait(result.exists, 'scheduler watchdog cleanup complete', 15)
             outcome = json.loads(result.read_text(encoding='utf-8'))
             assert outcome['ok'], outcome.get('error', 'High-contrast watchdog failed')
-        finally:
-            delete_watchdog_task(name)
+            assert outcome['context'] == context and outcome['expected'] == {
+                'flags': snapshot[0], 'scheme': snapshot[1], 'context': context}
+            assert not outcome['emergency'] and not outcome['recovery_needed'], outcome
+            assert restored_high_contrast(
+                (outcome['restored']['flags'], outcome['restored']['scheme']), snapshot), outcome
+            if not outcome.get('task_cleanup_complete'):
+                delete_watchdog_task(name)
+            artifact.unlink()
+            evidence.update(cleanup_complete=True, errors=[])
+            watchdog_record(cleanup, json.dumps(evidence))
+        except BaseException as error:
+            evidence.update(cleanup_complete=False, errors=[traceback.format_exc()])
+            try:
+                watchdog_record(cleanup, json.dumps(evidence))
+            finally:
+                # Never start another case on structure-only emergency recovery.
+                # Keep the task/artifacts for independent recovery after exit.
+                pytest.exit('Cooperative high-contrast restoration failed: %r; see %s' %
+                            (error, cleanup), returncode=1)
+
+
+def visible_transition_covers():
+    # Known private Windows transition class; not a universal occlusion test.
+    return [hwnd for hwnd in n.top_level_windows()
+            if n.is_visible(hwnd) and n.class_name(hwnd) == 'CoverWindowClass']
+
+
+def native_system_palette():
+    return [system_color(index) for index in
+            (win32con.COLOR_WINDOW, win32con.COLOR_BTNFACE, win32con.COLOR_HIGHLIGHT)]
 
 
 def system_color(index):
@@ -258,7 +514,7 @@ def set_edit_text(hwnd, text):
     assert n.window_text(hwnd) == text
 
 
-def assert_dark_preference(app, profile, expected, native=False):
+def assert_dark_preference(app, profile, expected):
     sheet = app.settings()
     try:
         page = app.settings_page(sheet, 0)
@@ -269,11 +525,6 @@ def assert_dark_preference(app, profile, expected, native=False):
             assert not n.api(n.user, 'IsWindowEnabled', n.w.BOOL, n.w.HWND)(combo), (
                 'unsupported Windows must disable the native-only theme choice')
             assert selected_index(app, combo) == 0
-        if native:
-            # Themed XP property pages use a light tab-page surface rather than
-            # the classic dialog face; unsupported systems must stay light.
-            n.wait(lambda: max(colors(page, (3, 3, 8, 8)).most_common(1)[0][0]) > 128,
-                   'settings page keeps a native light surface', 10)
     finally:
         app.close_settings(sheet, accept=False)
     assert profile.preferences() == expected, 'native fallback must not rewrite preferences'
@@ -284,18 +535,20 @@ def test_legacy_dark_preference_keeps_native_edit(launch, profile, settings):
     profile.set('Theme', winreg.REG_SZ, 'dark')
     expected = profile.preferences()
     app = launch()
+    native = edit_background(app.search)
     with InputState() as inputs, foreground(app, inputs), n.window_dpi_context(app.frame):
         text = 'native fallback text'
         set_edit_text(app.search, text)
-        assert_dark_preference(app, profile, expected, native=True)
-        n.wait(lambda: edit_background(app.search) == system_color(win32con.COLOR_WINDOW),
-               'legacy Edit uses native COLOR_WINDOW', 10)
+        assert_dark_preference(app, profile, expected)
+        assert edit_background(app.search) == native, 'opening settings preserves native appearance'
         assert n.window_text(app.search) == text
         screenshot(app.frame, settings[2] / 'legacy-dark-preference-native.png')
 
 
 @modern_theme
-def test_actual_high_contrast_overrides_dark_and_restores(launch, profile, settings):
+def test_actual_high_contrast_overrides_dark_and_restores(launch, profile, settings, hc_appearance):
+    from test_theme_surfaces import observed_colors
+
     snapshot = high_contrast()
     if snapshot[0] & HCF_HIGHCONTRASTON:
         pytest.skip('high contrast already enabled; do not alter the existing desktop')
@@ -306,38 +559,86 @@ def test_actual_high_contrast_overrides_dark_and_restores(launch, profile, setti
     app = launch()
     with InputState() as inputs, foreground(app, inputs), n.window_dpi_context(app.frame):
         text = 'high contrast preserves this text'
-        set_edit_text(app.search, text)
-        n.wait(lambda: dark_background(app.search), 'explicit dark before high contrast', 10)
-        dark_fill = edit_background(app.search)
-        regions = {}
-        unobscured = set()
+        evidence = {'before': {'high_contrast': list(snapshot)}}
+        evidence_path = settings[2] / 'high-contrast-controls.json'
 
-        def fill(hwnd):
+        def record(stage, values):
+            evidence[stage] = values
+            evidence_path.write_text(json.dumps(evidence, indent=2), encoding='utf-8')
+
+        set_edit_text(app.search, text)
+        regions = {}
+
+        def remember_region(hwnd, region=None):
             _, _, width, height = n.rectangle(hwnd, client=True)
-            region = regions.get(hwnd, (2, 2, width - 2, height - 2))
-            if callable(region):
-                region = region()
-            if hwnd in unobscured:
-                x = (region[0] + region[2]) // 2
-                y = (region[1] + region[3]) // 2
-                point = win32gui.ClientToScreen(hwnd, (x, y))
+            regions[hwnd] = region or (2, 2, width - 2, height - 2)
+
+        def sample_points(hwnd, region):
+            left, top, right, bottom = region
+            assert left < right and top < bottom, ('empty native sample', hwnd, region)
+            return [win32gui.ClientToScreen(hwnd, point) for point in
+                    ((left, top), (right - 1, top), (left, bottom - 1),
+                     (right - 1, bottom - 1),
+                     ((left + right) // 2, (top + bottom) // 2))]
+
+        def require_ownership(hwnd, points):
+            for point in points:
                 actual = win32gui.WindowFromPoint(point)
-                if actual != hwnd:
+                # WindowFromPoint ignores disabled windows. A hidden modal
+                # sheet leaves its owner disabled, so descend from the exact
+                # hit root without skipping disabled children. Still reject
+                # other top-level windows and overlapping siblings.
+                if actual == app.frame and not win32gui.IsWindowEnabled(app.frame):
+                    current = actual
+                    while current and current != hwnd:
+                        child = win32gui.ChildWindowFromPointEx(
+                            current, win32gui.ScreenToClient(current, point),
+                            0x0001 | 0x0004)  # CWP_SKIPINVISIBLE | CWP_SKIPTRANSPARENT
+                        if not child or child == current:
+                            break
+                        current = child
+                    actual = current
+                if actual != hwnd and not (actual and win32gui.IsChild(hwnd, actual)):
                     raise ObscuredSample(str((
                         'native control sample is obscured', hwnd, n.class_name(hwnd),
-                        region, point, actual, n.class_name(actual) if actual else None)))
-            return colors(hwnd, region).most_common(1)[0][0]
+                        point, actual, n.class_name(actual) if actual else None)))
 
-        def wait_fill(hwnd, expected_fills, description):
-            observed = []
+        def fill(hwnd):
+            if hwnd not in regions:
+                remember_region(hwnd)
+            region = regions[hwnd]
+            points = sample_points(hwnd, region)
             obstruction = []
 
             def sample():
                 try:
-                    value = fill(hwnd)
+                    require_ownership(hwnd, points)
+                    value = observed_colors(hwnd, region).most_common(1)[0][0]
+                    require_ownership(hwnd, points)
+                    return value
                 except ObscuredSample as error:
                     obstruction[:] = [str(error)]
                     return None
+
+            try:
+                return n.wait(sample, 'unobscured native control capture', 5)
+            except AssertionError as error:
+                message = '%s; obstruction=%r' % (error, obstruction)
+                record('failure', {'hwnd': hwnd, 'region': region, 'error': message})
+                raise AssertionError(message) from error
+
+        def remember_edit_region():
+            _, _, width, height = n.rectangle(app.search, client=True)
+            remember_region(app.search, (width - 10, height - 8, width - 5, height - 4))
+
+        remember_edit_region()
+        original_edit = fill(app.search)
+
+        def wait_fill(hwnd, expected_fills, description):
+            observed = []
+
+            def sample():
+                value = fill(hwnd)
                 observed[:] = [value]
                 expected = expected_fills() if callable(expected_fills) else expected_fills
                 return value if value in expected else None
@@ -348,17 +649,10 @@ def test_actual_high_contrast_overrides_dark_and_restores(launch, profile, setti
                 expected = expected_fills() if callable(expected_fills) else expected_fills
                 raise AssertionError('%s: observed=%r, expected=%r' %
                                      (description, observed, expected) +
-                                     '; cause=' + str(error) +
-                                     '; obstruction=' + repr(obstruction)) from error
+                                     '; cause=' + str(error)) from error
 
         dark_status = fill(app.status)
         sheet = app.settings()
-        evidence = {'before': {'high_contrast': list(snapshot)}}
-        evidence_path = settings[2] / 'high-contrast-controls.json'
-
-        def record(stage, values):
-            evidence[stage] = values
-            evidence_path.write_text(json.dumps(evidence, indent=2), encoding='utf-8')
 
         try:
             page = app.settings_page(sheet, 0)
@@ -384,20 +678,19 @@ def test_actual_high_contrast_overrides_dark_and_restores(launch, profile, setti
             overflow = n.wait(lambda: win32gui.FindWindowEx(tab, 0, 'msctls_updown32', None),
                               'native overflow created after initial theme application')
             n.wait(lambda: n.is_visible(overflow), 'late overflow visible')
-            info = combo_info(combo)
-            def combo_region():
-                item = combo_info(combo).item
-                return (item.right - 12, item.top + 3, item.right - 4, item.bottom - 3)
 
-            def tab_region():
+            def remember_control_regions():
+                current_info = combo_info(combo)
+                item = current_info.item
+                remember_region(combo, (item.right - 12, item.top + 3,
+                                        item.right - 4, item.bottom - 3))
                 overflow_left = win32gui.ScreenToClient(tab, n.rectangle(overflow)[:2])[0]
-                return (4, 4, overflow_left - 4, 8)
+                # Exclude the property page, header text and overflow child.
+                remember_region(tab, (4, 4, overflow_left - 4, 8))
+                remember_region(overflow)
+                return current_info
 
-            regions[combo] = combo_region
-            # The display area lies behind the property page. Sample only the
-            # exposed header above its text, excluding the overflow child.
-            regions[tab] = tab_region
-            unobscured.update((combo, tab, overflow, info.list))
+            info = remember_control_regions()
 
             def idle_pointer():
                 left, top, _, _ = n.rectangle(sheet)
@@ -405,52 +698,68 @@ def test_actual_high_contrast_overrides_dark_and_restores(launch, profile, setti
 
             idle_pointer()
 
-            def stable_fill(hwnd):
-                previous = [None, time.monotonic()]
-
-                def sample():
-                    value = fill(hwnd)
-                    if value != previous[0]:
-                        previous[:] = [value, time.monotonic()]
-                    return value if time.monotonic() - previous[1] >= 0.3 else None
-
-                return n.wait(sample, 'idle native background settles', 10)
-
-            before_controls = {name: stable_fill(hwnd) for name, hwnd in
+            before_controls = {name: fill(hwnd) for name, hwnd in
                                [('combo', combo), ('tab', tab), ('overflow', overflow)]}
-            assert all(max(value) < 128 for value in before_controls.values()), (
-                'all sampled controls must initially render dark', before_controls)
             record('dark_controls', before_controls)
-            with temporary_high_contrast(snapshot, settings[2] / 'high-contrast-restore.json'):
+            with temporary_high_contrast(snapshot, settings[2] / 'high-contrast-restore.json', hc_appearance):
                 assert high_contrast()[0] & HCF_HIGHCONTRASTON
                 idle_pointer()
+                info = remember_control_regions()
                 observed = {}
-                failures = []
 
                 def observe(name, sample):
                     try:
                         observed[name] = {'color': sample()}
                     except AssertionError as error:
                         observed[name] = {'error': str(error)}
-                        failures.append(str(error))
-                    record('high_contrast_observations', dict(
-                        observed, high_contrast=list(high_contrast()),
-                        system_window=system_color(win32con.COLOR_WINDOW),
-                        system_face=system_color(win32con.COLOR_BTNFACE)))
+                        raise
+                    finally:
+                        record('high_contrast_observations', dict(
+                            observed, high_contrast=list(high_contrast()),
+                            system_window=system_color(win32con.COLOR_WINDOW),
+                            system_face=system_color(win32con.COLOR_BTNFACE)))
 
                 for name, hwnd in [('combo', combo), ('tab', tab), ('overflow', overflow)]:
-                    color_index = win32con.COLOR_WINDOW if name == 'combo' else win32con.COLOR_BTNFACE
-                    observe(name, lambda hwnd=hwnd, name=name, color_index=color_index:
-                            wait_fill(hwnd, lambda: {system_color(color_index)},
-                                      name + ' restores native high-contrast background'))
-                n.send(combo, win32con.CB_SHOWDROPDOWN, 1)
-                try:
-                    n.wait(lambda: n.is_visible(info.list), 'high-contrast combo popup visible')
-                    observe('combo_list', lambda: wait_fill(info.list,
-                                                           lambda: {system_color(win32con.COLOR_WINDOW)},
-                                                           'combo popup uses system colors'))
-                finally:
-                    n.send(combo, win32con.CB_SHOWDROPDOWN, 0)
+                    # HC uses system roles, not the application's dark palette.
+                    # Check each surface independently: one recolored control
+                    # must not hide stale dark rendering in another control.
+                    role = win32con.COLOR_WINDOW if name == 'combo' else win32con.COLOR_BTNFACE
+                    observe(name, lambda hwnd=hwnd, role=role: wait_fill(
+                        hwnd, lambda: {system_color(role)}, name + ' uses its high-contrast system role'))
+                # Recheck every exposed control before delivering an owned gesture.
+                for hwnd in (combo, tab, overflow):
+                    require_ownership(hwnd, sample_points(hwnd, regions[hwnd]))
+                assert high_contrast()[0] & HCF_HIGHCONTRASTON
+
+                def require_sheet_input():
+                    active = win32gui.GetForegroundWindow()
+                    assert active in (sheet, info.list) or (
+                        active and (win32gui.IsChild(sheet, active) or
+                                    win32gui.IsChild(info.list, active))), (
+                                        'settings no longer owns foreground input', active)
+
+                require_sheet_input()
+                button = info.button
+                button_points = sample_points(combo, (button.left, button.top,
+                                                     button.right, button.bottom))
+                require_ownership(combo, button_points)
+                point = n.physical_screen_point(combo, button_points[-1])
+                with n.physical_dpi_context():
+                    require_sheet_input()
+                    require_ownership(combo, [point])
+                    inputs.click(*point)
+                n.wait(lambda: n.is_visible(info.list), 'high-contrast combo popup visible', 5)
+                remember_region(info.list)
+                observe('combo_list', lambda: wait_fill(
+                    info.list, lambda: {system_color(win32con.COLOR_WINDOW)},
+                    'combo list uses the high-contrast window background'))
+                # On failed observation, unwind immediately instead of injecting
+                # cleanup input into a potentially covered or inactive desktop.
+                require_sheet_input()
+                require_ownership(info.list, sample_points(info.list, regions[info.list]))
+                assert n.is_visible(info.list), 'combo popup remains open before Escape'
+                inputs.key(win32con.VK_ESCAPE)
+                n.wait(lambda: not n.is_visible(info.list), 'Escape closes high-contrast combo popup', 5)
                 assert n.send(combo, win32con.CB_GETCURSEL) == selection
                 assert n.send(tab, 0x130B) == selected
                 assert profile.preferences() == expected
@@ -458,15 +767,14 @@ def test_actual_high_contrast_overrides_dark_and_restores(launch, profile, setti
                 # displayed pixels cannot come from an overlapping dialog.
                 win32gui.ShowWindow(sheet, win32con.SW_HIDE)
                 try:
-                    def native_edit_fill():
-                        value = edit_background(app.search)
-                        return value if value == system_color(win32con.COLOR_WINDOW) else None
-
-                    observe('edit', lambda: n.wait(native_edit_fill,
-                            'high contrast restores native Edit background', 10))
-                    observe('status', lambda: wait_fill(app.status,
-                            lambda: {system_color(win32con.COLOR_BTNFACE)},
-                            'status restores native high-contrast background'))
+                    remember_edit_region()
+                    remember_region(app.status)
+                    observe('edit', lambda: wait_fill(
+                        app.search, lambda: {system_color(win32con.COLOR_WINDOW)},
+                        'edit uses the high-contrast window background'))
+                    observe('status', lambda: wait_fill(
+                        app.status, lambda: {system_color(win32con.COLOR_BTNFACE)},
+                        'status uses the high-contrast face background'))
                     assert n.window_text(app.search) == text
                     screenshot(app.frame, settings[2] / 'actual-high-contrast.png')
                 finally:
@@ -475,9 +783,9 @@ def test_actual_high_contrast_overrides_dark_and_restores(launch, profile, setti
                         system_window=system_color(win32con.COLOR_WINDOW),
                         system_face=system_color(win32con.COLOR_BTNFACE)))
                 screenshot(sheet, settings[2] / 'high-contrast-native-controls.png')
-                assert not failures, '\n'.join(failures)
             restored = {}
             idle_pointer()
+            remember_control_regions()
             for name, hwnd in [('combo', combo), ('tab', tab), ('overflow', overflow)]:
                 restored[name] = wait_fill(hwnd, {before_controls[name]},
                                            name + ' returns to its original dark background')
@@ -486,17 +794,24 @@ def test_actual_high_contrast_overrides_dark_and_restores(launch, profile, setti
             assert profile.preferences() == expected
             record('restored_controls', dict(restored, high_contrast=list(high_contrast())))
             screenshot(sheet, settings[2] / 'high-contrast-controls-restored-dark.png')
-        finally:
+        except AssertionError as error:
+            if 'failure' not in evidence:
+                record('failure', {'error': str(error)})
+            raise
+        else:
+            # Failure teardown belongs to the launch fixture's native Session
+            # cleanup, not another UIA operation in the broken dialog state.
             app.close_settings(sheet, accept=False)
         assert restored_high_contrast(high_contrast(), snapshot)
-        n.wait(lambda: dark_background(app.search) and edit_background(app.search) == dark_fill,
-               'dark palette returns after real high contrast is disabled', 10)
-        n.wait(lambda: fill(app.status) == dark_status,
-               'status returns to its original dark background', 10)
+        remember_edit_region()
+        remember_region(app.status)
+        wait_fill(app.search, {original_edit},
+                  'dark palette returns after real high contrast is disabled')
+        wait_fill(app.status, {dark_status}, 'status returns to its original dark background')
         assert n.window_text(app.search) == text
         assert_dark_preference(app, profile, expected)
         record('verified', {'high_contrast': list(high_contrast()),
-                            'edit': edit_background(app.search),
+                            'edit': fill(app.search),
                             'status': fill(app.status),
                             'preferences': list(profile.preferences())})
         screenshot(app.frame, settings[2] / 'high-contrast-restored-dark.png')

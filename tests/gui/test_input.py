@@ -3,8 +3,8 @@ import pytest
 import uiautomation as auto
 import win32con
 import win32gui
-from support import native as n
-from support.input_state import InputState
+from support import deadline, native as n
+from support.input_state import InputState, foreground
 
 pytestmark = pytest.mark.interactive
 
@@ -31,11 +31,13 @@ def test_real_sidebar_context_keys(launch, settings, command, control):
                 else:
                     inputs.state["held"].append(win32con.VK_SHIFT)
                     inputs.save()
-                    auto.PressKey(win32con.VK_SHIFT)
+                    with deadline.operation('hold Shift for context menu gesture', 5):
+                        auto.PressKey(win32con.VK_SHIFT, waitTime=0)
                     try:
                         inputs.key(win32con.VK_F10)
                     finally:
-                        auto.ReleaseKey(win32con.VK_SHIFT)
+                        with deadline.operation('release Shift after context menu gesture', 5):
+                            auto.ReleaseKey(win32con.VK_SHIFT, waitTime=0)
                         inputs.state["held"].remove(win32con.VK_SHIFT)
                         inputs.save()
                 _, ids = find_popup(app)
@@ -48,51 +50,46 @@ def test_real_sidebar_context_keys(launch, settings, command, control):
 def test_real_tool_toolbar_and_list_click(launch):
     with InputState() as input_state:
         app = launch()
-        frame = auto.ControlFromHandle(app.frame)
-        assert frame.SetTopmost(True)
-        try:
+        with foreground(app, input_state):
             toolbar = n.get_item(app.frame, 1113)
-            button = auto.ControlFromHandle(toolbar).Control(Name=app.toolbar_text(1800))
-            button.Click()
+            with deadline.operation('click tool toolbar button', 5):
+                button = auto.ControlFromHandle(toolbar).Control(Name=app.toolbar_text(1800))
+                button.Click(waitTime=0)
             panel = n.wait(lambda: app.tool_list, "tool panel opened by toolbar click")
-            item = app.row(0, panel)
-            item.Click()
+            with deadline.operation('click tool list row', 15):
+                item = app.row(0, panel)
+                item.Click()
             assert app.active_document() is None
-            item.DoubleClick()
+            with deadline.operation('double click tool list row', 5):
+                item.DoubleClick()
             n.wait(lambda: n.get_item(app.active_document(), 1816), "tool opened by list double click")
-        finally:
-            assert frame.SetTopmost(False)
 
 
 def test_real_search_keyboard(launch, settings):
     with InputState() as input_state:
         app = launch([settings[1]])
         n.wait(lambda: app.status_text().startswith(("Ready.", "已就绪")), "loaded", 45)
-        # Expose the window for a real mouse click on the search input.
-        frame = auto.ControlFromHandle(app.frame)
-        assert frame.SetTopmost(True)
-        try:
+        mode = n.get_item(app.frame, 1114)
+        condition_mode = app.choices(mode)[1]
+        with foreground(app, input_state):
             with n.window_dpi_context(app.frame):
                 left, top, right, bottom = n.rectangle(app.search)
                 input_state.click((left+right)//2, (top+bottom)//2)
             n.wait(lambda: win32gui.GetForegroundWindow() == app.frame, "foreground ownership")
             n.wait(lambda: app.focused() == app.search, "search input focus")
-        finally:
-            assert frame.SetTopmost(False)
         input_state.disable_ime(app.search)
         for character in "CREATEFILEW":
             input_state.key(ord(character))
         n.wait(lambda: n.window_text(app.search).casefold() == "createfilew", "real input delivered")
         n.wait(lambda: app.status_text().startswith(("Results ", "共 ")), "real-input search completed", 45)
         assert "CreateFileW" in app.cell(0)
-        mode = n.get_item(app.frame, 1114)
         input_state.key(win32con.VK_TAB)
         n.wait(lambda: app.focused() == mode, "real Tab reaches mode")
         input_state.key(win32con.VK_HOME)
         input_state.key(win32con.VK_DOWN)
         input_state.key(win32con.VK_RETURN)
         n.wait(lambda: auto.ControlFromHandle(mode).GetValuePattern().Value
-               == app.choices(mode)[1], "real keyboard selects condition mode")
+               == condition_mode, "real keyboard selects condition mode")
         n.wait(lambda: "condition" in app.status_text() or "条件" in app.status_text(), "condition diagnostic", 45)
         assert app.count() == 0
         input_state.key(win32con.VK_HOME)
@@ -104,10 +101,15 @@ def test_real_search_keyboard(launch, settings):
 
 
 def test_real_tool_find_keyboard(launch):
-    from support.input_state import foreground
+    from support.input_state import foreground, require_available_hotkey
     from test_tools import edit
     from test_navigation import editor_selection
     from test_find import replace_input
+
+    for key, modifiers, label in ((win32con.VK_F3, 0, 'F3'),
+                                  (win32con.VK_F3, win32con.MOD_SHIFT, 'Shift+F3'),
+                                  (ord('F'), win32con.MOD_CONTROL, 'Ctrl+F')):
+        require_available_hotkey(key, modifiers, label)
 
     with InputState() as inputs:
         app = launch()
@@ -122,11 +124,13 @@ def test_real_tool_find_keyboard(launch):
             app.focus(n.get_item(doc, 1820))
             inputs.state["held"].append(win32con.VK_CONTROL)
             inputs.save()
-            auto.PressKey(win32con.VK_CONTROL, waitTime=0)
+            with deadline.operation('hold Control for find gesture', 5):
+                auto.PressKey(win32con.VK_CONTROL, waitTime=0)
             try:
                 inputs.key(ord("F"))
             finally:
-                auto.ReleaseKey(win32con.VK_CONTROL, waitTime=0)
+                with deadline.operation('release Control after find gesture', 5):
+                    auto.ReleaseKey(win32con.VK_CONTROL, waitTime=0)
                 inputs.state["held"].remove(win32con.VK_CONTROL)
                 inputs.save()
             find = n.get_item(doc, 1220)
@@ -139,11 +143,13 @@ def test_real_tool_find_keyboard(launch):
             n.wait(lambda: editor_selection(app, editor)[0] > first[0], "F3 finds next")
             inputs.state["held"].append(win32con.VK_SHIFT)
             inputs.save()
-            auto.PressKey(win32con.VK_SHIFT, waitTime=0)
+            with deadline.operation('hold Shift for previous match gesture', 5):
+                auto.PressKey(win32con.VK_SHIFT, waitTime=0)
             try:
                 inputs.key(win32con.VK_F3)
             finally:
-                auto.ReleaseKey(win32con.VK_SHIFT, waitTime=0)
+                with deadline.operation('release Shift after previous match gesture', 5):
+                    auto.ReleaseKey(win32con.VK_SHIFT, waitTime=0)
                 inputs.state["held"].remove(win32con.VK_SHIFT)
                 inputs.save()
             n.wait(lambda: editor_selection(app, editor) == first, "Shift+F3 finds previous")

@@ -20,9 +20,13 @@ def main():
     assert inputs and args.reference.is_file()
 
     def layout(files, name, arch):
-        result = subprocess.run([str(executable("host-cli")), *map(str, files), "--json",
-                                 "--arch", arch, "layout", name],
-                                capture_output=True, check=True, encoding="utf-8")
+        try:
+            result = subprocess.run([str(executable("host-cli")), *map(str, files), "--json",
+                                     "--arch", arch, "layout", name],
+                                    capture_output=True, check=True, encoding="utf-8", timeout=30)
+        except subprocess.TimeoutExpired as error:
+            error.add_note(f"Query command/inputs: {error.cmd!r}; stderr: {error.stderr!r}")
+            raise
         return json.loads(result.stdout)["result"]
 
     checks = 0

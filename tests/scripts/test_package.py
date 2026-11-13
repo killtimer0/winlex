@@ -43,7 +43,7 @@ class PackageContracts(unittest.TestCase):
             "pwsh", "-NoProfile", "-File", str(SCRIPT), "-Architecture", arch,
             "-Configuration", configuration, "-CliBuildRecord", str(records[0]),
             "-GuiBuildRecord", str(records[1]), "-OutputDir", str(output),
-        ], text=True, capture_output=True, encoding="utf-8", errors="replace")
+        ], text=True, capture_output=True, encoding="utf-8", errors="replace", timeout=120)
 
     def assert_no_local_paths(self, data, name, paths):
         for path in paths:
@@ -163,7 +163,7 @@ class PackageContracts(unittest.TestCase):
                     self.assertEqual("thunks_sha256" in record, not arm64)
                     dumpbin = Path(record["linker"]).with_name("dumpbin.exe")
                     result = subprocess.run([str(dumpbin), "/imports", record["executable"]],
-                                            text=True, capture_output=True, errors="replace")
+                                            text=True, capture_output=True, errors="replace", timeout=45)
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                     dlls = set(re.findall(r"^\s+([^\s]+\.dll)\s*$", result.stdout.lower(), re.MULTILINE))
                     self.assertIn("ucrtbase.dll" if arm64 else "msvcrt.dll", dlls)
@@ -197,7 +197,7 @@ class WorkflowContracts(unittest.TestCase):
                 "$text=[Console]::In.ReadToEnd(); $errors=$null; "
                 "[System.Management.Automation.Language.Parser]::ParseInput($text,[ref]$null,[ref]$errors) | Out-Null; "
                 "if ($errors) { $errors | ForEach-Object { $_.Message }; exit 1 }"],
-                input=script, text=True, capture_output=True, encoding="utf-8")
+                input=script, text=True, capture_output=True, encoding="utf-8", timeout=45)
             self.assertEqual(result.returncode, 0, step.get("name", "run") + result.stdout + result.stderr)
 
 

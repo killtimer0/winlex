@@ -2,8 +2,8 @@
 import pytest
 import uiautomation as auto
 
-from support import native as n
-from test_tools import tool, body
+from support import deadline, native as n
+from test_tools import tool, body, close, edit
 
 
 def show_panel(app, command, control):
@@ -12,6 +12,11 @@ def show_panel(app, command, control):
         app.command(command)
         target = n.wait(lambda: n.get_item(app.frame, control), "panel control exposed")
     app.focus(target)
+
+
+@deadline.operation('observe background search results via UIA', 5)
+def search_completed(app, results):
+    return any(row.Name.splitlines()[0].endswith('.CreateFileW') for row in app.rows(results))
 
 
 def test_panel_statuses_and_document_close_fallback(launch, settings):
@@ -31,7 +36,7 @@ def test_panel_statuses_and_document_close_fallback(launch, settings):
     show_panel(app, 1021, 1112)
     app.focus(n.get_item(doc, 1203))
     assert not app.status_text()
-    auto.ControlFromHandle(doc).GetWindowPattern().Close()
+    close(doc)
     n.wait(lambda: app.status_text() == source_status, "closed document uses visible panel")
     app.command(1021)
     assert not app.status_text(), "collapsed panel does not contribute text"
@@ -47,19 +52,25 @@ def test_search_completion_does_not_replace_other_panel_or_tool_status(launch, s
     ready = app.status_text()
     app.command(1040)
     results = app.results
-    auto.ControlFromHandle(app.search).GetValuePattern().SetValue('CreateFileW')
+    with deadline.operation('submit background search via UIA', 5):
+        value = auto.ControlFromHandle(app.search).GetValuePattern()
+        assert value.SetValue('CreateFileW', waitTime=0)
+        n.wait(lambda: value.Value == 'CreateFileW', 'background search text updated', 5)
     show_panel(app, 1021, 1112)
-    n.wait(lambda: any(row.Name.splitlines()[0].endswith('.CreateFileW') for row in app.rows(results)),
+    n.wait(lambda: search_completed(app, results),
            "search completed in background", 45)
     assert app.status_text() == source_status
     app.focus(n.get_item(doc, 1810))
     assert app.status_text() == ready
     app.command(1040)
-    auto.ControlFromHandle(app.search).GetValuePattern().SetValue('ERROR_ACCESS_DENIED')
+    with deadline.operation('submit second background search via UIA', 5):
+        value = auto.ControlFromHandle(app.search).GetValuePattern()
+        assert value.SetValue('ERROR_ACCESS_DENIED', waitTime=0)
+        n.wait(lambda: value.Value == 'ERROR_ACCESS_DENIED', 'second background search text updated', 5)
     app.focus(n.get_item(doc, 1810))
     n.wait(lambda: app.named_rows("ERROR_ACCESS_DENIED"), "second search completed", 45)
     assert app.status_text() == ready
-    auto.ControlFromHandle(n.get_item(doc, 1810)).GetValuePattern().SetValue('5')
+    edit(doc, 1810, '5')
     app.command(1815, doc)
     show_panel(app, 1800, 1801)
     n.wait(lambda: "0x00000005" in body(doc), "tool completed while sidebar active", 30)

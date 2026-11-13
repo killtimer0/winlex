@@ -2,6 +2,7 @@ import contextlib
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -11,6 +12,8 @@ import unittest
 
 from run import ROOT, compare_files, differences, discover, extract, main
 
+EVIDENCE = ROOT / "tmp/oracle-ucrt-check"
+EVIDENCE.mkdir(parents=True, exist_ok=True)
 
 class ComparisonContracts(unittest.TestCase):
     def test_detects_signature_and_constant_changes_at_entity_path(self):
@@ -29,7 +32,7 @@ class ComparisonContracts(unittest.TestCase):
                 self.assertTrue(list(differences(a, b)))
 
     def test_discovery_is_recursive_and_rejects_empty_or_missing_inputs(self):
-        with tempfile.TemporaryDirectory(prefix="winmd discovery ", dir=ROOT / "tmp") as temp:
+        with tempfile.TemporaryDirectory(prefix="winmd discovery ", dir=EVIDENCE) as temp:
             folder = Path(temp)
             with self.assertRaises(ValueError):
                 discover(folder)
@@ -41,7 +44,7 @@ class ComparisonContracts(unittest.TestCase):
             self.assertEqual([p.relative_to(folder).as_posix() for p in discover(folder)], ["a.winmd", "nested/a.WINMD"])
 
     def test_reader_failure_preserves_both_errors_and_continues_batch(self):
-        with tempfile.TemporaryDirectory(prefix="winmd failure ", dir=ROOT / "tmp") as temp:
+        with tempfile.TemporaryDirectory(prefix="winmd failure ", dir=EVIDENCE) as temp:
             folder = Path(temp)
             source = folder / "inputs"
             source.mkdir()
@@ -60,13 +63,13 @@ class ComparisonContracts(unittest.TestCase):
                 self.assertIn("parse failure", (output / record["evidence"] / "rust.stderr").read_text())
 
     def test_empty_directory_returns_failure(self):
-        with tempfile.TemporaryDirectory(prefix="winmd empty ", dir=ROOT / "tmp") as temp:
+        with tempfile.TemporaryDirectory(prefix="winmd empty ", dir=EVIDENCE) as temp:
             from unittest.mock import patch
             with patch.object(sys, "argv", ["run.py", temp]), contextlib.redirect_stderr(io.StringIO()):
                 self.assertEqual(main(), 1)
 
     def test_invalid_output_and_timeout_are_failures(self):
-        with tempfile.TemporaryDirectory(prefix="winmd reader errors ", dir=ROOT / "tmp") as temp:
+        with tempfile.TemporaryDirectory(prefix="winmd reader errors ", dir=EVIDENCE) as temp:
             folder = Path(temp)
             source = folder / "input.winmd"
             source.touch()
@@ -83,17 +86,19 @@ class ComparisonContracts(unittest.TestCase):
 class IndependentReaders(unittest.TestCase):
     def test_real_fixture_and_corrupt_file(self):
         # Keep fixture sources, build products and comparison evidence for diagnosis.
-        folder = Path(tempfile.mkdtemp(prefix="differential fixture ", dir=ROOT / "tmp"))
+        folder = Path(tempfile.mkdtemp(prefix="differential fixture ", dir=EVIDENCE))
         build = folder / "build"
         with (folder / "fixture-build.log").open("wb") as log:
             subprocess.run(["dotnet", "build", ROOT / "tests/differential/Fixtures", "-c", "Debug", "-o", build],
-                           stdout=log, stderr=subprocess.STDOUT, check=True)
+                           stdout=log, stderr=subprocess.STDOUT, check=True, timeout=300)
         inputs = folder / "inputs"
         inputs.mkdir()
         shutil.copyfile(build / "Fixtures.dll", inputs / "fixture.winmd")
         evidence = folder / "comparison"
-        result = subprocess.run([sys.executable, ROOT / "tests/differential/run.py", inputs, "--output", evidence],
-                                capture_output=True, text=True)
+        reader_options = (["--rust-reader", os.environ["WINLEX_DIFFERENTIAL_RUST_READER"]]
+                          if "WINLEX_DIFFERENTIAL_RUST_READER" in os.environ else [])
+        result = subprocess.run([sys.executable, ROOT / "tests/differential/run.py", inputs, "--output", evidence, *reader_options],
+                                capture_output=True, text=True, timeout=2 * 300 + 2 * 180 + 30)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr + f"\nEvidence: {folder}")
         facts = json.loads((evidence / "0000/rust.json").read_text())
         fields = {v["name"]: v for v in facts["fields"].values()}
@@ -109,9 +114,16 @@ class IndependentReaders(unittest.TestCase):
                          if v["namespace"] == "Winlex.Metadata" and v["name"] == "NativeAlignmentAttribute")
         self.assertEqual(alignment["arguments"], [{"name": "", "value": "16"}])
         self.assertIn("18446744073709551615", [v["value"] for v in facts["constants"].values()])
+        if not reader_options:
+            messages = [json.loads(line) for line in (evidence / "cargo.jsonl").read_text(encoding="utf-8").splitlines()
+                        if line.strip()]
+            reader = next(m["executable"] for m in messages if m.get("reason") == "compiler-artifact"
+                          and m.get("target", {}).get("name") == "winmd-facts" and m.get("executable"))
+            reader_options = ["--rust-reader", reader]
+        reader_options += ["--oracle-reader", str(evidence / "oracle/Oracle.dll")]
         (inputs / "broken.winmd").write_bytes(b"not a PE")
-        failure = subprocess.run([sys.executable, ROOT / "tests/differential/run.py", inputs, "--output", folder / "failed"],
-                                 capture_output=True, text=True)
+        failure = subprocess.run([sys.executable, ROOT / "tests/differential/run.py", inputs, "--output", folder / "failed", *reader_options],
+                                 capture_output=True, text=True, timeout=4 * 180 + 30)
         self.assertEqual(failure.returncode, 1, failure.stdout + failure.stderr)
         report = json.loads((folder / "failed/report.json").read_text())
         self.assertEqual([r["passed"] for r in report["files"]], [False, True])

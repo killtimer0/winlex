@@ -42,7 +42,7 @@ def select_result(app, row, control=None):
 
 def result(app, name):
     app.query(name)
-    row = app.named_rows(name)[0]
+    row = app.first_named_row(name)
     select_result(app, row)
     app.focus(app.results)
     return row

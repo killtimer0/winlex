@@ -1,9 +1,11 @@
 """Validate WinRT queries against SDK metadata, headers and the .NET reader."""
 import argparse
 import json
+import math
 from pathlib import Path
 import re
 import subprocess
+import sys
 from artifacts import executable
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -14,7 +16,11 @@ def query(files, command, name, error=None):
     args = [executable("host-cli"), "--json", "--arch", "x64", "--limit", "1000"]
     for file in files:
         args.append(file)
-    p = subprocess.run(args + [command, name], capture_output=True)
+    try:
+        p = subprocess.run(args + [command, name], capture_output=True, timeout=30)
+    except subprocess.TimeoutExpired as error:
+        error.add_note(f"Query command/inputs: {error.cmd!r}; stderr: {error.stderr!r}")
+        raise
     data = json.loads(p.stdout)
     if error:
         assert p.returncode == 3 and error in data["error"]["message"], data
@@ -34,13 +40,35 @@ def references(value):
             yield from references(child)
 
 
+def windows_reference_ids(value):
+    refs = {}
+    for ref in references(value):
+        if ref["namespace"].startswith("Windows."):
+            identity = ref["reference_id"]
+            refs[f'{identity["source_id"]}::0x{identity["token"]:08x}'] = ref
+    return refs
+
+
+def positive_seconds(value):
+    seconds = float(value)
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise argparse.ArgumentTypeError("timeout must be finite and positive")
+    return seconds
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sdk", type=Path, required=True, help="Windows Kits/10 directory")
     parser.add_argument("--version", default="10.0.26100.0")
     parser.add_argument("--apps", type=Path, help="directory containing extracted App SDK packages")
+    parser.add_argument("--audit-timeout", type=positive_seconds, default=180,
+                        help="full query-audit budget in seconds (default: 180)")
     args = parser.parse_args()
+    apps = sorted(set(args.apps.glob("**/metadata/*.winmd"))) if args.apps is not None else []
+    if args.apps is not None and not apps:
+        parser.error(f"--apps {args.apps}: no metadata/*.winmd inputs found")
     OUT.mkdir(parents=True, exist_ok=True)
+    (OUT / "report.json").unlink(missing_ok=True)
     union = args.sdk / "UnionMetadata" / args.version / "Windows.winmd"
     contracts = list((args.sdk / "References" / args.version).rglob("*.winmd"))
     assert contracts
@@ -114,13 +142,21 @@ def main():
     sms = (args.sdk / "Include" / args.version / "winrt/windows.devices.sms.h").read_text(errors="replace").lower()
     for iid in expected_iids.values():
         assert iid in sms, iid
-    apps = sorted(set(args.apps.glob("**/metadata/*.winmd"))) if args.apps else []
-    subprocess.run([executable("query-audit"), union, *apps], check=True)
+    try:
+        audit = subprocess.run([executable("query-audit"), union, *apps],
+                               stderr=subprocess.PIPE, text=True, encoding="utf-8",
+                               timeout=args.audit_timeout)
+    except subprocess.TimeoutExpired as error:
+        error.add_note(f"Query command/inputs: {error.cmd!r}; stderr: {error.stderr!r}")
+        raise
+    if audit.stderr:
+        print(audit.stderr, end="", file=sys.stderr)
+    audit.check_returncode()
     if apps:
         for deps in ([union], contracts):
             files = apps + deps
             app = query(files, "show", "Microsoft.Windows.AppLifecycle.AppInstance")
-            refs = {r["reference_id"]: r for r in references(app) if r["namespace"].startswith("Windows.")}
+            refs = windows_reference_ids(app)
             assert refs
             for ref in refs:
                 result = query(files, "show", ref)

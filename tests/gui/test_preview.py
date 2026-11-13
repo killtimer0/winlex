@@ -5,7 +5,7 @@ import win32gui
 import uiautomation as auto
 from contextlib import ExitStack
 
-from support import native as n
+from support import deadline, native as n
 from support.input_state import InputState, foreground
 from test_result_menu import select_result
 
@@ -38,13 +38,22 @@ def body(app, doc):
     return n.get_item(doc, 1203)
 
 
+def deselect_result(app):
+    row = app.selected_row()
+    assert row >= 0, "A selected result is required for deselection"
+    item = app.row(row)
+    with deadline.operation('deselect result via UIA', 5):
+        item.GetSelectionItemPattern().RemoveFromSelection(waitTime=0)
+    n.wait(lambda: app.selected_row() == -1, "result deselected", 5)
+
+
 def test_open_without_selected_result_preserves_existing_document(launch, settings):
     app = launch([settings[1]])
     app.query("CreateFileW")
     doc = app.open_row()
     n.wait(lambda: "CreateFileW(" in app.content(doc), "declaration", 45)
     original = app.content(doc)
-    app.row(app.selected_row()).GetSelectionItemPattern().RemoveFromSelection()
+    deselect_result(app)
     assert app.selected_row() == -1
     for command in (1049, 1050):
         app.command(command)
@@ -172,7 +181,8 @@ def test_pinning_and_open_commands_preserve_documents_and_focus(launch, settings
     assert preview != doc and len(app.documents()) == 2
     n.wait(lambda: name in app.content(preview), "preview beside pinned document", 45)
     assert app.content(doc) == pinned_body
-    assert auto.ControlFromHandle(preview).GetWindowPattern().Close(waitTime=0)
+    with deadline.operation('close transient preview via UIA', 5):
+        assert auto.ControlFromHandle(preview).GetWindowPattern().Close(waitTime=0)
     n.wait(lambda: app.documents() == [doc], "close transient preview")
     app.focus(app.results)
     opened = app.double_click_row(pointer) if double_click else app.open_row(0)

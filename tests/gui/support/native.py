@@ -6,6 +6,8 @@ from contextlib import contextmanager
 import uiautomation as auto
 import pythoncom
 import win32com.client
+import win32gui
+from . import deadline
 
 user = c.WinDLL("user32", use_last_error=True)
 kernel = c.WinDLL("kernel32", use_last_error=True)
@@ -41,6 +43,23 @@ def send(hwnd, message, wp=0, lp=0):
     return c.c_ssize_t(result.value).value
 
 
+@deadline.operation('dispatch queued native theme messages', 5)
+def dispatch_pending_messages():
+    """Refresh caller-thread state without synthesizing theme notifications."""
+    until = time.monotonic() + 5
+    while True:
+        assert time.monotonic() < until, 'Controller message queue did not drain before theme read'
+        available, message = win32gui.PeekMessage(None, 0, 0, 1)  # PM_REMOVE
+        if not available:
+            return
+        if message[1] == 0x12:  # WM_QUIT
+            win32gui.PostQuitMessage(message[2])
+            raise AssertionError('Controller quit before native theme read')
+        win32gui.TranslateMessage(message)
+        win32gui.DispatchMessage(message)
+
+
+@deadline.operation('read control text via UIA', 5)
 def window_text(hwnd):
     control = auto.ControlFromHandle(hwnd)
     value = control.GetPattern(auto.PatternId.ValuePattern)
@@ -56,6 +75,7 @@ def rich_edit_document(hwnd):
     return win32com.client.Dispatch(pythoncom.ObjectFromLresult(token, pythoncom.IID_IDispatch, 0))
 
 
+@deadline.operation('read complete Rich Edit text via TOM', 5)
 def rich_edit_text(hwnd):
     """Complete text for UTF-16 and full-render measurements, excluding TOM's final paragraph mark."""
     document = rich_edit_document(hwnd)
@@ -63,8 +83,41 @@ def rich_edit_text(hwnd):
 
 
 def get_item(hwnd, identifier):
-    return next((control.NativeWindowHandle for control, _ in auto.WalkControl(auto.ControlFromHandle(hwnd))
-                 if control.AutomationId == str(identifier) and control.NativeWindowHandle), None)
+    direct = api(user, 'GetDlgItem', w.HWND, w.HWND, c.c_int)(hwnd, identifier)
+    if direct:
+        return direct
+    found = []
+    win32gui.EnumChildWindows(hwnd, lambda child, _: found.append(child)
+                             if get_id(child) == identifier else None, None)
+    return next(iter(found), None)
+
+
+def top_level_windows():
+    found = []
+    try:
+        win32gui.EnumWindows(lambda hwnd, _: found.append(hwnd) or True, None)
+    except win32gui.error as error:
+        # Windows 10 19045 returns FALSE with last-error zero on an empty
+        # isolated desktop; pywin32 turns that empty result into error(0).
+        if error.winerror or found:
+            raise
+    return found
+
+
+def find_window(pid, window_class, owner=None):
+    found = []
+
+    def visit(hwnd, _):
+        process = w.DWORD()
+        get_pid(hwnd, c.byref(process))
+        if (process.value == pid and class_name(hwnd) == window_class and is_visible(hwnd)
+                and (owner is None or win32gui.GetWindow(hwnd, 4) == owner)):
+            found.append(hwnd)
+
+    for hwnd in top_level_windows():
+        visit(hwnd, None)
+    assert len(found) <= 1, ('ambiguous native window', pid, window_class, found)
+    return next(iter(found), None)
 
 
 def class_name(hwnd):
@@ -77,6 +130,45 @@ def rectangle(hwnd, client=False):
     rect = w.RECT()
     assert (get_client if client else get_rect)(hwnd, c.byref(rect))
     return rect.left, rect.top, rect.right, rect.bottom
+
+
+def titlebar_rectangle(hwnd):
+    """Get the non-client caption without walking virtual list items via UIA."""
+    class TitleBarInfo(c.Structure):
+        _fields_ = [('size', w.DWORD), ('rect', w.RECT), ('states', w.DWORD * 6)]
+
+    info = TitleBarInfo()
+    info.size = c.sizeof(info)
+    get_info = api(user, 'GetTitleBarInfo', w.BOOL, w.HWND, c.POINTER(TitleBarInfo))
+    assert get_info(hwnd, c.byref(info)), 'Cannot get title bar bounds'
+    rect = info.rect
+    return rect.left, rect.top, rect.right, rect.bottom
+
+
+def physical_screen_point(hwnd, point):
+    """Convert a point measured in the target's DPI space for real input."""
+    if not hasattr(user, "LogicalToPhysicalPointForPerMonitorDPI"):
+        return point
+    value = w.POINT(*point)
+    convert = api(user, "LogicalToPhysicalPointForPerMonitorDPI", w.BOOL,
+                  w.HWND, c.POINTER(w.POINT))
+    assert convert(hwnd, c.byref(value)), "Cannot convert target point to physical pixels"
+    return value.x, value.y
+
+
+@contextmanager
+def physical_dpi_context():
+    """Use physical screen pixels for capture and input on modern Windows."""
+    previous = None
+    if hasattr(user, "SetThreadDpiAwarenessContext"):
+        set_context = api(user, "SetThreadDpiAwarenessContext", c.c_void_p, c.c_void_p)
+        previous = set_context(-4)  # DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+        assert previous, "Cannot enter physical screen coordinate space"
+    try:
+        yield
+    finally:
+        if previous:
+            assert set_context(previous), "Cannot restore test DPI context"
 
 
 @contextmanager
@@ -96,13 +188,16 @@ def window_dpi_context(hwnd):
 
 
 def wait(probe, description, timeout=15):
-    until = time.monotonic() + timeout
-    while time.monotonic() < until:
-        value = probe()
-        if value:
-            return value
-        time.sleep(0.025)
-    raise AssertionError("Timeout: " + description)
+    with deadline.operation(description, timeout):
+        until = time.monotonic() + timeout
+        while time.monotonic() < until:
+            value = probe()
+            if time.monotonic() >= until:
+                raise AssertionError('Timeout: ' + description)
+            if value:
+                return value
+            time.sleep(min(0.025, max(0, until - time.monotonic())))
+        raise AssertionError("Timeout: " + description)
 
 
 def monitors():
