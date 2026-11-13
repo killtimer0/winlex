@@ -376,7 +376,9 @@ impl View {
                 WS_EX_CLIENTEDGE,
             ),
         ] {
-            *control = self.shell.create_field(hwnd, label, id, class, style, edge)?;
+            *control = self
+                .shell
+                .create_field(hwnd, label, id, class, style, edge)?;
         }
         self.shell.populate_combo(
             self.scope,

@@ -505,13 +505,7 @@ unsafe fn tabs(hwnd: HWND, dc: HDC) {
             top: body_top,
             ..area
         };
-        rounded(
-            dc,
-            body,
-            Role::Edge,
-            Role::Dialog,
-            roundness(),
-        );
+        rounded(dc, body, Role::Edge, Role::Dialog, roundness());
         if saved != 0 {
             RestoreDC(dc, saved);
         }
@@ -1090,21 +1084,9 @@ pub(super) fn toolbar(draw: &mut NMTBCUSTOMDRAW) -> isize {
                         FillRect(dc, &r, brush_role(fill));
                     } else {
                         let radius = if windows11() { 5 } else { 0 };
-                        rounded(
-                            dc,
-                            r,
-                            edge(false, hot),
-                            fill,
-                            radius,
-                        );
+                        rounded(dc, r, edge(false, hot), fill, radius);
                         if let Some(drop) = drop {
-                            rounded(
-                                dc,
-                                drop,
-                                edge(false, hot),
-                                fill,
-                                radius,
-                            );
+                            rounded(dc, drop, edge(false, hot), fill, radius);
                         }
                     }
                     if saved != 0 {

@@ -48,11 +48,7 @@ fn parse(args: &[OsString]) -> Result<Request, String> {
         }
     }
     let text = text.ok_or("missing target")?;
-    Ok(Request {
-        text,
-        kind,
-        views,
-    })
+    Ok(Request { text, kind, views })
 }
 
 pub(super) fn run(args: &[OsString], out: &mut dyn Write, err: &mut dyn Write) -> u8 {

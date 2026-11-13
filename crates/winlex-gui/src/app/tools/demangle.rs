@@ -72,7 +72,9 @@ impl View {
                 0,
             ),
         ] {
-            *control = self.shell.create_field(hwnd, label, id, class, style, edge)?;
+            *control = self
+                .shell
+                .create_field(hwnd, label, id, class, style, edge)?;
         }
         self.shell
             .populate_combo(self.abi, ABIS.iter().map(|&(label, _)| label));

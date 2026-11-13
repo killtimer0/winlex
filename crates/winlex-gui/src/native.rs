@@ -45,9 +45,7 @@ impl Theme {
         Self(std::cell::Cell::new(0))
     }
     pub fn open(hwnd: HWND, class: *const u16) -> Self {
-        Self(std::cell::Cell::new(unsafe {
-            OpenThemeData(hwnd, class)
-        }))
+        Self(std::cell::Cell::new(unsafe { OpenThemeData(hwnd, class) }))
     }
     pub fn get(&self, hwnd: HWND, class: *const u16) -> HTHEME {
         if self.0.get() == 0 {

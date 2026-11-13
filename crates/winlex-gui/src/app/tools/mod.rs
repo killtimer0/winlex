@@ -280,8 +280,22 @@ impl Shell {
         unsafe { child_ex(hwnd, class, &[0], WS_TABSTOP | style, edge, id) }
     }
     /// Create a tab-stop push button.
-    fn create_button(&mut self, hwnd: HWND, label: u16, id: u16, style: u32) -> anyhow::Result<HWND> {
-        unsafe { child(hwnd, w!("BUTTON"), resources::wide_text(label), WS_TABSTOP | style, id) }
+    fn create_button(
+        &mut self,
+        hwnd: HWND,
+        label: u16,
+        id: u16,
+        style: u32,
+    ) -> anyhow::Result<HWND> {
+        unsafe {
+            child(
+                hwnd,
+                w!("BUTTON"),
+                resources::wide_text(label),
+                WS_TABSTOP | style,
+                id,
+            )
+        }
     }
     /// Create the result copy button; the id identifies the tool's text.
     fn create_copy_button(&mut self, hwnd: HWND, id: u16) -> anyhow::Result<()> {

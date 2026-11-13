@@ -280,12 +280,7 @@ impl Rendered {
         out
     }
 
-    fn number(
-        &mut self,
-        label: &str,
-        value: u64,
-        unit: Option<&'static str>,
-    ) -> std::fmt::Result {
+    fn number(&mut self, label: &str, value: u64, unit: Option<&'static str>) -> std::fmt::Result {
         let suffix = unit.map_or(String::new(), |unit| format!(" {unit}"));
         self.annotated(
             value.into(),
@@ -675,9 +670,7 @@ fn append(
                     arch,
                     "Vtable",
                     c.vtable_target(target, arch),
-                    |out, vtable| {
-                        out.number("vtable: ", vtable.slots.len() as u64, Some("slots"))
-                    },
+                    |out, vtable| out.number("vtable: ", vtable.slots.len() as u64, Some("slots")),
                 )?
             } else {
                 None

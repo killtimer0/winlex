@@ -37,7 +37,10 @@ pub(super) fn open_guide(ctx: &Context) {
             resources::text(IDS_METADATA_BROWSER_FAILED),
             METADATA_RELEASES
         );
-        super::status::report(ctx, super::help::show_text(ctx, Some(IDS_GET_METADATA), &body));
+        super::status::report(
+            ctx,
+            super::help::show_text(ctx, Some(IDS_GET_METADATA), &body),
+        );
     }
 }
 
