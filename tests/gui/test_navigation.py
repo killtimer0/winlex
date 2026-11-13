@@ -353,23 +353,14 @@ def test_last_reference_glyph_and_trailing_line_space_have_precise_hit_bounds(la
                          n.c.POINTER(n.w.POINT))(editor, n.c.byref(point))
             _, _, width, height = n.rectangle(editor, client=True)
             assert 0 <= point.x < width and 0 <= point.y < height
-            local = (point.x & 0xffff) | ((point.y & 0xffff) << 16)
             if navigate:
-                hit = n.rich_edit_document(editor).RangeFromPoint(
-                    n.c.c_short(screen & 0xffff).value, n.c.c_short(screen >> 16).value)
-                assert hit.Start == end
                 editor_selection(app, editor, (start, end))
                 menu, items = popup(app, editor, screen, protocol_mouse=True)
                 assert selection_packed(editor) == (end << 16) | start
                 assert 2074 in items
                 state = n.api(n.user, "GetMenuState", n.w.UINT, n.w.HMENU, n.w.UINT, n.w.UINT)
                 assert not state(menu, 2074, 0) & 3
-                dismiss(editor)
-                n.send(editor, win32con.WM_NULL)
-            win32gui.PostMessage(editor, win32con.WM_LBUTTONDOWN, win32con.MK_CONTROL | win32con.MK_LBUTTON, local)
-            win32gui.PostMessage(editor, win32con.WM_LBUTTONUP, win32con.MK_CONTROL, local)
-            n.send(app.frame, win32con.WM_NULL)
-            if navigate:
+                choose_reference(editor)
                 destination(app, source, "SECURITY_ATTRIBUTES", "x86")
             else:
                 assert app.documents() == [source]

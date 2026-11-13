@@ -384,12 +384,14 @@ impl MetadataView {
             (state.content.clone(), state.binding.clone())
         };
         let Some(content) = content else { return };
-        let Some((target, range)) = crate::rich_text::region_at_point(self.editor, &content, point)
-            .and_then(|region| {
-                region
-                    .target()
-                    .map(|target| (target.clone(), region.range.clone()))
-            })
+        let Some((target, range)) =
+            crate::rich_text::region_at_point(self.editor, &content.regions, point).and_then(
+                |region| {
+                    region
+                        .target()
+                        .map(|target| (target.clone(), region.range.clone()))
+                },
+            )
         else {
             return;
         };
@@ -407,9 +409,12 @@ impl MetadataView {
         let Some(press) = self.state.borrow_mut().press.take() else {
             return;
         };
-        let same_symbol =
-            crate::rich_text::region_at_point(self.editor, &press.navigation.content, point)
-                .is_some_and(|region| region.range == press.range);
+        let same_symbol = crate::rich_text::region_at_point(
+            self.editor,
+            &press.navigation.content.regions,
+            point,
+        )
+        .is_some_and(|region| region.range == press.range);
         if same_symbol && click_distance(press.origin, point) {
             self.queue_navigation(press.navigation);
         }
@@ -419,7 +424,7 @@ impl MetadataView {
         let range = link_modifier()
             .then(|| {
                 let content = self.state.borrow().content.clone()?;
-                crate::rich_text::region_at_point(self.editor, &content, point)
+                crate::rich_text::region_at_point(self.editor, &content.regions, point)
                     .filter(|region| region.target().is_some())
                     .map(|region| region.range.clone())
             })

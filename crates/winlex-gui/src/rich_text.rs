@@ -116,15 +116,66 @@ pub fn region_at(regions: &[Region], range: std::ops::Range<usize>) -> Option<&R
     })
 }
 
-/// The character index under a client-area point, if the point is in the text.
+/// The nearest insertion position; the right half of a glyph can return its end.
 fn char_index(hwnd: HWND, point: &POINT) -> Option<usize> {
     let index = send_ref(hwnd, EM_CHARFROMPOS, 0, point) as i32;
     (index >= 0).then_some(index as usize)
 }
 
-pub fn region_at_point(hwnd: HWND, content: &Content, point: POINT) -> Option<&Region> {
+pub fn region_at_point(hwnd: HWND, regions: &[Region], point: POINT) -> Option<&Region> {
+    use windows::Win32::UI::Controls::RichEdit::{
+        tomAllowOffClient, tomClientCoord, tomConstants, tomStart,
+    };
+
+    if unsafe { PtInRect(&client(hwnd), point) } == 0 {
+        return None;
+    }
     let index = char_index(hwnd, &point)?;
-    region_at(&content.regions, index..index)
+    let candidates = [Some(index), index.checked_sub(1)];
+    let mut document = None;
+    for character in candidates.into_iter().flatten() {
+        let Some(region) =
+            region_at(regions, character..character).filter(|region| region.target().is_some())
+        else {
+            continue;
+        };
+        // Measure an independent character range, never the user's selection.
+        // Checking the rectangle also rejects adjacent whitespace and other lines.
+        if document.is_none() {
+            let mut ole = None::<IRichEditOle>;
+            send(hwnd, EM_GETOLEINTERFACE, 0, &mut ole as *mut _ as isize);
+            document = ole.and_then(|ole| ole.cast::<ITextDocument>().ok());
+        }
+        let Some(document) = document.as_ref() else {
+            break;
+        };
+        let character = i32::try_from(character).ok()?;
+        let range = unsafe { document.Range(character, character.checked_add(1)?) }.ok()?;
+        let mut area = RECT {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
+        let flags = tomStart.0 | tomClientCoord.0 | tomAllowOffClient.0;
+        unsafe {
+            range
+                .GetPoint(tomConstants(flags), &mut area.left, &mut area.top)
+                .ok()?;
+            range
+                .GetPoint(
+                    tomConstants(flags | TA_RIGHT as i32 | TA_BOTTOM as i32),
+                    &mut area.right,
+                    &mut area.bottom,
+                )
+                .ok()?;
+            if PtInRect(&area, point) != 0 {
+                return Some(region);
+            }
+        }
+    }
+    // Numeric caret boundaries retain their existing inclusive-end contract.
+    region_at(regions, index..index).filter(|region| region.number().is_some())
 }
 
 enum ContextAction {
@@ -166,9 +217,7 @@ pub fn context_menu(
             ScreenToClient(hwnd, &mut local);
         }
         let index = char_index(hwnd, &local);
-        if let Some(index) = index {
-            mouse_region = region_at(regions, index..index);
-        }
+        mouse_region = region_at_point(hwnd, regions, local);
         let selected_link = mouse_region.is_some_and(|region| {
             selection.cpMin as usize <= region.range.start
                 && region.range.end <= selection.cpMax as usize
@@ -1220,18 +1269,37 @@ mod tests {
                             y: point.y + 2,
                         };
                         assert_eq!(
-                            region_at_point(editor, &content, point).map(|r| r.range.clone()),
+                            region_at_point(editor, &content.regions, point)
+                                .map(|r| r.range.clone()),
                             Some(region.range.clone()),
                             "plain={plain}, mode={mode:?}, index={index}"
                         );
                     }
                     let end = fixture.character_position(region.range.end as i32);
+                    let last = fixture.character_position(region.range.end as i32 - 1);
+                    let view = ViewState::capture(editor);
+                    for x in [last.x + 1, last.x + (end.x - last.x) * 3 / 4, end.x - 1] {
+                        assert_eq!(
+                            region_at_point(editor, &content.regions, POINT { x, y: last.y + 2 })
+                                .map(|region| region.range.clone()),
+                            Some(region.range.clone()),
+                            "last glyph plain={plain}, mode={mode:?}, x={x}"
+                        );
+                    }
+                    assert_eq!(ViewState::capture(editor), view);
+                    for x in [end.x, end.x + 1, end.x + 30] {
+                        assert!(
+                            region_at_point(editor, &content.regions, POINT { x, y: end.y + 2 })
+                                .is_none(),
+                            "after glyph plain={plain}, mode={mode:?}, x={x}"
+                        );
+                    }
                     let miss = POINT {
                         x: end.x + 400,
                         y: end.y + 2,
                     };
                     assert!(
-                        region_at_point(editor, &content, miss).is_none(),
+                        region_at_point(editor, &content.regions, miss).is_none(),
                         "plain={plain}, mode={mode:?}"
                     );
                     fixture.select(region.range.start as i32, region.range.end as i32);
@@ -1265,6 +1333,66 @@ mod tests {
         }
         drop(fixture);
         crate::theme::set_mode(0);
+    }
+
+    #[test]
+    fn wrapped_reference_glyphs_hit_without_changing_reading_state() {
+        use windows::Win32::UI::Controls::RichEdit::{tomClientCoord, tomConstants, tomStart};
+
+        let fixture = Editor::new(
+            WS_POPUP | WS_VISIBLE,
+            crate::layout::rect(-10000, -10000, 200, 500),
+        );
+        let editor = fixture.1;
+        set_bounds(editor, crate::layout::rect(0, 0, 80, 400)).unwrap();
+        let mut rendered = Rendered::from("LongReferenceSpanningLines");
+        let range = 0..rendered.text.encode_utf16().count();
+        rendered.regions.push(Region::link(
+            range.clone(),
+            EntityId {
+                source_id: 0,
+                token: 0x02000001,
+            }
+            .into(),
+            SymbolRole::Type,
+        ));
+        let content = Content::from(rendered);
+        set_content(editor, &content).unwrap();
+        assert!(send(editor, EM_GETLINECOUNT, 0, 0) > 1);
+        fixture.select(2, 5);
+        let view = ViewState::capture(editor);
+        let mut ole = None::<IRichEditOle>;
+        send(editor, EM_GETOLEINTERFACE, 0, &mut ole as *mut _ as isize);
+        let document = ole.unwrap().cast::<ITextDocument>().unwrap();
+        for index in range.clone() {
+            let character = unsafe { document.Range(index as i32, index as i32 + 1) }.unwrap();
+            let (mut right, mut bottom) = (0, 0);
+            unsafe {
+                character
+                    .GetPoint(
+                        tomConstants(
+                            tomStart.0 | tomClientCoord.0 | TA_RIGHT as i32 | TA_BOTTOM as i32,
+                        ),
+                        &mut right,
+                        &mut bottom,
+                    )
+                    .unwrap();
+            }
+            assert_eq!(
+                region_at_point(
+                    editor,
+                    &content.regions,
+                    POINT {
+                        x: right - 1,
+                        y: bottom - 2
+                    }
+                )
+                .map(|region| region.range.clone()),
+                Some(range.clone()),
+                "wrapped glyph {index}"
+            );
+        }
+        assert_eq!(ViewState::capture(editor), view);
     }
 
     #[test]
