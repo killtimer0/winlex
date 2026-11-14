@@ -1,7 +1,7 @@
 LANGUAGE 9, 1
 STRINGTABLE
 BEGIN
-    IDS_ABOUT_INFO "Winlex %1!s!%n%nOffline Windows API reference and metadata browser.%n%nAuthor: killtimer0%nAI-assisted development: GPT (OpenAI)%n%n<a href=""https://github.com/killtimer0/winlex"">Project homepage</a>%n<a href=""https://github.com/killtimer0/winlex/blob/main/LICENSE"">License (GPL-3.0)</a>"
+    IDS_ABOUT_INFO "Winlex %1!s!%n%nOffline Windows API reference and metadata browser.%n%nAuthor: killtimer0%nAI-assisted development: GPT (OpenAI)%n%n<a href=""https://github.com/killtimer0/winlex"">Project homepage</a>%n<a href=""https://github.com/killtimer0/winlex/blob/main/CHANGELOG.md"">Changelog</a>%n<a href=""https://github.com/killtimer0/winlex/blob/main/LICENSE"">License (GPL-3.0)</a>"
     IDS_GET_METADATA "Get metadata"
     IDS_METADATA_PROMPT "No metadata files have been added. Open the metadata releases page?"
     IDS_METADATA_EMPTY "No metadata files have been added. Choose Help → Get metadata to open the releases page."
@@ -181,14 +181,14 @@ BEGIN
         MENUITEM "&About Winlex...", ABOUT
     END
 END
-IDD_ABOUT DIALOGEX 0, 0, 250, 142
+IDD_ABOUT DIALOGEX 0, 0, 250, 154
 STYLE 0x80C800C0
 CAPTION "About Winlex"
 FONT 8, "MS Shell Dlg"
 BEGIN
     ICON IDI_APP, ABOUT_ICON, 12, 12, 20, 20
-    CONTROL VERSION_TEXT, ABOUT_INFO, "SysLink", 0x50010000, 48, 12, 190, 96
-    DEFPUSHBUTTON "OK", 1, 188, 116, 50, 14
+    CONTROL VERSION_TEXT, ABOUT_INFO, "SysLink", 0x50010000, 48, 12, 190, 108
+    DEFPUSHBUTTON "OK", 1, 188, 128, 50, 14
 END
 IDD_GENERIC_BIND DIALOGEX 0, 0, 350, 136
 STYLE 0x80CC00C0
