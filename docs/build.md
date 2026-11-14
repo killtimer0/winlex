@@ -139,14 +139,14 @@ python tests/gui/resources.py --exe "$guiExe"
 
 `$guiExe` 为构建显示的 GUI 完整路径。`--dpi` 可改为 `pmv1`、`system`、`unaware` 或 `auto`。默认使用 `--desktop isolated`；也可使用 `--desktop current` 在当前桌面运行契约测试。
 结果写入 `tmp/gui-tests/<run-id>/`：`run.json` 和 JUnit 汇总结果，失败时保留无损截图，`progress.jsonl` 与 `timings.jsonl` 用于定位中断或慢阶段；输入来源与 fixture 哈希见 `environment.json` 和 `fixture-hashes.json`。与标准输入相同的 fixture 副本会在收尾时移除，变异或损坏的输入保留。
-操作和测试阶段的期限记录在 `deadlines.jsonl`，阻塞栈直接保存在 `timeout-stacks.log`。先检查 `run.json` 的 `timeout` 操作与栈，再决定修复或调整用例，不以增加整轮 `--timeout` 代替定位。阶段兜底预算和长场景标记见 `tests/gui/support/lifecycle.py`。
-普通失败不停止后续用例。遇到无法返回的调用时，驱动终止并清理当前 worker，将当前用例记为超时失败，再从尚未执行的用例继续；不重跑已完成或超时的用例。续跑证据位于 `continued/`，根目录 JUnit 汇总全部结果。取消、整轮预算耗尽或清理失败时不续跑。
+超时排查查看 `run.json`、`deadlines.jsonl` 和 `timeout-stacks.log`；阶段预算见 [`tests/gui/support/lifecycle.py`](../tests/gui/support/lifecycle.py)。
+单用例超时且清理成功后，驱动继续尚未执行的用例，记录位于 `continued/`，根目录 JUnit 汇总结果。取消、整轮预算耗尽或清理失败时停止。
 `--desktop current --real-input` 只选择 `interactive` 交互与屏幕呈现测试，不指定时运行其余用例；可用 `--collect-only -q` 检查选择结果。交互测试须独占已解锁的活动桌面，运行期间不要操作键鼠。独立桌面也不隔离剪贴板等会话共享资源。
-真实高对比测试须通过 `--hc-theme PATH` 显式指定目标机的 `.theme` 预期外观文件，例如 `%SystemRoot%\Resources\Ease of Access Themes\hcblack.theme` 的实际路径。测试记录文件哈希，并在采样前确认文件声明的视觉样式和系统颜色角色；此参数只读取预期，不应用文件或覆盖个性化。系统未在期限内达到该预期时报告夹具应用失败，不据此判定产品绘制错误。该参数不影响非 HC 用例。
-原生文件选择器用例通过 `picker_environment` fixture 在启动产品前检查网络快捷方式中的 WSL 目标；目标未运行时报告环境错误，证据写入 `picker-environment-*.json`。检查只读取快捷方式元数据和运行中的发行版列表，不访问目标、启动发行版或修改快捷方式。新增选择器用例也须显式依赖此 fixture；仅部分参数使用选择器时，在对应参数的 setup 中请求它。
+真实高对比测试使用 `--hc-theme PATH` 指定目标机的 `.theme` 预期外观文件，例如 `%SystemRoot%\Resources\Ease of Access Themes\hcblack.theme`；此参数读取预期外观，不应用主题。
+新增原生文件选择器用例须在 setup 中请求 `picker_environment` fixture；环境检查见 [`tests/gui/support/picker_environment.py`](../tests/gui/support/picker_environment.py)。
 
 XP 目标执行端需有兼容 XP 的 Python 3.8 和 UI Automation 组件；通过 `python -m pip install -r tests/gui/requirements.lock` 安装目标端依赖，不使用开发机的 `.venv` 或 uv 锁文件。
-计划任务使用同目录的 `pythonw.exe` 启动 worker，避免控制台遮挡交互测试；目标 Python 安装须保留该解释器。
+目标 Python 安装须保留同目录的 `pythonw.exe`，供计划任务启动 worker。
 `tests/gui/requirements.txt` 定义目标端直接依赖，`requirements.lock` 固定其 Python 3.8 Windows 传递依赖。在开发机更新清单后重新生成：
 
 ```powershell
