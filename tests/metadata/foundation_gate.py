@@ -2,9 +2,8 @@
 import argparse
 import json
 from pathlib import Path
-import subprocess
 
-from artifacts import executable
+from artifacts import query_command, run_query
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -20,9 +19,8 @@ def main():
     assert inputs and args.reference.is_file()
 
     def layout(files, name, arch):
-        result = subprocess.run([str(executable("host-cli")), *map(str, files), "--json",
-                                 "--arch", arch, "layout", name],
-                                capture_output=True, check=True, encoding="utf-8")
+        result = run_query(query_command(files, arch, "layout", name),
+                           capture_output=True, check=True, encoding="utf-8")
         return json.loads(result.stdout)["result"]
 
     checks = 0

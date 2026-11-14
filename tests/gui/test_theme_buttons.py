@@ -6,7 +6,7 @@ import win32con
 import win32gui
 import uiautomation as auto
 
-from support import native as n
+from support import deadline, native as n
 from support.input_state import InputState
 from support.diagnostics import screenshot
 from test_about import open_about
@@ -61,12 +61,15 @@ def test_dark_native_find_buttons_and_auto_checkboxes(launch, profile, settings)
         app.command(1060)
         query, count = n.get_item(doc, 1220), n.get_item(doc, 1223)
         n.wait(lambda: n.is_visible(query) and app.focused() == query, 'native find controls visible')
-        auto.ControlFromHandle(query).SendKeys('HANDLE')
+        # Keep real typing and its default key interval within the action budget.
+        with deadline.operation('type native find query via UIA'):
+            auto.ControlFromHandle(query).SendKeys('HANDLE', waitTime=0)
         n.wait(lambda: n.window_text(count).startswith('1/'), 'find initial match')
         for command, expected in [(1061, '2/'), (1062, '1/')]:
             button = n.get_item(doc, command)
             evidence[str(command)] = button_pixels(button)
-            inputs.click(*win32gui.ClientToScreen(button, center(n.rectangle(button, client=True))))
+            inputs.click(*win32gui.ClientToScreen(button, center(n.rectangle(button, client=True))),
+                         wait_time=0)
             n.wait(lambda: n.window_text(count).startswith(expected), 'native find pushbutton navigates')
             assert app.focused() == button
         screenshot(app.frame, settings[2] / 'dark-native-find-buttons-enabled.png')
@@ -78,7 +81,7 @@ def test_dark_native_find_buttons_and_auto_checkboxes(launch, profile, settings)
             glyph_area = (0, 0, height // 2 + 2, height)
             unchecked_glyph = colors(checkbox, glyph_area)
             point = win32gui.ClientToScreen(checkbox, center(n.rectangle(checkbox, client=True)))
-            inputs.click(*point)
+            inputs.click(*point, wait_time=0)
             n.wait(lambda: n.send(checkbox, win32con.BM_GETCHECK) != original, 'native checkbox mouse toggle')
             assert app.focused() == checkbox
             evidence[str(identifier)]['checked'] = button_pixels(checkbox, checkbox=True)
@@ -125,20 +128,25 @@ def test_dark_native_find_buttons_and_auto_checkboxes(launch, profile, settings)
                 screenshot(app.frame, settings[2] / 'dark-native-checkbox-disabled.png')
                 (settings[2] / 'dark-native-find-buttons.json').write_text(
                     json.dumps(evidence, indent=2), encoding='utf-8')
-            inputs.click(*win32gui.ClientToScreen(checkbox, center(n.rectangle(checkbox, client=True))))
+            before_space = n.window_text(query)
+            selection = n.send(query, win32con.EM_GETSEL)
+            start, end = selection & 0xffff, (selection >> 16) & 0xffff
+            assert 0 <= start <= end <= len(before_space)
+            expected = before_space[:start] + ' ' + before_space[end:]
+            inputs.click(*win32gui.ClientToScreen(checkbox, center(n.rectangle(checkbox, client=True))),
+                         wait_time=0)
+            inputs.key(win32con.VK_SPACE)
+            n.wait(lambda: n.window_text(query) == expected, 'Space reaches enabled focus, not disabled checkbox')
             assert n.send(checkbox, win32con.BM_GETCHECK) == original
             assert app.focused() == query
-            before_space = n.window_text(query)
-            inputs.key(win32con.VK_SPACE)
-            n.wait(lambda: n.window_text(query) != before_space, 'Space reaches enabled focus, not disabled checkbox')
-            assert n.send(checkbox, win32con.BM_GETCHECK) == original
             screenshot(app.frame, settings[2] / 'dark-native-find-buttons.png')
         finally:
             enable(checkbox, True)
         assert win32gui.IsWindowEnabled(checkbox)
         assert n.send(checkbox, win32con.BM_GETCHECK) == original
         evidence['reenabled'] = button_pixels(checkbox, checkbox=True)
-        inputs.click(*win32gui.ClientToScreen(checkbox, center(n.rectangle(checkbox, client=True))))
+        inputs.click(*win32gui.ClientToScreen(checkbox, center(n.rectangle(checkbox, client=True))),
+                     wait_time=0)
         n.wait(lambda: n.send(checkbox, win32con.BM_GETCHECK) != original,
                'reenabled checkbox accepts mouse activation')
         assert app.focused() == checkbox
@@ -149,5 +157,6 @@ def test_dark_native_find_buttons_and_auto_checkboxes(launch, profile, settings)
             json.dumps(evidence, indent=2), encoding='utf-8')
         close = n.get_item(doc, 1063)
         button_pixels(close)
-        inputs.click(*win32gui.ClientToScreen(close, center(n.rectangle(close, client=True))))
+        inputs.click(*win32gui.ClientToScreen(close, center(n.rectangle(close, client=True))),
+                     wait_time=0)
         n.wait(lambda: not n.is_visible(query), 'native find Close button')

@@ -3,16 +3,14 @@ import win32con
 import win32gui
 import winreg
 import uiautomation as auto
-from support import native as n
+from support import deadline, native as n
 from support.session import invoke
+from test_document import resize
 
 
 def open_help(app):
     app.command(1053)
-    dialog = auto.WindowControl(searchDepth=3, RegexName='^(Search syntax|搜索语法)$',
-                                Compare=lambda item, depth: item.ProcessId == app.process.pid)
-    assert dialog.Exists(5)
-    return dialog.NativeWindowHandle
+    return n.wait(lambda: n.find_window(app.process.pid, '#32770', app.frame), 'search help dialog', 15)
 
 
 @pytest.mark.parametrize('language,mode', [
@@ -26,25 +24,32 @@ def test_search_help_readonly_resize_and_dpi(launch, profile, language, mode):
     assert win32gui.IsWindowEnabled(edit)
     text = n.window_text(edit)
     assert win32gui.GetWindowLong(edit, win32con.GWL_STYLE) & win32con.ES_READONLY
-    editor = auto.ControlFromHandle(edit)
     app.focus(edit)
-    win32gui.SendMessage(edit, win32con.EM_SETSEL, 0, 4)
+    n.send(edit, win32con.EM_SETSEL, 0, 4)
     assert n.send(edit, win32con.EM_GETSEL) == 4 << 16
-    win32gui.SendMessage(edit, win32con.WM_CHAR, ord('X'), 0)
+    n.send(edit, win32con.WM_CHAR, ord('X'), 0)
     assert n.window_text(edit) == text
     with n.window_dpi_context(dialog):
         outer, before_edit, before_button = [n.rectangle(h) for h in (dialog, edit, button)]
-        auto.ControlFromHandle(dialog).GetPattern(auto.PatternId.TransformPattern).Resize(
-            outer[2] - outer[0] + 120, outer[3] - outer[1] + 80)
+        resize(dialog, outer[2] - outer[0] + 120, outer[3] - outer[1] + 80)
         after_edit, after_button = n.rectangle(edit), n.rectangle(button)
         assert after_edit[:2] == before_edit[:2]
         assert (after_edit[2] - before_edit[2], after_edit[3] - before_edit[3]) == (120, 80)
         assert (after_button[0] - before_button[0], after_button[1] - before_button[1]) == (120, 80)
-    monitors = n.monitors()
+    with n.window_dpi_context(dialog):
+        monitors = n.monitors()
     for monitor in monitors * (2 if len(monitors) > 1 else 1):
         with n.window_dpi_context(dialog):
-            auto.ControlFromHandle(dialog).GetPattern(auto.PatternId.TransformPattern).Move(
-                monitor[0] + 40, monitor[1] + 40)
+            with deadline.operation('move search help across monitors via UIA'):
+                control = auto.ControlFromHandle(dialog)
+                target = (monitor[0] + 40, monitor[1] + 40)
+                assert control.GetPattern(auto.PatternId.TransformPattern).Move(*target, waitTime=0)
+
+                def moved():
+                    bounds = control.BoundingRectangle
+                    return (bounds.left, bounds.top) == target
+
+                n.wait(moved, 'search help reached requested screen position', 15)
             left, top = win32gui.ClientToScreen(dialog, (0, 0))
             _, _, width, height = win32gui.GetClientRect(dialog)
             for control in (edit, button):

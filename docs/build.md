@@ -75,11 +75,11 @@ python scripts/readme-media.py --exe target/x86_64-pc-windows-msvc/debug/winlex-
 运行库测试、静态检查和独立验证：
 
 ```powershell
-cargo test -p winlex-core -p winlex-format -p winlex-cli --locked
+cargo test -p winlex-core -p winlex-format -p winlex-cli --all-targets --locked
 cargo fmt --all --check
 cargo clippy -p winlex-core -p winlex-format -p winlex-cli --all-targets --locked -- -D warnings
 python tests/metadata/run.py
-python -m unittest discover -s tests/metadata -p test_artifacts.py
+python -m unittest discover -s tests/metadata -v
 python -m unittest discover -s tests/differential -v
 python -m unittest discover -s tests/scripts -v
 ```
@@ -120,6 +120,13 @@ python tests/fixtures/build_message_fixtures.py --x86-build "$x86Cli.build.json"
 
 `$x86Cli` 和 `$x64Cli` 为对应 CLI 的完整路径；资源 DLL 写入 `tmp/message-fixtures/`。
 
+GUI 搜索分类测试使用独立的托管 fixture，将它放在被测 WinMD 同目录：
+
+```powershell
+dotnet build tests/gui/fixtures/SearchEntries.csproj -c Debug -o tmp/search-fixtures
+Copy-Item tmp/search-fixtures/SearchEntries.dll inputs/SearchEntries.dll
+```
+
 GUI 测试使用 pytest；普通契约测试默认在独立的非活动桌面执行 UI Automation：
 
 ```powershell
@@ -132,15 +139,20 @@ python tests/gui/resources.py --exe "$guiExe"
 
 `$guiExe` 为构建显示的 GUI 完整路径。`--dpi` 可改为 `pmv1`、`system`、`unaware` 或 `auto`。默认使用 `--desktop isolated`；也可使用 `--desktop current` 在当前桌面运行契约测试。
 结果写入 `tmp/gui-tests/<run-id>/`：`run.json` 和 JUnit 汇总结果，失败时保留无损截图，`progress.jsonl` 与 `timings.jsonl` 用于定位中断或慢阶段；输入来源与 fixture 哈希见 `environment.json` 和 `fixture-hashes.json`。与标准输入相同的 fixture 副本会在收尾时移除，变异或损坏的输入保留。
+超时排查查看 `run.json`、`deadlines.jsonl` 和 `timeout-stacks.log`。各阶段、清理与停滞预算集中定义在 [`tests/gui/support/policy.py`](../tests/gui/support/policy.py)；`--timeout`、`--case-timeout`、`--stall-after`、`--consecutive-stalls` 分别覆盖整轮、单例、停滞和连续停滞预算。`n.wait` 轮询与阶段／操作发布都会更新心跳，调用阶段超过停滞预算仍无进展时记录堆栈并终止当前 worker。
+单用例超时且清理成功后，驱动继续尚未执行的用例，记录位于 `continued/`，根目录 JUnit 汇总结果；连续停滞达到 `--consecutive-stalls`（重试的工作进程在完成任何用例前再次停滞）、取消、整轮预算耗尽或清理失败时停止。运行期间按慢用例阈值实时打印 `[slow]` 行，结束时列出最慢用例；超时结果记录用例、阶段、操作、`termination_reason`、最后完成用例和剩余用例数。
 `--desktop current --real-input` 只选择 `interactive` 交互与屏幕呈现测试，不指定时运行其余用例；可用 `--collect-only -q` 检查选择结果。交互测试须独占已解锁的活动桌面，运行期间不要操作键鼠。独立桌面也不隔离剪贴板等会话共享资源。
+真实高对比测试使用 `--hc-theme PATH` 指定目标机的 `.theme` 预期外观文件，例如 `%SystemRoot%\Resources\Ease of Access Themes\hcblack.theme`；此参数读取预期外观，不应用主题。
+
 XP 目标执行端需有兼容 XP 的 Python 3.8 和 UI Automation 组件；通过 `python -m pip install -r tests/gui/requirements.lock` 安装目标端依赖，不使用开发机的 `.venv` 或 uv 锁文件。
+目标 Python 安装须保留同目录的 `pythonw.exe`，供计划任务启动 worker。
 `tests/gui/requirements.txt` 定义目标端直接依赖，`requirements.lock` 固定其 Python 3.8 Windows 传递依赖。在开发机更新清单后重新生成：
 
 ```powershell
 uv pip compile tests/gui/requirements.txt --python .venv/Scripts/python.exe --python-version 3.8 --python-platform windows --no-python-downloads --no-annotate --output-file tests/gui/requirements.lock
 ```
 
-将 `winlex.exe` 与被测 `winlex-gui.exe` 放在同一目录。自定义消息资源测试还需部署 `tmp/message-fixtures/` 中的 `messages-*.dll`、`neutral-*.dll` 和 `empty-*.dll`；缺少可选资源时相应用例跳过。UNC 用例使用测试机自身的管理共享，无权限时跳过。
+将 `winlex.exe` 与被测 `winlex-gui.exe` 放在同一目录。自定义消息资源测试还需将 `tmp/message-fixtures/` 中的 `messages-*.dll`、`neutral-*.dll` 和 `empty-*.dll` 复制到该目录；搜索分类 fixture 放在 `--winmd` 指定输入的同目录。缺少 fixture 时相应用例跳过。UNC 用例使用测试机自身的管理共享，无权限时跳过。
 
 ### 本机/SSH 调度
 
@@ -162,6 +174,7 @@ SSH 配置字段如下：
 | `script` | 目标机上部署的 `tests/gui/remote.py` 完整路径 |
 | `root` | 目标机上的任务队列与结果目录；本机模式下为调度机目录 |
 | `sftp_drive_root` | SFTP 盘符映射前缀；Bitvise 的 `/C/...` 映射填 `/`，使用原生 Windows 路径的服务省略此字段 |
+| `desktop` | 默认桌面，`isolated`（省略时）或 `current`；提交时的 `--desktop` 覆盖此值 |
 
 JSON 中的反斜杠须写成 `\\`，路径也可使用 `/`。`script` 和 `root` 应与目标端部署位置及 worker 启动参数一致。
 目标端部署 `tests/gui/`、被测 EXE 和 WinMD 输入，保留 `tests/gui` 目录结构。配置的目标 Python 应已具备测试依赖。以下操作从调度机执行：
@@ -177,7 +190,10 @@ python tests/gui/remote.py --config tests/gui/config/win10.json cancel --run-id 
 python tests/gui/remote.py --config tests/gui/config/win10.json collect --run-id RUN_ID
 ```
 
-`start-worker` 通过任务计划程序请求在当前用户已登录的交互会话中启动 worker，使用配置指定的 Python；`capabilities` 显示解释器路径、桌面和心跳。修改配置并完成部署后，用 `capabilities` 确认 `worker_available` 为 `true`，并核对 `executable`、`desktop` 和 `heartbeat_age`。需要该用户已登录以及创建计划任务的权限。也可在目标交互桌面手动执行 `python tests/gui/remote.py worker --root C:/WinlexTests/runs`。远程提交默认使用独立桌面；交互测试期间该会话须解锁且由测试独占，同一桌面只运行一个 worker。
+`start-worker` 通过任务计划程序请求在当前用户已登录的交互会话中启动 worker，使用配置指定的 Python；`capabilities` 显示解释器路径、桌面和心跳。修改配置并完成部署后，用 `capabilities` 确认 `worker_available` 为 `true`，并核对 `executable`、`desktop` 和 `heartbeat_age`。需要该用户已登录以及创建计划任务的权限。也可在目标交互桌面手动执行 `python tests/gui/remote.py worker --root C:/WinlexTests/runs`。
+远程提交默认使用独立桌面，目标配置可用 `desktop` 固定为 `current`，提交时的 `--desktop` 覆盖配置。
+XP 的 UI Automation 在非输入桌面上完成每次控件操作都要等待固定超时（读取属性不受影响），因此 XP 目标使用 `current`；该桌面须解锁、无屏保并独占，同一桌面只运行一个 worker。
+远程 worker 启动与本地相同的 `run.py --engine`，由同一 supervisor 和同一份预算监督；`submit` 的 `--timeout`、`--case-timeout`、`--stall-after`、`--consecutive-stalls` 原样传给远端。`status` 和 `watch` 读取相同的进度与慢用例摘要，停滞和超时结果与本地结构一致。
 `deploy` 的目标父目录须已存在。SSH 负责调度和传输，GUI 由交互 worker 启动。收集 ZIP 默认回收到 `tmp/remote-tests/`。选择交互测试可在提交时增加 `--desktop current --real-input -k real_search_keyboard`。
 
 WinMD 输入部署到目标端固定位置，通过 `--winmd` 复用。收集结果以 ZIP 保存，可解压查看报告和故障截图。

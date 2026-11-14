@@ -5,6 +5,8 @@ import win32con
 import uiautomation as auto
 
 from support import native as n
+from support import deadline
+from support.input_state import InputState, foreground
 from test_context import find_popup, wait_closed
 from test_navigation import editor_selection as selection, follow_caret, reference
 
@@ -74,7 +76,8 @@ def replay(app, command, name, architecture=None, document=None):
 
 
 def close(app, doc):
-    assert auto.ControlFromHandle(doc).GetPattern(auto.PatternId.WindowPattern).Close(waitTime=0)
+    with deadline.operation('close historical document via UIA'):
+        assert auto.ControlFromHandle(doc).GetPattern(auto.PatternId.WindowPattern).Close(waitTime=0)
     n.wait(lambda: doc not in app.documents(), "historical document closed")
 
 
@@ -190,7 +193,8 @@ def test_manual_activation_records_but_close_repositions_without_extra_visit(
     if activation == "mdi":
         app.focus(first)
     else:
-        assert app._tabs()[0].GetSelectionItemPattern().Select(waitTime=0)
+        with deadline.operation('activate historical document tab via UIA'):
+            assert app._tabs()[0].GetSelectionItemPattern().Select(waitTime=0)
     current(app, "CreateFileW", document=first)
     replay(app, HISTORY_BACK, "DeleteFileW", document=third)
     replay(app, HISTORY_FORWARD, "CreateFileW", document=first)
@@ -233,14 +237,15 @@ def test_close_prefers_previous_visit_over_closer_future_match(launch, settings)
     closing = visit(app, "GetLastError", pin=True)  # D
     tabs = n.get_item(app.frame, 1104)
     labels = app.tab_labels()
-    pages = app._tabs()
     points = []
     left, top, _, _ = n.rectangle(tabs)
-    for page in (pages[0], pages[-1]):
-        rect = page.BoundingRectangle
-        x = rect.left - left + min(20, (rect.right - rect.left) // 2)
-        y = (rect.top + rect.bottom) // 2 - top
-        points.append((x & 0xffff) | ((y & 0xffff) << 16))
+    with deadline.operation('measure history reorder tabs via UIA'):
+        pages = app._tabs()
+        for page in (pages[0], pages[-1]):
+            rect = page.BoundingRectangle
+            x = rect.left - left + min(20, (rect.right - rect.left) // 2)
+            y = (rect.top + rect.bottom) // 2 - top
+            points.append((x & 0xffff) | ((y & 0xffff) << 16))
     n.send(tabs, win32con.WM_LBUTTONDOWN, win32con.MK_LBUTTON, points[0])
     n.send(tabs, win32con.WM_MOUSEMOVE, win32con.MK_LBUTTON, points[1])
     n.send(tabs, win32con.WM_LBUTTONUP, 0, points[1])
@@ -297,14 +302,18 @@ def test_long_declaration_restores_full_utf16_selection_and_top_anchor(launch, s
     app = launch([settings[1]])
     doc = visit(app, "Windows.Win32.Graphics.Gdi.Apis")
     editor = n.get_item(doc, 1203)
-    length = n.rich_edit_document(editor).Range(0, 0).StoryLength - 1
+    with deadline.operation('read long declaration length via TOM'):
+        length = n.rich_edit_document(editor).Range(0, 0).StoryLength - 1
     assert length > 70000, "fixture must exercise selection beyond 16-bit offsets"
     wanted = (66000, 66023)
     app.focus(editor)
     selection(app, editor, wanted)
-    assert auto.ControlFromHandle(editor).GetPattern(auto.PatternId.ScrollPattern).SetScrollPercent(-1, 75)
-    top = n.send(editor, win32con.EM_GETFIRSTVISIBLELINE)
-    assert top > 0
+    with deadline.operation('scroll long declaration via UIA'):
+        assert auto.ControlFromHandle(editor).GetPattern(auto.PatternId.ScrollPattern).SetScrollPercent(
+            -1, 75, waitTime=0)
+        top = n.wait(lambda: n.send(editor, win32con.EM_GETFIRSTVISIBLELINE),
+                     "long declaration scrolled below its first line", 15)
+        assert top > 0
     assert visit(app, "CloseHandle") == doc
     replay(app, HISTORY_BACK, "Apis", document=doc)
     n.wait(lambda: selection(app, editor) == wanted, "full UTF-16 selection restored", 45)
@@ -327,17 +336,22 @@ def test_rapid_history_replay_does_not_apply_stale_restore_to_final_target(launc
     selection(app, editor, (3, 9))
     loading = ("Loading declaration...", "正在加载声明…")
     pending_modifiers = 0
+    # A bounded native read stays inside the short-lived loading label; the
+    # UIA text read can finish after the declaration replaced it.
+    def loading_text():
+        return n.text_prefix(editor).strip() in loading
+
     # Send replay and modifier gestures without waiting for intermediate loads.
     for _ in range(12):
         for command in (HISTORY_BACK, HISTORY_FORWARD):
             app.command(command)
-            pending = app.content(doc).strip() in loading
+            pending = loading_text()
             for message, key in ((win32con.WM_SYSKEYDOWN, win32con.VK_MENU),
                                  (win32con.WM_KEYDOWN, win32con.VK_CONTROL),
                                  (win32con.WM_KEYDOWN, win32con.VK_SHIFT)):
                 n.send(editor, message, key, 1)
                 n.send(editor, win32con.WM_KEYUP, key, 0xc0000001)
-            if pending and app.content(doc).strip() in loading:
+            if pending and loading_text():
                 pending_modifiers += 1
     assert pending_modifiers, "modifier delivery must be observed during public loading state"
     # Finish on a different target so the pre-burst body cannot satisfy the wait.
@@ -370,39 +384,47 @@ def test_appcommand_routes_from_editor_and_search(launch, settings):
 def test_real_foreground_history_gestures(launch, settings, gesture):
     import win32gui
 
-    app = launch([settings[1]])
-    doc = visit(app, "CreateFileW")
-    assert visit(app, "CloseHandle") == doc
-    editor = n.get_item(doc, 1203)
-    for command, name in ((HISTORY_BACK, "CreateFileW"),
-                          (HISTORY_FORWARD, "CloseHandle")):
-        app.focus(app.search)
-        assert win32gui.GetForegroundWindow() == app.frame, "real history input requires foreground ownership"
-        if gesture == "alt-arrows":
-            auto.SendKeys("{Alt}{Left}" if command == HISTORY_BACK else "{Alt}{Right}")
-        elif gesture == "menu":
-            menu, index, _ = history_menu(app)
-            rect = n.w.RECT()
-            with n.window_dpi_context(app.frame):
-                assert n.api(n.user, "GetMenuItemRect", n.w.BOOL, n.w.HWND, n.w.HMENU,
-                             n.w.UINT, n.c.POINTER(n.w.RECT))(app.frame, menu, index, n.c.byref(rect))
-                auto.Click((rect.left + rect.right) // 2, (rect.top + rect.bottom) // 2)
-            popup_menu, items = find_popup(app)
-            with n.window_dpi_context(app.frame):
-                assert n.api(n.user, "GetMenuItemRect", n.w.BOOL, n.w.HWND, n.w.HMENU,
-                             n.w.UINT, n.c.POINTER(n.w.RECT))(
-                                 app.frame, popup_menu, items.index(command), n.c.byref(rect))
-                assert rect.right > rect.left and rect.bottom > rect.top
-                auto.Click((rect.left + rect.right) // 2, (rect.top + rect.bottom) // 2)
-            wait_closed(editor)
-        else:
-            # Native X-button input lets DefWindowProc generate WM_APPCOMMAND.
-            with n.window_dpi_context(app.frame):
-                left, top, right, bottom = n.rectangle(editor)
-                auto.MoveTo((left + right) // 2, (top + bottom) // 2)
-            side = 1 if command == HISTORY_BACK else 2
-            assert auto.SendInput(auto.MouseInput(0, 0, side, auto.MouseEventFlag.XDown)) == 1
-            assert auto.SendInput(auto.MouseInput(0, 0, side, auto.MouseEventFlag.XUp)) == 1
-        current(app, name, document=doc)
-        n.wait(lambda: app.focused() == editor, "real gesture focuses history editor")
-        assert win32gui.GetForegroundWindow() == app.frame
+    with InputState() as inputs:
+        app = launch([settings[1]])
+        with foreground(app, inputs):
+            doc = visit(app, "CreateFileW")
+            assert visit(app, "CloseHandle") == doc
+            editor = n.get_item(doc, 1203)
+            for command, name in ((HISTORY_BACK, "CreateFileW"),
+                                  (HISTORY_FORWARD, "CloseHandle")):
+                app.focus(app.search)
+                assert win32gui.GetForegroundWindow() == app.frame, "real history input requires foreground ownership"
+                if gesture == "alt-arrows":
+                    inputs.hold(win32con.VK_MENU)
+                    auto.PressKey(win32con.VK_MENU, waitTime=0)
+                    try:
+                        inputs.key(win32con.VK_LEFT if command == HISTORY_BACK else win32con.VK_RIGHT)
+                    finally:
+                        auto.ReleaseKey(win32con.VK_MENU, waitTime=0)
+                        inputs.release(win32con.VK_MENU)
+                elif gesture == "menu":
+                    menu, index, _ = history_menu(app)
+                    rect = n.w.RECT()
+                    with n.window_dpi_context(app.frame):
+                        assert n.api(n.user, "GetMenuItemRect", n.w.BOOL, n.w.HWND, n.w.HMENU,
+                                     n.w.UINT, n.c.POINTER(n.w.RECT))(app.frame, menu, index, n.c.byref(rect))
+                        inputs.click((rect.left + rect.right) // 2, (rect.top + rect.bottom) // 2, wait_time=0)
+                    popup_menu, items = find_popup(app)
+                    with n.window_dpi_context(app.frame):
+                        assert n.api(n.user, "GetMenuItemRect", n.w.BOOL, n.w.HWND, n.w.HMENU,
+                                     n.w.UINT, n.c.POINTER(n.w.RECT))(
+                                         app.frame, popup_menu, items.index(command), n.c.byref(rect))
+                        assert rect.right > rect.left and rect.bottom > rect.top
+                        inputs.click((rect.left + rect.right) // 2, (rect.top + rect.bottom) // 2, wait_time=0)
+                    wait_closed(editor)
+                else:
+                    # Native X-button input lets DefWindowProc generate WM_APPCOMMAND.
+                    with n.window_dpi_context(app.frame):
+                        left, top, right, bottom = n.rectangle(editor)
+                        auto.MoveTo((left + right) // 2, (top + bottom) // 2)
+                    side = 1 if command == HISTORY_BACK else 2
+                    assert auto.SendInput(auto.MouseInput(0, 0, side, auto.MouseEventFlag.XDown)) == 1
+                    assert auto.SendInput(auto.MouseInput(0, 0, side, auto.MouseEventFlag.XUp)) == 1
+                current(app, name, document=doc)
+                n.wait(lambda: app.focused() == editor, "real gesture focuses history editor")
+                assert win32gui.GetForegroundWindow() == app.frame

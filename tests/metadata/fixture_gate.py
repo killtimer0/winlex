@@ -1,14 +1,14 @@
 import json
 from pathlib import Path
 import subprocess
-from artifacts import executable
+from artifacts import query_command, run_query
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def layout(source, name):
-    return subprocess.run(
-        [executable("host-cli"), source, "--json", "--arch", "x64", "layout", name],
+def layout(source, name, command="layout"):
+    return run_query(
+        query_command([source], "x64", command, name),
         capture_output=True, text=True, encoding="utf-8",
     )
 
@@ -35,7 +35,8 @@ def main():
     overlay = json.loads(result.stdout)["result"]
     assert overlay["size_bits"] == 64 and [f["offset_bits"] for f in overlay["fields"]] == [0, 0]
     def query(command, name):
-        p = subprocess.run([executable("host-cli"), source, "--json", "--arch", "x64", command, name], capture_output=True, check=True)
+        p = layout(source, name, command)
+        p.check_returncode()
         return json.loads(p.stdout)["result"]
     box = query("show", "Fixtures.IBox`1")
     assert box["generic_parameters"][0]["name"] == "T"

@@ -8,7 +8,7 @@ import win32con
 import win32gui
 import uiautomation as auto
 
-from support import native as n
+from support import deadline, native as n
 from test_context import find_popup, menu_key, popup, popup_window, wait_closed
 from test_navigation import activate, destination, editor_selection, follow_caret, pin_active_tab, reference
 
@@ -111,10 +111,15 @@ def bind_dialog(app, document):
     assert win32gui.IsWindowEnabled(button)
     assert win32gui.IsWindowVisible(button)
     win32gui.PostMessage(document, win32con.WM_COMMAND, 1212, button)
-    dialog = auto.WindowControl(searchDepth=4, ClassName="#32770",
-                                Compare=lambda item, depth: item.ProcessId == app.process.pid)
-    n.wait(lambda: dialog.Exists(0, 0), "type binding dialog")
-    return dialog
+    hwnd = n.wait(lambda: n.find_window(app.process.pid, '#32770'), 'type binding dialog')
+    return hwnd
+
+
+@deadline.operation('write type argument via UIA')
+def set_argument(hwnd, value):
+    pattern = auto.ControlFromHandle(hwnd).GetValuePattern()
+    assert pattern.SetValue(value, waitTime=0), "type argument write failed"
+    n.wait(lambda: pattern.Value == value, "type argument value updated", 15)
 
 
 @pytest.mark.parametrize("member, argument, name", [
@@ -131,17 +136,15 @@ def test_link_and_manual_binding_reuse_the_same_instance(launch, generic_metadat
     follow_caret(app, source, reference(app, source, name) + 2)
     linked = destination(app, source, name, "x64")
     pin_active_tab(app)
-    dialog = bind_dialog(app, linked)
-    hwnd = dialog.NativeWindowHandle
+    hwnd = bind_dialog(app, linked)
     prefilled = n.window_text(n.get_item(hwnd, 1500))
     assert prefilled
     # Accepting the current value must preserve the linked instance identity.
     win32gui.PostMessage(hwnd, win32con.WM_COMMAND, 1231, n.get_item(hwnd, 1231))
     n.wait(lambda: not n.is_window(hwnd), "prefilled binding accepted")
     assert app.active_document() == linked
-    dialog = bind_dialog(app, linked)
-    hwnd = dialog.NativeWindowHandle
-    auto.ControlFromHandle(n.get_item(hwnd, 1500)).GetValuePattern().SetValue(argument)
+    hwnd = bind_dialog(app, linked)
+    set_argument(n.get_item(hwnd, 1500), argument)
     win32gui.PostMessage(hwnd, win32con.WM_COMMAND, 1231, n.get_item(hwnd, 1231))
     n.wait(lambda: not n.is_window(hwnd), "manual binding accepted")
     assert app.active_document() == linked
@@ -180,9 +183,8 @@ def test_failed_architecture_switch_keeps_instance_position_history_and_preferen
     app.query("Fixtures.IBox`1")
     definition = app.open_row()
     app.choose(definition, "x86")
-    dialog = bind_dialog(app, definition)
-    hwnd = dialog.NativeWindowHandle
-    auto.ControlFromHandle(n.get_item(hwnd, 1500)).GetValuePattern().SetValue("Fixtures.X64Argument")
+    hwnd = bind_dialog(app, definition)
+    set_argument(n.get_item(hwnd, 1500), "Fixtures.X64Argument")
     win32gui.PostMessage(hwnd, win32con.WM_COMMAND, 1231, n.get_item(hwnd, 1231))
     n.wait(lambda: bool(n.window_text(n.get_item(hwnd, 1232))), "architecture-limited argument rejected")
     assert app.active_document() == definition
@@ -201,34 +203,30 @@ def test_manual_winrt_binding_validates_arguments_and_reuses_instances(launch, s
     app.query("Windows.Foundation.Collections.IVector`1")
     definition = app.open_row()
     app.choose(definition, "x64")
-    dialog = bind_dialog(app, definition)
-    hwnd = dialog.NativeWindowHandle
+    hwnd = bind_dialog(app, definition)
     field = n.get_item(hwnd, 1500)
-    auto.ControlFromHandle(field).GetValuePattern().SetValue("int32, string")
+    set_argument(field, "int32, string")
     win32gui.PostMessage(hwnd, win32con.WM_COMMAND, 1231, n.get_item(hwnd, 1231))
     n.wait(lambda: bool(n.window_text(n.get_item(hwnd, 1232))), "argument validation error")
     assert app.active_document() == definition
-    auto.ControlFromHandle(field).GetValuePattern().SetValue("int32")
+    set_argument(field, "int32")
     menu_key(field, win32con.VK_RETURN)
     integers = destination(app, definition, "IVector<int32>", "x64")
     n.wait(lambda: "b939af5b-b45d-5489-9149-61442c1905fe" in app.content(integers), "instance IID")
     assert "scalar ABI" in app.content(integers)
     assert "int32 GetAt(" in app.content(integers)
     pin_active_tab(app)
-    dialog = bind_dialog(app, definition)
-    hwnd = dialog.NativeWindowHandle
-    auto.ControlFromHandle(n.get_item(hwnd, 1500)).GetValuePattern().SetValue("int32")
+    hwnd = bind_dialog(app, definition)
+    set_argument(n.get_item(hwnd, 1500), "int32")
     win32gui.PostMessage(hwnd, win32con.WM_COMMAND, 1231, n.get_item(hwnd, 1231))
     assert destination(app, definition, "IVector<int32>", "x64") == integers
-    dialog = bind_dialog(app, integers)
-    hwnd = dialog.NativeWindowHandle
-    auto.ControlFromHandle(n.get_item(hwnd, 1500)).GetValuePattern().SetValue("string")
+    hwnd = bind_dialog(app, integers)
+    set_argument(n.get_item(hwnd, 1500), "string")
     win32gui.PostMessage(hwnd, win32con.WM_COMMAND, 1231, n.get_item(hwnd, 1231))
     strings = destination(app, integers, "IVector<string>", "x64")
     assert strings != integers
     n.wait(lambda: "string GetAt(" in app.content(strings), "rebound instance signature")
-    dialog = bind_dialog(app, strings)
-    hwnd = dialog.NativeWindowHandle
+    hwnd = bind_dialog(app, strings)
     win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
     n.wait(lambda: not n.is_window(hwnd), "binding cancelled")
     assert app.active_document() == strings
@@ -239,22 +237,20 @@ def test_separate_argument_fields_validate_and_prefill(launch, generic_metadata)
     app.query("Fixtures.Box`2")
     definition = app.open_row()
     app.choose(definition, "x64")
-    dialog = bind_dialog(app, definition)
-    hwnd = dialog.NativeWindowHandle
+    hwnd = bind_dialog(app, definition)
     first, second = (win32gui.GetDlgItem(hwnd, identifier) for identifier in (1500, 1501))
     assert n.window_text(first) == n.window_text(second) == ""
-    auto.ControlFromHandle(first).GetValuePattern().SetValue("string")
+    set_argument(first, "string")
     win32gui.PostMessage(hwnd, win32con.WM_COMMAND, 1231, n.get_item(hwnd, 1231))
     n.wait(lambda: bool(n.window_text(n.get_item(hwnd, 1232))), "empty second argument rejected")
     assert app.focused() == second
     assert n.window_text(first) == "string"
-    auto.ControlFromHandle(second).GetValuePattern().SetValue("int32")
+    set_argument(second, "int32")
     menu_key(second, win32con.VK_RETURN)
     instance = destination(app, definition, "Box<string, int32>", "x64")
     n.wait(lambda: "string First;" in app.content(instance), "first argument substituted")
     assert "int32 Second;" in app.content(instance)
-    dialog = bind_dialog(app, instance)
-    hwnd = dialog.NativeWindowHandle
+    hwnd = bind_dialog(app, instance)
     assert n.window_text(n.get_item(hwnd, 1500)) == "string"
     assert n.window_text(n.get_item(hwnd, 1501)) == "int32"
     win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
@@ -275,12 +271,11 @@ def test_winrt_argument_errors_stay_in_form_and_focus_the_invalid_field(launch, 
     definition = app.open_row()
     app.choose(definition, architecture)
     before = app.content(definition)
-    dialog = bind_dialog(app, definition)
-    hwnd = dialog.NativeWindowHandle
+    hwnd = bind_dialog(app, definition)
     first, second = (win32gui.GetDlgItem(hwnd, identifier) for identifier in (1500, 1501))
-    auto.ControlFromHandle(first).GetValuePattern().SetValue("string")
+    set_argument(first, "string")
     for expression in ("nuint", "nint", "IVector<nuint>", "IVector<IVector<nint>>", "int32[]"):
-        auto.ControlFromHandle(second).GetValuePattern().SetValue(expression)
+        set_argument(second, expression)
         n.send(hwnd, win32con.WM_COMMAND, 1231, win32gui.GetDlgItem(hwnd, 1231))
         assert n.is_window(hwnd)
         assert app.focused() == second
@@ -288,7 +283,7 @@ def test_winrt_argument_errors_stay_in_form_and_focus_the_invalid_field(launch, 
         assert expression in n.window_text(n.get_item(hwnd, 1232))
         assert app.active_document() == definition and app.choice(definition) == architecture
         assert app.content(definition) == before
-    auto.ControlFromHandle(second).GetValuePattern().SetValue("uint64")
+    set_argument(second, "uint64")
     menu_key(second, win32con.VK_RETURN)
     instance = destination(app, definition, "IMap<string, uint64>", architecture)
     n.wait(lambda: "uint64 Lookup(" in app.content(instance), "valid fixed-width WinRT argument accepted")
@@ -300,16 +295,14 @@ def test_dotnet_generics_keep_native_sized_arguments_without_conversion(launch, 
     app.query("Fixtures.Box`2")
     definition = app.open_row()
     app.choose(definition, architecture)
-    dialog = bind_dialog(app, definition)
-    hwnd = dialog.NativeWindowHandle
+    hwnd = bind_dialog(app, definition)
     for identifier, value in ((1500, "nint"), (1501, "nuint")):
-        auto.ControlFromHandle(win32gui.GetDlgItem(hwnd, identifier)).GetValuePattern().SetValue(value)
+        set_argument(win32gui.GetDlgItem(hwnd, identifier), value)
     menu_key(win32gui.GetDlgItem(hwnd, 1501), win32con.VK_RETURN)
     instance = destination(app, definition, "Box<nint, nuint>", architecture)
     n.wait(lambda: "nint First;" in app.content(instance), "native signed argument preserved")
     assert "nuint Second;" in app.content(instance)
-    dialog = bind_dialog(app, instance)
-    hwnd = dialog.NativeWindowHandle
+    hwnd = bind_dialog(app, instance)
     assert n.window_text(n.get_item(hwnd, 1500)) == "nint"
     assert n.window_text(n.get_item(hwnd, 1501)) == "nuint"
     win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
@@ -324,18 +317,18 @@ def test_many_arguments_scroll_keyboard_and_dpi_keep_values(launch, generic_meta
     app.query("Fixtures.Many`8")
     definition = app.open_row()
     app.choose(definition, "x64")
-    dialog = bind_dialog(app, definition)
-    hwnd = dialog.NativeWindowHandle
+    hwnd = bind_dialog(app, definition)
     fields = [win32gui.GetDlgItem(hwnd, 1500 + index) for index in range(8)]
     apply = n.get_item(hwnd, 1231)
     for field in fields[:-1]:
-        auto.ControlFromHandle(field).GetValuePattern().SetValue("int32")
+        set_argument(field, "int32")
     win32gui.PostMessage(hwnd, win32con.WM_COMMAND, 1231, apply)
     n.wait(lambda: app.focused() == fields[-1], "last invalid argument revealed and focused")
     assert n.is_visible(fields[-1])
-    auto.ControlFromHandle(fields[-1]).GetValuePattern().SetValue("string")
+    set_argument(fields[-1], "string")
     n.send(hwnd, win32con.WM_VSCROLL, win32con.SB_TOP, win32gui.GetDlgItem(hwnd, 1236))
-    auto.ControlFromHandle(fields[0]).SetFocus()
+    with deadline.operation('focus first type argument via UIA'):
+        auto.ControlFromHandle(fields[0]).SetFocus()
     for current, following in zip(fields, fields[1:]):
         menu_key(current, win32con.VK_TAB)
         n.wait(lambda: app.focused() == following, "Tab reaches each argument")
@@ -343,7 +336,9 @@ def test_many_arguments_scroll_keyboard_and_dpi_keep_values(launch, generic_meta
     observations = []
     for monitor in n.monitors():
         with n.window_dpi_context(hwnd):
-            dialog.GetPattern(auto.PatternId.TransformPattern).Move(monitor[0] + 40, monitor[1] + 40)
+            with deadline.operation('move type argument dialog via UIA'):
+                auto.ControlFromHandle(hwnd).GetPattern(auto.PatternId.TransformPattern).Move(
+                    monitor[0] + 40, monitor[1] + 40)
             n.wait(lambda: n.window_text(fields[-1]) == "string", "input retained after monitor move")
             left, top = win32gui.ClientToScreen(hwnd, (0, 0))
             _, _, width, height = win32gui.GetClientRect(hwnd)
@@ -351,7 +346,7 @@ def test_many_arguments_scroll_keyboard_and_dpi_keep_values(launch, generic_meta
                 x1, y1, x2, y2 = n.rectangle(control)
                 assert left <= x1 < x2 <= left + width
                 assert top <= y1 < y2 <= top + height
-            dpi = n.api(n.user, "GetDpiForWindow", n.w.UINT, n.w.HWND)(hwnd) if hasattr(n.user, "GetDpiForWindow") else None
+            dpi = n.window_dpi(hwnd)
             observations.append({"monitor": monitor, "effective_dpi": dpi, "bounds": n.rectangle(hwnd)})
     (settings[2] / "type-arguments-monitors.json").write_text(json.dumps(observations), encoding="utf-8")
     assert all(n.window_text(field) == "int32" for field in fields[:-1])
@@ -367,20 +362,19 @@ def test_argument_form_simulated_pmv1_scaling_keeps_input_focus_and_scroll(launc
     app = launch([generic_metadata], dpi="pmv1")
     app.query("Fixtures.Many`8")
     definition = app.open_row()
-    dialog = bind_dialog(app, definition)
-    hwnd = dialog.NativeWindowHandle
+    hwnd = bind_dialog(app, definition)
     fields = [win32gui.GetDlgItem(hwnd, 1500 + index) for index in range(8)]
     apply = win32gui.GetDlgItem(hwnd, 1231)
     # An empty last field exposes the validation/reveal path before scaling.
     for field in fields[:-1]:
-        auto.ControlFromHandle(field).GetValuePattern().SetValue("int32")
+        set_argument(field, "int32")
     n.send(hwnd, win32con.WM_COMMAND, 1231, apply)
-    auto.ControlFromHandle(fields[-1]).GetValuePattern().SetValue("string")
+    set_argument(fields[-1], "string")
     assert app.focused() == fields[-1]
     n.send(fields[-1], win32con.EM_SETSEL, 1, 4)
     with n.window_dpi_context(hwnd):
         original = n.rectangle(hwnd)
-        actual = n.api(n.user, "GetDpiForWindow", n.w.UINT, n.w.HWND)(hwnd)
+        actual = n.window_dpi(hwnd)
         for dpi in (96, 144, 192, actual):
             # Simulate only the PMv1 notification path, not an effective monitor change.
             rect = n.w.RECT(original[0], original[1],

@@ -16,18 +16,8 @@ import time
 import uuid
 import zipfile
 
-
-def atomic(path, value):
-    temporary = path.with_suffix(".new")
-    temporary.write_text(json.dumps(value, indent=2), encoding="utf-8")
-    for attempt in range(10):
-        try:
-            temporary.replace(path)
-            return
-        except PermissionError:
-            if attempt == 9:
-                raise
-            time.sleep(.02)
+from support import atomic, engine, progress, supervisor
+from support.policy import Policy
 
 
 def run_path(root, run_id):
@@ -53,36 +43,6 @@ def transfer_path(config, path):
     return path
 
 
-def last_record(path):
-    try:
-        with path.open("rb") as stream:
-            stream.seek(0, 2)
-            stream.seek(max(0, stream.tell() - 8192))
-            lines = stream.read().splitlines()
-    except FileNotFoundError:
-        return None
-    for line in reversed(lines):
-        try:
-            record = json.loads(line)
-        except ValueError:
-            continue
-        if isinstance(record, dict):
-            return record
-    return None
-
-
-def run_progress(path):
-    if (path / "actual" / "progress.jsonl").exists():
-        path = path / "actual"
-    started = last_record(path / "progress.jsonl")
-    if started is None:
-        return None
-    completed = last_record(path / "timings.jsonl")
-    active = completed is None or any(completed[key] != started[key] for key in ("nodeid", "phase"))
-    return {"nodeid": started["nodeid"], "phase": started["phase"], "active": active,
-            "elapsed": max(0, time.monotonic() - started["monotonic"]) if active else completed["duration"]}
-
-
 def rpc(root, request):
     root.mkdir(parents=True, exist_ok=True)
     action = request["action"]
@@ -92,7 +52,21 @@ def rpc(root, request):
             return {"worker_available": False}
         result = json.loads(path.read_text(encoding="utf-8"))
         result["heartbeat_age"] = time.time() - result["heartbeat"]
-        result["worker_available"] = result["heartbeat_age"] < 10
+        result["worker_available"] = result.get('worker_available', True) and result["heartbeat_age"] < 10
+        if result['worker_available']:
+            import support
+            import win32api
+            import win32con
+            import win32event
+            try:
+                process = win32api.OpenProcess(win32con.SYNCHRONIZE, False, result['pid'])
+            except win32api.error:
+                result['worker_available'] = False
+            else:
+                try:
+                    result['worker_available'] = win32event.WaitForSingleObject(process, 0) == win32con.WAIT_TIMEOUT
+                finally:
+                    win32api.CloseHandle(process)
         return result
     if action == "start-worker":
         current = rpc(root, {"action": "capabilities"})
@@ -107,7 +81,10 @@ def rpc(root, request):
         name = "Winlex.Tests." + hashlib.sha256(str(root).casefold().encode()).hexdigest()[:12]
         names = {entry.casefold() for entry in scheduler.Enum()}
         task = scheduler.Activate(name) if (name + ".job").casefold() in names else scheduler.NewWorkItem(name)
-        task.SetApplicationName(sys.executable)
+        interpreter = Path(sys.executable).with_name('pythonw.exe')
+        if not interpreter.is_file():
+            raise FileNotFoundError('Scheduled worker requires windowless Python: ' + str(interpreter))
+        task.SetApplicationName(str(interpreter))
         task.SetParameters(subprocess.list2cmdline([str(Path(__file__).resolve()), "worker", "--root", str(root)]))
         task.SetWorkingDirectory(str(Path(__file__).resolve().parent))
         task.SetFlags(t.TASK_FLAG_RUN_ONLY_IF_LOGGED_ON)
@@ -122,8 +99,8 @@ def rpc(root, request):
             result = rpc(root, {**request, "action": "status"})
             if result.get("state") not in ("running", "queued"):
                 return {**result, "watch_event": "finished"}
-            progress = result.get("progress")
-            if progress and progress["active"] and progress["elapsed"] >= request["slow_after"]:
+            state = result.get("progress")
+            if state and state["active"] and state["elapsed"] >= request["slow_after"]:
                 return {**result, "watch_event": "slow_phase"}
             if time.monotonic() >= deadline:
                 return {**result, "watch_event": "watch_timeout"}
@@ -131,19 +108,22 @@ def rpc(root, request):
     path = run_path(root, request["run_id"])
     if action == "submit":
         path.mkdir()
-        atomic(path / "request.json", request)
+        atomic.write_json(path / "request.json", request)
         return {"run_id": request["run_id"], "state": "queued"}
     if action == "cancel":
         (path / "cancel").touch()
         return {"cancel_requested": True}
     if action == "status":
+        failure = path / 'supervisor.json'
+        if failure.exists():
+            return json.loads(failure.read_text(encoding='utf-8'))
         result = path / "run.json"
         if result.exists():
             return json.loads(result.read_text(encoding="utf-8"))
         result = {"state": "running" if (path / "started.json").exists() else "queued"}
-        progress = run_progress(path)
-        if progress is not None:
-            result["progress"] = progress
+        active = progress.active(path)
+        if active is not None:
+            result["progress"] = active
         return result
     if action == "collect":
         from support.paths import extended
@@ -166,10 +146,10 @@ def worker(root, once=False):
     import win32event
     desktop = win32service.GetThreadDesktop(win32api.GetCurrentThreadId())
     station = win32service.GetProcessWindowStation()
-    station_name = win32service.GetUserObjectInformation(station, win32con.UOI_NAME)
+    station_name = win32service.GetUserObjectInformation(int(station), win32con.UOI_NAME)
     if station_name.lower() != "winsta0":
         raise RuntimeError("Worker must run from an interactive logon")
-    desktop_name = win32service.GetUserObjectInformation(desktop, win32con.UOI_NAME)
+    desktop_name = win32service.GetUserObjectInformation(int(desktop), win32con.UOI_NAME)
     mutex = win32event.CreateMutex(None, False, "Local\\Winlex.Tests.Worker." + desktop_name)
     if win32api.GetLastError() == 183:
         win32api.CloseHandle(mutex)
@@ -179,7 +159,7 @@ def worker(root, once=False):
                     "python": sys.version, "executable": sys.executable, "desktop": desktop_name,
                     **native.capabilities()}
     while True:
-        atomic(root / "capabilities.json", {**capabilities, "heartbeat": time.time()})
+        atomic.write_json(root / "capabilities.json", {**capabilities, "heartbeat": time.time()})
         for request in sorted(root.glob("*/request.json")):
             path = request.parent
             if (path / "run.json").exists() or (path / "started.json").exists():
@@ -192,28 +172,37 @@ def worker(root, once=False):
                 continue
             data = json.loads(request.read_text(encoding="utf-8"))
             if (path / "cancel").exists():
-                atomic(path / "run.json", {"cancelled": True, "cleanup_complete": True, "state": "cancelled_before_start"})
+                atomic.write_json(path / "run.json", {"cancelled": True, "cleanup_complete": True, "state": "cancelled_before_start"})
                 continue
-            command = [sys.executable, str(Path(__file__).with_name("run.py")), "--output", str(path),
-                       "--timeout", str(data["timeout"]), "--desktop", data["desktop"], *data["tests"]]
-            with (path / "output.log").open("w", encoding="utf-8") as log:
+            policy = Policy.load().overrides(
+                run=data["timeout"], call=data.get("case_timeout"),
+                stall=data.get("stall_after"),
+                consecutive_stalls=data.get("consecutive_stalls"))
+            command = engine.command(path, data["tests"], policy, data["desktop"])
+            # Read-write so the engine and pytest can query the redirected
+            # standard handle; a write-only handle is rejected on XP.
+            log = os.fdopen(os.open(path / "output.log",
+                                    os.O_RDWR | os.O_CREAT | os.O_TRUNC),
+                            "w", encoding="utf-8")
+            with log:
+                started = time.monotonic()
                 process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
                                            env={**os.environ, "PYTHONUTF8": "1"})
                 try:
-                    while process.poll() is None:
-                        atomic(root / "capabilities.json", {**capabilities, "heartbeat": time.time()})
-                        time.sleep(.25)
+                    safe = supervisor.supervise_runner(process, path, policy.run, started,
+                        lambda: atomic.write_json(root / 'capabilities.json', {**capabilities, 'heartbeat': time.time()}),
+                        policy=policy)
                 except KeyboardInterrupt:
                     (path / "cancel").touch()
-                    try:
-                        process.wait(timeout=20)
-                    except subprocess.TimeoutExpired:
-                        process.kill()
-                        process.wait()
-                    raise
-            if not (path / "run.json").exists():
-                atomic(path / "run.json", {"exit_code": process.returncode, "cleanup_complete": False,
-                                          "error": "Runner exited without cleanup report"})
+                    safe = supervisor.supervise_runner(process, path, policy.run, started,
+                        lambda: atomic.write_json(root / 'capabilities.json', {**capabilities, 'heartbeat': time.time()}),
+                        policy=policy)
+                    if safe:
+                        raise
+            if not safe:
+                atomic.write_json(root / 'capabilities.json', {**capabilities, 'heartbeat': time.time(),
+                    'worker_available': False, 'error': 'Runner cleanup unverified; queue stopped'})
+                return
         if once:
             return
         time.sleep(.25)
@@ -231,15 +220,20 @@ def main():
     parser.add_argument("--source", type=Path)
     parser.add_argument("--destination")
     parser.add_argument("--run-id")
-    parser.add_argument("--timeout", type=int, default=180)
+    parser.add_argument("--timeout", type=float, default=Policy.load().run)
+    parser.add_argument("--case-timeout", type=int)
+    parser.add_argument("--stall-after", type=float)
+    parser.add_argument("--consecutive-stalls", type=int)
     parser.add_argument("--slow-after", type=float, default=15)
-    parser.add_argument("--desktop", choices=("isolated", "current"), default="isolated")
+    parser.add_argument("--desktop", choices=("isolated", "current"))
     parser.add_argument("--output", type=Path, default=Path("tmp/remote-tests"))
     args, tests = parser.parse_known_args()
     if args.slow_after <= 0:
         parser.error("--slow-after must be positive")
-    if args.action == "submit" and "--real-input" in tests and args.desktop != "current":
-        parser.error("--real-input requires --desktop current")
+    if args.timeout <= 0 or any(value is not None and value <= 0
+                                for value in (args.case_timeout, args.stall_after,
+                                              args.consecutive_stalls)):
+        parser.error("timeout budgets must be positive")
     if args.action == "worker":
         worker(args.root.resolve(), args.once)
         return
@@ -247,6 +241,13 @@ def main():
         print(json.dumps(rpc(args.root.resolve(), json.loads(base64.b64decode(args.request)))))
         return
     config = json.loads(args.config.read_text(encoding="utf-8"))
+    # A target may pin its desktop: on XP the automation provider times out for
+    # about 2s per method call whenever the window is not on the input desktop.
+    desktop = args.desktop or config.get("desktop", "isolated")
+    if desktop not in ("isolated", "current"):
+        parser.error("desktop must be isolated or current")
+    if args.action == "submit" and "--real-input" in tests and desktop != "current":
+        parser.error("--real-input requires --desktop current")
     if args.action == "deploy":
         if not args.source or not args.destination:
             parser.error("deploy requires --source and --destination")
@@ -259,18 +260,29 @@ def main():
         else:
             subprocess.run(connection(config, "scp") + [
                 "-r", str(args.source), config["host"] + ":" + transfer_path(config, args.destination),
-            ], check=True)
+            ], check=True, timeout=max(180, args.timeout) + 30)
         print(json.dumps({"deployed": args.destination}))
         return
     request = {"action": args.action, "run_id": args.run_id or uuid.uuid4().hex,
-               "timeout": args.timeout, "slow_after": args.slow_after, "desktop": args.desktop, "tests": tests}
+               "timeout": args.timeout, "case_timeout": args.case_timeout,
+               "stall_after": args.stall_after,
+               "consecutive_stalls": args.consecutive_stalls,
+               "slow_after": args.slow_after, "desktop": desktop, "tests": tests}
     if config["transport"] == "local":
         result = rpc(Path(config["root"]).resolve(), request)
     else:
         payload = base64.b64encode(json.dumps(request).encode()).decode()
         # Windows OpenSSH target command line; GUI starts only in the worker.
         command = subprocess.list2cmdline([config["python"], config["script"], "rpc", "--root", config["root"], "--request", payload])
-        result = json.loads(subprocess.check_output(connection(config, "ssh") + [config["host"], command], text=True, encoding="utf-8"))
+        # Submission only queues work; watch must allow its full requested wait.
+        # Archive creation and transfers keep the default run budget for large files.
+        timeout = 30
+        if args.action == "watch":
+            timeout += max(0, args.timeout)
+        elif args.action == "collect":
+            timeout += max(180, args.timeout)
+        result = json.loads(subprocess.check_output(connection(config, "ssh") + [config["host"], command],
+                                                   text=True, encoding="utf-8", timeout=timeout))
     if args.action == "collect":
         args.output.mkdir(parents=True, exist_ok=True)
         destination = args.output / (request["run_id"] + ".zip")
@@ -279,7 +291,7 @@ def main():
         else:
             subprocess.run(connection(config, "scp") + [
                 config["host"] + ":" + transfer_path(config, result["archive"]), str(destination),
-            ], check=True)
+            ], check=True, timeout=max(180, args.timeout) + 30)
         result["local_archive"] = str(destination)
     print(json.dumps(result, indent=2))
 

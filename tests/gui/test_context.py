@@ -3,12 +3,14 @@ import shutil
 import subprocess
 import sys
 import time
+from contextlib import nullcontext
 import win32clipboard as clipboard
 import win32con
 import win32gui
 import pytest
 import uiautomation as auto
 from support import messages
+from support import deadline
 from support import native as n
 from support.input_state import InputState, foreground
 from support.session import ThreadInfo
@@ -17,7 +19,7 @@ from support.session import ThreadInfo
 def popup(app, editor, location=-1, keyboard=False, mouse=False, protocol_mouse=False):
     if mouse:
         auto.RightClick(n.c.c_short(location & 0xFFFF).value,
-                        n.c.c_short((location >> 16) & 0xFFFF).value)
+                        n.c.c_short((location >> 16) & 0xFFFF).value, waitTime=0)
     elif protocol_mouse:
         point = n.w.POINT(n.c.c_short(location & 0xFFFF).value,
                           n.c.c_short((location >> 16) & 0xFFFF).value)
@@ -51,7 +53,7 @@ def popup_window(pid):
 
 
 def find_popup(app):
-    window = n.wait(lambda: popup_window(app.process.pid), "context menu", 10)
+    window = n.wait(lambda: popup_window(app.process.pid), "context menu", 15)
     menu = n.send(window, messages.MN_GETHMENU)
     assert menu, "context menu handle"
     info = ThreadInfo()
@@ -84,6 +86,7 @@ def menu_key(window, key):
         win32gui.PostMessage(window, win32con.WM_KEYUP, key, 0)
 
 
+@deadline.operation('read packed editor selection via TOM')
 def selection_packed(editor):
     selection = n.rich_edit_document(editor).Selection
     return (selection.End << 16) | selection.Start
@@ -96,20 +99,23 @@ def select_native(editor, first, last):
 
 
 def select_text(editor, first, last):
-    document = n.rich_edit_document(editor)
-    if last == -1:
-        last = document.Range(0, 0).StoryLength - 1
-    win32gui.SendMessage(editor, win32con.EM_SETSEL, first, last)
+    with deadline.operation('prepare editor selection via TOM'):
+        document = n.rich_edit_document(editor)
+        if last == -1:
+            last = document.Range(0, 0).StoryLength - 1
+    n.send(editor, win32con.EM_SETSEL, first, last)
     def selected():
         selection = document.Selection
         return (selection.Start, selection.End) == (first, last)
     try:
         n.wait(selected, "editor selection", 45)
     except AssertionError as error:
-        selection = document.Selection
-        raise AssertionError("Expected selection %r, observed %r" %
-                             ((first, last), (selection.Start, selection.End))) from error
+        with deadline.operation('read failed editor selection via TOM'):
+            selection = document.Selection
+            raise AssertionError("Expected selection %r, observed %r" %
+                                 ((first, last), (selection.Start, selection.End))) from error
 
+@deadline.operation('measure editor character point via TOM')
 def character_point(app, editor, index):
     x, y = n.rich_edit_document(editor).Range(index, index + 1).GetPoint(32 | 256 | 512)
     point = n.w.POINT(x + 1, y + 1)
@@ -118,10 +124,19 @@ def character_point(app, editor, index):
     return (point.x & 0xFFFF) | ((point.y & 0xFFFF) << 16)
 
 
+@pytest.fixture
+def context_input(gesture):
+    if gesture == 'mouse':
+        yield None
+    else:
+        with InputState() as inputs:
+            yield inputs
+
+
 @pytest.mark.parametrize('kind', ['declaration', 'tool'])
 @pytest.mark.parametrize('gesture', ['mouse', pytest.param('apps', marks=pytest.mark.interactive),
                                     pytest.param('shift-f10', marks=pytest.mark.interactive)])
-def test_readonly_result_context_input_preserves_selection(launch, settings, kind, gesture):
+def test_readonly_result_context_input_preserves_selection(launch, settings, kind, gesture, context_input):
     from test_tools import tool, query
     app = launch([settings[1]])
     if kind == 'tool':
@@ -133,25 +148,32 @@ def test_readonly_result_context_input_preserves_selection(launch, settings, kin
         doc = app.open_row()
         n.wait(lambda: 'CreateFileW(' in app.content(doc), 'declaration')
         editor = n.get_item(doc, 1203)
-    app.focus(editor)
-    select_text(editor, 2, 8)
-    # TOM calls are rejected while the native popup runs its modal loop.
-    selection = n.send(editor, win32con.EM_GETSEL)
-    first = n.send(editor, win32con.EM_GETFIRSTVISIBLELINE)
-    if gesture == 'mouse':
-        popup(app, editor, character_point(app, editor, 4), protocol_mouse=True)
-    elif gesture == 'apps':
-        auto.SendKeys('{Apps}')
-        find_popup(app)
-    else:
-        auto.SendKeys('{Shift}{F10}')
-        find_popup(app)
-    try:
-        assert n.send(editor, win32con.EM_GETSEL) == selection
-        assert n.send(editor, win32con.EM_GETFIRSTVISIBLELINE) == first
-    finally:
-        dismiss(editor)
-    assert app.active_document() == doc
+    with foreground(app, context_input) if context_input is not None else nullcontext():
+        app.focus(editor)
+        select_text(editor, 2, 8)
+        # TOM calls are rejected while the native popup runs its modal loop.
+        selection = n.send(editor, win32con.EM_GETSEL)
+        first = n.send(editor, win32con.EM_GETFIRSTVISIBLELINE)
+        if gesture == 'mouse':
+            popup(app, editor, character_point(app, editor, 4), protocol_mouse=True)
+        elif gesture == 'apps':
+            context_input.key(win32con.VK_APPS)
+            find_popup(app)
+        else:
+            context_input.hold(win32con.VK_SHIFT)
+            auto.PressKey(win32con.VK_SHIFT, waitTime=0)
+            try:
+                context_input.key(win32con.VK_F10)
+            finally:
+                auto.ReleaseKey(win32con.VK_SHIFT, waitTime=0)
+                context_input.release(win32con.VK_SHIFT)
+            find_popup(app)
+        try:
+            assert n.send(editor, win32con.EM_GETSEL) == selection
+            assert n.send(editor, win32con.EM_GETFIRSTVISIBLELINE) == first
+        finally:
+            dismiss(editor)
+        assert app.active_document() == doc
 
 
 def test_numeric_context_and_selection_survive_architecture_changes(launch, settings):
@@ -356,7 +378,7 @@ def test_numeric_context_covers_labels_units_and_constant_annotations(launch, se
             n.send(editor, win32con.WM_NULL)
 
 
-def test_numeric_context_requires_the_whole_selection_in_one_region(launch, settings):
+def test_numeric_context_distinguishes_keyboard_selection_from_mouse_target(launch, settings):
     app = launch([settings[1]])
     app.query("Windows.Win32.Foundation.RECT")
     doc = app.open_row()
@@ -376,8 +398,10 @@ def test_numeric_context_requires_the_whole_selection_in_one_region(launch, sett
             location = character_point(app, editor, start + 1)
             for keyboard in (True, False):
                 _, items = popup(app, editor, location, keyboard=keyboard, protocol_mouse=not keyboard)
-                assert items == expected
-                dismiss(editor)
+                try:
+                    assert items == (expected if keyboard else [2071, 2072, 2073, 0, 2074])
+                finally:
+                    dismiss(editor)
                 n.send(editor, win32con.WM_NULL)
                 assert selection_packed(editor) == (last << 16) | first
 

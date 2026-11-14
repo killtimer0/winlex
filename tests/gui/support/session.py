@@ -13,7 +13,7 @@ import win32con
 import win32gui
 import win32process
 
-from . import native as n
+from . import deadline, messages, native as n
 
 
 class ThreadInfo(c.Structure):
@@ -28,16 +28,21 @@ def control(value):
 
 
 def find(root, identifier):
-    item = control(root).Control(AutomationId=str(identifier))
-    return item if item.Exists(0, 0) else None
+    if not isinstance(root, int):
+        with deadline.operation('read control native window handle via UIA'):
+            root = root.NativeWindowHandle
+    hwnd = n.get_item(root, identifier)
+    return control(hwnd) if hwnd else None
 
 
+@deadline.operation('get UIA control pattern')
 def pattern(item, kind):
     result = item.GetPattern(kind)
     assert result is not None, "UI Automation pattern %s unavailable on %s" % (kind, item)
     return result
 
 
+@deadline.operation('invoke UIA control')
 def invoke(value):
     item = control(value)
     action = item.GetPattern(uia.PatternId.InvokePattern)
@@ -46,6 +51,7 @@ def invoke(value):
     return pattern(item, uia.PatternId.LegacyIAccessiblePattern).DoDefaultAction(waitTime=0)
 
 
+@deadline.operation('find modal command button via UIA')
 def message_button(dialog, identifier):
     """Find the native command in either a MessageBox or a TaskDialog provider."""
     root = control(dialog)
@@ -56,6 +62,7 @@ def message_button(dialog, identifier):
     return None
 
 
+@deadline.operation('commit combo selection')
 def select_combo(value, label):
     combo = control(value)
     expansion = pattern(combo, uia.PatternId.ExpandCollapsePattern)
@@ -84,16 +91,14 @@ class Session:
             self.process = subprocess.Popen([str(exe), *map(str, arguments)], env=profile.environment(dpi=dpi))
             self.frame = n.wait(self.find_frame, "main window")
             self.status = self.item(self.frame, 1105)
-            self.mdi = n.wait(lambda: next((x.NativeWindowHandle for x, _ in uia.WalkControl(control(self.frame))
-                                            if x.ClassName == "MDIClient"), None), "MDI client")
-            if hasattr(n.user, "GetDpiForWindow"):
-                self.actual_dpi = n.api(n.user, "GetDpiForWindow", w.UINT, w.HWND)(self.frame)
+            self.mdi = n.wait(lambda: win32gui.FindWindowEx(self.frame, 0, 'MDIClient', None), 'MDI client')
+            self.actual_dpi = n.window_dpi(self.frame)
         except BaseException:
             self.close()
             raise
 
     def item(self, root, identifier):
-        return n.wait(lambda: (find(root, identifier) or None), "control %s" % identifier).NativeWindowHandle
+        return n.wait(lambda: n.get_item(root, identifier), "control %s" % identifier)
 
     @property
     def search(self):
@@ -117,9 +122,7 @@ class Session:
 
     def find_frame(self):
         assert self.process.poll() is None, "GUI exited: %s" % self.process.returncode
-        frame = uia.WindowControl(searchDepth=1, ClassName="Winlex.Frame",
-                                  Compare=lambda item, depth: item.ProcessId == self.process.pid)
-        return frame.NativeWindowHandle if frame.Exists(0, 0) else None
+        return n.find_window(self.process.pid, 'Winlex.Frame')
 
     def command(self, command, target=None, code=0):
         if command in (1049, 1050):
@@ -132,15 +135,14 @@ class Session:
 
     def settings(self):
         self.command(1051)
-        sheet_control = uia.WindowControl(searchDepth=3, ClassName="#32770",
-                                          Compare=lambda item, depth: item.ProcessId == self.process.pid)
-        sheet = n.wait(lambda: sheet_control.NativeWindowHandle if sheet_control.Exists(0, 0) else None,
+        sheet = n.wait(lambda: n.find_window(self.process.pid, '#32770', self.frame),
                        "settings property sheet")
         self.settings_page(sheet, 0)
         return sheet
 
+    @deadline.operation('select settings page')
     def settings_page(self, sheet, index):
-        tabs = [x for x, _ in uia.WalkControl(control(sheet)) if x.ControlType == uia.ControlType.TabItemControl]
+        tabs = self.settings_tabs(sheet)
         assert 0 <= index < len(tabs)
         selection = pattern(tabs[index], uia.PatternId.SelectionItemPattern)
         if not selection.IsSelected:
@@ -150,10 +152,18 @@ class Session:
         page = item.GetParentControl()
         return page.NativeWindowHandle
 
+    @deadline.operation('enumerate settings tab items via UIA')
+    def settings_tabs(self, sheet):
+        tab = n.send(sheet, messages.PSM_GETTABCONTROL)
+        assert tab, 'settings tab control'
+        return [item for item in control(tab).GetChildren()
+                if item.ControlType == uia.ControlType.TabItemControl]
+
     def close_settings(self, sheet, accept=True):
         invoke(n.wait(lambda: find(sheet, 1 if accept else 2), "settings button"))
         n.wait(lambda: not n.is_window(sheet), "settings closed")
 
+    @deadline.operation('enumerate combo options via UIA')
     def choices(self, value):
         combo = control(value)
         if not combo.IsEnabled:
@@ -199,6 +209,7 @@ class Session:
     def architecture(self, doc):
         return self.item(doc, 1047)
 
+    @deadline.operation('read architecture selection via UIA')
     def choice(self, doc):
         combo = control(self.architecture(doc))
         return pattern(combo, uia.PatternId.ValuePattern).Value
@@ -216,11 +227,13 @@ class Session:
         identifier = win32gui.GetDlgCtrlID(combo)
         n.send(parent, win32con.WM_COMMAND, (win32con.CBN_SELENDOK << 16) | identifier, combo)
 
+    @deadline.operation('read status text')
     def status_text(self):
         status = control(self.status)
         children = status.GetChildren()
         return children[0].Name if children else status.Name
 
+    @deadline.operation('read toolbar command text via UIA')
     def toolbar_text(self, command):
         toolbar = control(self.item(self.frame, 1113))
         return toolbar.GetChildren()[(1040, 1021, 1800).index(command)].Name
@@ -235,9 +248,11 @@ class Session:
                 yield item
             item = item.GetPreviousSiblingControl() if reverse else item.GetNextSiblingControl()
 
+    @deadline.operation('enumerate UIA list rows')
     def rows(self, value=...):
         return list(self._rows(value))
 
+    @deadline.operation('locate UIA list row')
     def row(self, row, value=...):
         total = self.count(value)
         if row < 0:
@@ -257,15 +272,26 @@ class Session:
         assert n.class_name(value) == "SysListView32", "Requested control is not a list view"
         return n.send(value, LVM_GETITEMCOUNT)
 
+    @deadline.operation('read UIA list row')
     def cell(self, row, control=...):
         return self.row(row, control).Name
 
     def select(self, row, control=...):
-        assert pattern(self.row(row, control), uia.PatternId.SelectionItemPattern).Select(waitTime=0)
+        item = self.row(row, control)
+        with deadline.operation('select UIA list row'):
+            assert pattern(item, uia.PatternId.SelectionItemPattern).Select(waitTime=0)
 
+    @deadline.operation('find named list rows')
     def named_rows(self, name):
         return [index for index, item in enumerate(self.rows())
                 if item.Name.splitlines()[0].rsplit(".", 1)[-1] == name]
+
+    @deadline.operation('find first named UIA list row')
+    def first_named_row(self, name):
+        for index, item in enumerate(self._rows()):
+            if item.Name.splitlines()[0].rsplit(".", 1)[-1] == name:
+                return index
+        raise LookupError("List row unavailable: %s" % name)
 
     def selected_row(self, control=...):
         value = self.results if control is ... else control
@@ -276,20 +302,27 @@ class Session:
     def top_row(self):
         return n.send(self.results, LVM_GETTOPINDEX)
 
+    @deadline.operation('measure list row')
     def item_rect(self, row, control=...):
         rect = self.row(row, control).BoundingRectangle
         origin = win32gui.ClientToScreen(self.results if control is ... else control, (0, 0))
         return rect.left - origin[0], rect.top - origin[1], rect.right - origin[0], rect.bottom - origin[1]
 
+    @deadline.operation('submit search and await completion')
     def query(self, value):
         if not self.search or control(self.search).IsOffscreen:
             self.command(1040)
-        pattern(control(self.search), uia.PatternId.ValuePattern).SetValue(value)
+        text = c.create_unicode_buffer(value)
+        assert n.send(self.search, win32con.WM_SETTEXT, 0, c.addressof(text)), "Search text write failed"
         n.wait(lambda: self.status_text().startswith(("Results ", "共 ")), "search completed", 45)
 
     def documents(self):
-        return [x.NativeWindowHandle for x, _ in uia.WalkControl(control(self.mdi))
-                if x.ClassName == "Winlex.Document"]
+        documents = []
+        child = win32gui.FindWindowEx(self.mdi, 0, 'Winlex.Document', None)
+        while child:
+            documents.append(child)
+            child = win32gui.FindWindowEx(self.mdi, child, 'Winlex.Document', None)
+        return documents
 
     def active_document(self):
         # Duplicate documents share window titles; tab labels cannot identify their HWNDs.
@@ -340,19 +373,24 @@ class Session:
     def _clicked_document(self, inputs, row, double, description):
         assert inputs is not None, "Mouse gestures require an interactive input owner"
         item = self.row(row)
-        name = item.Name.splitlines()[0].rsplit(".", 1)[-1]
-        rect = item.BoundingRectangle
+        with deadline.operation('read UIA row gesture target'):
+            name = item.Name.splitlines()[0].rsplit(".", 1)[-1]
+            rect = item.BoundingRectangle
         position = ((rect.left + rect.right) // 2, (rect.top + rect.bottom) // 2)
         assert win32gui.GetForegroundWindow() == self.frame, "Application lost foreground"
         assert win32gui.WindowFromPoint(position) == self.results, "Result row is obscured"
         if double:
             inputs.double_click(*position)
         else:
-            item.Click()
+            with deadline.operation('click owned list row'):
+                inputs.click(*position, wait_time=0)
         return self.wait_document(description, name)
 
     def focus(self, value):
-        hwnd = value if isinstance(value, int) else control(value).NativeWindowHandle
+        hwnd = value
+        if not isinstance(value, int):
+            with deadline.operation('read focus target native window handle via UIA'):
+                hwnd = control(value).NativeWindowHandle
         assert hwnd, "Focus target has no native window"
         own = win32api.GetCurrentThreadId()
         target = win32process.GetWindowThreadProcessId(hwnd)[0]
@@ -373,9 +411,11 @@ class Session:
         return [x for x, _ in uia.WalkControl(control(self.item(self.frame, 1104)))
                 if x.ControlType == uia.ControlType.TabItemControl]
 
+    @deadline.operation('read document tab labels via UIA')
     def tab_labels(self):
         return [x.Name for x in self._tabs()]
 
+    @deadline.operation('read document tab descriptions via UIA')
     def tab_descriptions(self):
         return [pattern(x, uia.PatternId.LegacyIAccessiblePattern).Description for x in self._tabs()]
 
@@ -383,7 +423,9 @@ class Session:
         editor = find(doc, 1203)
         if not editor:
             return ""
-        return n.window_text(editor.NativeWindowHandle)
+        with deadline.operation('read editor native window handle via UIA'):
+            hwnd = editor.NativeWindowHandle
+        return n.window_text(hwnd)
 
     def declaration_font(self, doc):
         font = n.rich_edit_document(self.item(doc, 1203)).Range(0, 0).Font
@@ -398,7 +440,8 @@ class Session:
                         and n.is_visible(hwnd) and n.class_name(hwnd) == "#32770"):
                     found.append(hwnd)
                 return True
-            win32gui.EnumWindows(visit, None)
+            for hwnd in n.top_level_windows():
+                visit(hwnd, None)
             return found
         candidates = n.wait(dialogs, "native file dialog")
         assert len(candidates) == 1, ("ambiguous file dialog", candidates)
@@ -423,18 +466,32 @@ class Session:
         win32gui.PostMessage(dialog, win32con.WM_COMMAND, win32con.IDOK, buttons[0])
         n.wait(lambda: not n.is_window(dialog), "file dialog closed")
 
+    @deadline.operation('capture native window diagnostics')
     def diagnostics(self, destination):
         rows = []
         if self.frame and n.is_window(self.frame):
-            for item, _ in uia.WalkControl(control(self.frame), includeTop=True):
+            windows = [self.frame]
+            win32gui.EnumChildWindows(self.frame, lambda hwnd, _: windows.append(hwnd), None)
+            text_available = True
+            for hwnd in windows:
                 try:
-                    rect = item.BoundingRectangle
-                    rows.append({"hwnd": item.NativeWindowHandle, "class": item.ClassName,
-                                 "type": item.ControlTypeName,
-                                 "id": item.AutomationId, "visible": not item.IsOffscreen,
-                                 "rect": [rect.left, rect.top, rect.right, rect.bottom], "text": item.Name[:4096]})
+                    row = {'hwnd': hwnd, 'class': n.class_name(hwnd), 'id': n.get_id(hwnd),
+                           'visible': bool(n.is_visible(hwnd)), 'rect': n.rectangle(hwnd)}
+                    # Do not enumerate virtual UIA descendants while collecting
+                    # evidence of a failure. One unresponsive GUI thread must
+                    # not multiply a per-control message timeout by its HWNDs.
+                    if text_available:
+                        text = c.create_unicode_buffer(4097)
+                        size = c.c_size_t()
+                        text_available = bool(n.send_timeout(hwnd, win32con.WM_GETTEXT, len(text),
+                                                           c.addressof(text), 3, 100, c.byref(size)))
+                        if text_available:
+                            row['text'] = text.value
+                    if not text_available:
+                        row['text_error'] = 'GUI text collection stopped after message timeout'
+                    rows.append(row)
                 except Exception as error:
-                    rows.append({"error": str(error)})
+                    rows.append({'hwnd': hwnd, 'error': str(error)})
         Path(destination).write_text(json.dumps(rows, ensure_ascii=True, indent=2), encoding="utf-8")
 
     def close(self):
@@ -444,27 +501,49 @@ class Session:
             try:
                 if self.frame and n.is_window(self.frame):
                     dialogs = []
-                    owners = [control(self.frame)]
-                    while owners:
-                        for item in owners.pop().GetChildren():
-                            if (item.ClassName == '#32770'
-                                    and not win32gui.GetWindowLong(item.NativeWindowHandle, win32con.GWL_STYLE) & win32con.WS_CHILD):
-                                dialogs.append(item)
-                                owners.append(item)
-                    for dialog in reversed(dialogs):
-                        handle = dialog.NativeWindowHandle
-                        button = message_button(dialog, win32con.IDNO) or message_button(dialog, win32con.IDCANCEL)
-                        if button is not None:
-                            invoke(button)
+                    # Cleanup needs owned HWNDs, not the frame's virtual UIA
+                    # descendants. Enumerating those can block or raise COM
+                    # marshalling exceptions under WOW64 before any close.
+                    def visit(hwnd, _):
+                        if (win32process.GetWindowThreadProcessId(hwnd)[1] != self.process.pid
+                                or n.class_name(hwnd) != '#32770'):
+                            return
+                        owner, seen = hwnd, set()
+                        while owner and owner not in seen:
+                            seen.add(owner)
+                            owner = win32gui.GetWindow(owner, win32con.GW_OWNER)
+                            if owner == self.frame:
+                                dialogs.append((len(seen), hwnd))
+                                break
+
+                    for hwnd in n.top_level_windows():
+                        visit(hwnd, None)
+                    for _, handle in sorted(dialogs, reverse=True):
+                        if not n.is_window(handle):
+                            continue
+                        for identifier in (win32con.IDCANCEL, win32con.IDNO):
+                            button = n.get_item(handle, identifier)
+                            if button and n.class_name(button) == 'Button':
+                                win32gui.PostMessage(handle, win32con.WM_COMMAND, identifier, button)
+                                break
                         else:
-                            pattern(dialog, uia.PatternId.WindowPattern).Close(waitTime=0)
-                        n.wait(lambda: not n.is_window(handle), 'owned dialog closed')
-                    pattern(control(self.frame), uia.PatternId.WindowPattern).Close(waitTime=0)
+                            # Winlex's Yes/No TaskDialogs use virtual buttons.
+                            # OK-only TaskDialogs allow ordinary WM_CLOSE; the
+                            # No command is ignored when it is not available.
+                            direct_ui = win32gui.FindWindowEx(handle, 0, 'DirectUIHWND', None)
+                            if direct_ui:
+                                win32gui.PostMessage(handle, messages.TDM_CLICK_BUTTON, win32con.IDNO, 0)
+                            win32gui.PostMessage(handle, win32con.WM_CLOSE, 0, 0)
+                        n.wait(lambda: not n.is_window(handle), 'owned dialog closed', 10)
             finally:
                 try:
-                    self.process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    self.process.kill()
-                    self.process.wait(timeout=5)
-                    raise AssertionError("GUI required forced termination")
+                    if self.frame and n.is_window(self.frame):
+                        win32gui.PostMessage(self.frame, win32con.WM_CLOSE, 0, 0)
+                finally:
+                    try:
+                        self.process.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        self.process.kill()
+                        self.process.wait(timeout=10)
+                        raise AssertionError("GUI required forced termination")
         self.cleanup_complete = True

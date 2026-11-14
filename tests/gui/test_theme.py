@@ -1,12 +1,10 @@
-import struct
 import ctypes as c
 import sys
 import pytest
 import win32con
-import win32gui
 import winreg
 import uiautomation as auto
-from support import native as n
+from support import deadline, messages, native as n
 from support.session import invoke, select_combo
 from support.diagnostics import capture, screenshot
 from test_about import open_about
@@ -18,6 +16,7 @@ modern_theme = pytest.mark.skipif(
     not THEME_SUPPORTED, reason='requires Windows 10 build 17763 or later')
 
 
+@deadline.operation('enumerate and select theme option via UIA')
 def select_theme(page, index):
     combo = auto.ControlFromHandle(n.get_item(page, 1301))
     expansion = combo.GetExpandCollapsePattern()
@@ -30,20 +29,25 @@ def select_theme(page, index):
     select_combo(combo, options[index])
 
 
+@deadline.operation('read selected combo option via UIA')
 def selected_index(app, hwnd):
     selected = auto.ControlFromHandle(hwnd).GetValuePattern().Value
     return app.choices(hwnd).index(selected)
 
 
+def background_pixels(hwnd):
+    """A blank client patch for relative theme comparisons, not a palette oracle."""
+    with n.window_dpi_context(hwnd):
+        _, _, width, height = n.rectangle(hwnd, client=True)
+        # Stay inside the client fill, away from scaled/rounded Edit borders.
+        x, y = width - 8, height // 2
+        with capture(hwnd, client=True, rect=(x, y, x + 1, y + 1)) as (_, _header, pixels):
+            return pixels[:3]
+
+
 def dark_background(hwnd):
-    root = n.api(n.user, 'GetAncestor', n.w.HWND, n.w.HWND, n.w.UINT)(hwnd, win32con.GA_ROOT)
-    point = win32gui.ClientToScreen(hwnd, (3, 3))
-    x, y = win32gui.ScreenToClient(root, point)
-    with capture(root, client=True) as (_, header, pixels):
-        width, height = struct.unpack_from('<ii', header, 4)
-        # Sample an inset blank corner rather than glyphs or the native border.
-        offset = ((height - y - 1) * width + x) * 4
-        return max(pixels[offset:offset + 3]) < 128
+    """Require a blank displayed client patch to use the dark theme fill."""
+    return max(background_pixels(hwnd)) < 128
 
 
 @modern_theme
@@ -80,10 +84,11 @@ def test_theme_switch_persistence_and_dialogs(launch, profile, settings, languag
     profile.set('Theme', winreg.REG_SZ, 'dark')
     original = profile.preferences()
     app = launch(dpi=dpi)
-    assert dark_background(app.search)
+    dark = background_pixels(app.search)
+    dialogs = {}
     for opener in (open_about, open_help):
         dialog = opener(app)
-        assert dark_background(dialog)
+        dialogs[opener] = background_pixels(dialog)
         screenshot(dialog, settings[2] / ('dark-%s-%s-%s.png' % (language, dpi, opener.__name__)))
         invoke(n.get_item(dialog, 1))
         n.wait(lambda: not n.is_window(dialog), 'close themed dialog')
@@ -91,33 +96,43 @@ def test_theme_switch_persistence_and_dialogs(launch, profile, settings, languag
     page = app.settings_page(sheet, 0)
     combo = n.get_item(page, 1301)
     assert selected_index(app, combo) == 2
-    assert dark_background(page)
-    tab = next(item.NativeWindowHandle for item, _ in auto.WalkControl(auto.ControlFromHandle(sheet))
-               if item.ClassName == 'SysTabControl32')
-    assert dark_background(tab)
+    dark_page = background_pixels(page)
+    tab = n.send(sheet, messages.PSM_GETTABCONTROL)
+    assert tab, 'settings tab control'
+    dark_tab = background_pixels(tab)
     screenshot(sheet, settings[2] / ('dark-%s-%s-settings.png' % (language, dpi)))
     select_theme(page, 1)
     app.close_settings(sheet, accept=False)
     assert profile.preferences() == original
-    assert dark_background(app.search)
+    assert background_pixels(app.search) == dark
     sheet = app.settings()
     page = app.settings_page(sheet, 0)
     select_theme(page, 1)
     app.close_settings(sheet)
     assert profile.preferences() == (*original[:2], 'light')
-    assert not dark_background(app.search)
+    n.wait(lambda: background_pixels(app.search) != dark, 'owner repaints after theme changes')
+    for opener, previous in dialogs.items():
+        dialog = opener(app)
+        assert background_pixels(dialog) != previous, 'new dialogs follow the changed theme'
+        invoke(n.get_item(dialog, 1))
+        n.wait(lambda: not n.is_window(dialog), 'close themed dialog')
     sheet = app.settings()
     page = app.settings_page(sheet, 0)
     assert selected_index(app, n.get_item(page, 1301)) == 1
+    assert background_pixels(page) != dark_page, 'settings inherits the changed theme'
+    tab = n.send(sheet, messages.PSM_GETTABCONTROL)
+    assert tab, 'settings tab control'
+    assert background_pixels(tab) != dark_tab, 'tab surface inherits the changed theme'
     select_theme(page, 2)
     app.close_settings(sheet)
-    assert dark_background(app.search)
     assert profile.preferences() == original
+    n.wait(lambda: background_pixels(app.search) == dark, 'owner restores the original theme')
     n.send(app.frame, win32con.WM_SETTINGCHANGE, 0, 0)
-    assert dark_background(app.search)
+    assert background_pixels(app.search) == dark
     assert profile.preferences() == original
+    app.close()
     restarted = launch(dpi=dpi)
-    assert dark_background(restarted.search)
+    n.wait(lambda: background_pixels(restarted.search) == dark, 'restarted owner paints persisted theme')
 
 
 @modern_theme
@@ -130,6 +145,8 @@ def test_theme_change_preserves_document(launch, profile, settings):
     doc = app.open_row()
     n.wait(lambda: 'CreateFileW(' in app.content(doc), 'loaded declaration', 45)
     original = app.content(doc)
+    light = background_pixels(app.search)
+    dark = None
     for mode in (2, 1, 2):
         sheet = app.settings()
         page = app.settings_page(sheet, 0)
@@ -137,7 +154,14 @@ def test_theme_change_preserves_document(launch, profile, settings):
         app.close_settings(sheet)
         assert app.content(doc) == original
         assert app.active_document() == doc
-        assert dark_background(app.search) == (mode == 2)
+        if mode == 1:
+            n.wait(lambda: background_pixels(app.search) == light, 'light appearance returns')
+        else:
+            n.wait(lambda: background_pixels(app.search) != light, 'theme change is painted')
+            if dark is None:
+                dark = background_pixels(app.search)
+            else:
+                assert background_pixels(app.search) == dark
     screenshot(app.frame, settings[2] / 'dark-document.png')
 
 
@@ -154,12 +178,15 @@ def test_system_theme_uses_windows_preference(launch, profile):
     except FileNotFoundError:
         expected = False
     app = launch()
-    assert dark_background(app.search) == expected
+    system = background_pixels(app.search)
     sheet = app.settings()
     page = app.settings_page(sheet, 0)
     assert selected_index(app, n.get_item(page, 1301)) == 0
     app.close_settings(sheet)
     assert profile.preferences() == original
+    profile.set('Theme', winreg.REG_SZ, 'dark' if expected else 'light')
+    explicit = launch()
+    assert background_pixels(explicit.search) == system, 'system preference matches explicit appearance'
 
 
 @modern_theme

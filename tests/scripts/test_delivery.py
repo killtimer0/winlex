@@ -83,7 +83,7 @@ class DeliveryContracts(unittest.TestCase):
             sys.executable, str(ROOT / "scripts/delivery.py"), "assemble",
             "--inputs", str(self.inputs), "--output", str(self.output),
             "--configuration", "Debug", "--commit", "revision",
-        ], capture_output=True, text=True, encoding="utf-8", errors="replace")
+        ], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual({path.name for path in self.output.iterdir()}, {
             "winlex-x86.zip", "winlex-x64.zip", "winlex-arm64.zip", "licenses.zip", "SHA256SUMS",
@@ -127,7 +127,7 @@ class DeliveryContracts(unittest.TestCase):
                         sys.executable, str(ROOT / "scripts/delivery.py"), "assemble",
                         "--inputs", str(self.inputs), "--output", str(output),
                         "--configuration", "Debug", "--commit", "revision",
-                    ], capture_output=True,
+                    ], capture_output=True, timeout=30,
                         env={**os.environ, "PYTHONIOENCODING": "cp1252:strict"})
                     self.assertEqual(result.returncode, 0, result.stderr)
                     log = result.stdout

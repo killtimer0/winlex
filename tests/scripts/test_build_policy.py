@@ -21,10 +21,10 @@ class BuildPolicyContracts(unittest.TestCase):
             '[workspace]\n[dependencies]\nserde_json="1"\n[[bin]]\nname="build-policy-probe"\n'
             f'path="{(ROOT / "build.rs").as_posix()}"\n', encoding="utf-8")
         subprocess.run(["cargo", "build", "--offline", "--manifest-path", str(cls.root / "Cargo.toml"),
-                        "--target-dir", str(cls.root / "target")], check=True)
+                        "--target-dir", str(cls.root / "target")], check=True, timeout=120)
         source = cls.root / "rc.rs"
         source.write_text("fn main() {}", encoding="utf-8")
-        subprocess.run(["rustc", str(source), "-o", str(cls.rc)], check=True)
+        subprocess.run(["rustc", str(source), "-o", str(cls.rc)], check=True, timeout=45)
 
     @classmethod
     def tearDownClass(cls):
@@ -51,7 +51,7 @@ class BuildPolicyContracts(unittest.TestCase):
                     obj = root / "thunks.obj"
                     obj.write_bytes(machine.to_bytes(2, "little") + bytes(18))
                     env["WINLEX_YY_THUNKS_OBJ"] = str(obj)
-            result = subprocess.run([str(self.build)], env=env, text=True, capture_output=True)
+            result = subprocess.run([str(self.build)], env=env, text=True, capture_output=True, timeout=45)
             return result
 
     def test_architecture_contract(self):

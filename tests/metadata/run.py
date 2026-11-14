@@ -12,10 +12,22 @@ ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "tmp/verify"
 
 
-def run(command):
-    p = subprocess.run(list(map(str, command)), cwd=ROOT)
+def run(command, timeout=600):
+    try:
+        p = subprocess.run(list(map(str, command)), cwd=ROOT, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        print(f"FAIL: {command[0]}: {error}", file=sys.stderr)
+        return False
     if p.returncode:
-        raise SystemExit(p.returncode)
+        print(f"FAIL: {command[0]} exited with {p.returncode}", file=sys.stderr)
+    return p.returncode == 0
+
+
+def positive_seconds(value):
+    seconds = float(value)
+    if not 0 < seconds < float("inf"):
+        raise argparse.ArgumentTypeError("timeout must be finite and positive")
+    return seconds
 
 
 def main():
@@ -27,8 +39,17 @@ def main():
     parser.add_argument("--target-dir", help="Cargo output directory (otherwise honor Cargo configuration)")
     parser.add_argument("--target", help="Cargo target (otherwise honor Cargo configuration)")
     parser.add_argument("--profile", default="dev", help="Cargo profile (default: dev/Debug)")
+    parser.add_argument("--build-timeout", type=positive_seconds, default=300,
+                        help="seconds per Cargo build/test subprocess (default: 300)")
+    parser.add_argument("--gate-timeout", type=positive_seconds, default=600,
+                        help="fallback seconds per complete gate, not per query (default: 600; increase for large SDK runs)")
     parser.add_argument("--artifacts", type=Path, default=manifest_path(), help="persist executable paths for standalone gates")
     args = parser.parse_args()
+    if args.winrt_apps and not args.winrt_sdk:
+        parser.error("--winrt-apps requires --winrt-sdk")
+    for option, directory in (("--winrt-sdk", args.winrt_sdk), ("--winrt-apps", args.winrt_apps)):
+        if directory and not Path(directory).is_dir():
+            parser.error(f"{option} directory does not exist: {directory}")
     OUT.mkdir(parents=True, exist_ok=True)
     source = json.loads((Path(__file__).parent / "source.json").read_text())
     winmd = ROOT / "inputs" / source["file"]
@@ -38,24 +59,44 @@ def main():
         options.extend(["--target-dir", args.target_dir])
     if args.target:
         options.extend(["--target", args.target])
-    executables = {
-        "host-cli": build_example("winlex-cli", "host-cli", options),
-    }
+    executables = {}
+    failed = []
+    skipped = []
+    # Invalidate an earlier run's artifacts before attempting any builds.
+    write_manifest(executables, args.artifacts.absolute())
+    builds = [("winlex-cli", "host-cli")]
     if args.winrt_sdk:
-        executables["query-audit"] = build_example("winlex-format", "query-audit", options)
+        builds.append(("winlex-format", "query-audit"))
+    for package, name in builds:
+        try:
+            executables[name] = build_example(package, name, options, timeout=args.build_timeout)
+        except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as error:
+            print(f"FAIL: build {name}: {error}", file=sys.stderr)
+            failed.append(f"build {name}")
     write_manifest(executables, args.artifacts.absolute())
     os.environ["WINLEX_GATE_ARTIFACTS"] = str(args.artifacts.absolute())
-    run(["cargo", "test", "-p", "winlex-cli", "-p", "winlex-core", "--locked", *options])
+    phases = [("cargo tests", ["cargo", "test", "-p", "winlex-cli", "-p", "winlex-core", "--locked", *options], (), args.build_timeout)]
     if args.abi:
-        run([sys.executable, "tests/abi/run.py"])
-    run([sys.executable, "tests/metadata/fixture_gate.py"])
-    run([sys.executable, "tests/metadata/multisource_gate.py"])
+        phases.append(("ABI", [sys.executable, "tests/abi/run.py"], ("host-cli",), args.gate_timeout))
+    for name in ("fixture", "multisource"):
+        phases.append((name, [sys.executable, f"tests/metadata/{name}_gate.py"], ("host-cli",), args.gate_timeout))
     if args.winrt_sdk:
         command = [sys.executable, "tests/metadata/winrt_gate.py", "--sdk", args.winrt_sdk, "--version", args.winrt_version]
         if args.winrt_apps:
             command.extend(["--apps", args.winrt_apps])
-        run(command)
+        phases.append(("WinRT", command, ("host-cli", "query-audit"), args.gate_timeout))
+    for name, command, required, timeout in phases:
+        missing = [item for item in required if item not in executables]
+        if missing:
+            print(f"SKIP: {name}: build unavailable: {', '.join(missing)}", file=sys.stderr)
+            skipped.append(name)
+        elif not run(command, timeout=timeout):
+            failed.append(name)
+    if failed or skipped:
+        print(f"Metadata checks: failed={', '.join(failed) or 'none'}; "
+              f"skipped={', '.join(skipped) or 'none'}", file=sys.stderr)
+    return int(bool(failed or skipped))
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

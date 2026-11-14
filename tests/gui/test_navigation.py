@@ -7,6 +7,7 @@ import win32gui
 import uiautomation as auto
 
 from support import native as n
+from support import deadline
 from support.input_state import InputState, foreground as real_foreground
 from test_context import character_point, dismiss, find_popup, popup, select_text, selection_packed, wait_closed
 
@@ -67,24 +68,23 @@ def ctrl_click(app, inputs, doc, index):
         position(app, editor, index)
         point = character_point(app, editor, index)
         assert win32gui.GetForegroundWindow() == app.frame, "Application lost foreground"
-        inputs.state["held"].append(win32con.VK_CONTROL)
-        inputs.save()
+        inputs.hold(win32con.VK_CONTROL)
         try:
             auto.PressKey(win32con.VK_CONTROL, waitTime=0)
             inputs.click(n.c.c_short(point & 0xffff).value, n.c.c_short(point >> 16).value)
         finally:
             auto.ReleaseKey(win32con.VK_CONTROL, waitTime=0)
-            inputs.state["held"].remove(win32con.VK_CONTROL)
-            inputs.save()
+            inputs.release(win32con.VK_CONTROL)
 
 
 def pin_active_tab(app):
-    page = next(page for page in app._tabs() if page.GetSelectionItemPattern().IsSelected)
-    rect = page.BoundingRectangle
-    tabs = n.get_item(app.frame, 1104)
-    left, top, _, _ = n.rectangle(tabs)
-    point = ((rect.left - left + min(20, (rect.right - rect.left) // 2)) & 0xffff) | (
-        (((rect.top + rect.bottom) // 2 - top) & 0xffff) << 16)
+    with deadline.operation('measure active tab for pin gesture via UIA'):
+        page = next(page for page in app._tabs() if page.GetSelectionItemPattern().IsSelected)
+        rect = page.BoundingRectangle
+        tabs = n.get_item(app.frame, 1104)
+        left, top, _, _ = n.rectangle(tabs)
+        point = ((rect.left - left + min(20, (rect.right - rect.left) // 2)) & 0xffff) | (
+            (((rect.top + rect.bottom) // 2 - top) & 0xffff) << 16)
     n.send(tabs, win32con.WM_LBUTTONDBLCLK, win32con.MK_LBUTTON, point)
     n.send(tabs, win32con.WM_LBUTTONUP, 0, point)
     n.wait(lambda: not any(text.startswith(("Preview · ", "预览 · "))
@@ -94,8 +94,9 @@ def pin_active_tab(app):
 def editor_selection(app, editor, value=None):
     if value is not None:
         select_text(editor, *value)
-    selected = n.rich_edit_document(editor).Selection
-    return selected.Start, selected.End
+    with deadline.operation('read editor selection via TOM'):
+        selected = n.rich_edit_document(editor).Selection
+        return selected.Start, selected.End
 
 
 def choose_reference(editor):
@@ -161,6 +162,8 @@ def test_ctrl_click_reuses_explicitly_fixed_architecture_links(launch, settings,
 
 @pytest.mark.interactive
 def test_link_clicks_keep_selection_and_require_a_complete_ctrl_gesture(launch, settings):
+    from support.session import ThreadInfo
+
     app = launch([settings[1]])
     with InputState() as inputs, real_foreground(app, inputs):
         app.query("CreateFileW")
@@ -180,26 +183,32 @@ def test_link_clicks_keep_selection_and_require_a_complete_ctrl_gesture(launch, 
 
             screen = character_point(app, editor, index + 3)
             x, y = n.c.c_short(screen & 0xffff).value, n.c.c_short(screen >> 16).value
+
+            def mouse_down_captured():
+                assert win32gui.GetForegroundWindow() == app.frame, "Application lost foreground"
+                info = ThreadInfo()
+                info.size = n.c.sizeof(info)
+                assert n.api(n.user, "GetGUIThreadInfo", n.w.BOOL, n.w.DWORD,
+                             n.c.POINTER(ThreadInfo))(n.get_pid(editor, None), n.c.byref(info))
+                return info.capture == editor
+
             # A release alone, or Ctrl added only after mouse-down, is not a link click.
             for press in (False, True):
                 assert win32gui.GetForegroundWindow() == app.frame, "Application lost foreground"
                 auto.MoveTo(x, y, waitTime=0)
                 if press:
-                    inputs.state["held"].append("mouse")
-                    inputs.save()
-                    auto.PressMouse(x, y)
-                inputs.state["held"].append(win32con.VK_CONTROL)
-                inputs.save()
+                    inputs.hold("mouse")
+                    auto.PressMouse(x, y, waitTime=0)
+                    n.wait(mouse_down_captured, "plain mouse-down captured before adding Ctrl", 15)
+                inputs.hold(win32con.VK_CONTROL)
                 try:
                     auto.PressKey(win32con.VK_CONTROL)
                     auto.ReleaseMouse()
                     if press:
-                        inputs.state["held"].remove("mouse")
-                        inputs.save()
+                        inputs.release("mouse")
                 finally:
                     auto.ReleaseKey(win32con.VK_CONTROL, waitTime=0)
-                    inputs.state["held"].remove(win32con.VK_CONTROL)
-                    inputs.save()
+                    inputs.release(win32con.VK_CONTROL)
                 n.send(app.frame, win32con.WM_NULL)
                 assert app.documents() == [source]
                 assert app.active_document() == source
@@ -356,17 +365,22 @@ def test_last_reference_glyph_and_trailing_line_space_have_precise_hit_bounds(la
             if navigate:
                 editor_selection(app, editor, (start, end))
                 menu, items = popup(app, editor, screen, protocol_mouse=True)
-                assert selection_packed(editor) == (end << 16) | start
-                assert 2074 in items
-                state = n.api(n.user, "GetMenuState", n.w.UINT, n.w.HMENU, n.w.UINT, n.w.UINT)
-                assert not state(menu, 2074, 0) & 3
-                choose_reference(editor)
+                try:
+                    assert selection_packed(editor) == (end << 16) | start
+                    assert 2074 in items
+                    state = n.api(n.user, "GetMenuState", n.w.UINT, n.w.HMENU, n.w.UINT, n.w.UINT)
+                    assert not state(menu, 2074, 0) & 3
+                    choose_reference(editor)
+                finally:
+                    dismiss(editor)
                 destination(app, source, "SECURITY_ATTRIBUTES", "x86")
             else:
                 assert app.documents() == [source]
                 _, items = popup(app, editor, screen, protocol_mouse=True)
-                assert items == [2074]
-                dismiss(editor)
+                try:
+                    assert items == [2074]
+                finally:
+                    dismiss(editor)
                 n.send(editor, win32con.WM_NULL)
 
 
@@ -392,8 +406,8 @@ def test_real_ctrl_hover_preserves_scrolled_reading_state(launch, settings, prof
             editor_selection(app, editor, (0, 6))
             line = n.send(editor, win32con.WM_USER + 54, 0, indices[0])
             n.send(editor, win32con.EM_LINESCROLL, 0, line - 1)
-            document = n.rich_edit_document(editor)
-            with n.window_dpi_context(app.frame):
+            with deadline.operation('measure visible editor references via TOM'), n.window_dpi_context(app.frame):
+                document = n.rich_edit_document(editor)
                 _, _, width, height = n.rectangle(editor, client=True)
                 visible = []
                 for index in indices:
@@ -403,27 +417,40 @@ def test_real_ctrl_hover_preserves_scrolled_reading_state(launch, settings, prof
                         break
                     if 0 <= x < width - 20 and 0 <= y < height - 20:
                         screen = character_point(app, editor, index + 1)
-                        visible.append((span, (n.c.c_short(screen & 0xffff).value,
-                                               n.c.c_short(screen >> 16).value)))
+                        visible.append((span, n.physical_screen_point(editor, (
+                            n.c.c_short(screen & 0xffff).value,
+                            n.c.c_short(screen >> 16).value))))
                     if len(visible) == 2:
                         break
             assert len(visible) == 2, "need two visible references after scrolling"
             top = n.send(editor, win32con.EM_GETFIRSTVISIBLELINE)
             assert top > 0
             selection = editor_selection(app, editor)
-            colors = [span.Font.ForeColor for span, _ in visible]
-            inputs.state["held"].append(win32con.VK_CONTROL)
-            inputs.save()
+            with deadline.operation('read reference colors via TOM'):
+                colors = [span.Font.ForeColor for span, _ in visible]
+            with n.physical_dpi_context():
+                left, top_edge, right, bottom = n.rectangle(app.results)
+            neutral = ((left + right) // 2, (top_edge + bottom) // 2)
+            auto.MoveTo(*neutral, waitTime=0)
+            n.wait(lambda: auto.GetCursorPos() == neutral
+                   and all(span.Font.Underline == 0 for span, _ in visible),
+                   "pointer starts outside the editor with no hovered reference")
+            assert app.focused() == editor
+            inputs.hold(win32con.VK_CONTROL)
             auto.PressKey(win32con.VK_CONTROL, waitTime=0)
             try:
                 for current in (0, 1, 0, 1):
-                    auto.MoveTo(*visible[current][1])
-                    n.wait(lambda: visible[current][0].Font.Underline == 1,
-                           "Ctrl-hover underlines the reference")
-                    assert visible[1 - current][0].Font.Underline == 0
+                    with deadline.operation('read destination reference before hover'):
+                        assert visible[current][0].Font.Underline == 0
+                    auto.MoveTo(*visible[current][1], waitTime=0)
+                    n.wait(lambda: visible[current][0].Font.Underline == 1
+                           and visible[1 - current][0].Font.Underline == 0,
+                           "Ctrl-hover transfers underline to the destination reference")
+                    assert app.focused() == editor
                     assert editor_selection(app, editor) == selection
                     assert n.send(editor, win32con.EM_GETFIRSTVISIBLELINE) == top
-                    assert [span.Font.ForeColor for span, _ in visible] == colors
+                    with deadline.operation('read hovered reference colors via TOM'):
+                        assert [span.Font.ForeColor for span, _ in visible] == colors
             finally:
                 auto.ReleaseKey(win32con.VK_CONTROL, waitTime=0)
             n.wait(lambda: all(span.Font.Underline == 0 for span, _ in visible),
@@ -448,7 +475,7 @@ def test_real_unfocused_scrolled_reference_navigates_on_first_gesture(launch, se
                 window = win32gui.GetForegroundWindow()
                 return window == app.frame or bool(win32gui.IsChild(app.frame, window))
             app.query("Windows.Win32.Graphics.Gdi.Apis")
-            app.select(app.named_rows("Apis")[0])
+            app.select(app.first_named_row("Apis"))
             app.focus(app.results)
             assert foreground(), "real input requires foreground ownership"
             inputs.key(win32con.VK_SPACE)
@@ -485,18 +512,19 @@ def test_real_unfocused_scrolled_reference_navigates_on_first_gesture(launch, se
                 point = (n.c.c_short(screen & 0xffff).value, n.c.c_short(screen >> 16).value)
                 left, above, right, bottom = n.rectangle(editor)
                 assert left <= point[0] < right and above <= point[1] < bottom
+                point = n.physical_screen_point(editor, point)
             assert editor_selection(app, editor) == (0, 0)
             assert app.focused() == app.results
             assert foreground(), ("first link gesture requires foreground ownership", app.frame,
                                   win32gui.GetForegroundWindow(),
                                   win32gui.GetWindowText(win32gui.GetForegroundWindow()))
             if gesture == "ctrl-click":
-                inputs.state["held"].extend((win32con.VK_CONTROL, "mouse"))
-                inputs.save()
+                inputs.hold(win32con.VK_CONTROL)
+                inputs.hold("mouse")
                 auto.PressKey(win32con.VK_CONTROL)
                 try:
                     auto.MoveTo(*point)
-                    auto.PressMouse(*auto.GetCursorPos())
+                    auto.PressMouse(*auto.GetCursorPos(), waitTime=0)
                     def tracking():
                         info = ThreadInfo()
                         info.size = n.c.sizeof(info)
@@ -510,16 +538,14 @@ def test_real_unfocused_scrolled_reference_navigates_on_first_gesture(launch, se
                     assert n.send(editor, win32con.EM_GETFIRSTVISIBLELINE) == top
                     assert foreground(), "Ctrl-click release requires foreground ownership"
                     auto.ReleaseMouse()
-                    inputs.state["held"].remove("mouse")
-                    inputs.save()
+                    inputs.release("mouse")
                     assert destination(app, source, "HDC", "x86") == source
                 finally:
-                    if "mouse" in inputs.state["held"]:
+                    if inputs.holding("mouse"):
                         auto.ReleaseMouse()
-                        inputs.state["held"].remove("mouse")
+                        inputs.release("mouse")
                     auto.ReleaseKey(win32con.VK_CONTROL)
-                    inputs.state["held"].remove(win32con.VK_CONTROL)
-                    inputs.save()
+                    inputs.release(win32con.VK_CONTROL)
             else:
                 auto.MoveTo(*point)
                 # InputState recovery owns left mouse releases, so deliver the right pair together.
@@ -565,23 +591,23 @@ def test_real_ctrl_click_and_drag_do_not_confuse_navigation_with_selection(launc
     with InputState() as inputs:
         app = launch([settings[1]])
         n.wait(lambda: app.status_text().startswith(("Ready.", "已就绪")), "loaded", 45)
-        auto.ControlFromHandle(app.frame).SetTopmost(True)
-        try:
-            auto.ControlFromHandle(app.frame).Restore()
+        with real_foreground(app, inputs):
+            with deadline.operation('restore navigation window via UIA'):
+                auto.ControlFromHandle(app.frame).Restore()
             with n.window_dpi_context(app.frame):
                 left, top, right, bottom = n.rectangle(app.search)
                 inputs.click((left + right) // 2, (top + bottom) // 2)
             try:
-                n.wait(lambda: win32gui.GetForegroundWindow() == app.frame, "foreground ownership")
-            except AssertionError:
+                n.wait(lambda: win32gui.GetForegroundWindow() == app.frame, "foreground ownership", 15)
+            except AssertionError as error:
                 foreground = win32gui.GetForegroundWindow()
-                pytest.skip(f"physical input unverified: foreground acquisition failed: frame={app.frame}, foreground={foreground}, "
-                            f"title={n.window_text(foreground)!r}, cursor={win32api.GetCursorPos()}, "
-                            f"search={n.rectangle(app.search)}, hit={win32gui.WindowFromPoint(win32api.GetCursorPos())}")
+                raise AssertionError(f"foreground acquisition failed: frame={app.frame}, foreground={foreground}, "
+                                     f"title={n.window_text(foreground)!r}, cursor={win32api.GetCursorPos()}, "
+                                     f"search={n.rectangle(app.search)}, hit={win32gui.WindowFromPoint(win32api.GetCursorPos())}") from error
             app.query("CreateFileW")
             app.select(0)
             app.focus(app.results)
-            auto.SendKeys("{Space}")
+            auto.SendKeys("{Space}", waitTime=0)
             source = n.wait(lambda: (lambda doc: doc if doc in app.documents()
                             and n.window_text(doc).startswith("CreateFileW -") else None)(
                                 app.active_document()), "source preview")
@@ -596,9 +622,12 @@ def test_real_ctrl_click_and_drag_do_not_confuse_navigation_with_selection(launc
                                n.c.c_short(last >> 16).value)
                 first = (n.c.c_short(first & 0xffff).value, n.c.c_short(first >> 16).value)
                 last = (n.c.c_short(last & 0xffff).value, n.c.c_short(last >> 16).value)
+                first = n.physical_screen_point(editor, first)
+                last = n.physical_screen_point(editor, last)
+                final_glyph = n.physical_screen_point(editor, final_glyph)
             def foreground(focus=editor):
-                if win32gui.GetForegroundWindow() != app.frame:
-                    pytest.skip("physical input unverified: application lost foreground ownership")
+                assert win32gui.GetForegroundWindow() == app.frame, (
+                    "application lost foreground ownership", app.frame, win32gui.GetForegroundWindow())
                 if focus is not None:
                     assert app.focused() == focus
                 return True
@@ -611,23 +640,21 @@ def test_real_ctrl_click_and_drag_do_not_confuse_navigation_with_selection(launc
                 return info.capture
 
             def hold(key):
-                inputs.state["held"].append(key)
-                inputs.save()
+                inputs.hold(key)
                 if key == "mouse":
-                    auto.PressMouse(*auto.GetCursorPos())
+                    auto.PressMouse(*auto.GetCursorPos(), waitTime=0)
                 else:
-                    auto.PressKey(key)
+                    auto.PressKey(key, waitTime=0)
 
             def release(key):
                 if key == "mouse":
-                    auto.ReleaseMouse()
+                    auto.ReleaseMouse(waitTime=0)
                 else:
-                    auto.ReleaseKey(key)
-                inputs.state["held"].remove(key)
-                inputs.save()
+                    auto.ReleaseKey(key, waitTime=0)
+                inputs.release(key)
 
             def press(point, control_editor=editor):
-                auto.MoveTo(*point)
+                auto.MoveTo(*point, waitTime=0)
                 hold(win32con.VK_CONTROL)
                 hold("mouse")
                 n.wait(lambda: foreground(None) and app.focused() == control_editor
@@ -657,12 +684,13 @@ def test_real_ctrl_click_and_drag_do_not_confuse_navigation_with_selection(launc
             with n.window_dpi_context(app.frame):
                 far = character_point(app, editor, reference(app, source, "lpSecurityAttributes") + 3)
                 far = (n.c.c_short(far & 0xffff).value, n.c.c_short(far >> 16).value)
+                far = n.physical_screen_point(editor, far)
             double_click_seconds = n.api(n.user, "GetDoubleClickTime", n.w.UINT)() / 1000
             for control, return_to_origin in ((False, False), (True, False), (True, True)):
                 time.sleep(double_click_seconds + .05)
                 foreground()
                 editor_selection(app, editor, (start, start))
-                auto.MoveTo(*first)
+                auto.MoveTo(*first, waitTime=0)
                 if control:
                     hold(win32con.VK_CONTROL)
                 hold("mouse")
@@ -671,7 +699,7 @@ def test_real_ctrl_click_and_drag_do_not_confuse_navigation_with_selection(launc
                        and win32api.GetAsyncKeyState(win32con.VK_LBUTTON) & 0x8000,
                        "drag mouse-down captured")
                 foreground()
-                auto.MoveTo(*(far if return_to_origin else last))
+                auto.MoveTo(*(far if return_to_origin else last), waitTime=0)
                 n.wait(lambda: foreground() and (lambda value: value & 0xffff != value >> 16)(
                     selection_packed(editor)), "physical drag selects text")
                 if return_to_origin:
@@ -679,14 +707,16 @@ def test_real_ctrl_click_and_drag_do_not_confuse_navigation_with_selection(launc
                            > start + len("SECURITY_ATTRIBUTES"), "native drag extends beyond reference")
                     far_selection = selection_packed(editor)
                     assert capture() == editor
-                    auto.MoveTo(*first)
+                    auto.MoveTo(*first, waitTime=0)
                     n.wait(lambda: foreground() and selection_packed(editor) != far_selection,
                            "native drag processes return to original down point")
                 foreground()
                 release("mouse")
                 if control:
                     release(win32con.VK_CONTROL)
-                time.sleep(.1)
+                n.wait(lambda: not capture()
+                       and not win32api.GetAsyncKeyState(win32con.VK_LBUTTON) & 0x8000,
+                       "drag release acknowledged")
                 assert set(app.documents()) == {source, target}
                 assert app.active_document() == source
 
@@ -709,7 +739,6 @@ def test_real_ctrl_click_and_drag_do_not_confuse_navigation_with_selection(launc
                     n.wait(lambda: app.choice(source) == "x64", "updated architecture")
                 foreground(app.search if cancel == "focus" else editor)
                 unpress()
-                time.sleep(.1)
                 assert app.active_document() == source, cancel
                 assert set(app.documents()) == {source, target}, cancel
             app.choose(source, "x86")
@@ -743,6 +772,7 @@ def test_real_ctrl_click_and_drag_do_not_confuse_navigation_with_selection(launc
                 screen = character_point(app, replacement_editor, replacement_start)
                 replacement_point = (n.c.c_short(screen & 0xffff).value,
                                      n.c.c_short(screen >> 16).value)
+                replacement_point = n.physical_screen_point(replacement_editor, replacement_point)
             time.sleep(double_click_seconds + .05)
             press(replacement_point, replacement_editor)
             assert preview("CreateFileA") == replacement
@@ -751,7 +781,6 @@ def test_real_ctrl_click_and_drag_do_not_confuse_navigation_with_selection(launc
                 assert character_point(app, replacement_editor, updated_start) == screen
             foreground(replacement_editor)
             unpress()
-            time.sleep(.1)
             assert app.active_document() == replacement
             assert set(app.documents()) == {source, target, replacement}
             time.sleep(double_click_seconds + .05)
@@ -775,5 +804,3 @@ def test_real_ctrl_click_and_drag_do_not_confuse_navigation_with_selection(launc
             inputs.key(win32con.VK_RETURN)
             wait_closed(editor)
             assert destination(app, source, "SECURITY_ATTRIBUTES", "x86") == target
-        finally:
-            auto.ControlFromHandle(app.frame).SetTopmost(False)

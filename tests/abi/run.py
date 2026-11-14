@@ -9,7 +9,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tests/metadata"))
-from artifacts import executable
+from artifacts import executable, query_command, run_query
 WINMD = ROOT / "inputs/Windows.Win32.winmd"
 SDK = Path(os.environ["WINLEX_SDK_INCLUDE"])
 MSVC = Path(os.environ["WINLEX_MSVC_ROOT"])
@@ -18,8 +18,8 @@ OUT = ROOT / "tmp/verify/compiler"
 
 
 def query(command, name, arch):
-    cmd = [executable("host-cli"), WINMD, "--json", "--arch", arch, command, name]
-    p = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", check=True)
+    cmd = query_command([WINMD], arch, command, name)
+    p = run_query(cmd, capture_output=True, text=True, encoding="utf-8", check=True)
     return json.loads(p.stdout)["result"]
 
 

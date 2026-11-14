@@ -6,7 +6,7 @@ import win32gui
 import win32process
 import winreg
 import uiautomation as auto
-from support import native as n
+from support import deadline, native as n
 from support.diagnostics import capture, screenshot
 from support.input_state import InputState, foreground
 from support.session import invoke
@@ -14,10 +14,7 @@ from support.session import invoke
 
 def open_about(app):
     app.command(1054)
-    dialog = auto.WindowControl(searchDepth=3, RegexName='^(About Winlex|关于 Winlex)$',
-                                Compare=lambda item, depth: item.ProcessId == app.process.pid)
-    assert dialog.Exists(5)
-    return dialog.NativeWindowHandle
+    return n.wait(lambda: n.find_window(app.process.pid, '#32770', app.frame), 'About dialog', 15)
 
 
 def link_item(app, control, index=0):
@@ -43,6 +40,25 @@ def link_item(app, control, index=0):
         win32api.CloseHandle(process)
 
 
+@deadline.operation('move and measure About child windows via UIA')
+def measure_children(dialog, monitor):
+    auto.ControlFromHandle(dialog).GetPattern(auto.PatternId.TransformPattern).Move(
+        monitor[0] + 40, monitor[1] + 40, waitTime=0)
+    left, top = win32gui.ClientToScreen(dialog, (0, 0))
+    _, _, width, height = win32gui.GetClientRect(dialog)
+    children = []
+    win32gui.EnumChildWindows(dialog, lambda hwnd, _: children.append(hwnd), None)
+    for hwnd in children:
+        if not n.is_visible(hwnd):
+            continue
+        # Only HWND-backed controls were checked by the original geometry
+        # contract. Do not traverse the SysLink's virtual UIA descendants.
+        child = auto.ControlFromHandle(hwnd)
+        r = child.BoundingRectangle
+        assert left <= r.left < r.right <= left + width, (hwnd, r)
+        assert top <= r.top < r.bottom <= top + height, (hwnd, r)
+
+
 @pytest.mark.parametrize('language,mode', [
     ('en-US', 'pmv2'), ('zh-CN', 'pmv1'), ('en-US', 'system'), ('zh-CN', 'unaware')])
 def test_about_content_modality_and_dpi(launch, profile, settings, language, mode):
@@ -65,19 +81,8 @@ def test_about_content_modality_and_dpi(launch, profile, settings, language, mod
     for cycle in range(3):
         for monitor in n.monitors():
             with n.window_dpi_context(dialog):
-                auto.ControlFromHandle(dialog).GetPattern(auto.PatternId.TransformPattern).Move(
-                    monitor[0] + 40, monitor[1] + 40)
-                left, top = win32gui.ClientToScreen(dialog, (0, 0))
-                _, _, width, height = win32gui.GetClientRect(dialog)
-                for child, _ in auto.WalkControl(auto.ControlFromHandle(dialog)):
-                    if not child.NativeWindowHandle or child.IsOffscreen:
-                        continue
-                    r = child.BoundingRectangle
-                    assert left <= r.left < r.right <= left + width, (child.Name, r)
-                    assert top <= r.top < r.bottom <= top + height, (child.Name, r)
+                measure_children(dialog, monitor)
                 evidence.append({'cycle': cycle, 'monitor': monitor, 'bounds': n.rectangle(dialog)})
-                if cycle == 2:
-                    screenshot(dialog, settings[2] / ('about-%s-%s-%d.png' % (language, mode, monitor[0])))
     for index in range(len(n.monitors())):
         sizes = [(e['bounds'][2] - e['bounds'][0], e['bounds'][3] - e['bounds'][1])
                  for e in evidence[index::len(n.monitors())]]

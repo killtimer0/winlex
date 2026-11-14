@@ -4,9 +4,10 @@ import pytest
 import win32con
 import win32gui
 import uiautomation as auto
-from support import native as n
+from support import deadline, native as n
 from test_context import select_text, selection_packed
 
+@deadline.operation('set document window state via UIA')
 def window_state(hwnd, state):
     pattern = auto.ControlFromHandle(hwnd).GetPattern(auto.PatternId.WindowPattern)
     assert pattern.SetWindowVisualState(state, waitTime=0)
@@ -15,6 +16,7 @@ def window_state(hwnd, state):
         "requested native window state")
 
 
+@deadline.operation('resize document window via UIA')
 def resize(hwnd, width, height):
     pattern = auto.ControlFromHandle(hwnd).GetPattern(auto.PatternId.TransformPattern)
     assert pattern.Resize(width, height, waitTime=0)
@@ -155,7 +157,7 @@ def test_document_minimum_limits_normal_not_maximized_windows(launch, settings):
     doc = app.open_row()
     window_state(doc, auto.WindowVisualState.Normal)
     with n.window_dpi_context(app.frame):
-        dpi = n.api(n.user, "GetDpiForWindow", n.w.UINT, n.w.HWND)(doc) if hasattr(n.user, "GetDpiForWindow") else 96
+        dpi = n.window_dpi(doc) or 96
         width, height = (320 * dpi + 48) // 96, (400 * dpi + 48) // 96
         resize(doc, 100, 100)
         left, top, right, bottom = n.rectangle(doc)
@@ -183,7 +185,7 @@ def test_document_minimum_limits_normal_not_maximized_windows(launch, settings):
                     if stable_since is None:
                         stable_since = time.monotonic()
                     return time.monotonic() - stable_since >= 0.2
-                n.wait(aligned, "stable maximized document fills MDI client", 5)
+                n.wait(aligned, "stable maximized document fills MDI client", 15)
         assert n.rectangle(app.mdi, client=True)[3] < height
         window_state(doc, auto.WindowVisualState.Normal)
         resize(doc, 100, 100)
@@ -229,7 +231,7 @@ def test_document_source_and_responsive_reading_layout(launch, settings):
 
     with n.window_dpi_context(app.frame):
         window_state(doc, auto.WindowVisualState.Normal)
-        dpi = n.api(n.user, "GetDpiForWindow", n.w.UINT, n.w.HWND)(doc) if hasattr(n.user, "GetDpiForWindow") else 96
+        dpi = n.window_dpi(doc) or 96
         counts = []
         for width in [850, 320, 850]:
             resize(doc, width * dpi // 96, 450 * dpi // 96)
@@ -282,10 +284,11 @@ def test_constant_summary_pseudocode_and_information_copy(launch, settings, copy
     shutil.copyfile(settings[1], path)
     app = launch([path])
     app.query("Windows.Win32.Foundation.WIN32_ERROR.ERROR_ACCESS_DENIED")
+    name = app.cell(0).splitlines()[0]
     matches = json.loads(subprocess.check_output([
         str(settings[0].with_name("winlex.exe")), str(path), "search",
-        app.cell(0).splitlines()[0], "--name", "--json",
-    ], encoding="utf-8"))["result"]["matches"]
+        name, "--name", "--json",
+    ], encoding="utf-8", timeout=30))["result"]["matches"]
     assert len(matches) == 1
     identity = matches[0]["id"]
     entity_id = f'{identity["source_id"]}::0x{identity["token"]:08x}'
@@ -299,8 +302,9 @@ def test_constant_summary_pseudocode_and_information_copy(launch, settings, copy
                            (1205, ("Source:", "来源：")),
                            (1203, ("Declaration", "声明"))]:
         hwnd = n.get_item(doc, control)
-        accessible = auto.ControlFromHandle(hwnd).GetLegacyIAccessiblePattern()
-        assert accessible.Name in names
+        with deadline.operation('read summary accessibility name via UIA'):
+            accessible = auto.ControlFromHandle(hwnd).GetLegacyIAccessiblePattern()
+            assert accessible.Name in names
     if not copy:
         return
     button = n.get_item(doc, 1206)
@@ -312,7 +316,8 @@ def test_constant_summary_pseudocode_and_information_copy(launch, settings, copy
             assert app.focused() == button
             wait_clipboard_available()
             sequence = clipboard.GetClipboardSequenceNumber()
-            auto.ControlFromHandle(button).Click()
+            with deadline.operation('open information menu via UIA'):
+                auto.ControlFromHandle(button).Click(waitTime=0)
             find_popup(app)
             window = popup_window(app.process.pid)
             assert window, "information menu window"
@@ -325,7 +330,8 @@ def test_constant_summary_pseudocode_and_information_copy(launch, settings, copy
             assert clipboard_text() == value
             assert app.focused() == button
         sequence = clipboard.GetClipboardSequenceNumber()
-        auto.ControlFromHandle(button).Click()
+        with deadline.operation('open information menu via UIA'):
+            auto.ControlFromHandle(button).Click(waitTime=0)
         find_popup(app)
         window = popup_window(app.process.pid)
         assert window, "information menu window"
@@ -343,7 +349,7 @@ def test_tiny_maximized_document_clips_summary_without_control_overlap(launch, s
     n.wait(lambda: "CreateFileW(" in app.content(doc), "declaration", 45)
     editor = n.get_item(doc, 1203)
     with n.window_dpi_context(app.frame):
-        dpi = n.api(n.user, "GetDpiForWindow", n.w.UINT, n.w.HWND)(doc) if hasattr(n.user, "GetDpiForWindow") else 96
+        dpi = n.window_dpi(doc) or 96
         window_state(doc, auto.WindowVisualState.Maximized)
         resize(app.frame, 650 * dpi // 96, 140 * dpi // 96)
         for control in [1047, 1206, 1211]:

@@ -1,6 +1,7 @@
 import os
 import shutil
 import struct
+from contextlib import nullcontext
 import pytest
 import winreg
 import win32con
@@ -11,6 +12,7 @@ import uiautomation as auto
 from support import native as n
 from support.messages import LVM_GETITEMTEXTW
 from support.pe import is_64_bit
+from support.input_state import InputState, foreground
 from test_context import selection_packed
 from test_metadata_guide import assert_no_dialog, resource_text
 
@@ -107,37 +109,48 @@ def test_source_actions_preserve_identity_and_recover_failed_reload(launch, prof
     assert not win32gui.IsWindowEnabled(reload_button) and not win32gui.IsWindowEnabled(remove_button)
 
 
+@pytest.fixture
+def source_context_input(mouse):
+    if mouse:
+        with InputState() as inputs:
+            yield inputs
+    else:
+        yield None
+
+
 @pytest.mark.parametrize('mouse', [False, pytest.param(True, marks=pytest.mark.interactive)],
                          ids=['menu-contract', 'clipboard'])
-def test_source_context_menu_copies_full_native_path(launch, settings, mouse):
-    from test_context import find_popup, popup, wait_closed, clipboard_text, wait_clipboard_available
+def test_source_context_menu_copies_full_native_path(launch, settings, mouse, source_context_input):
+    from test_context import dismiss, find_popup, popup, wait_closed, clipboard_text, wait_clipboard_available
     second = settings[2] / "右键来源.winmd"
     shutil.copyfile(settings[1], second)
     app = launch([settings[1], second])
     app.command(1021)
     n.wait(lambda: app.count(app.sources) == 2, "sources loaded", 45)
-    app.select(0, app.sources)
-    app.focus(app.sources)
-    if mouse:
-        wait_clipboard_available()
-        with n.window_dpi_context(app.frame):
-            left, top, right, bottom = app.item_rect(1, app.sources)
-            x, y = win32gui.ClientToScreen(app.sources, (left + 8, (top + bottom) // 2))
-            _, ids = popup(app, app.sources, location=(x & 0xffff) | ((y & 0xffff) << 16), mouse=True)
-    else:
-        win32gui.PostMessage(app.sources, win32con.WM_CONTEXTMENU, app.sources, -1)
-        _, ids = find_popup(app)
-    assert {1044, 1022, 1052} <= set(ids)
-    if mouse:
-        actions = [ident for ident in ids if ident and ident != 0xffffffff]
-        auto.SendKeys('{Down %d}{Enter}' % (actions.index(1052) + 1))
-    else:
-        menu = auto.MenuControl(searchDepth=3, ClassName='#32768', ProcessId=app.process.pid)
-        win32gui.PostMessage(menu.NativeWindowHandle, win32con.WM_KEYDOWN, win32con.VK_ESCAPE, 1)
-    wait_closed(app.sources)
-    if mouse:
-        n.wait(lambda: clipboard_text() == str(second), "source path copied")
-    assert app.selected_row(app.sources) == int(mouse)
+    with foreground(app, source_context_input) if source_context_input is not None else nullcontext():
+        app.select(0, app.sources)
+        app.focus(app.sources)
+        if mouse:
+            wait_clipboard_available()
+            with n.window_dpi_context(app.frame):
+                left, top, right, bottom = app.item_rect(1, app.sources)
+                x, y = win32gui.ClientToScreen(app.sources, (left + 8, (top + bottom) // 2))
+                _, ids = popup(app, app.sources, location=(x & 0xffff) | ((y & 0xffff) << 16), mouse=True)
+        else:
+            win32gui.PostMessage(app.sources, win32con.WM_CONTEXTMENU, app.sources, -1)
+            _, ids = find_popup(app)
+        assert {1044, 1022, 1052} <= set(ids)
+        if mouse:
+            actions = [ident for ident in ids if ident and ident != 0xffffffff]
+            for _ in range(actions.index(1052) + 1):
+                source_context_input.key(win32con.VK_DOWN)
+            source_context_input.key(win32con.VK_RETURN)
+        else:
+            dismiss(app.sources)
+        if mouse:
+            wait_closed(app.sources)
+            n.wait(lambda: clipboard_text() == str(second), "source path copied")
+        assert app.selected_row(app.sources) == int(mouse)
 
 
 def test_open_loads_and_close_keeps_document_snapshot(launch, profile, settings):

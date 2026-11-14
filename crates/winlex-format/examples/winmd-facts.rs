@@ -21,9 +21,9 @@ fn ty(t: &Type) -> Json {
             let mut result = ty(element);
             for _ in 0..*count {
                 result = json!({"kind": "pointer", "element": result});
-            }
-            if matches!(t, Type::PtrConst(_, _)) {
-                result = json!({"kind": "const", "element": result});
+                if matches!(t, Type::PtrConst(_, _)) {
+                    result = json!({"kind": "const", "element": result});
+                }
             }
             result
         }
@@ -156,4 +156,57 @@ fn main() -> winlex_core::Result<()> {
     let db = Db::from_inputs([winlex_core::SourceData::read(path)?])?;
     serde_json::to_writer(std::io::stdout().lock(), &facts(&db))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use winlex_core::windows_metadata::writer;
+
+    #[test]
+    fn pointer_facts_preserve_each_encoded_const_level() {
+        let mut file = writer::File::new("PointerFacts");
+        file.TypeRef("System.Runtime.CompilerServices", "IsConst");
+        let index = Index::new(vec![File::new(file.into_stream()).unwrap()]);
+
+        // ECMA-335 II.23.2: 1f/20 = required/optional modifier, 05 =
+        // IsConst TypeRef row 1, 0f = PTR, 08 = I4. Each modifier wraps
+        // its recursively decoded child, including inside a pointer run.
+        let cases: &[(&[u8], &str)] = &[
+            (
+                &[0x1f, 0x05, 0x0f, 0x1f, 0x05, 0x0f, 0x08],
+                r#"{"kind":"const","element":{"kind":"pointer","element":{"kind":"const","element":{"kind":"pointer","element":{"kind":"i32"}}}}}"#,
+            ),
+            (
+                &[0x1f, 0x05, 0x0f, 0x0f, 0x08],
+                r#"{"kind":"const","element":{"kind":"pointer","element":{"kind":"pointer","element":{"kind":"i32"}}}}"#,
+            ),
+            (
+                &[0x0f, 0x1f, 0x05, 0x0f, 0x08],
+                r#"{"kind":"pointer","element":{"kind":"const","element":{"kind":"pointer","element":{"kind":"i32"}}}}"#,
+            ),
+            (
+                &[0x20, 0x05, 0x0f, 0x20, 0x05, 0x0f, 0x08],
+                r#"{"kind":"const","element":{"kind":"pointer","element":{"kind":"const","element":{"kind":"pointer","element":{"kind":"i32"}}}}}"#,
+            ),
+            (
+                &[0x1f, 0x05, 0x0f, 0x1f, 0x05, 0x0f, 0x1f, 0x05, 0x0f, 0x08],
+                r#"{"kind":"const","element":{"kind":"pointer","element":{"kind":"const","element":{"kind":"pointer","element":{"kind":"const","element":{"kind":"pointer","element":{"kind":"i32"}}}}}}}"#,
+            ),
+            (
+                &[0x10, 0x1d, 0x0f, 0x1f, 0x05, 0x0f, 0x1f, 0x05, 0x0f, 0x08],
+                r#"{"kind":"byref","element":{"kind":"array","element":{"kind":"pointer","element":{"kind":"const","element":{"kind":"pointer","element":{"kind":"const","element":{"kind":"pointer","element":{"kind":"i32"}}}}}}}}"#,
+            ),
+        ];
+        for (bytes, expected) in cases {
+            let mut blob = Blob::new(&index, 0, bytes);
+            let actual = ty(&blob.read_type_signature(&[]));
+            assert!(blob.is_empty());
+            assert_eq!(
+                actual,
+                serde_json::from_str::<Json>(expected).unwrap(),
+                "{bytes:02x?}"
+            );
+        }
+    }
 }

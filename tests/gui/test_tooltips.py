@@ -1,16 +1,16 @@
 import shutil
 import struct
-import time
 import pytest
 import win32api
 import win32con
 import win32gui
 import win32process
 import uiautomation as auto
-from support import native as n
+from support import deadline, messages, native as n
 from support.input_state import InputState
-from support.diagnostics import screenshot
+from support.diagnostics import assert_unobscured, screenshot
 from support.pe import is_64_bit
+from support.session import select_combo
 
 
 def registered_tip(app, target, bits):
@@ -60,7 +60,6 @@ def test_search_tooltip_registers_and_tracks_mode_without_hover(launch, settings
     app = launch()
     selector = n.get_item(app.frame, 1114)
     choices = app.choices(selector)
-    from support.session import select_combo
     bits = 64 if is_64_bit(settings[0]) else 32
     _, initial = registered_tip(app, app.search, bits)
     assert initial, "search input has a registered tooltip"
@@ -74,47 +73,68 @@ def test_search_tooltip_registers_and_tracks_mode_without_hover(launch, settings
 def test_toolbar_names_on_hover(launch, settings):
     app = launch()
     toolbar = n.get_item(app.frame, 1113)
-    tooltip = auto.ToolTipControl(searchDepth=3, Compare=lambda item, depth: item.ProcessId == app.process.pid)
+    tooltip = n.send(toolbar, messages.TB_GETTOOLTIPS)
+    assert tooltip and n.is_window(tooltip), 'toolbar has a native tooltip'
+    initial = n.send(tooltip, messages.TTM_GETDELAYTIME, 3) / 1000
+    autopop = n.send(tooltip, messages.TTM_GETDELAYTIME, 2) / 1000
+    assert initial > 0 and autopop > 0, 'native tooltip must have finite display delays'
     with InputState() as inputs, n.window_dpi_context(app.frame):
-        auto.ControlFromHandle(app.frame).SetActive()
-        assert win32gui.GetForegroundWindow() == app.frame, 'toolbar foreground'
+        with deadline.operation('activate toolbar tooltip frame'):
+            auto.ControlFromHandle(app.frame).SetActive()
+            assert win32gui.GetForegroundWindow() == app.frame, 'toolbar foreground'
         for index, command in enumerate((1040, 1021)):
-            bounds = auto.ControlFromHandle(app.frame).TitleBarControl().BoundingRectangle
-            auto.MoveTo(bounds.xcenter(), bounds.ycenter())
-            n.wait(lambda: not tooltip.Exists(0, 0) or not n.is_visible(tooltip.NativeWindowHandle),
-                   'toolbar tooltip hidden')
-            time.sleep(.1)
-            button = auto.ControlFromHandle(toolbar).Control(Name=app.toolbar_text(command))
-            bounds = button.BoundingRectangle
-            auto.MoveTo(bounds.xcenter(), bounds.ycenter())
-            n.wait(lambda: tooltip.Exists(0, 0) and n.is_visible(tooltip.NativeWindowHandle), 'toolbar tooltip')
-            assert tooltip.Name == app.toolbar_text(command)
+            with deadline.operation('leave toolbar tooltip target'), n.physical_dpi_context():
+                left, top, right, bottom = n.titlebar_rectangle(app.frame)
+                auto.MoveTo((left + right) // 2, (top + bottom) // 2, waitTime=0)
+            n.wait(lambda: not n.is_visible(tooltip),
+                   'toolbar tooltip hidden', autopop + 1)
+            with deadline.operation('hover toolbar tooltip target'):
+                expected = app.toolbar_text(command)
+                button = auto.ControlFromHandle(toolbar).Control(Name=expected)
+                bounds = button.BoundingRectangle
+                auto.MoveTo(bounds.xcenter(), bounds.ycenter(), waitTime=0)
+            n.wait(lambda: n.is_visible(tooltip) and n.window_text(tooltip) == expected,
+                   'toolbar tooltip content', initial + autopop)
             screenshot(app.frame, settings[2] / ('toolbar-%d.png' % index))
-        button.Click()
-        n.wait(lambda: n.is_visible(app.sources), 'toolbar opens metadata')
+        with deadline.operation('open metadata through toolbar'):
+            button.Click(waitTime=0)
+            n.wait(lambda: n.is_visible(app.sources), 'toolbar opens metadata')
 
 
 def infotip(app, control, row, image):
-    assert control and n.is_visible(control)
-    item = app.row(row, control)
-    item.GetScrollItemPattern().ScrollIntoView()
-    tooltip = auto.ToolTipControl(searchDepth=3, Compare=lambda item, depth: item.ProcessId == app.process.pid)
-    with InputState():
+    with deadline.operation('prepare list infotip row'):
+        assert control and n.is_visible(control)
+        item = app.row(row, control)
+        item.GetScrollItemPattern().ScrollIntoView()
+        # A desktop UIA search can outlast the tooltip's auto-pop interval even
+        # with Exists(0, 0); wait on the list's associated HWND instead.
+        tooltip_hwnd = n.send(control, messages.LVM_GETTOOLTIPS)
+        assert tooltip_hwnd and n.is_window(tooltip_hwnd), 'list has a native tooltip'
+        initial = n.send(tooltip_hwnd, messages.TTM_GETDELAYTIME, 3) / 1000
+        autopop = n.send(tooltip_hwnd, messages.TTM_GETDELAYTIME, 2) / 1000
+        assert initial > 0 and autopop > 0, 'native tooltip must have finite display delays'
+    # Cover initial display and eventual hiding using the control's actual
+    # timing and pointer delivery, not a whole-case timeout.
+    with InputState(), deadline.operation('list infotip hover and dismissal'):
         auto.ControlFromHandle(app.frame).SetActive()
         assert win32gui.GetForegroundWindow() == app.frame, 'infotip foreground'
         # Neither list content nor the search Edit is a neutral hover target:
         # both can provide their own tooltip while the previous tip is hiding.
-        bounds = auto.ControlFromHandle(app.frame).TitleBarControl().BoundingRectangle
-        auto.MoveTo(bounds.xcenter(), bounds.ycenter())
-        n.wait(lambda: not tooltip.Exists(0, 0) or not n.is_visible(tooltip.NativeWindowHandle), 'infotip hidden')
-        time.sleep(.1)
+        with n.physical_dpi_context():
+            left, top, right, bottom = n.titlebar_rectangle(app.frame)
+            auto.MoveTo((left + right) // 2, (top + bottom) // 2, waitTime=0)
+        n.wait(lambda: not n.is_visible(tooltip_hwnd), 'infotip hidden', autopop + 1)
         bounds = item.BoundingRectangle
-        auto.MoveTo(min(bounds.left + 120, bounds.right - 8), bounds.top + bounds.height() // 4)
-        n.wait(lambda: tooltip.Exists(0, 0) and n.is_visible(tooltip.NativeWindowHandle), 'native infotip')
-        time.sleep(.1)
-        text = tooltip.Name
-        assert n.is_visible(tooltip.NativeWindowHandle)
-        screenshot(tooltip.NativeWindowHandle, image)
+        auto.MoveTo(min(bounds.left + 120, bounds.right - 8), bounds.top + bounds.height() // 4, waitTime=0)
+        text = n.wait(lambda: n.window_text(tooltip_hwnd) if n.is_visible(tooltip_hwnd) else None,
+                      'native infotip content', initial + autopop)
+        assert n.is_visible(tooltip_hwnd)
+        assert_unobscured(tooltip_hwnd)
+        screenshot(tooltip_hwnd, image)
+        with n.physical_dpi_context():
+            left, top, right, bottom = n.titlebar_rectangle(app.frame)
+            auto.MoveTo((left + right) // 2, (top + bottom) // 2, waitTime=0)
+        n.wait(lambda: not n.is_visible(tooltip_hwnd), 'infotip hides after pointer leaves', autopop + 1)
         return text
 
 
@@ -152,10 +172,10 @@ def test_structured_infotips_preserve_paths_and_report_reload_errors(launch, set
 def test_infotips_include_values_and_full_guids(launch, settings):
     app = launch([settings[1]])
     mode = n.get_item(app.frame, 1114)
-    assert auto.ControlFromHandle(mode).Select(app.choices(mode)[1])
+    select_combo(mode, app.choices(mode)[1])
     for index, query, labels in [
         (1, 'value = 5', ('Value: 5', '值：5')),
-        (1, 'guid = "0000000c-0000-0000-c000-000000000046"', ('GUID: ', 'GUID：')),
+        (2, 'guid = "0000000c-0000-0000-c000-000000000046"', ('GUID: ', 'GUID：')),
     ]:
         app.query(query)
         tip = infotip(app, app.results, 0, settings[2] / ('value-tooltip-%d.png' % index))

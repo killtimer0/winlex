@@ -9,7 +9,7 @@ import win32api
 import win32con
 import win32gui
 import win32service
-from . import native as n
+from . import atomic, deadline, native as n
 
 IMC_GETOPENSTATUS = 5
 IMC_SETOPENSTATUS = 6
@@ -17,18 +17,41 @@ GA_ROOT = 2
 get_ancestor = n.api(n.user, "GetAncestor", n.w.HWND, n.w.HWND, n.w.UINT)
 
 
+@deadline.operation('check global hotkey availability')
+def require_available_hotkey(key, modifiers, description):
+    """Probe registered conflicts without sending input or retaining ownership."""
+    register = n.api(n.user, 'RegisterHotKey', n.w.BOOL,
+                     n.w.HWND, n.c.c_int, n.w.UINT, n.w.UINT)
+    unregister = n.api(n.user, 'UnregisterHotKey', n.w.BOOL, n.w.HWND, n.c.c_int)
+    identifier = 0x574C  # Private to this controller thread's short-lived probe.
+    if not register(None, identifier, modifiers, key):
+        error = n.c.get_last_error()
+        if error == 1409:  # ERROR_HOTKEY_ALREADY_REGISTERED
+            raise RuntimeError('Input environment conflict: %s is registered as a global hotkey'
+                               % description)
+        raise n.c.WinError(error)
+    try:
+        return
+    finally:
+        if not unregister(None, identifier):
+            raise n.c.WinError(n.c.get_last_error())
+
+
 @contextmanager
 def foreground(app, inputs):
-    window = auto.ControlFromHandle(app.frame)
-    topmost = window.IsTopmost()
-    window.SetTopmost(True)
-    try:
-        window.Restore()
-        window.TitleBarControl().Click(simulateMove=False)
+    with n.physical_dpi_context():
+        with deadline.operation('activate physical input target via UIA'):
+            window = auto.ControlFromHandle(app.frame)
+            window.Restore(waitTime=0)
+            window.SetActive(waitTime=0)
+        left, top, right, bottom = n.titlebar_rectangle(app.frame)
+        point = ((left + right) // 2, (top + bottom) // 2)
+        hit = win32gui.WindowFromPoint(point)
+        assert get_ancestor(hit, GA_ROOT) == app.frame, "foreground title bar is obscured"
+        if win32gui.GetForegroundWindow() != app.frame:
+            inputs.click(*point, wait_time=0)
         n.wait(lambda: win32gui.GetForegroundWindow() == app.frame, "foreground input")
-        yield lambda: win32gui.GetForegroundWindow() == app.frame
-    finally:
-        window.SetTopmost(topmost)
+    yield lambda: win32gui.GetForegroundWindow() == app.frame
 
 
 def ime_window(hwnd):
@@ -59,10 +82,14 @@ def recover(path):
             if not foreground:
                 raise RuntimeError("Cannot resolve previous foreground root")
         if foreground and win32gui.IsWindow(foreground) and win32gui.GetForegroundWindow() != foreground:
-            # Windows may deny foreground activation. Do not inject keys or wait
-            # for permission: restoring the user's foreground is best effort.
+            # Windows may deny activation; never inject keys or retry for
+            # permission. Cross-queue activation is asynchronous, however:
+            # acknowledge its notification before judging the final foreground.
             win32gui.SetForegroundWindow(foreground)
-            if win32gui.GetForegroundWindow() != foreground:
+            with deadline.operation('acknowledge foreground restoration'):
+                acknowledged = n.send_timeout(foreground, win32con.WM_NULL,
+                                              0, 0, 3, 1000, None)
+            if not acknowledged or win32gui.GetForegroundWindow() != foreground:
                 logging.getLogger(__name__).warning("Could not restore previous foreground window %s", foreground)
     except Exception as error:
         logging.getLogger(__name__).warning("Could not restore previous foreground window: %s", error)
@@ -88,9 +115,19 @@ class InputState:
                       "foreground": foreground, "raw_foreground": raw_foreground}
 
     def save(self):
-        temporary = self.path.with_suffix(".new")
-        temporary.write_text(json.dumps(self.state), encoding="utf-8")
-        temporary.replace(self.path)
+        atomic.write_json(self.path, self.state, indent=None)
+
+    def hold(self, code):
+        """Record ownership before delivery so the outer runner can undo it."""
+        self.state["held"].append(code)
+        self.save()
+
+    def release(self, code):
+        self.state["held"].remove(code)
+        self.save()
+
+    def holding(self, code):
+        return code in self.state["held"]
 
     def __enter__(self):
         current = win32service.GetThreadDesktop(win32api.GetCurrentThreadId())
@@ -105,35 +142,31 @@ class InputState:
         self.save()
         return self
 
-    def click(self, x, y):
-        self.state["held"].append("mouse")
-        self.save()
-        auto.Click(x, y)
-        self.state["held"].remove("mouse")
-        self.save()
+    def click(self, x, y, *, wait_time=auto.OPERATION_WAIT_TIME):
+        self.hold("mouse")
+        auto.Click(x, y, waitTime=wait_time)
+        self.release("mouse")
 
     def double_click(self, x, y):
-        self.state["held"].append("mouse")
-        self.save()
+        self.hold("mouse")
         try:
             auto.Click(x, y, waitTime=0)
-            auto.Click(x, y)
+            auto.Click(x, y, waitTime=0)
         except BaseException:
             auto.ReleaseMouse(waitTime=0)
             raise
         finally:
-            self.state["held"].remove("mouse")
-            self.save()
+            self.release("mouse")
 
     def key(self, code):
-        self.state["held"].append(code)
-        self.save()
         # A key() is a tap, not a held key. The provider's default 500 ms pause
         # occurs before key-up and can cross the Windows auto-repeat threshold.
+        self.hold(code)
         auto.PressKey(code, waitTime=0)
-        auto.ReleaseKey(code)
-        self.state["held"].remove(code)
-        self.save()
+        # SendInput preserves event order. Callers observe focus/results after
+        # their gesture; the provider's post-key-up pause is not synchronization.
+        auto.ReleaseKey(code, waitTime=0)
+        self.release(code)
 
     def disable_ime(self, control):
         window = ime_window(control)

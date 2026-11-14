@@ -120,6 +120,21 @@ def compare_files(directory, files, output, rust, dotnet, timeout):
 
 
 def build(output, args):
+    if args.rust_reader:
+        paths = {str(args.rust_reader.resolve(strict=True))}
+    else:
+        paths = build_rust(output, args)
+    if args.oracle_reader:
+        oracle = args.oracle_reader.resolve(strict=True)
+    else:
+        oracle = output / "oracle/Oracle.dll"
+        with (output / "dotnet-build.log").open("wb") as log:
+            subprocess.run(["dotnet", "build", ROOT / "tests/differential/Oracle", "-c", "Debug", "-o", oracle.parent],
+                           cwd=ROOT, stdout=log, stderr=subprocess.STDOUT, check=True, timeout=args.build_timeout)
+    return [paths.pop()], ["dotnet", oracle]
+
+
+def build_rust(output, args):
     options = []
     if args.target:
         options += ["--target", args.target]
@@ -128,18 +143,14 @@ def build(output, args):
     command = ["cargo", "build", "-p", "winlex-format", "--example", "winmd-facts", "--locked",
                "--message-format=json-render-diagnostics", *options]
     with (output / "cargo.jsonl").open("wb") as log, (output / "cargo.stderr").open("wb") as err:
-        result = subprocess.run(command, cwd=ROOT, stdout=log, stderr=err)
+        result = subprocess.run(command, cwd=ROOT, stdout=log, stderr=err, timeout=args.build_timeout)
     result.check_returncode()
     messages = [json.loads(line) for line in (output / "cargo.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
     paths = {m["executable"] for m in messages if m.get("reason") == "compiler-artifact"
              and m.get("target", {}).get("name") == "winmd-facts" and m.get("executable")}
     if len(paths) != 1:
         raise RuntimeError("Cargo did not report exactly one winmd-facts executable")
-    oracle = output / "oracle"
-    with (output / "dotnet-build.log").open("wb") as log:
-        subprocess.run(["dotnet", "build", ROOT / "tests/differential/Oracle", "-c", "Debug", "-o", oracle],
-                       cwd=ROOT, stdout=log, stderr=subprocess.STDOUT, check=True)
-    return [paths.pop()], ["dotnet", oracle / "Oracle.dll"]
+    return paths
 
 
 def main():
@@ -148,6 +159,9 @@ def main():
     parser.add_argument("--output", type=Path, help="new evidence directory (must not already exist)")
     parser.add_argument("--target", help="host-runnable Rust target")
     parser.add_argument("--target-dir", type=Path)
+    parser.add_argument("--rust-reader", type=Path, help="use an existing winmd-facts executable without building Rust")
+    parser.add_argument("--oracle-reader", type=Path, help="use an existing Oracle.dll without building .NET")
+    parser.add_argument("--build-timeout", type=float, default=300, help="seconds per build")
     parser.add_argument("--timeout", type=float, default=180, help="seconds per reader per file")
     args = parser.parse_args()
     directory = args.directory.absolute()
@@ -155,6 +169,8 @@ def main():
     try:
         if not math.isfinite(args.timeout) or args.timeout <= 0:
             raise ValueError("Timeout must be finite and positive")
+        if not math.isfinite(args.build_timeout) or args.build_timeout <= 0:
+            raise ValueError("Build timeout must be finite and positive")
         files = discover(directory)
         output.mkdir(parents=True, exist_ok=False)
         rust, dotnet = build(output, args)

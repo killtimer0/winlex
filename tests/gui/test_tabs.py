@@ -4,10 +4,11 @@ from ctypes import wintypes as w
 import win32con
 import win32gui
 import uiautomation as auto
-from support import native as n
+from support import deadline, native as n
 from support.session import ThreadInfo
 
 
+@deadline.operation('measure MSAA tab center')
 def center(page):
     rect = page.BoundingRectangle
     return rect.left + min(20, (rect.right - rect.left) // 2), (rect.top + rect.bottom) // 2
@@ -20,33 +21,37 @@ def test_tabs_msaa_activation_close_and_reorder(launch, settings):
     app.query("CloseHandle")
     second = app.open_row()
     tabs = n.get_item(app.frame, 1104)
-    root = auto.ControlFromHandle(tabs)
-    pages = app._tabs()
-    assert root.GetLegacyIAccessiblePattern().Role == 0x3c
-    assert len(pages) == 2 and all(page.GetLegacyIAccessiblePattern().Role == 0x25 for page in pages)
-    names = [page.Name for page in pages]
-    assert root.GetLegacyIAccessiblePattern().Select(1, waitTime=0)
-    assert pages[0].GetLegacyIAccessiblePattern().DoDefaultAction(waitTime=0)
-    n.wait(lambda: app.active_document() == first, "MSAA activation")
-    assert pages[0].GetLegacyIAccessiblePattern().State & 2
-    assert pages[0].GetLegacyIAccessiblePattern().State & 4
+    with deadline.operation('observe MSAA tab roles and names'):
+        root = auto.ControlFromHandle(tabs)
+        pages = app._tabs()
+        assert root.GetLegacyIAccessiblePattern().Role == 0x3c
+        assert len(pages) == 2 and all(page.GetLegacyIAccessiblePattern().Role == 0x25 for page in pages)
+        names = [page.Name for page in pages]
+    with deadline.operation('activate tab through MSAA'):
+        assert root.GetLegacyIAccessiblePattern().Select(1, waitTime=0)
+        assert pages[0].GetLegacyIAccessiblePattern().DoDefaultAction(waitTime=0)
+        n.wait(lambda: app.active_document() == first, "MSAA activation")
+        assert pages[0].GetLegacyIAccessiblePattern().State & 2
+        assert pages[0].GetLegacyIAccessiblePattern().State & 4
     win32gui.PostMessage(tabs, win32con.WM_KEYDOWN, win32con.VK_END, 1)
     win32gui.PostMessage(tabs, win32con.WM_KEYUP, win32con.VK_END, -1073741823)
     n.wait(lambda: app.active_document() == second, "keyboard last tab")
-    assert pages[1].GetLegacyIAccessiblePattern().State & 2
-    origin = n.rectangle(tabs)
-    points = []
-    for page in pages:
-        x, y = center(page)
-        points.append(((x - origin[0]) & 0xffff) | (((y - origin[1]) & 0xffff) << 16))
+    with deadline.operation('observe keyboard tab selection and drag geometry via MSAA'):
+        assert pages[1].GetLegacyIAccessiblePattern().State & 2
+        origin = n.rectangle(tabs)
+        points = []
+        for page in pages:
+            x, y = center(page)
+            points.append(((x - origin[0]) & 0xffff) | (((y - origin[1]) & 0xffff) << 16))
     n.send(tabs, win32con.WM_LBUTTONDOWN, win32con.MK_LBUTTON, points[1])
     n.send(tabs, win32con.WM_MOUSEMOVE, win32con.MK_LBUTTON, points[0])
     n.send(tabs, win32con.WM_LBUTTONUP, 0, points[0])
     n.wait(lambda: app.tab_labels() == list(reversed(names)), "tab reorder")
-    assert [page.Name for page in pages] == names
-    rect = pages[1].BoundingRectangle
-    x, y = rect.right - 4 - origin[0], (rect.top + rect.bottom) // 2 - origin[1]
-    point = (x & 0xffff) | ((y & 0xffff) << 16)
+    with deadline.operation('observe stable MSAA tab identity and right edge'):
+        assert [page.Name for page in pages] == names
+        rect = pages[1].BoundingRectangle
+        x, y = rect.right - 4 - origin[0], (rect.top + rect.bottom) // 2 - origin[1]
+        point = (x & 0xffff) | ((y & 0xffff) << 16)
     n.send(tabs, win32con.WM_LBUTTONDOWN, win32con.MK_LBUTTON, point)
     n.send(tabs, win32con.WM_LBUTTONUP, 0, point)
     assert len(app.documents()) == 2, "right edge is part of the tab, not a close button"
@@ -65,14 +70,15 @@ def test_tabs_focus_only_selection_none_and_cancel_capture(launch, settings):
     app.query("CloseHandle")
     active = app.open_row()
     tabs = n.get_item(app.frame, 1104)
-    root = auto.ControlFromHandle(tabs)
-    pages = app._tabs()
-    assert pages[0].GetLegacyIAccessiblePattern().Select(1, waitTime=0)
-    assert app.active_document() == active, "TAKEFOCUS must not select"
-    assert pages[0].GetLegacyIAccessiblePattern().State & 4 and not pages[0].GetLegacyIAccessiblePattern().State & 2
-    assert pages[1].GetLegacyIAccessiblePattern().State & 2 and not pages[1].GetLegacyIAccessiblePattern().State & 4
-    assert root.GetLegacyIAccessiblePattern().Select(0, waitTime=0)
-    assert pages[0].GetLegacyIAccessiblePattern().State & 4 and app.active_document() == active
+    with deadline.operation('focus tab through MSAA without changing selection'):
+        root = auto.ControlFromHandle(tabs)
+        pages = app._tabs()
+        assert pages[0].GetLegacyIAccessiblePattern().Select(1, waitTime=0)
+        assert app.active_document() == active, "TAKEFOCUS must not select"
+        assert pages[0].GetLegacyIAccessiblePattern().State & 4 and not pages[0].GetLegacyIAccessiblePattern().State & 2
+        assert pages[1].GetLegacyIAccessiblePattern().State & 2 and not pages[1].GetLegacyIAccessiblePattern().State & 4
+        assert root.GetLegacyIAccessiblePattern().Select(0, waitTime=0)
+        assert pages[0].GetLegacyIAccessiblePattern().State & 4 and app.active_document() == active
     get_info = n.api(n.user, "GetGUIThreadInfo", w.BOOL, w.DWORD, c.POINTER(ThreadInfo))
 
     def capture():
@@ -81,11 +87,12 @@ def test_tabs_focus_only_selection_none_and_cancel_capture(launch, settings):
         assert get_info(n.get_pid(app.frame, None), c.byref(info))
         return info.capture
 
-    origin = n.rectangle(tabs)
-    points = []
-    for page in pages:
-        x, y = center(page)
-        points.append(((x - origin[0]) & 0xffff) | (((y - origin[1]) & 0xffff) << 16))
+    with deadline.operation('measure MSAA tab drag targets'):
+        origin = n.rectangle(tabs)
+        points = []
+        for page in pages:
+            x, y = center(page)
+            points.append(((x - origin[0]) & 0xffff) | (((y - origin[1]) & 0xffff) << 16))
     start, end = points
     names = app.tab_labels()
     for cancel in (win32con.WM_CANCELMODE, win32con.WM_KEYDOWN):

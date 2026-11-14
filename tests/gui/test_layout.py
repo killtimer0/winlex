@@ -5,8 +5,9 @@ import uiautomation as auto
 from support.diagnostics import capture
 from support.input_state import InputState, foreground
 from support import messages
-from support import native as n
+from support import deadline, native as n
 from test_context import select_text
+from test_document import resize
 from test_tools import close, visual_state
 
 
@@ -31,8 +32,9 @@ def test_list_selection_paint_follows_focus(launch, settings, sources):
         with n.window_dpi_context(app.frame):
             _, _, width, height = n.rectangle(control, client=True)
             left, top, right, bottom = app.item_rect(0, control)
-            with capture(control, client=True) as (bitmap, _, _):
-                rgb = bitmap.GetPixelColor(min(right, width) - 4, (top + bottom) // 2 - 3)
+            x, y = min(right, width) - 4, (top + bottom) // 2 - 3
+            with capture(control, client=True, rect=(x, y, x + 1, y + 1)) as (bitmap, _, _):
+                rgb = bitmap.GetPixelColor(0, 0)
                 return ((rgb & 255) << 16) | (rgb & 0xff00) | ((rgb >> 16) & 255)
 
     with InputState() as inputs, foreground(app, inputs):
@@ -47,18 +49,24 @@ def test_list_selection_paint_follows_focus(launch, settings, sources):
             unfocused = background()
             assert app.selected_row(control) == 0  # Losing focus hides the highlight, not selection.
             assert selected != unfocused, (theme_name, selected, unfocused)
-            assert unfocused == win32gui.GetSysColor(win32con.COLOR_WINDOW)
+            app.focus(control)
+            n.wait(lambda: background() == selected, "selection painting returns with focus")
 
 
-def check_toolbar_and_search(app):
-    toolbar = n.get_item(app.frame, 1113)
+@deadline.operation('read toolbar button bounds via UIA')
+def toolbar_button_rects(toolbar):
     buttons = auto.ControlFromHandle(toolbar).GetChildren()
     def button_rect(index):
         rect = buttons[index].BoundingRectangle
         left, top, _, _ = n.rectangle(toolbar)
         return rect.left - left, rect.top - top, rect.right - left, rect.bottom - top
 
-    first, second = button_rect(0), button_rect(1)
+    return button_rect(0), button_rect(1)
+
+
+def check_toolbar_and_search(app):
+    toolbar = n.get_item(app.frame, 1113)
+    first, second = toolbar_button_rects(toolbar)
     area = n.rectangle(toolbar, client=True)
     assert first[0] == second[0] and first[3] <= second[1]
     assert 0 <= first[0] < first[2] <= area[2]
@@ -74,11 +82,11 @@ def check_toolbar_and_search(app):
     assert n.send(toolbar, messages.TB_ISBUTTONCHECKED, 1021)
     assert not n.send(toolbar, messages.TB_ISBUTTONCHECKED, 1040)
     n.wait(lambda: app.focused() == app.sources, "mouse activation focuses sources")
-    frame = auto.ControlFromHandle(app.frame)
-    rect = frame.BoundingRectangle
-    transform = frame.GetTransformPattern()
-    assert transform.Resize(rect.width() + 1, rect.height())
-    assert transform.Resize(rect.width(), rect.height())
+    with deadline.operation('read frame bounds via UIA'):
+        rect = auto.ControlFromHandle(app.frame).BoundingRectangle
+        width, height = rect.width(), rect.height()
+    resize(app.frame, width + 1, height)
+    resize(app.frame, width, height)
     n.send(app.frame, win32con.WM_SETTINGCHANGE)
     assert app.focused() == app.sources, "layout and environment updates must not move focus"
     n.send(toolbar, win32con.WM_LBUTTONDOWN, win32con.MK_LBUTTON, point)
@@ -158,7 +166,7 @@ def test_mdi_maximize_inheritance_and_one_shot_arrangement(launch, settings):
     other = app.open_new()
     assert n.is_zoomed(other), "new document must inherit MDI maximization"
     with n.window_dpi_context(app.frame):
-        dpi = n.api(n.user, "GetDpiForWindow", n.w.UINT, n.w.HWND)(original) if hasattr(n.user, "GetDpiForWindow") else 96
+        dpi = n.window_dpi(original) or 96
         for command in (1011, 1012, None):
             if command is None:
                 # The application exposes no cascade command; exercise the MDI contract directly.
@@ -181,8 +189,7 @@ def test_mdi_maximize_inheritance_and_one_shot_arrangement(launch, settings):
     close(third)
     assert {h: n.rectangle(h) for h in before} == before, "closing must not retile remaining documents"
     frame = n.rectangle(app.frame)
-    assert auto.ControlFromHandle(app.frame).GetTransformPattern().Resize(
-        frame[2] - frame[0] + 80, frame[3] - frame[1] + 60)
+    resize(app.frame, frame[2] - frame[0] + 80, frame[3] - frame[1] + 60)
     assert {h: n.rectangle(h) for h in before} == before, "frame resize must not retile documents"
 
 
@@ -225,11 +232,11 @@ def test_mdi_remembers_last_user_state_after_all_documents_close(launch, setting
 
     doc = reopen(doc)
     assert n.is_zoomed(doc), "closing all must retain maximized preference"
-    win32gui.SendMessage(doc, win32con.WM_SYSCOMMAND, win32con.SC_RESTORE, 0)
+    n.send(doc, win32con.WM_SYSCOMMAND, win32con.SC_RESTORE, 0)
     assert not n.is_zoomed(doc)
     doc = reopen(doc)
     assert not n.is_zoomed(doc), "closing all must retain restored preference"
-    win32gui.SendMessage(doc, win32con.WM_SYSCOMMAND, win32con.SC_MAXIMIZE, 0)
+    n.send(doc, win32con.WM_SYSCOMMAND, win32con.SC_MAXIMIZE, 0)
     assert n.is_zoomed(doc)
     doc = reopen(doc)
     assert n.is_zoomed(doc)

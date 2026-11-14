@@ -23,9 +23,8 @@ def resource_text(exe, identifier, language):
 
 
 def owned_dialogs(app):
-    dialog = auto.WindowControl(searchDepth=3, ClassName='#32770',
-                                Compare=lambda item, depth: item.ProcessId == app.process.pid)
-    return [dialog.NativeWindowHandle] if dialog.Exists(0, 0) else []
+    dialog = n.find_window(app.process.pid, '#32770', app.frame)
+    return [dialog] if dialog else []
 
 
 def assert_no_dialog(app):

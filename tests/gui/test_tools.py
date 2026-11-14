@@ -1,11 +1,12 @@
 """Tool instances share MDI/history, but own requests and live-only state."""
+import time
 import win32con
 import win32gui
 import winreg
 import pytest
 import uiautomation as auto
 
-from support import native as n
+from support import deadline, native as n
 from support.session import invoke, select_combo
 from test_history import enabled, history_menu, HISTORY_BACK, HISTORY_FORWARD
 from test_theme import selected_index
@@ -13,8 +14,7 @@ from test_metadata_guide import resource_text
 
 
 def tools(app):
-    return [item.NativeWindowHandle for item, _ in auto.WalkControl(auto.ControlFromHandle(app.mdi))
-            if item.ClassName == 'Winlex.Document' and n.get_item(item.NativeWindowHandle, 1816)]
+    return [hwnd for hwnd in app.documents() if n.get_item(hwnd, 1816)]
 
 
 def initialize_command_menu(app, command):
@@ -35,10 +35,16 @@ def activate(doc):
     n.wait(lambda: n.send(mdi, win32con.WM_MDIGETACTIVE) == doc, "tool document activated")
 
 
+@deadline.operation('close tool document via UIA')
 def close(doc):
-    assert auto.ControlFromHandle(doc).GetWindowPattern().Close()
+    until = time.monotonic() + 5
+    assert auto.ControlFromHandle(doc).GetWindowPattern().Close(waitTime=0)
+    remaining = until - time.monotonic()
+    assert remaining > 0, 'Tool document close exhausted its budget'
+    n.wait(lambda: not n.is_window(doc), 'tool document closed', remaining)
 
 
+@deadline.operation('set tool window state via UIA')
 def visual_state(hwnd, state):
     assert auto.ControlFromHandle(hwnd).GetWindowPattern().SetWindowVisualState(state)
 
@@ -61,9 +67,15 @@ def choose_scope(app, doc, index):
     select_combo(combo, app.choices(combo)[index])
 
 
+@deadline.operation('edit tool value via UIA')
 def edit(doc, identifier, value):
-    control = auto.ControlFromHandle(n.get_item(doc, identifier))
-    assert control.GetValuePattern().SetValue(value)
+    until = time.monotonic() + 5
+    hwnd = n.get_item(doc, identifier)
+    control = auto.ControlFromHandle(hwnd)
+    assert control.GetValuePattern().SetValue(value, waitTime=0)
+    remaining = until - time.monotonic()
+    assert remaining > 0, 'Tool value write exhausted its budget'
+    n.wait(lambda: n.window_text(hwnd) == value, 'tool value accepted', remaining)
 
 
 def body(doc):
@@ -72,9 +84,20 @@ def body(doc):
 
 def query(app, doc, value):
     edit(doc, 1810, value)
-    invoke(n.get_item(doc, 1815))
-    return n.wait(lambda: body(doc) if win32gui.IsWindowEnabled(n.get_item(doc, 1815))
-                    and body(doc) else None, "tool explicit query", 30)
+    # UIA Invoke may return before the command is dispatched, allowing the old
+    # enabled button and body to satisfy the wait. Send through the existing
+    # synchronous command entry point so submission has been acknowledged.
+    app.command(1815, doc)
+
+    def completed():
+        if not win32gui.IsWindowEnabled(n.get_item(doc, 1815)):
+            return None
+        # Completion enables the button before rendering; finish that UI-thread
+        # turn before reading the result. Identical requests need no text change.
+        n.send(doc, win32con.WM_NULL)
+        return body(doc)
+
+    return n.wait(completed, "tool explicit query", 30)
 
 
 def test_tool_new_button_tracks_selection(launch):
@@ -147,7 +170,8 @@ def test_tool_list_context_menu_offers_instance_actions_without_opening(launch):
     app.command(1800)
     panel = app.tool_list
     app.select(0, panel)
-    app.row(0, panel).GetSelectionItemPattern().RemoveFromSelection()
+    app.row(0, panel).GetSelectionItemPattern().RemoveFromSelection(waitTime=0)
+    n.wait(lambda: app.selected_row(panel) == -1, "tool row deselected", 15)
     assert app.selected_row(panel) == -1
     for command in (1049, 1050):
         app.command(command)
@@ -264,8 +288,7 @@ def test_tool_compact_layout_and_narrow_fallback(launch, find_visible):
     if find_visible:
         app.command(1060)
     with n.window_dpi_context(doc):
-        dpi = (n.api(n.user, "GetDpiForWindow", n.w.UINT, n.w.HWND)(doc)
-               if hasattr(n.user, "GetDpiForWindow") else 96)
+        dpi = n.window_dpi(doc) or 96
         scale = lambda value: round(value * dpi / 96)
         visual_state(doc, auto.WindowVisualState.Normal)
         for width, paired in [(900, True), (320, False), (220, False), (900, True)]:
@@ -319,8 +342,7 @@ def test_tool_resize_preserves_combo_dropdowns_and_selection(launch):
     choices = [app.choices(combo) for combo in combos]
     selected = [n.window_text(combo) for combo in combos]
     with n.window_dpi_context(doc):
-        dpi = (n.api(n.user, 'GetDpiForWindow', n.w.UINT, n.w.HWND)(doc)
-               if hasattr(n.user, 'GetDpiForWindow') else 96)
+        dpi = n.window_dpi(doc) or 96
         for width, height in [(900, 560), (900, 600), (400, 600), (900, 560)]:
             assert auto.ControlFromHandle(doc).GetTransformPattern().Resize(
                 round(width * dpi / 96), round(height * dpi / 96))
@@ -378,7 +400,7 @@ def test_shared_status_tracks_active_instance_and_catalog_refresh(launch, settin
     n.wait(lambda: "0x00000005" in body(first), "queried tool result available", 30)
     assert app.active_document() == second and app.status_text() == ready
     app.command(1040)
-    assert auto.ControlFromHandle(app.search).GetValuePattern().SetValue("CreateFileW")
+    assert auto.ControlFromHandle(app.search).GetValuePattern().SetValue("CreateFileW", waitTime=0)
     n.wait(lambda: app.count() and app.named_rows("CreateFileW"), "background catalog search", 45)
     assert app.active_document() == second
     search_prefix = resource_text(settings[0], 2025, ui_language.langid).split('%1!s!')[0]
@@ -399,7 +421,7 @@ def test_search_error_and_document_focus_select_their_own_status(launch, setting
     app.command(1040)
     mode = n.get_item(app.frame, 1114)
     select_combo(mode, app.choices(mode)[1])
-    assert auto.ControlFromHandle(app.search).GetValuePattern().SetValue("value =")
+    assert auto.ControlFromHandle(app.search).GetValuePattern().SetValue("value =", waitTime=0)
     incomplete = resource_text(settings[0], 2099, ui_language.langid)
     n.wait(lambda: incomplete in app.status_text(), "search error over active tool")
     error = app.status_text()
@@ -469,6 +491,7 @@ def test_explicit_query_stale_results_checked_numbers_and_language(launch, setti
     original = query(app, doc, "0x80070005")
     assert "0x80070005" in original and "0x00000005" in original
     assert "2147024891" in original
+    assert query(app, doc, "0x80070005") == original
     assert "0x80070005" in query(app, doc, "-2147024891")
     old = body(doc)
     edit(doc, 1810, "4294967296")
@@ -590,13 +613,21 @@ def test_tool_keyboard_open_enter_query_and_focus_regions(launch):
     panel = app.tool_list
     app.select(0, panel)
     app.focus(panel)
+    # UIA selection need not move the native keyboard caret on every OS.
+    win32gui.PostMessage(panel, win32con.WM_KEYDOWN, win32con.VK_HOME, 1)
+    win32gui.PostMessage(panel, win32con.WM_KEYUP, win32con.VK_HOME, -1073741823)
     win32gui.PostMessage(panel, win32con.WM_KEYDOWN, win32con.VK_DOWN, 1)
     win32gui.PostMessage(panel, win32con.WM_KEYUP, win32con.VK_DOWN, -1073741823)
+    n.wait(lambda: app.selected_row(panel) != 0, "Down changes the selected tool")
+    selected_title = app.cell(app.selected_row(panel), panel).splitlines()[0]
     assert not tools(app)
     win32gui.PostMessage(panel, win32con.WM_KEYDOWN, win32con.VK_RETURN, 1)
     win32gui.PostMessage(panel, win32con.WM_KEYUP, win32con.VK_RETURN, -1073741823)
-    doc = n.wait(lambda: app.active_document() if app.active_document() in tools(app)
-                 else None, "Enter opens selected tool")
+    selected_doc = n.wait(lambda: app.active_document(), "Enter opens selected tool")
+    assert selected_title in n.window_text(selected_doc)
+    # Query/focus assertions below belong to the error-code tool, not whichever
+    # tool the preceding Down/Enter gesture selected.
+    doc = tool(app)
     code = n.get_item(doc, 1810)
     n.wait(lambda: app.focused() == code, "tool input focused")
     edit(doc, 1810, "5")

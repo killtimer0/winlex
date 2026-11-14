@@ -46,10 +46,10 @@ def main():
         for stem in ['messages', 'empty', 'neutral']:
             res = OUT / (stem + '.res')
             subprocess.run([build['resource_compiler'], '/nologo', '/fo', str(res),
-                            str(OUT / (stem + '.rc'))], cwd=OUT, check=True)
+                            str(OUT / (stem + '.rc'))], cwd=OUT, check=True, timeout=30)
             subprocess.run([build['linker'], '/nologo', '/dll', '/noentry', '/nodefaultlib',
                             '/machine:' + arch, '/out:' + str(OUT / (stem + '-' + arch + '.dll')),
-                            str(res)], cwd=OUT, check=True)
+                            str(res)], cwd=OUT, check=True, timeout=30)
     print(OUT)
 
 

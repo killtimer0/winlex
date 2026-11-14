@@ -1,12 +1,12 @@
 import win32con
 import winreg
 import pytest
-import uiautomation as auto
 
 from support import native as n
 from support.diagnostics import screenshot
-from test_theme import THEME_SUPPORTED, dark_background, modern_theme, select_theme, selected_index
+from test_theme import THEME_SUPPORTED, background_pixels, modern_theme, select_theme, selected_index
 from test_tools import body, query, tool
+from test_settings import mask
 
 
 @modern_theme
@@ -18,7 +18,7 @@ def test_tool_empty_and_populated_result_follow_theme(launch, profile, settings)
     doc = tool(app)
     result = n.get_item(doc, 1816)
     assert body(doc) == ''
-    assert dark_background(result)
+    dark = background_pixels(result)
     screenshot(app.frame, settings[2] / 'tool-empty-dark.png')
     for populated in (False, True):
         if populated:
@@ -29,7 +29,10 @@ def test_tool_empty_and_populated_result_follow_theme(launch, profile, settings)
             page = app.settings_page(sheet, 0)
             select_theme(page, mode)
             app.close_settings(sheet)
-            assert dark_background(result) == (mode == 2)
+            if mode == 1:
+                n.wait(lambda: background_pixels(result) != dark, 'tool result follows theme change')
+            else:
+                n.wait(lambda: background_pixels(result) == dark, 'tool result restores its appearance')
             assert body(doc) == original
 
 
@@ -48,18 +51,14 @@ def test_unsupported_appearance_retains_preference_and_native_tool_behavior(laun
     controls = [n.get_item(doc, control) for control in (1810, 1815, 1816)]
     layout = [n.rectangle(control) for control in controls]
     enabled = n.api(n.user, 'IsWindowEnabled', n.w.BOOL, n.w.HWND)
-    system_color = n.api(n.user, 'GetSysColor', n.w.DWORD, n.c.c_int)
-    assert n.send(results, 0x1000) == system_color(win32con.COLOR_WINDOW)  # LVM_GETBKCOLOR
+    native_background = n.send(results, 0x1000)  # LVM_GETBKCOLOR
     sheet = app.settings()
     page = app.settings_page(sheet, 0)
     appearance = n.get_item(page, 1301)
     assert len(app.choices(appearance)) == 1
     assert selected_index(app, appearance) == 0
     assert not enabled(appearance)
-    search_page = app.settings_page(sheet, 1)
-    checkbox = auto.ControlFromHandle(n.get_item(search_page, 1313))
-    if not checkbox.GetTogglePattern().ToggleState:
-        checkbox.GetTogglePattern().Toggle()
+    mask(app, sheet, expected[1])
     app.close_settings(sheet)
     assert profile.preferences() == expected
     for notification in (win32con.WM_SETTINGCHANGE, win32con.WM_SYSCOLORCHANGE, 0x031a):
@@ -67,7 +66,7 @@ def test_unsupported_appearance_retains_preference_and_native_tool_behavior(laun
     assert body(doc) == original and app.active_document() == doc
     assert [n.rectangle(control) for control in controls] == layout
     assert all(n.is_visible(control) and enabled(control) for control in controls)
-    assert n.send(results, 0x1000) == system_color(win32con.COLOR_WINDOW)
+    assert n.send(results, 0x1000) == native_background
     assert '0x00000057' in query(app, doc, '87')
     assert profile.preferences() == expected
     restarted = launch()
