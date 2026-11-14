@@ -3,6 +3,7 @@ import shutil
 import subprocess
 import sys
 import time
+from contextlib import nullcontext
 import win32clipboard as clipboard
 import win32con
 import win32gui
@@ -18,7 +19,7 @@ from support.session import ThreadInfo
 def popup(app, editor, location=-1, keyboard=False, mouse=False, protocol_mouse=False):
     if mouse:
         auto.RightClick(n.c.c_short(location & 0xFFFF).value,
-                        n.c.c_short((location >> 16) & 0xFFFF).value)
+                        n.c.c_short((location >> 16) & 0xFFFF).value, waitTime=0)
     elif protocol_mouse:
         point = n.w.POINT(n.c.c_short(location & 0xFFFF).value,
                           n.c.c_short((location >> 16) & 0xFFFF).value)
@@ -123,10 +124,19 @@ def character_point(app, editor, index):
     return (point.x & 0xFFFF) | ((point.y & 0xFFFF) << 16)
 
 
+@pytest.fixture
+def context_input(gesture):
+    if gesture == 'mouse':
+        yield None
+    else:
+        with InputState() as inputs:
+            yield inputs
+
+
 @pytest.mark.parametrize('kind', ['declaration', 'tool'])
 @pytest.mark.parametrize('gesture', ['mouse', pytest.param('apps', marks=pytest.mark.interactive),
                                     pytest.param('shift-f10', marks=pytest.mark.interactive)])
-def test_readonly_result_context_input_preserves_selection(launch, settings, kind, gesture):
+def test_readonly_result_context_input_preserves_selection(launch, settings, kind, gesture, context_input):
     from test_tools import tool, query
     app = launch([settings[1]])
     if kind == 'tool':
@@ -138,25 +148,34 @@ def test_readonly_result_context_input_preserves_selection(launch, settings, kin
         doc = app.open_row()
         n.wait(lambda: 'CreateFileW(' in app.content(doc), 'declaration')
         editor = n.get_item(doc, 1203)
-    app.focus(editor)
-    select_text(editor, 2, 8)
-    # TOM calls are rejected while the native popup runs its modal loop.
-    selection = n.send(editor, win32con.EM_GETSEL)
-    first = n.send(editor, win32con.EM_GETFIRSTVISIBLELINE)
-    if gesture == 'mouse':
-        popup(app, editor, character_point(app, editor, 4), protocol_mouse=True)
-    elif gesture == 'apps':
-        auto.SendKeys('{Apps}', waitTime=0)
-        find_popup(app)
-    else:
-        auto.SendKeys('{Shift}{F10}', waitTime=0)
-        find_popup(app)
-    try:
-        assert n.send(editor, win32con.EM_GETSEL) == selection
-        assert n.send(editor, win32con.EM_GETFIRSTVISIBLELINE) == first
-    finally:
-        dismiss(editor)
-    assert app.active_document() == doc
+    with foreground(app, context_input) if context_input is not None else nullcontext():
+        app.focus(editor)
+        select_text(editor, 2, 8)
+        # TOM calls are rejected while the native popup runs its modal loop.
+        selection = n.send(editor, win32con.EM_GETSEL)
+        first = n.send(editor, win32con.EM_GETFIRSTVISIBLELINE)
+        if gesture == 'mouse':
+            popup(app, editor, character_point(app, editor, 4), protocol_mouse=True)
+        elif gesture == 'apps':
+            context_input.key(win32con.VK_APPS)
+            find_popup(app)
+        else:
+            context_input.state['held'].append(win32con.VK_SHIFT)
+            context_input.save()
+            auto.PressKey(win32con.VK_SHIFT, waitTime=0)
+            try:
+                context_input.key(win32con.VK_F10)
+            finally:
+                auto.ReleaseKey(win32con.VK_SHIFT, waitTime=0)
+                context_input.state['held'].remove(win32con.VK_SHIFT)
+                context_input.save()
+            find_popup(app)
+        try:
+            assert n.send(editor, win32con.EM_GETSEL) == selection
+            assert n.send(editor, win32con.EM_GETFIRSTVISIBLELINE) == first
+        finally:
+            dismiss(editor)
+        assert app.active_document() == doc
 
 
 def test_numeric_context_and_selection_survive_architecture_changes(launch, settings):

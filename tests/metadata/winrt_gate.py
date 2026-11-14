@@ -6,7 +6,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
-from artifacts import executable
+from artifacts import executable, run_query
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "tmp/verify/winrt"
@@ -16,11 +16,7 @@ def query(files, command, name, error=None):
     args = [executable("host-cli"), "--json", "--arch", "x64", "--limit", "1000"]
     for file in files:
         args.append(file)
-    try:
-        p = subprocess.run(args + [command, name], capture_output=True, timeout=30)
-    except subprocess.TimeoutExpired as error:
-        error.add_note(f"Query command/inputs: {error.cmd!r}; stderr: {error.stderr!r}")
-        raise
+    p = run_query(args + [command, name], capture_output=True)
     data = json.loads(p.stdout)
     if error:
         assert p.returncode == 3 and error in data["error"]["message"], data
@@ -142,13 +138,9 @@ def main():
     sms = (args.sdk / "Include" / args.version / "winrt/windows.devices.sms.h").read_text(errors="replace").lower()
     for iid in expected_iids.values():
         assert iid in sms, iid
-    try:
-        audit = subprocess.run([executable("query-audit"), union, *apps],
-                               stderr=subprocess.PIPE, text=True, encoding="utf-8",
-                               timeout=args.audit_timeout)
-    except subprocess.TimeoutExpired as error:
-        error.add_note(f"Query command/inputs: {error.cmd!r}; stderr: {error.stderr!r}")
-        raise
+    audit = run_query([executable("query-audit"), union, *apps],
+                      stderr=subprocess.PIPE, text=True, encoding="utf-8",
+                      timeout=args.audit_timeout)
     if audit.stderr:
         print(audit.stderr, end="", file=sys.stderr)
     audit.check_returncode()

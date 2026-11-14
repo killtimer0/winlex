@@ -74,7 +74,7 @@ def test_real_search_keyboard(launch, settings):
         with foreground(app, input_state):
             with n.window_dpi_context(app.frame):
                 left, top, right, bottom = n.rectangle(app.search)
-                input_state.click((left+right)//2, (top+bottom)//2)
+                input_state.click((left+right)//2, (top+bottom)//2, wait_time=0)
             n.wait(lambda: win32gui.GetForegroundWindow() == app.frame, "foreground ownership")
             n.wait(lambda: app.focused() == app.search, "search input focus")
         input_state.disable_ime(app.search)

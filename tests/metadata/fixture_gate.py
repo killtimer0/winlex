@@ -1,20 +1,16 @@
 import json
 from pathlib import Path
 import subprocess
-from artifacts import executable
+from artifacts import executable, run_query
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
 def layout(source, name, command="layout"):
-    try:
-        return subprocess.run(
-            [executable("host-cli"), source, "--json", "--arch", "x64", command, name],
-            capture_output=True, text=True, encoding="utf-8", timeout=30,
-        )
-    except subprocess.TimeoutExpired as error:
-        error.add_note(f"Query command/inputs: {error.cmd!r}; stderr: {error.stderr!r}")
-        raise
+    return run_query(
+        [executable("host-cli"), source, "--json", "--arch", "x64", command, name],
+        capture_output=True, text=True, encoding="utf-8",
+    )
 
 
 def main():

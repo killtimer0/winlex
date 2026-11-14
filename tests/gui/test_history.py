@@ -6,6 +6,7 @@ import uiautomation as auto
 
 from support import native as n
 from support import deadline
+from support.input_state import InputState, foreground
 from test_context import find_popup, wait_closed
 from test_navigation import editor_selection as selection, follow_caret, reference
 
@@ -378,39 +379,49 @@ def test_appcommand_routes_from_editor_and_search(launch, settings):
 def test_real_foreground_history_gestures(launch, settings, gesture):
     import win32gui
 
-    app = launch([settings[1]])
-    doc = visit(app, "CreateFileW")
-    assert visit(app, "CloseHandle") == doc
-    editor = n.get_item(doc, 1203)
-    for command, name in ((HISTORY_BACK, "CreateFileW"),
-                          (HISTORY_FORWARD, "CloseHandle")):
-        app.focus(app.search)
-        assert win32gui.GetForegroundWindow() == app.frame, "real history input requires foreground ownership"
-        if gesture == "alt-arrows":
-            auto.SendKeys("{Alt}{Left}" if command == HISTORY_BACK else "{Alt}{Right}", waitTime=0)
-        elif gesture == "menu":
-            menu, index, _ = history_menu(app)
-            rect = n.w.RECT()
-            with n.window_dpi_context(app.frame):
-                assert n.api(n.user, "GetMenuItemRect", n.w.BOOL, n.w.HWND, n.w.HMENU,
-                             n.w.UINT, n.c.POINTER(n.w.RECT))(app.frame, menu, index, n.c.byref(rect))
-                auto.Click((rect.left + rect.right) // 2, (rect.top + rect.bottom) // 2, waitTime=0)
-            popup_menu, items = find_popup(app)
-            with n.window_dpi_context(app.frame):
-                assert n.api(n.user, "GetMenuItemRect", n.w.BOOL, n.w.HWND, n.w.HMENU,
-                             n.w.UINT, n.c.POINTER(n.w.RECT))(
-                                 app.frame, popup_menu, items.index(command), n.c.byref(rect))
-                assert rect.right > rect.left and rect.bottom > rect.top
-                auto.Click((rect.left + rect.right) // 2, (rect.top + rect.bottom) // 2, waitTime=0)
-            wait_closed(editor)
-        else:
-            # Native X-button input lets DefWindowProc generate WM_APPCOMMAND.
-            with n.window_dpi_context(app.frame):
-                left, top, right, bottom = n.rectangle(editor)
-                auto.MoveTo((left + right) // 2, (top + bottom) // 2)
-            side = 1 if command == HISTORY_BACK else 2
-            assert auto.SendInput(auto.MouseInput(0, 0, side, auto.MouseEventFlag.XDown)) == 1
-            assert auto.SendInput(auto.MouseInput(0, 0, side, auto.MouseEventFlag.XUp)) == 1
-        current(app, name, document=doc)
-        n.wait(lambda: app.focused() == editor, "real gesture focuses history editor")
-        assert win32gui.GetForegroundWindow() == app.frame
+    with InputState() as inputs:
+        app = launch([settings[1]])
+        with foreground(app, inputs):
+            doc = visit(app, "CreateFileW")
+            assert visit(app, "CloseHandle") == doc
+            editor = n.get_item(doc, 1203)
+            for command, name in ((HISTORY_BACK, "CreateFileW"),
+                                  (HISTORY_FORWARD, "CloseHandle")):
+                app.focus(app.search)
+                assert win32gui.GetForegroundWindow() == app.frame, "real history input requires foreground ownership"
+                if gesture == "alt-arrows":
+                    inputs.state['held'].append(win32con.VK_MENU)
+                    inputs.save()
+                    auto.PressKey(win32con.VK_MENU, waitTime=0)
+                    try:
+                        inputs.key(win32con.VK_LEFT if command == HISTORY_BACK else win32con.VK_RIGHT)
+                    finally:
+                        auto.ReleaseKey(win32con.VK_MENU, waitTime=0)
+                        inputs.state['held'].remove(win32con.VK_MENU)
+                        inputs.save()
+                elif gesture == "menu":
+                    menu, index, _ = history_menu(app)
+                    rect = n.w.RECT()
+                    with n.window_dpi_context(app.frame):
+                        assert n.api(n.user, "GetMenuItemRect", n.w.BOOL, n.w.HWND, n.w.HMENU,
+                                     n.w.UINT, n.c.POINTER(n.w.RECT))(app.frame, menu, index, n.c.byref(rect))
+                        inputs.click((rect.left + rect.right) // 2, (rect.top + rect.bottom) // 2, wait_time=0)
+                    popup_menu, items = find_popup(app)
+                    with n.window_dpi_context(app.frame):
+                        assert n.api(n.user, "GetMenuItemRect", n.w.BOOL, n.w.HWND, n.w.HMENU,
+                                     n.w.UINT, n.c.POINTER(n.w.RECT))(
+                                         app.frame, popup_menu, items.index(command), n.c.byref(rect))
+                        assert rect.right > rect.left and rect.bottom > rect.top
+                        inputs.click((rect.left + rect.right) // 2, (rect.top + rect.bottom) // 2, wait_time=0)
+                    wait_closed(editor)
+                else:
+                    # Native X-button input lets DefWindowProc generate WM_APPCOMMAND.
+                    with n.window_dpi_context(app.frame):
+                        left, top, right, bottom = n.rectangle(editor)
+                        auto.MoveTo((left + right) // 2, (top + bottom) // 2)
+                    side = 1 if command == HISTORY_BACK else 2
+                    assert auto.SendInput(auto.MouseInput(0, 0, side, auto.MouseEventFlag.XDown)) == 1
+                    assert auto.SendInput(auto.MouseInput(0, 0, side, auto.MouseEventFlag.XUp)) == 1
+                current(app, name, document=doc)
+                n.wait(lambda: app.focused() == editor, "real gesture focuses history editor")
+                assert win32gui.GetForegroundWindow() == app.frame

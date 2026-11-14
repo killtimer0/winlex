@@ -191,27 +191,27 @@ def supervise_runner(process, path, timeout, started, heartbeat):
     from support import deadline
     plans = {}
     startup = True
+    ceiling = started + 15
     while process.poll() is None:
         heartbeat()
         now = time.monotonic()
-        operation = last_record(path / 'runner-deadlines.jsonl')
-        if operation and operation.get('phase') != 'startup':
-            startup = False
-        ceiling = started + 15 + timeout
-        if not operation:
-            ceiling = started + 15
-        elif startup:
-            ceiling = started + 15
-        elif operation.get('phase') == 'cleanup-inventory':
-            ceiling = operation['deadline']
-        elif operation.get('phase') == 'cleanup':
-            plan = last_record(path / 'runner-cleanup.jsonl')
-            if plan:
-                ceiling = plans.setdefault(plan['attempt'], plan['deadline'])
-            else:
-                ceiling = min(ceiling, operation['deadline'])
-        overdue = deadline.expired(path / 'runner-deadlines.jsonl', now)
-        if overdue or now > ceiling + .25:
+        operation = deadline.current_record(path / 'runner-deadlines.jsonl')
+        if operation:
+            if operation.get('phase') != 'startup':
+                startup = False
+            ceiling = started + 15 + timeout
+            if startup:
+                ceiling = started + 15
+            elif operation.get('phase') == 'cleanup-inventory':
+                ceiling = operation['deadline']
+            elif operation.get('phase') == 'cleanup':
+                plan = last_record(path / 'runner-cleanup.jsonl')
+                if plan:
+                    ceiling = plans.setdefault(plan['attempt'], plan['deadline'])
+                else:
+                    ceiling = min(ceiling, operation['deadline'])
+        overdue = deadline.expired(operation, now)
+        if overdue or now > ceiling + deadline.DIAGNOSTIC_GRACE:
             reason = 'Runner deadline exceeded'
             if overdue:
                 reason += ': ' + overdue['operation']

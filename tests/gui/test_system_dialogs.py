@@ -80,10 +80,13 @@ def test_sources_prompt_native_version_buttons_and_default(launch, profile, dpi)
 
 
 def assert_native_content_painted(dialog):
-    _, _, width, height = n.rectangle(dialog, client=True)
-    palette = colors(dialog, (3, 3, width - 3, height - 3))
-    background = palette.most_common(1)[0][0]
-    assert any(color != background for color in palette), 'native client content must be painted'
+    def painted():
+        _, _, width, height = n.rectangle(dialog, client=True)
+        palette = colors(dialog, (3, 3, width - 3, height - 3))
+        background = palette.most_common(1)[0][0]
+        return any(color != background for color in palette)
+
+    n.wait(painted, 'native client content must be painted', 5)
 
 
 @deadline.operation('read current native TaskDialog theme', 5)
@@ -179,7 +182,7 @@ def test_sources_prompt_theme_and_escape_preserve_yes_no(launch, profile, settin
         prompt = n.wait(lambda: native_dialog(app), 'sources TaskDialog')
         with n.physical_dpi_context():
             left, top, right, bottom = n.titlebar_rectangle(prompt)
-            inputs.click((left + right) // 2, (top + bottom) // 2)
+            inputs.click((left + right) // 2, (top + bottom) // 2, wait_time=0)
         n.wait(lambda: win32gui.GetForegroundWindow() == prompt, 'sources prompt foreground')
         assert_modal(app, prompt)
         assert_titlebar_theme(prompt, theme == 'dark')
@@ -215,7 +218,7 @@ def test_sources_prompt_client_theme_roundtrip(launch, profile, dpi):
                 hit = win32gui.WindowFromPoint(point)
                 assert get_ancestor(hit, GA_ROOT) == prompt, 'TaskDialog title bar is obscured'
                 if win32gui.GetForegroundWindow() != prompt:
-                    inputs.click(*point)
+                    inputs.click(*point, wait_time=0)
             n.wait(lambda: win32gui.GetForegroundWindow() == prompt, 'TaskDialog foreground', 5)
             appearance = task_dialog_appearance(prompt, native_light=theme == 'light')
             if theme in appearances:
@@ -368,7 +371,7 @@ def file_picker_colors(dialog, field, entry):
 @pytest.mark.parametrize('theme', ['light', 'dark'])
 @pytest.mark.parametrize('dpi', ['pmv2', 'pmv1'])
 def test_file_picker_current_theme_native_navigation_and_cancel(
-        launch, profile, settings, tmp_path, theme, dpi):
+        launch, profile, settings, tmp_path, theme, dpi, picker_environment):
     profile.set('Theme', winreg.REG_SZ, theme)
     app = launch(dpi=dpi)
     folder = tmp_path / 'native-picker-navigation'

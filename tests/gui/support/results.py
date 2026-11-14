@@ -16,6 +16,8 @@ def merge(attempts, output):
     cases = {}
     timed_out_cases = set()
     for folder, result in attempts:
+        for record in records(folder / 'progress.jsonl'):
+            cases.setdefault(record['nodeid'], [])
         for record in records(folder / 'timings.jsonl'):
             cases.setdefault(record['nodeid'], []).append(record)
         if result.get('timeout'):

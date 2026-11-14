@@ -49,7 +49,7 @@ def foreground(app, inputs):
         hit = win32gui.WindowFromPoint(point)
         assert get_ancestor(hit, GA_ROOT) == app.frame, "foreground title bar is obscured"
         if win32gui.GetForegroundWindow() != app.frame:
-            inputs.click(*point)
+            inputs.click(*point, wait_time=0)
         n.wait(lambda: win32gui.GetForegroundWindow() == app.frame, "foreground input")
     yield lambda: win32gui.GetForegroundWindow() == app.frame
 

@@ -85,14 +85,14 @@ def test_toolbar_names_on_hover(launch, settings):
         for index, command in enumerate((1040, 1021)):
             with deadline.operation('leave toolbar tooltip target', 5), n.physical_dpi_context():
                 left, top, right, bottom = n.titlebar_rectangle(app.frame)
-                auto.MoveTo((left + right) // 2, (top + bottom) // 2)
+                auto.MoveTo((left + right) // 2, (top + bottom) // 2, waitTime=0)
             n.wait(lambda: not n.is_visible(tooltip),
                    'toolbar tooltip hidden', autopop + 1)
             with deadline.operation('hover toolbar tooltip target', 5):
                 expected = app.toolbar_text(command)
                 button = auto.ControlFromHandle(toolbar).Control(Name=expected)
                 bounds = button.BoundingRectangle
-                auto.MoveTo(bounds.xcenter(), bounds.ycenter())
+                auto.MoveTo(bounds.xcenter(), bounds.ycenter(), waitTime=0)
             n.wait(lambda: n.is_visible(tooltip) and n.window_text(tooltip) == expected,
                    'toolbar tooltip content', initial + autopop)
             screenshot(app.frame, settings[2] / ('toolbar-%d.png' % index))
@@ -114,7 +114,7 @@ def infotip(app, control, row, image):
         autopop = n.send(tooltip_hwnd, messages.TTM_GETDELAYTIME, 2) / 1000
         assert initial > 0 and autopop > 0, 'native tooltip must have finite display delays'
     # Cover initial display and eventual hiding using the control's actual
-    # timing, including two input-delivery pauses, not a whole-case timeout.
+    # timing and pointer delivery, not a whole-case timeout.
     with InputState(), deadline.operation('list infotip hover and dismissal', initial + 2 * autopop + 1):
         auto.ControlFromHandle(app.frame).SetActive()
         assert win32gui.GetForegroundWindow() == app.frame, 'infotip foreground'
@@ -122,10 +122,10 @@ def infotip(app, control, row, image):
         # both can provide their own tooltip while the previous tip is hiding.
         with n.physical_dpi_context():
             left, top, right, bottom = n.titlebar_rectangle(app.frame)
-            auto.MoveTo((left + right) // 2, (top + bottom) // 2)
+            auto.MoveTo((left + right) // 2, (top + bottom) // 2, waitTime=0)
         n.wait(lambda: not n.is_visible(tooltip_hwnd), 'infotip hidden', autopop + 1)
         bounds = item.BoundingRectangle
-        auto.MoveTo(min(bounds.left + 120, bounds.right - 8), bounds.top + bounds.height() // 4)
+        auto.MoveTo(min(bounds.left + 120, bounds.right - 8), bounds.top + bounds.height() // 4, waitTime=0)
         text = n.wait(lambda: n.window_text(tooltip_hwnd) if n.is_visible(tooltip_hwnd) else None,
                       'native infotip content', initial + autopop)
         assert n.is_visible(tooltip_hwnd)
@@ -133,7 +133,7 @@ def infotip(app, control, row, image):
         screenshot(tooltip_hwnd, image)
         with n.physical_dpi_context():
             left, top, right, bottom = n.titlebar_rectangle(app.frame)
-            auto.MoveTo((left + right) // 2, (top + bottom) // 2)
+            auto.MoveTo((left + right) // 2, (top + bottom) // 2, waitTime=0)
         n.wait(lambda: not n.is_visible(tooltip_hwnd), 'infotip hides after pointer leaves', autopop + 1)
         return text
 

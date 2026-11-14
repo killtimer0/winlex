@@ -384,7 +384,7 @@ class Session:
             inputs.double_click(*position)
         else:
             with deadline.operation('click owned list row', 5):
-                inputs.click(*position)
+                inputs.click(*position, wait_time=0)
         return self.wait_document(description, name)
 
     def focus(self, value):

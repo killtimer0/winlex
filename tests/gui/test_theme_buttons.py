@@ -145,7 +145,8 @@ def test_dark_native_find_buttons_and_auto_checkboxes(launch, profile, settings)
         assert win32gui.IsWindowEnabled(checkbox)
         assert n.send(checkbox, win32con.BM_GETCHECK) == original
         evidence['reenabled'] = button_pixels(checkbox, checkbox=True)
-        inputs.click(*win32gui.ClientToScreen(checkbox, center(n.rectangle(checkbox, client=True))))
+        inputs.click(*win32gui.ClientToScreen(checkbox, center(n.rectangle(checkbox, client=True))),
+                     wait_time=0)
         n.wait(lambda: n.send(checkbox, win32con.BM_GETCHECK) != original,
                'reenabled checkbox accepts mouse activation')
         assert app.focused() == checkbox

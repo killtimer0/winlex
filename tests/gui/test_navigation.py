@@ -287,8 +287,14 @@ def test_primitives_unresolved_types_and_whitespace_have_no_navigation(launch, s
             assert app.documents() == [source]
 
 
+@pytest.fixture
+def source_snapshot_environment(request, reload):
+    if not reload:
+        request.getfixturevalue('picker_environment')
+
+
 @pytest.mark.parametrize("reload", [True, False], ids=["reload", "unload-reopen"])
-def test_navigation_uses_source_snapshot_not_current_catalog(launch, settings, reload):
+def test_navigation_uses_source_snapshot_not_current_catalog(launch, settings, reload, source_snapshot_environment):
     path = settings[2] / "navigation-snapshot😀.winmd"
     shutil.copyfile(settings[1], path)
     app = launch([path])
@@ -434,16 +440,26 @@ def test_real_ctrl_hover_preserves_scrolled_reading_state(launch, settings, prof
             selection = editor_selection(app, editor)
             with deadline.operation('read reference colors via TOM', 5):
                 colors = [span.Font.ForeColor for span, _ in visible]
+            with n.physical_dpi_context():
+                left, top_edge, right, bottom = n.rectangle(app.results)
+            neutral = ((left + right) // 2, (top_edge + bottom) // 2)
+            auto.MoveTo(*neutral, waitTime=0)
+            n.wait(lambda: auto.GetCursorPos() == neutral
+                   and all(span.Font.Underline == 0 for span, _ in visible),
+                   "pointer starts outside the editor with no hovered reference")
+            assert app.focused() == editor
             inputs.state["held"].append(win32con.VK_CONTROL)
             inputs.save()
             auto.PressKey(win32con.VK_CONTROL, waitTime=0)
             try:
                 for current in (0, 1, 0, 1):
-                    auto.MoveTo(*visible[current][1])
-                    n.wait(lambda: visible[current][0].Font.Underline == 1,
-                           "Ctrl-hover underlines the reference")
-                    with deadline.operation('read inactive reference underline via TOM', 5):
-                        assert visible[1 - current][0].Font.Underline == 0
+                    with deadline.operation('read destination reference before hover', 5):
+                        assert visible[current][0].Font.Underline == 0
+                    auto.MoveTo(*visible[current][1], waitTime=0)
+                    n.wait(lambda: visible[current][0].Font.Underline == 1
+                           and visible[1 - current][0].Font.Underline == 0,
+                           "Ctrl-hover transfers underline to the destination reference")
+                    assert app.focused() == editor
                     assert editor_selection(app, editor) == selection
                     assert n.send(editor, win32con.EM_GETFIRSTVISIBLELINE) == top
                     with deadline.operation('read hovered reference colors via TOM', 5):
@@ -521,7 +537,7 @@ def test_real_unfocused_scrolled_reference_navigates_on_first_gesture(launch, se
                 auto.PressKey(win32con.VK_CONTROL)
                 try:
                     auto.MoveTo(*point)
-                    auto.PressMouse(*auto.GetCursorPos())
+                    auto.PressMouse(*auto.GetCursorPos(), waitTime=0)
                     def tracking():
                         info = ThreadInfo()
                         info.size = n.c.sizeof(info)

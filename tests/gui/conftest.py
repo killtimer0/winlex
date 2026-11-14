@@ -8,17 +8,13 @@ import importlib.metadata
 from pathlib import Path
 
 import pytest
-import uiautomation as auto
+from support import deadline, lifecycle
 import win32api
 import win32con
 import win32service
 from support.config import ConfigProfile
 from support.languages import LANGUAGES, language
-from support.session import Session, invoke, message_button
 from support.pe import is_64_bit
-from support import native as n
-from support.diagnostics import screenshot
-from support import deadline, lifecycle
 from support.artifacts import finish_fixtures
 from support.paths import extended
 
@@ -96,6 +92,8 @@ def automation_client():
 
 @pytest.fixture(scope="session")
 def settings(request, automation_client):
+    from support import native as n
+
     if hasattr(n.user, "SetThreadDpiAwarenessContext"):
         n.api(n.user, "SetThreadDpiAwarenessContext", n.c.c_void_p, n.c.c_void_p)(n.c.c_void_p(-4))
     option = request.config.getoption
@@ -117,6 +115,14 @@ def settings(request, automation_client):
     (output / "environment.json").write_text(json.dumps(info, indent=2), encoding="utf-8")
     yield exe, winmd, output
     finish_fixtures(extended(output), extended(winmd), info["hashes"][str(winmd)])
+
+
+@pytest.fixture
+def picker_environment(request, settings):
+    from support.picker_environment import require_picker_environment
+
+    node = hashlib.sha256(request.node.nodeid.encode('utf-8')).hexdigest()[:16]
+    require_picker_environment(settings[2] / ('picker-environment-%s.json' % node))
 
 
 @pytest.fixture
@@ -145,6 +151,10 @@ def profile(request):
 
 @pytest.fixture
 def launch(request, settings, profile):
+    from support import native as n
+    from support.diagnostics import screenshot
+    from support.session import Session, invoke, message_button
+
     sessions = []
     def start(arguments=(), dpi=None, *, metadata_prompt=False):
         session = Session(settings[0], profile, arguments, dpi or request.config.getoption("--dpi"))

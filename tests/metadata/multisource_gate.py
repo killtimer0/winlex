@@ -2,7 +2,7 @@
 import json
 from pathlib import Path
 import subprocess
-from artifacts import executable
+from artifacts import executable, run_query
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "tmp/verify/multisource"
@@ -50,11 +50,7 @@ def query(files, command, name=None, *options, error=None):
     args.append(command)
     if name is not None:
         args.append(name)
-    try:
-        p = subprocess.run(args, capture_output=True, timeout=30)
-    except subprocess.TimeoutExpired as error:
-        error.add_note(f"Query command/inputs: {error.cmd!r}; stderr: {error.stderr!r}")
-        raise
+    p = run_query(args, capture_output=True)
     data = json.loads(p.stdout)
     if error:
         assert p.returncode and error in data["error"]["message"], data

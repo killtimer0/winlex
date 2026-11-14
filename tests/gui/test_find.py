@@ -81,7 +81,7 @@ def test_document_find_controls_remain_visible_and_disjoint_when_narrow(launch, 
     query = n.get_item(doc, 1220)
     n.wait(lambda: n.is_visible(query), "find opened")
     with deadline.operation('edit document find query via UIA', 5):
-        auto.ControlFromHandle(query).GetValuePattern().SetValue('HANDLE')
+        assert auto.ControlFromHandle(query).GetValuePattern().SetValue('HANDLE', waitTime=0)
     n.wait(lambda: n.window_text(n.get_item(doc, 1223)).startswith("1/"), "first match")
     with n.window_dpi_context(doc):
         dpi = (n.api(n.user, "GetDpiForWindow", n.w.UINT, n.w.HWND)(doc)
@@ -125,7 +125,7 @@ def test_document_find_and_preview_reuse(launch, settings):
     expanded = n.rectangle(editor)
     assert expanded[1] > collapsed[1]
     with deadline.operation('edit document find query via UIA', 5):
-        auto.ControlFromHandle(query).GetValuePattern().SetValue('HANDLE')
+        assert auto.ControlFromHandle(query).GetValuePattern().SetValue('HANDLE', waitTime=0)
     n.wait(lambda: n.window_text(count).startswith("1/"), "first match")
     first = editor_selection(app, editor)
     assert first[1] - first[0] == 6

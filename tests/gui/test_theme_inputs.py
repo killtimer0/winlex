@@ -54,7 +54,7 @@ def test_theme_combo_dropdown_pixels_and_keyboard_commit(launch, profile, settin
             combo = n.get_item(app.settings_page(sheet, 0), 1301)
             info = combo_info(combo)
             arrow = (info.button.left, info.button.top, info.button.right, info.button.bottom)
-            inputs.click(*win32gui.ClientToScreen(combo, center(arrow)))
+            inputs.click(*win32gui.ClientToScreen(combo, center(arrow)), wait_time=0)
             n.wait(lambda: n.send(combo, win32con.CB_GETDROPPEDSTATE), 'mouse opens theme dropdown')
             popup = n.wait(lambda: info.list if n.is_visible(info.list) else None, 'combo list visible')
             _, _, width, height = n.rectangle(popup, client=True)

@@ -94,9 +94,7 @@ def settled_surfaces(measure, matches, description, evidence=None):
         nonlocal last
         try:
             last = measure()
-        except (COMError, LookupError):
-            # Native theme changes rebuild UIA elements while preserving the
-            # dialog HWND. Reacquire them; never reuse a pre-transition node.
+        except LookupError:
             return None
         return last if matches(last) else None
 
@@ -469,7 +467,7 @@ def settled_picker_surfaces(dialog, reference, description, evidence,
 
 
 @pytest.mark.parametrize('dpi', ['pmv1', 'pmv2'])
-def test_file_picker_stays_open_across_high_contrast(launch, profile, settings, tmp_path, dpi, hc_appearance):
+def test_file_picker_stays_open_across_high_contrast(launch, profile, settings, tmp_path, dpi, hc_appearance, picker_environment):
     snapshot = contrast_snapshot()
     profile.set('Theme', winreg.REG_SZ, 'dark')
     before = profile.preferences()

@@ -33,9 +33,7 @@ def main():
     output = Path(args.output or ("tmp/gui-tests/" + uuid.uuid4().hex)).resolve()
     if (output / "run.json").exists():
         parser.error("Output contains a completed run; select a fresh directory")
-    started = time.monotonic()
-    budget = args.timeout
-    args.until = started + budget
+    args.until = time.monotonic() + args.timeout
     attempts, excluded = [], set()
     folder = output
     output.mkdir(parents=True, exist_ok=True)
@@ -44,7 +42,6 @@ def main():
     while True:
         with (output / 'attempts.jsonl').open('a', encoding='utf-8') as stream:
             stream.write(json.dumps({'directory': str(folder.relative_to(output))}) + '\n')
-        args.timeout = max(.1, budget - (time.monotonic() - started))
         result = run_attempt(args, tests, folder, output, excluded)
         attempts.append((folder, result))
         timeout = result.get('timeout')
@@ -60,20 +57,25 @@ def main():
             break  # A collection failure has no safely resumable case boundary.
         excluded.update(row['nodeid'] for row in records(folder / 'timings.jsonl') if row['phase'] == 'teardown')
         excluded.add(timeout['nodeid'])
-        if not any(nodeid not in excluded for nodeid in selection) or time.monotonic() - started >= budget:
+        if not any(nodeid not in excluded for nodeid in selection) or time.monotonic() >= args.until:
             break
         folder = output / 'continued' / str(len(attempts))
-        operation_deadline.phase('runner', 'startup', min(15, budget - (time.monotonic() - started)))
+        operation_deadline.phase('runner', 'startup', min(15, args.until - time.monotonic()))
     if any(result.get('timeout') for _, result in attempts):
         counts = merge(attempts, output)
         result = dict(result, exit_code=1, timed_out=True, case_counts=counts,
                       timeout=next(row['timeout'] for _, row in attempts if row.get('timeout')),
                       case_timeouts=[row['timeout'] for _, row in attempts if row.get('timeout')])
+    elif result['cleanup_complete'] and (result['timed_out'] or result['cancelled']):
+        # A stopped first worker cannot flush pytest's JUnit. Retain committed
+        # phases and mark its interrupted case without authorizing continuation.
+        result['case_counts'] = merge(attempts, output)
     publication = output / 'run.new'
     publication.write_text(json.dumps(result, indent=2), encoding='utf-8')
     publication.replace(output / 'run.json')
     operation_deadline.close()
-    return 0 if result['exit_code'] == 0 and result['cleanup_complete'] else 1
+    return 0 if (result['exit_code'] == 0 and result['cleanup_complete']
+                 and not result['cancelled'] and not result['timed_out']) else 1
 
 
 def run_attempt(args, tests, output, root, excluded):
@@ -138,7 +140,7 @@ def run_attempt(args, tests, output, root, excluded):
                               active_context=operation_deadline.current_record(output / 'deadlines.jsonl'),
                               pytest_stack=str(output / 'timeout-stacks.log'))
                 break
-            overdue = operation_deadline.expired(output / 'deadlines.jsonl')
+            overdue = operation_deadline.expired(operation_deadline.current_record(output / 'deadlines.jsonl'))
             if overdue:
                 result['timed_out'] = True
                 result['timeout'] = overdue
@@ -159,7 +161,7 @@ def run_attempt(args, tests, output, root, excluded):
             if result.get('termination_reason') == 'budget_exhausted':
                 # Give the pytest timer its diagnostic grace before stopping
                 # the job. This neither renews execution nor resumes a case.
-                time.sleep(max(0, args.until + .25 - time.monotonic()))
+                time.sleep(max(0, args.until + operation_deadline.DIAGNOSTIC_GRACE - time.monotonic()))
             if process and not assigned:
                 win32process.TerminateProcess(process, 1)
                 if win32event.WaitForSingleObject(process, 10000) != win32con.WAIT_OBJECT_0:

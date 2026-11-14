@@ -10,6 +10,7 @@ from support import deadline, native as n
 from support.session import invoke, select_combo
 from support.diagnostics import capture, save_pixels
 from support.languages import LANGUAGES
+from support.input_state import InputState, foreground
 
 
 @deadline.operation('set settings category mask via UIA', 5)
@@ -336,48 +337,52 @@ def test_settings_dpi_pages(launch, settings, mode):
 def test_settings_pmv1_initial_paint(launch, settings):
     if not hasattr(n.user, "GetDpiForWindow"):
         pytest.skip("per-monitor DPI unavailable")
-    app = launch(dpi="pmv1")
-    get_dpi = n.api(n.user, "GetDpiForWindow", n.w.UINT, n.w.HWND)
-    get_system_dpi = n.api(n.user, "GetDpiForSystem", n.w.UINT)
-    with n.window_dpi_context(app.frame):
-        system_dpi = get_system_dpi()
-        frame = auto.ControlFromHandle(app.frame)
-        frame.SetActive()
-        n.wait(lambda: win32gui.GetForegroundWindow() == app.frame, "settings first-paint foreground")
-        for monitor in n.monitors():
-            frame.GetPattern(auto.PatternId.TransformPattern).Move(monitor[0] + 30, monitor[1] + 30)
-            if get_dpi(app.frame) != system_dpi:
-                break
-        else:
-            pytest.skip("no monitor with a different DPI")
-    # Do not select pages or render a screenshot before observing the first paint.
-    auto.ControlFromHandle(app.frame).SendKeys('{Alt}fs', waitTime=0)
-    sheet = n.wait(lambda: n.find_window(app.process.pid, '#32770', app.frame), 'settings first paint', 5)
-    sheet_control = auto.ControlFromHandle(sheet)
-    assert get_dpi(sheet) != system_dpi
-    page = sheet_control.ComboBoxControl(AutomationId='1300').GetParentControl()
-    label = page.TextControl().NativeWindowHandle
+    with InputState() as inputs:
+        app = launch(dpi="pmv1")
+        get_dpi = n.api(n.user, "GetDpiForWindow", n.w.UINT, n.w.HWND)
+        get_system_dpi = n.api(n.user, "GetDpiForSystem", n.w.UINT)
+        with foreground(app, inputs), n.window_dpi_context(app.frame):
+            system_dpi = get_system_dpi()
+            frame = auto.ControlFromHandle(app.frame)
+            for monitor in n.monitors():
+                frame.GetPattern(auto.PatternId.TransformPattern).Move(monitor[0] + 30, monitor[1] + 30)
+                if get_dpi(app.frame) != system_dpi:
+                    break
+            else:
+                pytest.skip("no monitor with a different DPI")
+        # Do not select pages or render a screenshot before observing the first paint.
+        assert win32gui.GetForegroundWindow() == app.frame, 'settings first-paint foreground'
+        inputs.state['held'].append(win32con.VK_MENU)
+        inputs.save()
+        frame.SendKeys('{Alt}fs', waitTime=0)
+        inputs.state['held'].remove(win32con.VK_MENU)
+        inputs.save()
+        sheet = n.wait(lambda: n.find_window(app.process.pid, '#32770', app.frame), 'settings first paint', 5)
+        sheet_control = auto.ControlFromHandle(sheet)
+        assert get_dpi(sheet) != system_dpi
+        page = sheet_control.ComboBoxControl(AutomationId='1300').GetParentControl()
+        label = page.TextControl().NativeWindowHandle
 
-    def pixels():
-        with n.window_dpi_context(label), capture(label, client=True) as (_, header, raw):
-            return header, raw
+        def pixels():
+            with n.window_dpi_context(label), capture(label, client=True) as (_, header, raw):
+                return header, raw
 
-    previous, since = None, time.monotonic()
+        previous, since = None, time.monotonic()
 
-    def stable():
-        nonlocal previous, since
-        current = pixels()
-        if current != previous:
-            previous, since = current, time.monotonic()
-        return current if time.monotonic() - since >= .3 else None
+        def stable():
+            nonlocal previous, since
+            current = pixels()
+            if current != previous:
+                previous, since = current, time.monotonic()
+            return current if time.monotonic() - since >= .3 else None
 
-    before = n.wait(stable, "stable initial text paint")
-    assert len(set(before[1][::4])) > 1, "visible text pixels were not captured"
-    win32gui.RedrawWindow(sheet, None, None,
-                         win32con.RDW_INVALIDATE | win32con.RDW_ERASE |
-                         win32con.RDW_ALLCHILDREN | win32con.RDW_UPDATENOW)
-    after = pixels()
-    for name, (header, raw) in (("initial", before), ("repainted", after)):
-        save_pixels(settings[2] / ("settings-pmv1-" + name + ".png"), header, raw)
-    assert before == after, "initial text changes after an otherwise redundant repaint"
-    app.close_settings(sheet, accept=False)
+        before = n.wait(stable, "stable initial text paint")
+        assert len(set(before[1][::4])) > 1, "visible text pixels were not captured"
+        win32gui.RedrawWindow(sheet, None, None,
+                             win32con.RDW_INVALIDATE | win32con.RDW_ERASE |
+                             win32con.RDW_ALLCHILDREN | win32con.RDW_UPDATENOW)
+        after = pixels()
+        for name, (header, raw) in (("initial", before), ("repainted", after)):
+            save_pixels(settings[2] / ("settings-pmv1-" + name + ".png"), header, raw)
+        assert before == after, "initial text changes after an otherwise redundant repaint"
+        app.close_settings(sheet, accept=False)

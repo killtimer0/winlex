@@ -69,8 +69,13 @@ def choose_scope(app, doc, index):
 
 @deadline.operation('edit tool value via UIA', 5)
 def edit(doc, identifier, value):
-    control = auto.ControlFromHandle(n.get_item(doc, identifier))
-    assert control.GetValuePattern().SetValue(value)
+    until = time.monotonic() + 5
+    hwnd = n.get_item(doc, identifier)
+    control = auto.ControlFromHandle(hwnd)
+    assert control.GetValuePattern().SetValue(value, waitTime=0)
+    remaining = until - time.monotonic()
+    assert remaining > 0, 'Tool value write exhausted its budget'
+    n.wait(lambda: n.window_text(hwnd) == value, 'tool value accepted', remaining)
 
 
 def body(doc):
@@ -79,9 +84,20 @@ def body(doc):
 
 def query(app, doc, value):
     edit(doc, 1810, value)
-    invoke(n.get_item(doc, 1815))
-    return n.wait(lambda: body(doc) if win32gui.IsWindowEnabled(n.get_item(doc, 1815))
-                    and body(doc) else None, "tool explicit query", 30)
+    # UIA Invoke may return before the command is dispatched, allowing the old
+    # enabled button and body to satisfy the wait. Send through the existing
+    # synchronous command entry point so submission has been acknowledged.
+    app.command(1815, doc)
+
+    def completed():
+        if not win32gui.IsWindowEnabled(n.get_item(doc, 1815)):
+            return None
+        # Completion enables the button before rendering; finish that UI-thread
+        # turn before reading the result. Identical requests need no text change.
+        n.send(doc, win32con.WM_NULL)
+        return body(doc)
+
+    return n.wait(completed, "tool explicit query", 30)
 
 
 def test_tool_new_button_tracks_selection(launch):
@@ -174,7 +190,7 @@ def test_tool_list_context_menu_offers_instance_actions_without_opening(launch):
 
 
 @pytest.mark.parametrize("active_panel", [0, 2])
-def test_tool_list_rows_align_after_initialization_and_panel_switches(launch, settings, profile, active_panel):
+def test_tool_list_rows_align_after_initialization_and_panel_switches(launch, settings, profile, active_panel, picker_environment):
     profile.set("ActivePanel", winreg.REG_DWORD, active_panel)
     app = launch()
     panel = app.tool_list
@@ -477,6 +493,7 @@ def test_explicit_query_stale_results_checked_numbers_and_language(launch, setti
     original = query(app, doc, "0x80070005")
     assert "0x80070005" in original and "0x00000005" in original
     assert "2147024891" in original
+    assert query(app, doc, "0x80070005") == original
     assert "0x80070005" in query(app, doc, "-2147024891")
     old = body(doc)
     edit(doc, 1810, "4294967296")

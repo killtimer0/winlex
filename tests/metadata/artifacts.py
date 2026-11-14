@@ -13,6 +13,14 @@ OVERRIDES = {
 }
 
 
+def run_query(command, *, timeout=30, **options):
+    try:
+        return subprocess.run(command, timeout=timeout, **options)
+    except subprocess.TimeoutExpired as error:
+        error.add_note(f"Query command/inputs: {error.cmd!r}; stderr: {error.stderr!r}")
+        raise
+
+
 def select_executable(messages, name):
     paths = {
         message["executable"]

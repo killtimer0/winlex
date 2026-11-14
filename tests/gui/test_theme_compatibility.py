@@ -443,6 +443,7 @@ def temporary_high_contrast(snapshot, artifact, appearance=None):
         original_error = sys.exc_info()
         if original_error[0] is not None:
             evidence['original_error'] = ''.join(traceback.format_exception(*original_error))
+        restore_samples = []
         try:
             if high_contrast()[0] & HCF_HIGHCONTRASTON:
                 evidence['high_contrast_palettes'].append(native_system_palette())
@@ -453,14 +454,43 @@ def temporary_high_contrast(snapshot, artifact, appearance=None):
                 remaining = until - time.monotonic()
                 assert remaining > 0, 'Native high-contrast restoration exhausted its budget'
                 def restored():
+                    sample = {'entered_elapsed': time.monotonic() - (until - 10)}
+                    restore_samples.append(sample)
+                    if len(restore_samples) > 64:
+                        del restore_samples[0]
                     n.dispatch_pending_messages()
-                    return (restored_high_contrast(high_contrast(), snapshot)
-                            and native_system_palette() == original_palette
-                            and not visible_transition_covers())
+                    sample['pump_completed_elapsed'] = time.monotonic() - (until - 10)
+                    state = high_contrast()
+                    palette = native_system_palette()
+                    sample['palette_read_elapsed'] = time.monotonic() - (until - 10)
+                    covers = visible_transition_covers()
+                    sample['cover_read_elapsed'] = time.monotonic() - (until - 10)
+                    observation = {
+                        'high_contrast': list(state), 'palette': palette, 'covers': covers,
+                        'structure_matches': restored_high_contrast(state, snapshot),
+                        'palette_matches': palette == original_palette,
+                        'covers_absent': not covers,
+                    }
+                    # Record every changed observation, including all components
+                    # when the first one fails. Preserve the last sample on timeout.
+                    if evidence.get('restore_observation') != observation:
+                        evidence['restore_observation'] = observation
+                        evidence.setdefault('restore_observations', []).append({
+                            'elapsed_seconds': time.monotonic() - (until - 10),
+                            **observation,
+                        })
+                        watchdog_record(cleanup, json.dumps(evidence))
+                    sample.update(structure_matches=observation['structure_matches'],
+                                  palette_matches=observation['palette_matches'], covers=covers,
+                                  completed_elapsed=time.monotonic() - (until - 10))
+                    return (observation['structure_matches']
+                            and observation['palette_matches']
+                            and observation['covers_absent'])
 
                 n.wait(restored,
                        'original HIGHCONTRAST, native palette and transition cover restored',
                        remaining)
+            evidence['restore_samples'] = restore_samples
             watchdog_record(completed, str(os.getpid()))
             n.wait(result.exists, 'scheduler watchdog cleanup complete', 15)
             outcome = json.loads(result.read_text(encoding='utf-8'))
@@ -470,13 +500,12 @@ def temporary_high_contrast(snapshot, artifact, appearance=None):
             assert not outcome['emergency'] and not outcome['recovery_needed'], outcome
             assert restored_high_contrast(
                 (outcome['restored']['flags'], outcome['restored']['scheme']), snapshot), outcome
-            if not outcome.get('task_cleanup_complete'):
-                delete_watchdog_task(name)
             artifact.unlink()
             evidence.update(cleanup_complete=True, errors=[])
             watchdog_record(cleanup, json.dumps(evidence))
         except BaseException as error:
-            evidence.update(cleanup_complete=False, errors=[traceback.format_exc()])
+            evidence.update(cleanup_complete=False, errors=[traceback.format_exc()],
+                            restore_samples=restore_samples)
             try:
                 watchdog_record(cleanup, json.dumps(evidence))
             finally:
@@ -698,8 +727,17 @@ def test_actual_high_contrast_overrides_dark_and_restores(launch, profile, setti
 
             idle_pointer()
 
-            before_controls = {name: fill(hwnd) for name, hwnd in
-                               [('combo', combo), ('tab', tab), ('overflow', overflow)]}
+            initial = []
+
+            def settled_dark_controls():
+                current = {name: fill(hwnd) for name, hwnd in
+                           [('combo', combo), ('tab', tab), ('overflow', overflow)]}
+                if not initial or current != initial[0]:
+                    initial[:] = [current, time.monotonic()]
+                # Do not make a restoration oracle from an animation frame.
+                return current if time.monotonic() - initial[1] >= .1 else None
+
+            before_controls = n.wait(settled_dark_controls, 'initial dark control animations settle', 5)
             record('dark_controls', before_controls)
             with temporary_high_contrast(snapshot, settings[2] / 'high-contrast-restore.json', hc_appearance):
                 assert high_contrast()[0] & HCF_HIGHCONTRASTON
@@ -738,6 +776,8 @@ def test_actual_high_contrast_overrides_dark_and_restores(launch, profile, setti
                                     win32gui.IsChild(info.list, active))), (
                                         'settings no longer owns foreground input', active)
 
+                n.wait(lambda: win32gui.GetForegroundWindow() == sheet,
+                       'settings foreground returns after native high contrast transition', 5)
                 require_sheet_input()
                 button = info.button
                 button_points = sample_points(combo, (button.left, button.top,

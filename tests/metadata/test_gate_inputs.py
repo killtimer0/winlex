@@ -4,11 +4,11 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
-import fixture_gate
-import multisource_gate
+from artifacts import run_query
 import winrt_gate
 
 
@@ -85,22 +85,30 @@ class ReferenceIdentityContracts(unittest.TestCase):
 
 class QueryTimeoutContracts(unittest.TestCase):
     def test_single_query_timeout_propagates_with_inputs_and_stderr(self):
-        for gate in (fixture_gate, multisource_gate, winrt_gate):
-            with self.subTest(gate=gate.__name__):
-                command = ["host-cli.exe", "input.winmd", "layout", "Example"]
-                timeout = subprocess.TimeoutExpired(command, 30, stderr=b"reader stalled")
-                with patch.object(gate, "executable", return_value=Path(command[0])), \
-                     patch.object(gate.subprocess, "run", side_effect=timeout) as run:
-                    with self.assertRaises(subprocess.TimeoutExpired) as raised:
-                        if gate is fixture_gate:
-                            gate.layout(Path("input.winmd"), "Example")
-                        else:
-                            gate.query([Path("input.winmd")], "layout", "Example")
-                self.assertIs(raised.exception, timeout)
-                self.assertEqual(run.call_args.kwargs["timeout"], 30)
-                diagnostics = "\n".join(timeout.__notes__)
-                self.assertIn("input.winmd", diagnostics)
-                self.assertIn("reader stalled", diagnostics)
+        command = [sys.executable, "-c",
+                   "import sys,time; print('reader stalled', file=sys.stderr, flush=True); time.sleep(60)",
+                   "input.winmd", "layout", "Example"]
+        started = time.monotonic()
+        with self.assertRaises(subprocess.TimeoutExpired) as raised:
+            run_query(command, capture_output=True, timeout=1)
+        self.assertLess(time.monotonic() - started, 5)
+        self.assertIn(b"reader stalled", raised.exception.stderr)
+        diagnostics = "\n".join(raised.exception.__notes__)
+        self.assertIn("input.winmd", diagnostics)
+        self.assertIn("reader stalled", diagnostics)
+
+    def test_query_preserves_text_bytes_and_nonzero_exit_policy(self):
+        command = [sys.executable, "-c", "import sys; print(sys.argv[1]); sys.exit(int(sys.argv[2]))",
+                   "input with spaces.winmd"]
+        for code in (0, 3):
+            with self.subTest(code=code):
+                result = run_query([*command, str(code)], capture_output=True)
+                self.assertEqual(result.returncode, code)
+                self.assertEqual(result.stdout.strip(), b"input with spaces.winmd")
+        result = run_query([*command, "0"], capture_output=True, encoding="utf-8", check=True)
+        self.assertEqual(result.stdout.strip(), "input with spaces.winmd")
+        with self.assertRaises(subprocess.CalledProcessError):
+            run_query([*command, "3"], capture_output=True, check=True)
 
 
 if __name__ == "__main__":

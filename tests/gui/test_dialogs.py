@@ -6,10 +6,7 @@ from test_tools import tool, choose_scope, body, edit
 
 
 @pytest.mark.parametrize('loaded', [False, True])
-def test_native_picker_cancel_keeps_application_state(launch, profile, settings, loaded):
-    from support.picker_environment import require_picker_environment
-
-    require_picker_environment(settings[2] / ('picker-environment-%s.json' % loaded))
+def test_native_picker_cancel_keeps_application_state(launch, profile, settings, loaded, picker_environment):
     app = launch([settings[1]] if loaded else [])
     if loaded:
         app.query('CreateFileW')
@@ -39,7 +36,7 @@ def test_native_picker_cancel_keeps_application_state(launch, profile, settings,
     app.close()
 
 
-def test_module_picker_uses_system_dialog_and_cancel_preserves_request(launch):
+def test_module_picker_uses_system_dialog_and_cancel_preserves_request(launch, picker_environment):
     app = launch()
     doc = tool(app)
     choose_scope(app, doc, 5)
@@ -59,7 +56,7 @@ def test_module_picker_uses_system_dialog_and_cancel_preserves_request(launch):
     assert (n.window_text(code), n.window_text(module), body(doc), app.status_text()) == before
 
 
-def test_module_picker_accepts_resource_path(launch, settings):
+def test_module_picker_accepts_resource_path(launch, settings, picker_environment):
     from test_tools import query
 
     module = settings[0].with_name('messages-x64.dll')
@@ -74,7 +71,8 @@ def test_module_picker_accepts_resource_path(launch, settings):
     with deadline.operation('set native module picker filename via UIA', 5):
         filename = picker.ComboBoxControl(AutomationId='1148').EditControl()
         n.wait(lambda: filename.Exists(0, 0), 'native filename edit', 5)
-        filename.GetValuePattern().SetValue(str(module))
+        assert filename.GetValuePattern().SetValue(str(module), waitTime=0)
+        n.wait(lambda: filename.GetValuePattern().Value == str(module), 'module filename accepted', 5)
     invoke(picker.ButtonControl(AutomationId='1'))
     n.wait(lambda: not n.is_window(dialog), 'module picker accepted the selected file')
     n.wait(lambda: n.window_text(n.get_item(doc, 1813)) == str(module), 'selected module path')

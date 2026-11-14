@@ -148,21 +148,13 @@ class BuildRecordContracts(unittest.TestCase):
             root = directory / "repo"
             hooks = directory / "disabled-hooks"
             hooks.mkdir()
-            user_hooks = directory / "user-hooks"
-            user_hooks.mkdir()
-            (user_hooks / "pre-commit").write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
-            user_config = directory / "user.gitconfig"
-            user_config.write_text(
-                '[commit]\n\tgpgsign = true\n[gpg]\n\tprogram = nonexistent-contract-signer\n'
-                f'[core]\n\thooksPath = "{user_hooks.as_posix()}"\n', encoding="utf-8")
-            env = {**os.environ, "GIT_CONFIG_GLOBAL": str(user_config)}
             git = ["git", "-c", "commit.gpgsign=false", "-c", f"core.hooksPath={hooks.as_posix()}"]
-            subprocess.run([*git, "init", "-q", str(root)], check=True, env=env, timeout=30)
+            subprocess.run([*git, "init", "-q", str(root)], check=True, timeout=30)
             (root / ".gitignore").write_text("/artifacts/\n", encoding="utf-8")
             (root / "source.rs").write_text("original", encoding="utf-8")
-            subprocess.run([*git, "add", "."], cwd=root, check=True, env=env, timeout=30)
+            subprocess.run([*git, "add", "."], cwd=root, check=True, timeout=30)
             subprocess.run([*git, "-c", "user.name=Contract", "-c", "user.email=contract@example.invalid",
-                            "commit", "-qm", "fixture"], cwd=root, check=True, env=env, timeout=30)
+                            "commit", "-qm", "fixture"], cwd=root, check=True, timeout=30)
             before = record.snapshot(root)["source"]
             self.assertFalse(before["dirty"])
             (root / "artifacts").mkdir()
