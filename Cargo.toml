@@ -32,7 +32,7 @@ winlex-gui = { path = "crates/winlex-gui" }
 serde_json.workspace = true
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 license = "GPL-3.0-only"
 
 [workspace.dependencies]

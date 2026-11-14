@@ -213,6 +213,7 @@ jobs:
 
           base = f"https://github.com/{os.environ['GH_REPO']}/blob/{quote(os.environ['TAG'], safe='')}"
           with Path('release-notes.md').open('a', encoding='utf-8') as notes:
+              notes.write(f'\n[更新日志]({base}/CHANGELOG.md)\n')
               notes.write(f'\n[构建与兼容说明]({base}/docs/build.md)\n')
           PY
           options=(--draft --verify-tag --title "$TAG" --notes-file release-notes.md)

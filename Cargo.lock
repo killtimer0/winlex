@@ -387,7 +387,7 @@ checksum = "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
 
 [[package]]
 name = "winlex"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde_json",
  "winlex-cli",
@@ -396,7 +396,7 @@ dependencies = [
 
 [[package]]
 name = "winlex-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -406,7 +406,7 @@ dependencies = [
 
 [[package]]
 name = "winlex-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "cpp_demangle",
@@ -422,7 +422,7 @@ dependencies = [
 
 [[package]]
 name = "winlex-format"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde_json",
  "winlex-core",
@@ -430,7 +430,7 @@ dependencies = [
 
 [[package]]
 name = "winlex-gui"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "serde",
