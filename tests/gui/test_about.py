@@ -12,6 +12,13 @@ from support.input_state import InputState, foreground
 from support.session import invoke
 
 
+ABOUT_URLS = {
+    'https://github.com/killtimer0/winlex',
+    'https://github.com/killtimer0/winlex/blob/main/CHANGELOG.md',
+    'https://github.com/killtimer0/winlex/blob/main/LICENSE',
+}
+
+
 def open_about(app):
     app.command(1054)
     return n.wait(lambda: n.find_window(app.process.pid, '#32770', app.frame), 'About dialog', 15)
@@ -31,13 +38,24 @@ def link_item(app, control, index=0):
                                              win32con.MEM_COMMIT | win32con.MEM_RESERVE,
                                              win32con.PAGE_READWRITE)
         assert n.write_process_memory(int(process), memory, n.c.byref(item), n.c.sizeof(item), None)
-        assert n.send(control, 0x0703, 0, memory)  # LM_GETITEM
+        if not n.send(control, 0x0703, 0, memory):  # LM_GETITEM
+            return None
         assert n.read_process_memory(int(process), memory, n.c.byref(item), n.c.sizeof(item), None)
         return item.url, item.state
     finally:
         if memory is not None:
             win32process.VirtualFreeEx(process, memory, 0, win32con.MEM_RELEASE)
         win32api.CloseHandle(process)
+
+
+def link_items(app, control):
+    items = []
+    for index in range(64):
+        item = link_item(app, control, index)
+        if item is None:
+            return items
+        items.append(item)
+    raise AssertionError('About link enumeration exceeded safety limit')
 
 
 @deadline.operation('move and measure About child windows via UIA')
@@ -73,10 +91,8 @@ def test_about_content_modality_and_dpi(launch, profile, settings, language, mod
     ms, ls = version['FileVersionMS'], version['FileVersionLS']
     assert '.'.join(map(str, [ms >> 16, ms & 65535, ls >> 16, ls & 65535])) in text
     assert n.send(n.get_item(dialog, 1400), win32con.STM_GETICON)
-    for index, url in enumerate(('https://github.com/killtimer0/winlex',
-                                 'https://github.com/killtimer0/winlex/blob/main/LICENSE')):
-        actual, state = link_item(app, info, index)
-        assert actual == url and state & 2
+    enabled_urls = {url for url, state in link_items(app, info) if state & 2}
+    assert ABOUT_URLS <= enabled_urls, ABOUT_URLS - enabled_urls
     evidence = []
     for cycle in range(3):
         for monitor in n.monitors():
@@ -106,15 +122,33 @@ def test_about_real_keyboard(launch, profile, settings, theme):
         dialog = open_about(app)
         n.wait(lambda: win32gui.GetForegroundWindow() == dialog, 'about foreground')
         assert app.focused() == n.get_item(dialog, 1)
-        inputs.key(win32con.VK_TAB)
         info = n.get_item(dialog, 1403)
-        n.wait(lambda: app.focused() == info and link_item(app, info, 0)[1] & 1,
-               'homepage keyboard focus')
-        inputs.key(win32con.VK_TAB)
-        n.wait(lambda: app.focused() == info and link_item(app, info, 1)[1] & 1,
-               'license keyboard focus')
-        inputs.key(win32con.VK_TAB)
-        n.wait(lambda: app.focused() == n.get_item(dialog, 1), 'return to OK')
+
+        def focus_target():
+            hwnd = app.focused()
+            url = None
+            if hwnd == info:
+                url = next((url for url, state in link_items(app, info) if state & 1), None)
+            return hwnd, url
+
+        visited = set()
+        previous = focus_target()
+        for _ in range(64):
+            inputs.key(win32con.VK_TAB)
+
+            def changed_focus():
+                current = focus_target()
+                return current if current != previous else None
+
+            current = n.wait(changed_focus, 'Tab moves About focus')
+            if current[0] == n.get_item(dialog, 1):
+                break
+            if current[1] is not None:
+                visited.add(current[1])
+            previous = current
+        else:
+            pytest.fail('About Tab traversal did not return to OK within safety limit')
+        assert ABOUT_URLS <= visited, ABOUT_URLS - visited
 
         def painted():
             with n.window_dpi_context(dialog), capture(dialog) as (_, _, pixels):
