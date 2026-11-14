@@ -575,6 +575,10 @@ mod tests {
     #[test]
     fn parent_background_can_destroy_a_painting_checkbox() {
         if !super::super::supported() {
+            eprintln!(
+                "SKIPPED parent_background_can_destroy_a_painting_checkbox: \
+                 dark-theme APIs unavailable"
+            );
             return;
         }
         let _controls = super::super::tests::CommonControls::activate();

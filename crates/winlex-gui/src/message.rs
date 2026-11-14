@@ -292,6 +292,10 @@ mod tests {
     #[test]
     fn native_task_dialog_returns_native_button_ids_without_user_interaction() {
         if backend(WindowsVersion::query().unwrap()) != Backend::TaskDialog {
+            eprintln!(
+                "SKIPPED native_task_dialog_returns_native_button_ids_without_user_interaction: \
+                 message backend is not TaskDialog"
+            );
             return;
         }
         struct Selection {

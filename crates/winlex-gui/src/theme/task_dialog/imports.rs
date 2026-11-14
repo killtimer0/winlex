@@ -736,6 +736,10 @@ mod tests {
     #[ignore = "process-wide IAT failure injection; run this test alone in a fresh process"]
     fn native_install_failure_acquire_recovers_retained_journal_and_real_imports() {
         if !super::super::super::supported() {
+            eprintln!(
+                "SKIPPED native_install_failure_acquire_recovers_retained_journal_and_real_imports: \
+                 dark-theme APIs unavailable"
+            );
             return;
         }
         struct RestoreHooks(Hooks);
@@ -841,6 +845,10 @@ mod tests {
     #[ignore = "process-wide IAT restoration test; run this test alone"]
     fn native_task_dialog_nested_guards_restore_real_slots_and_protections() {
         if !super::super::super::supported() {
+            eprintln!(
+                "SKIPPED native_task_dialog_nested_guards_restore_real_slots_and_protections: \
+                 dark-theme APIs unavailable"
+            );
             return;
         }
         unsafe extern "system" fn close_dialog(

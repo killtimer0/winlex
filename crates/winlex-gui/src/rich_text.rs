@@ -1510,7 +1510,10 @@ mod tests {
         .unwrap();
         let body = rendered.text.clone();
         let content = Content::from(rendered);
-        let fixture = Editor::new(WS_POPUP | WS_VISIBLE, crate::layout::rect(0, 0, 900, 600));
+        let fixture = Editor::new(
+            WS_POPUP | WS_VISIBLE,
+            crate::layout::rect(-10000, -10000, 900, 600),
+        );
         let editor = fixture.1;
         set_bounds(editor, crate::layout::rect(0, 0, 750, 500)).unwrap();
         focus(editor);
@@ -1537,7 +1540,10 @@ mod tests {
     fn streamed_content_preserves_text_formats_and_reading_state() {
         use windows::Win32::UI::Controls::RichEdit::SCF_SELECTION;
 
-        let fixture = Editor::new(WS_POPUP | WS_VISIBLE, crate::layout::rect(0, 0, 900, 600));
+        let fixture = Editor::new(
+            WS_POPUP | WS_VISIBLE,
+            crate::layout::rect(-10000, -10000, 900, 600),
+        );
         let editor = fixture.1;
         set_bounds(editor, crate::layout::rect(0, 0, 750, 500)).unwrap();
         focus(editor);

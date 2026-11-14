@@ -123,6 +123,10 @@ mod tests {
     #[test]
     fn enable_transitions_paint_native_text_with_the_upstream_foreground() {
         if !super::super::supported() || high_contrast() {
+            eprintln!(
+                "SKIPPED enable_transitions_paint_native_text_with_the_upstream_foreground: \
+                 dark-theme APIs unavailable or high contrast active"
+            );
             return;
         }
         let _controls = super::super::tests::CommonControls::activate();

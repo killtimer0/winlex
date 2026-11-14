@@ -318,6 +318,10 @@ mod tests {
     #[test]
     fn preferred_native_combo_preserves_selection_during_reapplication_and_printing() {
         if !super::super::supported() {
+            eprintln!(
+                "SKIPPED preferred_native_combo_preserves_selection_during_reapplication_and_printing: \
+                 dark-theme APIs unavailable"
+            );
             return;
         }
         let _controls = super::super::tests::CommonControls::activate();
@@ -392,6 +396,10 @@ mod tests {
     #[test]
     fn preferred_native_edit_retains_client_edge_and_restores_it_after_scroll_removal() {
         if !super::super::supported() {
+            eprintln!(
+                "SKIPPED preferred_native_edit_retains_client_edge_and_restores_it_after_scroll_removal: \
+                 dark-theme APIs unavailable"
+            );
             return;
         }
         let _controls = super::super::tests::CommonControls::activate();

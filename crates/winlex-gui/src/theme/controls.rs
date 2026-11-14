@@ -1365,12 +1365,7 @@ mod tests {
     impl OverflowWindow {
         unsafe fn new() -> Self {
             unsafe {
-                let parent = static_window(RECT {
-                    left: 0,
-                    top: 0,
-                    right: 180,
-                    bottom: 100,
-                });
+                let parent = static_window(crate::layout::rect(-10000, -10000, 180, 100));
                 let tab = empty_tab(parent);
                 set_bounds(
                     tab,
@@ -1810,12 +1805,7 @@ mod tests {
     fn tab_overflow_created_after_install_keeps_native_scrolling_and_selection() {
         let _activation = super::super::tests::CommonControls::activate();
         unsafe {
-            let parent = static_window(RECT {
-                left: 0,
-                top: 0,
-                right: 1800,
-                bottom: 200,
-            });
+            let parent = static_window(crate::layout::rect(-10000, -10000, 1800, 200));
             let tab = empty_tab(parent);
             set_bounds(
                 tab,
@@ -1842,7 +1832,7 @@ mod tests {
             )
             .unwrap();
             super::super::set_mode(2);
-            ShowWindow(parent, SW_SHOW);
+            ShowWindow(parent, SW_SHOWNOACTIVATE);
             UpdateWindow(tab);
             let overflow = FindWindowExW(tab, ptr::null_mut(), UPDOWN_CLASSW, ptr::null());
             assert!(
@@ -2193,6 +2183,10 @@ mod tests {
     #[test]
     fn check_toolbar_notifications_use_palette_without_changing_native_check_state() {
         if !super::super::supported() || high_contrast() {
+            eprintln!(
+                "SKIPPED check_toolbar_notifications_use_palette_without_changing_native_check_state: \
+                 dark-theme APIs unavailable or high contrast active"
+            );
             return;
         }
         let _activation = super::super::tests::CommonControls::activate();

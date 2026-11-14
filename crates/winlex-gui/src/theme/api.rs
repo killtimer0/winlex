@@ -240,6 +240,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "process-wide foreground and activation state; run this test alone"]
     fn nonclient_refresh_preserves_activation_and_bounds_reentry() {
         unsafe {
             let hwnd = test_window(

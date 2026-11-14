@@ -377,12 +377,14 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "process-wide uxtheme preferred app mode; run this test alone"]
     fn shell_notifications_reapply_native_opt_in_after_default_processing() {
         native_notifications_reapply_opt_in(true);
     }
 
     fn native_notifications_reapply_opt_in(shell: bool) {
         if !super::super::supported() {
+            eprintln!("SKIPPED native opt-in contract: dark-theme APIs unavailable");
             return;
         }
         let _controls = super::super::tests::CommonControls::activate();
@@ -390,7 +392,7 @@ mod tests {
         let Some(allowed) =
             (unsafe { GetProcAddress(GetModuleHandleW(w!("uxtheme.dll")), 137usize as *const u8) })
         else {
-            eprintln!("Skipping native opt-in assertion: ordinal 137 unavailable");
+            eprintln!("SKIPPED native opt-in contract: uxtheme ordinal 137 unavailable");
             return;
         };
         let allowed: Allowed = unsafe { std::mem::transmute(allowed) };
@@ -457,7 +459,10 @@ mod tests {
     #[ignore = "process-wide IAT hook test; run this test alone"]
     fn guarded_hooks_forward_in_light_mode_and_on_unrelated_threads() {
         if !super::super::supported() || high_contrast() {
-            eprintln!("Skipping dark hook contract: unsupported or high contrast");
+            eprintln!(
+                "SKIPPED guarded_hooks_forward_in_light_mode_and_on_unrelated_threads: \
+                 dark-theme APIs unavailable or high contrast active"
+            );
             return;
         }
         let _controls = super::super::tests::CommonControls::activate();
@@ -532,6 +537,10 @@ mod tests {
     #[test]
     fn palette_invalidation_during_native_drawing_keeps_theme_alive() {
         if !super::super::supported() || high_contrast() {
+            eprintln!(
+                "SKIPPED palette_invalidation_during_native_drawing_keeps_theme_alive: \
+                 dark-theme APIs unavailable or high contrast active"
+            );
             return;
         }
         clear_palette();

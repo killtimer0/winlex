@@ -97,6 +97,10 @@ impl Drop for CommonControls {
 #[test]
 fn root_notifications_reapply_after_default_without_touching_other_roots() {
     if !supported() {
+        eprintln!(
+            "SKIPPED root_notifications_reapply_after_default_without_touching_other_roots: \
+             dark-theme APIs unavailable"
+        );
         return;
     }
     let controls = CommonControls::activate();
@@ -180,6 +184,10 @@ fn root_notifications_reapply_after_default_without_touching_other_roots() {
 #[test]
 fn applying_and_switching_updates_existing_native_controls() {
     if !supported() {
+        eprintln!(
+            "SKIPPED applying_and_switching_updates_existing_native_controls: \
+             dark-theme APIs unavailable; verified only that unsupported mode ignores dark mode"
+        );
         set_mode(2);
         assert!(!is_dark());
         set_mode(0);
@@ -226,6 +234,10 @@ fn applying_and_switching_updates_existing_native_controls() {
 #[test]
 fn theme_switches_preserve_native_control_input_and_status_contracts() {
     if !supported() {
+        eprintln!(
+            "SKIPPED theme_switches_preserve_native_control_input_and_status_contracts: \
+             dark-theme APIs unavailable"
+        );
         return;
     }
     let controls = CommonControls::activate();
@@ -235,7 +247,7 @@ fn theme_switches_preserve_native_control_input_and_status_contracts() {
             w!("STATIC"),
             ptr::null(),
             WS_POPUP,
-            crate::layout::rect(0, 0, 400, 300),
+            crate::layout::rect(-10000, -10000, 400, 300),
         );
         let checkbox = child(
             parent,
@@ -282,7 +294,7 @@ fn theme_switches_preserve_native_control_input_and_status_contracts() {
         send(tabs, TCM_SETCURSEL, 1, 0);
         set_mode(2);
         apply(parent);
-        ShowWindow(parent, SW_SHOW);
+        ShowWindow(parent, SW_SHOWNOACTIVATE);
         for mode in [2, 1] {
             set_mode(mode);
             // These button types are behavior, not a choice of painting strategy.
@@ -366,6 +378,10 @@ fn theme_switches_preserve_native_control_input_and_status_contracts() {
 #[test]
 fn dark_status_grip_tracks_style_maximized_parent_and_layout() {
     if !supported() || high_contrast() || native_dark_theme() {
+        eprintln!(
+            "SKIPPED dark_status_grip_tracks_style_maximized_parent_and_layout: \
+             dark-theme APIs unavailable, high contrast active, or native dark theme"
+        );
         return;
     }
     let controls = CommonControls::activate();
@@ -443,12 +459,21 @@ fn dark_status_grip_tracks_style_maximized_parent_and_layout() {
 #[test]
 fn dark_checkbox_keeps_text_contrast_focus_and_check_state() {
     if !supported() || high_contrast() {
+        eprintln!(
+            "SKIPPED dark_checkbox_keeps_text_contrast_focus_and_check_state: \
+             dark-theme APIs unavailable or high contrast active"
+        );
         return;
     }
     let _controls = CommonControls::activate();
     unsafe {
         let area = crate::layout::rect(0, 0, 220, 40);
-        let parent = test_window(w!("STATIC"), ptr::null(), WS_POPUP, area);
+        let parent = test_window(
+            w!("STATIC"),
+            ptr::null(),
+            WS_POPUP,
+            crate::layout::rect(-10000, -10000, 220, 40),
+        );
         let checkbox = child(
             parent,
             w!("BUTTON"),
@@ -489,7 +514,7 @@ fn dark_checkbox_keeps_text_contrast_focus_and_check_state() {
                 "Checkbox label must use a readable foreground"
             );
             if !disabled {
-                ShowWindow(parent, SW_SHOW);
+                ShowWindow(parent, SW_SHOWNOACTIVATE);
                 SetFocus(checkbox);
                 send(
                     checkbox,
@@ -540,6 +565,10 @@ fn dark_checkbox_keeps_text_contrast_focus_and_check_state() {
 #[test]
 fn syslink_mixed_text_keeps_normal_link_and_disabled_colors_and_native_state() {
     if !supported() {
+        eprintln!(
+            "SKIPPED syslink_mixed_text_keeps_normal_link_and_disabled_colors_and_native_state: \
+             dark-theme APIs unavailable"
+        );
         return;
     }
     let controls = CommonControls::activate();
@@ -637,6 +666,10 @@ fn syslink_mixed_text_keeps_normal_link_and_disabled_colors_and_native_state() {
 #[test]
 fn edit_and_combo_list_backgrounds_follow_upstream_color_contract() {
     if !supported() || high_contrast() {
+        eprintln!(
+            "SKIPPED edit_and_combo_list_backgrounds_follow_upstream_color_contract: \
+             dark-theme APIs unavailable or high contrast active"
+        );
         return;
     }
     let _controls = CommonControls::activate();
@@ -693,6 +726,10 @@ fn edit_and_combo_list_backgrounds_follow_upstream_color_contract() {
 #[test]
 fn mdi_menu_glyph_paint_keeps_native_menu_commands_and_states() {
     if !supported() || high_contrast() {
+        eprintln!(
+            "SKIPPED mdi_menu_glyph_paint_keeps_native_menu_commands_and_states: \
+             dark-theme APIs unavailable or high contrast active"
+        );
         return;
     }
     unsafe {
@@ -797,7 +834,10 @@ fn property_sheet_is_dark_before_page_initialization_and_first_display() {
     use std::{cell::Cell, os::windows::ffi::OsStrExt};
 
     if !supported() || high_contrast() {
-        eprintln!("Skipping dark property-sheet contract: unsupported or high contrast");
+        eprintln!(
+            "SKIPPED property_sheet_is_dark_before_page_initialization_and_first_display: \
+             dark-theme APIs unavailable or high contrast active"
+        );
         return;
     }
     let controls = CommonControls::activate();

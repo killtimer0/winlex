@@ -905,12 +905,17 @@ mod file_dialog_tests {
     use super::*;
 
     #[test]
+    #[ignore = "process-wide uxtheme preferred app mode; run this test alone"]
     fn native_file_dialog_refresh_restores_policy_even_when_palette_is_unchanged() {
         if !supported()
             || high_contrast()
             || !crate::platform::WindowsVersion::query()
                 .is_ok_and(|version| version.build() >= 18362)
         {
+            eprintln!(
+                "SKIPPED native_file_dialog_refresh_restores_policy_even_when_palette_is_unchanged: \
+                 dark-theme APIs, low-contrast mode, or Windows 10 build 18362 required"
+            );
             return;
         }
         let _controls = tests::CommonControls::activate();
