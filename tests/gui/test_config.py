@@ -10,7 +10,7 @@ from test_document import window_state
 from test_settings import checked
 
 
-@deadline.operation('read settings combo value via UIA', 5)
+@deadline.operation('read settings combo value via UIA')
 def combo_value(control):
     return auto.ControlFromHandle(control).GetValuePattern().Value
 
@@ -18,7 +18,7 @@ def combo_value(control):
 def test_normal_placement_round_trips_registry_coordinates(launch, profile):
     app = launch()
     dpi = app.actual_dpi or 96
-    with deadline.operation('move and size configured window via UIA', 5):
+    with deadline.operation('move and size configured window via UIA'):
         assert auto.ControlFromHandle(app.frame).MoveWindow(70, 80, 740 * dpi // 96, 520 * dpi // 96)
     bounds = n.rectangle(app.frame)
     app.close()

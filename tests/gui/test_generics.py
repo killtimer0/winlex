@@ -115,7 +115,7 @@ def bind_dialog(app, document):
     return hwnd
 
 
-@deadline.operation('write type argument via UIA', 5)
+@deadline.operation('write type argument via UIA')
 def set_argument(hwnd, value):
     pattern = auto.ControlFromHandle(hwnd).GetValuePattern()
     assert pattern.SetValue(value, waitTime=0), "type argument write failed"
@@ -327,7 +327,7 @@ def test_many_arguments_scroll_keyboard_and_dpi_keep_values(launch, generic_meta
     assert n.is_visible(fields[-1])
     set_argument(fields[-1], "string")
     n.send(hwnd, win32con.WM_VSCROLL, win32con.SB_TOP, win32gui.GetDlgItem(hwnd, 1236))
-    with deadline.operation('focus first type argument via UIA', 5):
+    with deadline.operation('focus first type argument via UIA'):
         auto.ControlFromHandle(fields[0]).SetFocus()
     for current, following in zip(fields, fields[1:]):
         menu_key(current, win32con.VK_TAB)
@@ -336,7 +336,7 @@ def test_many_arguments_scroll_keyboard_and_dpi_keep_values(launch, generic_meta
     observations = []
     for monitor in n.monitors():
         with n.window_dpi_context(hwnd):
-            with deadline.operation('move type argument dialog via UIA', 5):
+            with deadline.operation('move type argument dialog via UIA'):
                 auto.ControlFromHandle(hwnd).GetPattern(auto.PatternId.TransformPattern).Move(
                     monitor[0] + 40, monitor[1] + 40)
             n.wait(lambda: n.window_text(fields[-1]) == "string", "input retained after monitor move")

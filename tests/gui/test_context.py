@@ -86,7 +86,7 @@ def menu_key(window, key):
         win32gui.PostMessage(window, win32con.WM_KEYUP, key, 0)
 
 
-@deadline.operation('read packed editor selection via TOM', 5)
+@deadline.operation('read packed editor selection via TOM')
 def selection_packed(editor):
     selection = n.rich_edit_document(editor).Selection
     return (selection.End << 16) | selection.Start
@@ -99,7 +99,7 @@ def select_native(editor, first, last):
 
 
 def select_text(editor, first, last):
-    with deadline.operation('prepare editor selection via TOM', 5):
+    with deadline.operation('prepare editor selection via TOM'):
         document = n.rich_edit_document(editor)
         if last == -1:
             last = document.Range(0, 0).StoryLength - 1
@@ -110,12 +110,12 @@ def select_text(editor, first, last):
     try:
         n.wait(selected, "editor selection", 45)
     except AssertionError as error:
-        with deadline.operation('read failed editor selection via TOM', 5):
+        with deadline.operation('read failed editor selection via TOM'):
             selection = document.Selection
             raise AssertionError("Expected selection %r, observed %r" %
                                  ((first, last), (selection.Start, selection.End))) from error
 
-@deadline.operation('measure editor character point via TOM', 5)
+@deadline.operation('measure editor character point via TOM')
 def character_point(app, editor, index):
     x, y = n.rich_edit_document(editor).Range(index, index + 1).GetPoint(32 | 256 | 512)
     point = n.w.POINT(x + 1, y + 1)

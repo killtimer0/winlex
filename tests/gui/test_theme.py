@@ -16,7 +16,7 @@ modern_theme = pytest.mark.skipif(
     not THEME_SUPPORTED, reason='requires Windows 10 build 17763 or later')
 
 
-@deadline.operation('enumerate and select theme option via UIA', 5)
+@deadline.operation('enumerate and select theme option via UIA')
 def select_theme(page, index):
     combo = auto.ControlFromHandle(n.get_item(page, 1301))
     expansion = combo.GetExpandCollapsePattern()
@@ -29,7 +29,7 @@ def select_theme(page, index):
     select_combo(combo, options[index])
 
 
-@deadline.operation('read selected combo option via UIA', 5)
+@deadline.operation('read selected combo option via UIA')
 def selected_index(app, hwnd):
     selected = auto.ControlFromHandle(hwnd).GetValuePattern().Value
     return app.choices(hwnd).index(selected)

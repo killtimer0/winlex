@@ -93,7 +93,7 @@ def assert_task_dialog_client_theme(appearance, dark):
             'native TaskDialog pane must follow the selected theme', name, dominant)
 
 
-@deadline.operation('read current native TaskDialog theme', 5)
+@deadline.operation('read current native TaskDialog theme')
 def native_task_dialog_primary_fill(dialog):
     """Read the public native TaskDialog primary-panel color as BGR."""
     # UxTheme caches caller-process state. Opening a new HTHEME is insufficient
@@ -118,7 +118,7 @@ def native_task_dialog_primary_fill(dialog):
         n.api(ux, 'CloseThemeData', n.c.c_long, n.c.c_void_p)(theme)
 
 
-@deadline.operation('observe TaskDialog client theme', 5)
+@deadline.operation('observe TaskDialog client theme')
 def task_dialog_appearance(dialog, native_light=False):
     """Observe both client panes for relative theme comparisons."""
     assert_unobscured(dialog)
@@ -214,7 +214,7 @@ def test_sources_prompt_client_theme_roundtrip(launch, profile, dpi):
             profile.set('Theme', winreg.REG_SZ, theme)
             app = launch(dpi=dpi, metadata_prompt=True)
             prompt = n.wait(lambda: native_dialog(app), 'sources TaskDialog')
-            with deadline.operation('activate sources TaskDialog via UIA', 5):
+            with deadline.operation('activate sources TaskDialog via UIA'):
                 auto.ControlFromHandle(prompt).SetActive(waitTime=0)
             with n.physical_dpi_context():
                 left, top, right, bottom = n.titlebar_rectangle(prompt)
@@ -298,7 +298,7 @@ def picker_uia_calls():
         assert remove(token), 'Cannot remove picker exception observer'
 
 
-@deadline.operation('locate native folder entry via UIA', 5)
+@deadline.operation('locate native folder entry via UIA')
 def picker_entry(dialog, sentinel):
     # Exists/FindControl can traverse past native exceptions swallowed below
     # Python. Check each provider call instead of retrying that whole search.
@@ -327,7 +327,7 @@ def picker_entry(dialog, sentinel):
         return find(root, 1)
 
 
-@deadline.operation('measure native file picker surfaces via UIA', 5)
+@deadline.operation('measure native file picker surfaces via UIA')
 def file_picker_colors(dialog, field, entry):
     """Measure native filename and folder surfaces without fixing an exact palette."""
     origin = win32gui.ClientToScreen(dialog, (0, 0))

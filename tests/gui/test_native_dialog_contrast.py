@@ -37,7 +37,7 @@ def contrast_snapshot():
     return snapshot
 
 
-@deadline.operation('measure live TaskDialog surfaces via UIA', 5)
+@deadline.operation('measure live TaskDialog surfaces via UIA')
 def task_surfaces(dialog):
     text = auto.ControlFromHandle(dialog).TextControl(AutomationId='ContentText')
     if not text.Exists(0, 0):
@@ -112,7 +112,7 @@ def record(dialog, output, phase, surfaces):
     (output / (phase + '-colors.json')).write_text(json.dumps(evidence, indent=2), encoding='utf-8')
 
 
-@deadline.operation('verify live TaskDialog accessible commands', 5)
+@deadline.operation('verify live TaskDialog accessible commands')
 def assert_prompt_contract(app, dialog):
     assert n.is_window(dialog) and native_dialog(app) == dialog
     assert_modal(app, dialog)
@@ -212,7 +212,7 @@ def test_task_dialog_stays_open_across_high_contrast(launch, profile, settings, 
                     and all(backgrounds[name] in allowed for name, allowed in expected.items())
                     and task_text_painted(surfaces))
 
-        @deadline.operation('observe native TaskDialog repaint', 5)
+        @deadline.operation('observe native TaskDialog repaint')
         def observe():
             nonlocal obscured_since, native_sample
             palette = picker_native_palette()
@@ -288,7 +288,7 @@ def navigate(dialog, folder, sentinel):
     n.wait(lambda: picker_entry(dialog, sentinel), 'native navigation reveals expected file', 30)
 
 
-@deadline.operation('measure live native picker surfaces via UIA', 5)
+@deadline.operation('measure live native picker surfaces via UIA')
 def picker_surfaces(dialog, sentinel):
     field = filename_field(dialog)
     entry = picker_entry(dialog, sentinel) if field else None
@@ -297,7 +297,7 @@ def picker_surfaces(dialog, sentinel):
     return file_picker_colors(dialog, field, entry)
 
 
-@deadline.operation('observe native picker repaint', 5)
+@deadline.operation('observe native picker repaint')
 def observe_picker_surfaces(dialog, reference):
     # Keep only screen regions, not provider elements. The theme broadcast
     # rebuilds UIA providers; querying them to decide whether repaint finished

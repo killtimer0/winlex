@@ -12,7 +12,7 @@ GUI = ROOT / 'tests' / 'gui'
 REMOTE = GUI / 'remote.py'
 
 sys.path.insert(0, str(GUI))
-from support import bounded  # noqa: E402
+from support import bounded, supervisor  # noqa: E402
 
 
 def load_remote():
@@ -65,7 +65,7 @@ def supervise(folder, source, *, timeout=5, extra=(), run_id='0' * 32):
         process = subprocess.Popen([sys.executable, str(wrapper), str(output), *extra],
                                    cwd=ROOT, stdout=log, stderr=subprocess.STDOUT)
         try:
-            safe = remote.supervise_runner(process, output, timeout, started, lambda: None)
+            safe = supervisor.supervise_runner(process, output, timeout, started, lambda: None)
         finally:
             if process.poll() is None:
                 process.kill()

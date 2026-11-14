@@ -10,6 +10,7 @@ import time
 import unittest
 
 import gui_probe
+from support import supervisor
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -55,7 +56,7 @@ time.sleep(.2)
             started = time.monotonic()
             process = subprocess.Popen([sys.executable, '-c', script, str(output)])
             try:
-                self.assertTrue(remote.supervise_runner(process, output, 2, started, lambda: None))
+                self.assertTrue(supervisor.supervise_runner(process, output, 2, started, lambda: None))
                 self.assertEqual(process.returncode, 0)
             finally:
                 if process.poll() is None:

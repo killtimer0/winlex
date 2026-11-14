@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 from support import deadline, lifecycle
+from support.policy import Policy
 import win32api
 import win32con
 import win32service
@@ -37,7 +38,7 @@ def pytest_configure(config):
     output = Path(config.getoption('--artifacts'))
     output.mkdir(parents=True, exist_ok=True)
     deadline.configure(output)
-    deadline.phase('collection', 'collection', 30)
+    deadline.phase('collection', 'collection', Policy.load().collection)
 
 
 def pytest_unconfigure(config):

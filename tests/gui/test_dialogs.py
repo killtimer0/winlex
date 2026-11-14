@@ -68,7 +68,7 @@ def test_module_picker_accepts_resource_path(launch, settings):
     invoke(n.get_item(doc, 1814))
     dialog = n.wait(lambda: n.find_window(app.process.pid, '#32770', app.frame), 'module file picker', 30)
     picker = auto.ControlFromHandle(dialog)
-    with deadline.operation('set native module picker filename via UIA', 30):
+    with deadline.operation('set native module picker filename via UIA'):
         filename = picker.ComboBoxControl(AutomationId='1148').EditControl()
         n.wait(lambda: filename.Exists(0, 0), 'native filename edit', 30)
         assert filename.GetValuePattern().SetValue(str(module), waitTime=0)

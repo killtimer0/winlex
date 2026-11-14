@@ -42,7 +42,7 @@ def deselect_result(app):
     row = app.selected_row()
     assert row >= 0, "A selected result is required for deselection"
     item = app.row(row)
-    with deadline.operation('deselect result via UIA', 5):
+    with deadline.operation('deselect result via UIA'):
         item.GetSelectionItemPattern().RemoveFromSelection(waitTime=0)
     n.wait(lambda: app.selected_row() == -1, "result deselected", 15)
 
@@ -181,7 +181,7 @@ def test_pinning_and_open_commands_preserve_documents_and_focus(launch, settings
     assert preview != doc and len(app.documents()) == 2
     n.wait(lambda: name in app.content(preview), "preview beside pinned document", 45)
     assert app.content(doc) == pinned_body
-    with deadline.operation('close transient preview via UIA', 5):
+    with deadline.operation('close transient preview via UIA'):
         assert auto.ControlFromHandle(preview).GetWindowPattern().Close(waitTime=0)
     n.wait(lambda: app.documents() == [doc], "close transient preview")
     app.focus(app.results)

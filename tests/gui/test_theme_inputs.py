@@ -217,14 +217,14 @@ def test_win11_edit_real_dpi_corners_and_theme_restore(launch, profile, settings
         assert n.window_text(edit) == 'aaa', 'theme roundtrip must preserve native Edit text'
 
 
-@deadline.operation('measure settings tab item via UIA', 5)
+@deadline.operation('measure settings tab item via UIA')
 def tab_rect(tab, item):
     rect = item.BoundingRectangle
     x, y = win32gui.ClientToScreen(tab, (0, 0))
     return rect.left - x, rect.top - y, rect.right - x, rect.bottom - y
 
 
-@deadline.operation('read settings tab selection via UIA', 5)
+@deadline.operation('read settings tab selection via UIA')
 def tab_selected(item):
     return item.GetSelectionItemPattern().IsSelected
 

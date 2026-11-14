@@ -40,7 +40,7 @@ def link_item(app, control, index=0):
         win32api.CloseHandle(process)
 
 
-@deadline.operation('move and measure About child windows via UIA', 5)
+@deadline.operation('move and measure About child windows via UIA')
 def measure_children(dialog, monitor):
     auto.ControlFromHandle(dialog).GetPattern(auto.PatternId.TransformPattern).Move(
         monitor[0] + 40, monitor[1] + 40, waitTime=0)

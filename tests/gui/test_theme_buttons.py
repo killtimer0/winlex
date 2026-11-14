@@ -62,7 +62,7 @@ def test_dark_native_find_buttons_and_auto_checkboxes(launch, profile, settings)
         query, count = n.get_item(doc, 1220), n.get_item(doc, 1223)
         n.wait(lambda: n.is_visible(query) and app.focused() == query, 'native find controls visible')
         # Keep real typing and its default key interval within the action budget.
-        with deadline.operation('type native find query via UIA', 5):
+        with deadline.operation('type native find query via UIA'):
             auto.ControlFromHandle(query).SendKeys('HANDLE', waitTime=0)
         n.wait(lambda: n.window_text(count).startswith('1/'), 'find initial match')
         for command, expected in [(1061, '2/'), (1062, '1/')]:

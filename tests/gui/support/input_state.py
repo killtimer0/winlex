@@ -17,7 +17,7 @@ GA_ROOT = 2
 get_ancestor = n.api(n.user, "GetAncestor", n.w.HWND, n.w.HWND, n.w.UINT)
 
 
-@deadline.operation('check global hotkey availability', 2)
+@deadline.operation('check global hotkey availability')
 def require_available_hotkey(key, modifiers, description):
     """Probe registered conflicts without sending input or retaining ownership."""
     register = n.api(n.user, 'RegisterHotKey', n.w.BOOL,
@@ -40,7 +40,7 @@ def require_available_hotkey(key, modifiers, description):
 @contextmanager
 def foreground(app, inputs):
     with n.physical_dpi_context():
-        with deadline.operation('activate physical input target via UIA', 5):
+        with deadline.operation('activate physical input target via UIA'):
             window = auto.ControlFromHandle(app.frame)
             window.Restore(waitTime=0)
             window.SetActive(waitTime=0)
@@ -86,7 +86,7 @@ def recover(path):
             # permission. Cross-queue activation is asynchronous, however:
             # acknowledge its notification before judging the final foreground.
             win32gui.SetForegroundWindow(foreground)
-            with deadline.operation('acknowledge foreground restoration', 2):
+            with deadline.operation('acknowledge foreground restoration'):
                 acknowledged = n.send_timeout(foreground, win32con.WM_NULL,
                                               0, 0, 3, 1000, None)
             if not acknowledged or win32gui.GetForegroundWindow() != foreground:

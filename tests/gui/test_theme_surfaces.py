@@ -49,7 +49,7 @@ def dark_app(launch, profile, arguments=()):
     return app
 
 
-@deadline.operation('repaint and sample control pixels', 5)
+@deadline.operation('repaint and sample control pixels')
 def colors(hwnd, rect, client=True):
     win32gui.RedrawWindow(hwnd, None, None,
                          win32con.RDW_INVALIDATE | win32con.RDW_UPDATENOW |
@@ -57,7 +57,7 @@ def colors(hwnd, rect, client=True):
     return observed_colors(hwnd, rect, client)
 
 
-@deadline.operation('sample displayed control pixels', 5)
+@deadline.operation('sample displayed control pixels')
 def observed_colors(hwnd, rect, client=True):
     """Observe native theme transitions without synchronously forcing repaint."""
     _header, pixels = capture_pixels(hwnd, client=client, rect=rect)

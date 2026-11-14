@@ -54,7 +54,7 @@ def test_tool_find_refreshes_and_preserves_per_window_state(
     n.wait(lambda: n.rich_edit_document(editor).Selection.Text == needle, "tool match")
     for command in (1061, 1062):
         app.command(command)
-        with deadline.operation('read tool match selection via TOM', 5):
+        with deadline.operation('read tool match selection via TOM'):
             assert n.rich_edit_document(editor).Selection.Text == needle
     assert editor_selection(app, n.get_item(declaration, 1203)) == saved
     assert n.window_text(n.get_item(declaration, 1220)) == "HANDLE"
@@ -67,7 +67,7 @@ def test_tool_find_refreshes_and_preserves_per_window_state(
     assert n.window_text(find) == needle
     activate(declaration)
     app.command(1061)
-    with deadline.operation('read declaration match selection via TOM', 5):
+    with deadline.operation('read declaration match selection via TOM'):
         assert n.rich_edit_document(n.get_item(declaration, 1203)).Selection.Text == "HANDLE"
     assert n.window_text(find) == needle
 
@@ -80,7 +80,7 @@ def test_document_find_controls_remain_visible_and_disjoint_when_narrow(launch, 
     app.command(1060)
     query = n.get_item(doc, 1220)
     n.wait(lambda: n.is_visible(query), "find opened")
-    with deadline.operation('edit document find query via UIA', 5):
+    with deadline.operation('edit document find query via UIA'):
         assert auto.ControlFromHandle(query).GetValuePattern().SetValue('HANDLE', waitTime=0)
     n.wait(lambda: n.window_text(n.get_item(doc, 1223)).startswith("1/"), "first match")
     with n.window_dpi_context(doc):
@@ -91,7 +91,7 @@ def test_document_find_controls_remain_visible_and_disjoint_when_narrow(launch, 
         for width in (900, 320, 220, 900):
             left, top, _, _ = n.rectangle(doc)
             x, y = win32gui.ScreenToClient(app.mdi, (left, top))
-            with deadline.operation('resize document find window via UIA', 5):
+            with deadline.operation('resize document find window via UIA'):
                 assert auto.ControlFromHandle(doc).MoveWindow(x, y, scale(width), scale(720))
             controls = [n.get_item(doc, control) for control in
                         (1224, 1220, 1062, 1061, 1063, 1221, 1222, 1223, 1203)]
@@ -124,7 +124,7 @@ def test_document_find_and_preview_reuse(launch, settings):
     n.wait(lambda: n.is_visible(query) and app.focused() == query, "find opened")
     expanded = n.rectangle(editor)
     assert expanded[1] > collapsed[1]
-    with deadline.operation('edit document find query via UIA', 5):
+    with deadline.operation('edit document find query via UIA'):
         assert auto.ControlFromHandle(query).GetValuePattern().SetValue('HANDLE', waitTime=0)
     n.wait(lambda: n.window_text(count).startswith("1/"), "first match")
     first = editor_selection(app, editor)
@@ -139,7 +139,7 @@ def test_document_find_and_preview_reuse(launch, settings):
     app.command(1062)
     assert n.window_text(count).startswith(f"{total}/{total}")
     assert editor_selection(app, editor)[0] > first[0]
-    with deadline.operation('edit unmatched document find query via UIA', 5):
+    with deadline.operation('edit unmatched document find query via UIA'):
         auto.ControlFromHandle(query).GetValuePattern().SetValue('not_present_anywhere_12345', waitTime=0)
     n.wait(lambda: n.window_text(count).startswith("0/0"), "no matches")
     assert n.rectangle(editor) == expanded
@@ -150,7 +150,7 @@ def test_document_find_and_preview_reuse(launch, settings):
     assert not enabled(app, HISTORY_BACK)
     app.command(1060)
     assert n.window_text(query) == "HANDLE"
-    with deadline.operation('restore document find query via UIA', 5):
+    with deadline.operation('restore document find query via UIA'):
         auto.ControlFromHandle(query).GetValuePattern().SetValue('HANDLE')
     saved = editor_selection(app, editor)
     app.query("CloseHandle")

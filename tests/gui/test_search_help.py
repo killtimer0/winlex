@@ -39,7 +39,7 @@ def test_search_help_readonly_resize_and_dpi(launch, profile, language, mode):
     monitors = n.monitors()
     for monitor in monitors * (2 if len(monitors) > 1 else 1):
         with n.window_dpi_context(dialog):
-            with deadline.operation('move search help across monitors via UIA', 5):
+            with deadline.operation('move search help across monitors via UIA'):
                 control = auto.ControlFromHandle(dialog)
                 target = (monitor[0] + 40, monitor[1] + 40)
                 assert control.GetPattern(auto.PatternId.TransformPattern).Move(*target, waitTime=0)

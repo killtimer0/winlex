@@ -79,16 +79,16 @@ def test_toolbar_names_on_hover(launch, settings):
     autopop = n.send(tooltip, messages.TTM_GETDELAYTIME, 2) / 1000
     assert initial > 0 and autopop > 0, 'native tooltip must have finite display delays'
     with InputState() as inputs, n.window_dpi_context(app.frame):
-        with deadline.operation('activate toolbar tooltip frame', 5):
+        with deadline.operation('activate toolbar tooltip frame'):
             auto.ControlFromHandle(app.frame).SetActive()
             assert win32gui.GetForegroundWindow() == app.frame, 'toolbar foreground'
         for index, command in enumerate((1040, 1021)):
-            with deadline.operation('leave toolbar tooltip target', 5), n.physical_dpi_context():
+            with deadline.operation('leave toolbar tooltip target'), n.physical_dpi_context():
                 left, top, right, bottom = n.titlebar_rectangle(app.frame)
                 auto.MoveTo((left + right) // 2, (top + bottom) // 2, waitTime=0)
             n.wait(lambda: not n.is_visible(tooltip),
                    'toolbar tooltip hidden', autopop + 1)
-            with deadline.operation('hover toolbar tooltip target', 5):
+            with deadline.operation('hover toolbar tooltip target'):
                 expected = app.toolbar_text(command)
                 button = auto.ControlFromHandle(toolbar).Control(Name=expected)
                 bounds = button.BoundingRectangle
@@ -96,13 +96,13 @@ def test_toolbar_names_on_hover(launch, settings):
             n.wait(lambda: n.is_visible(tooltip) and n.window_text(tooltip) == expected,
                    'toolbar tooltip content', initial + autopop)
             screenshot(app.frame, settings[2] / ('toolbar-%d.png' % index))
-        with deadline.operation('open metadata through toolbar', 5):
+        with deadline.operation('open metadata through toolbar'):
             button.Click(waitTime=0)
             n.wait(lambda: n.is_visible(app.sources), 'toolbar opens metadata')
 
 
 def infotip(app, control, row, image):
-    with deadline.operation('prepare list infotip row', 15):
+    with deadline.operation('prepare list infotip row'):
         assert control and n.is_visible(control)
         item = app.row(row, control)
         item.GetScrollItemPattern().ScrollIntoView()
@@ -115,7 +115,7 @@ def infotip(app, control, row, image):
         assert initial > 0 and autopop > 0, 'native tooltip must have finite display delays'
     # Cover initial display and eventual hiding using the control's actual
     # timing and pointer delivery, not a whole-case timeout.
-    with InputState(), deadline.operation('list infotip hover and dismissal', initial + 2 * autopop + 1):
+    with InputState(), deadline.operation('list infotip hover and dismissal'):
         auto.ControlFromHandle(app.frame).SetActive()
         assert win32gui.GetForegroundWindow() == app.frame, 'infotip foreground'
         # Neither list content nor the search Edit is a neutral hover target:

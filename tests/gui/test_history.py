@@ -76,7 +76,7 @@ def replay(app, command, name, architecture=None, document=None):
 
 
 def close(app, doc):
-    with deadline.operation('close historical document via UIA', 5):
+    with deadline.operation('close historical document via UIA'):
         assert auto.ControlFromHandle(doc).GetPattern(auto.PatternId.WindowPattern).Close(waitTime=0)
     n.wait(lambda: doc not in app.documents(), "historical document closed")
 
@@ -193,7 +193,7 @@ def test_manual_activation_records_but_close_repositions_without_extra_visit(
     if activation == "mdi":
         app.focus(first)
     else:
-        with deadline.operation('activate historical document tab via UIA', 5):
+        with deadline.operation('activate historical document tab via UIA'):
             assert app._tabs()[0].GetSelectionItemPattern().Select(waitTime=0)
     current(app, "CreateFileW", document=first)
     replay(app, HISTORY_BACK, "DeleteFileW", document=third)
@@ -239,7 +239,7 @@ def test_close_prefers_previous_visit_over_closer_future_match(launch, settings)
     labels = app.tab_labels()
     points = []
     left, top, _, _ = n.rectangle(tabs)
-    with deadline.operation('measure history reorder tabs via UIA', 5):
+    with deadline.operation('measure history reorder tabs via UIA'):
         pages = app._tabs()
         for page in (pages[0], pages[-1]):
             rect = page.BoundingRectangle
@@ -302,13 +302,13 @@ def test_long_declaration_restores_full_utf16_selection_and_top_anchor(launch, s
     app = launch([settings[1]])
     doc = visit(app, "Windows.Win32.Graphics.Gdi.Apis")
     editor = n.get_item(doc, 1203)
-    with deadline.operation('read long declaration length via TOM', 5):
+    with deadline.operation('read long declaration length via TOM'):
         length = n.rich_edit_document(editor).Range(0, 0).StoryLength - 1
     assert length > 70000, "fixture must exercise selection beyond 16-bit offsets"
     wanted = (66000, 66023)
     app.focus(editor)
     selection(app, editor, wanted)
-    with deadline.operation('scroll long declaration via UIA', 5):
+    with deadline.operation('scroll long declaration via UIA'):
         assert auto.ControlFromHandle(editor).GetPattern(auto.PatternId.ScrollPattern).SetScrollPercent(
             -1, 75, waitTime=0)
         top = n.wait(lambda: n.send(editor, win32con.EM_GETFIRSTVISIBLELINE),

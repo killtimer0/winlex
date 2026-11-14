@@ -43,7 +43,7 @@ def send(hwnd, message, wp=0, lp=0):
     return c.c_ssize_t(result.value).value
 
 
-@deadline.operation('dispatch queued native theme messages', 5)
+@deadline.operation('dispatch queued native theme messages')
 def dispatch_pending_messages():
     """Refresh caller-thread state without synthesizing theme notifications."""
     until = time.monotonic() + 5
@@ -59,7 +59,7 @@ def dispatch_pending_messages():
         win32gui.DispatchMessage(message)
 
 
-@deadline.operation('read control text via UIA', 5)
+@deadline.operation('read control text via UIA')
 def window_text(hwnd):
     control = auto.ControlFromHandle(hwnd)
     value = control.GetPattern(auto.PatternId.ValuePattern)
@@ -75,7 +75,7 @@ def rich_edit_document(hwnd):
     return win32com.client.Dispatch(pythoncom.ObjectFromLresult(token, pythoncom.IID_IDispatch, 0))
 
 
-@deadline.operation('read complete Rich Edit text via TOM', 5)
+@deadline.operation('read complete Rich Edit text via TOM')
 def rich_edit_text(hwnd):
     """Complete text for UTF-16 and full-render measurements, excluding TOM's final paragraph mark."""
     document = rich_edit_document(hwnd)
@@ -188,9 +188,10 @@ def window_dpi_context(hwnd):
 
 
 def wait(probe, description, timeout=15):
-    with deadline.operation(description, timeout):
+    with deadline.operation(description):
         until = time.monotonic() + timeout
         while time.monotonic() < until:
+            deadline.progress()
             value = probe()
             if time.monotonic() >= until:
                 raise AssertionError('Timeout: ' + description)

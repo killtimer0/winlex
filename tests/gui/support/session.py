@@ -29,20 +29,20 @@ def control(value):
 
 def find(root, identifier):
     if not isinstance(root, int):
-        with deadline.operation('read control native window handle via UIA', 5):
+        with deadline.operation('read control native window handle via UIA'):
             root = root.NativeWindowHandle
     hwnd = n.get_item(root, identifier)
     return control(hwnd) if hwnd else None
 
 
-@deadline.operation('get UIA control pattern', 5)
+@deadline.operation('get UIA control pattern')
 def pattern(item, kind):
     result = item.GetPattern(kind)
     assert result is not None, "UI Automation pattern %s unavailable on %s" % (kind, item)
     return result
 
 
-@deadline.operation('invoke UIA control', 5)
+@deadline.operation('invoke UIA control')
 def invoke(value):
     item = control(value)
     action = item.GetPattern(uia.PatternId.InvokePattern)
@@ -51,7 +51,7 @@ def invoke(value):
     return pattern(item, uia.PatternId.LegacyIAccessiblePattern).DoDefaultAction(waitTime=0)
 
 
-@deadline.operation('find modal command button via UIA', 5)
+@deadline.operation('find modal command button via UIA')
 def message_button(dialog, identifier):
     """Find the native command in either a MessageBox or a TaskDialog provider."""
     root = control(dialog)
@@ -62,7 +62,7 @@ def message_button(dialog, identifier):
     return None
 
 
-@deadline.operation('commit combo selection', 5)
+@deadline.operation('commit combo selection')
 def select_combo(value, label):
     combo = control(value)
     expansion = pattern(combo, uia.PatternId.ExpandCollapsePattern)
@@ -141,7 +141,7 @@ class Session:
         self.settings_page(sheet, 0)
         return sheet
 
-    @deadline.operation('select settings page', 5)
+    @deadline.operation('select settings page')
     def settings_page(self, sheet, index):
         tabs = self.settings_tabs(sheet)
         assert 0 <= index < len(tabs)
@@ -153,7 +153,7 @@ class Session:
         page = item.GetParentControl()
         return page.NativeWindowHandle
 
-    @deadline.operation('enumerate settings tab items via UIA', 5)
+    @deadline.operation('enumerate settings tab items via UIA')
     def settings_tabs(self, sheet):
         tab = n.send(sheet, messages.PSM_GETTABCONTROL)
         assert tab, 'settings tab control'
@@ -164,7 +164,7 @@ class Session:
         invoke(n.wait(lambda: find(sheet, 1 if accept else 2), "settings button"))
         n.wait(lambda: not n.is_window(sheet), "settings closed")
 
-    @deadline.operation('enumerate combo options via UIA', 5)
+    @deadline.operation('enumerate combo options via UIA')
     def choices(self, value):
         combo = control(value)
         if not combo.IsEnabled:
@@ -210,7 +210,7 @@ class Session:
     def architecture(self, doc):
         return self.item(doc, 1047)
 
-    @deadline.operation('read architecture selection via UIA', 5)
+    @deadline.operation('read architecture selection via UIA')
     def choice(self, doc):
         combo = control(self.architecture(doc))
         return pattern(combo, uia.PatternId.ValuePattern).Value
@@ -228,13 +228,13 @@ class Session:
         identifier = win32gui.GetDlgCtrlID(combo)
         n.send(parent, win32con.WM_COMMAND, (win32con.CBN_SELENDOK << 16) | identifier, combo)
 
-    @deadline.operation('read status text', 5)
+    @deadline.operation('read status text')
     def status_text(self):
         status = control(self.status)
         children = status.GetChildren()
         return children[0].Name if children else status.Name
 
-    @deadline.operation('read toolbar command text via UIA', 5)
+    @deadline.operation('read toolbar command text via UIA')
     def toolbar_text(self, command):
         toolbar = control(self.item(self.frame, 1113))
         return toolbar.GetChildren()[(1040, 1021, 1800).index(command)].Name
@@ -249,11 +249,11 @@ class Session:
                 yield item
             item = item.GetPreviousSiblingControl() if reverse else item.GetNextSiblingControl()
 
-    @deadline.operation('enumerate UIA list rows', 15)
+    @deadline.operation('enumerate UIA list rows')
     def rows(self, value=...):
         return list(self._rows(value))
 
-    @deadline.operation('locate UIA list row', 15)
+    @deadline.operation('locate UIA list row')
     def row(self, row, value=...):
         total = self.count(value)
         if row < 0:
@@ -273,21 +273,21 @@ class Session:
         assert n.class_name(value) == "SysListView32", "Requested control is not a list view"
         return n.send(value, LVM_GETITEMCOUNT)
 
-    @deadline.operation('read UIA list row', 15)
+    @deadline.operation('read UIA list row')
     def cell(self, row, control=...):
         return self.row(row, control).Name
 
     def select(self, row, control=...):
         item = self.row(row, control)
-        with deadline.operation('select UIA list row', 5):
+        with deadline.operation('select UIA list row'):
             assert pattern(item, uia.PatternId.SelectionItemPattern).Select(waitTime=0)
 
-    @deadline.operation('find named list rows', 15)
+    @deadline.operation('find named list rows')
     def named_rows(self, name):
         return [index for index, item in enumerate(self.rows())
                 if item.Name.splitlines()[0].rsplit(".", 1)[-1] == name]
 
-    @deadline.operation('find first named UIA list row', 15)
+    @deadline.operation('find first named UIA list row')
     def first_named_row(self, name):
         for index, item in enumerate(self._rows()):
             if item.Name.splitlines()[0].rsplit(".", 1)[-1] == name:
@@ -303,13 +303,13 @@ class Session:
     def top_row(self):
         return n.send(self.results, LVM_GETTOPINDEX)
 
-    @deadline.operation('measure list row', 15)
+    @deadline.operation('measure list row')
     def item_rect(self, row, control=...):
         rect = self.row(row, control).BoundingRectangle
         origin = win32gui.ClientToScreen(self.results if control is ... else control, (0, 0))
         return rect.left - origin[0], rect.top - origin[1], rect.right - origin[0], rect.bottom - origin[1]
 
-    @deadline.operation('submit search and await completion', 45)
+    @deadline.operation('submit search and await completion')
     def query(self, value):
         if not self.search or control(self.search).IsOffscreen:
             self.command(1040)
@@ -374,7 +374,7 @@ class Session:
     def _clicked_document(self, inputs, row, double, description):
         assert inputs is not None, "Mouse gestures require an interactive input owner"
         item = self.row(row)
-        with deadline.operation('read UIA row gesture target', 5):
+        with deadline.operation('read UIA row gesture target'):
             name = item.Name.splitlines()[0].rsplit(".", 1)[-1]
             rect = item.BoundingRectangle
         position = ((rect.left + rect.right) // 2, (rect.top + rect.bottom) // 2)
@@ -383,14 +383,14 @@ class Session:
         if double:
             inputs.double_click(*position)
         else:
-            with deadline.operation('click owned list row', 5):
+            with deadline.operation('click owned list row'):
                 inputs.click(*position, wait_time=0)
         return self.wait_document(description, name)
 
     def focus(self, value):
         hwnd = value
         if not isinstance(value, int):
-            with deadline.operation('read focus target native window handle via UIA', 5):
+            with deadline.operation('read focus target native window handle via UIA'):
                 hwnd = control(value).NativeWindowHandle
         assert hwnd, "Focus target has no native window"
         own = win32api.GetCurrentThreadId()
@@ -412,11 +412,11 @@ class Session:
         return [x for x, _ in uia.WalkControl(control(self.item(self.frame, 1104)))
                 if x.ControlType == uia.ControlType.TabItemControl]
 
-    @deadline.operation('read document tab labels via UIA', 5)
+    @deadline.operation('read document tab labels via UIA')
     def tab_labels(self):
         return [x.Name for x in self._tabs()]
 
-    @deadline.operation('read document tab descriptions via UIA', 5)
+    @deadline.operation('read document tab descriptions via UIA')
     def tab_descriptions(self):
         return [pattern(x, uia.PatternId.LegacyIAccessiblePattern).Description for x in self._tabs()]
 
@@ -424,7 +424,7 @@ class Session:
         editor = find(doc, 1203)
         if not editor:
             return ""
-        with deadline.operation('read editor native window handle via UIA', 5):
+        with deadline.operation('read editor native window handle via UIA'):
             hwnd = editor.NativeWindowHandle
         return n.window_text(hwnd)
 
@@ -467,7 +467,7 @@ class Session:
         win32gui.PostMessage(dialog, win32con.WM_COMMAND, win32con.IDOK, buttons[0])
         n.wait(lambda: not n.is_window(dialog), "file dialog closed")
 
-    @deadline.operation('capture native window diagnostics', 5)
+    @deadline.operation('capture native window diagnostics')
     def diagnostics(self, destination):
         rows = []
         if self.frame and n.is_window(self.frame):

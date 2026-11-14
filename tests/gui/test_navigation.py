@@ -80,7 +80,7 @@ def ctrl_click(app, inputs, doc, index):
 
 
 def pin_active_tab(app):
-    with deadline.operation('measure active tab for pin gesture via UIA', 5):
+    with deadline.operation('measure active tab for pin gesture via UIA'):
         page = next(page for page in app._tabs() if page.GetSelectionItemPattern().IsSelected)
         rect = page.BoundingRectangle
         tabs = n.get_item(app.frame, 1104)
@@ -96,7 +96,7 @@ def pin_active_tab(app):
 def editor_selection(app, editor, value=None):
     if value is not None:
         select_text(editor, *value)
-    with deadline.operation('read editor selection via TOM', 5):
+    with deadline.operation('read editor selection via TOM'):
         selected = n.rich_edit_document(editor).Selection
         return selected.Start, selected.End
 
@@ -412,7 +412,7 @@ def test_real_ctrl_hover_preserves_scrolled_reading_state(launch, settings, prof
             editor_selection(app, editor, (0, 6))
             line = n.send(editor, win32con.WM_USER + 54, 0, indices[0])
             n.send(editor, win32con.EM_LINESCROLL, 0, line - 1)
-            with deadline.operation('measure visible editor references via TOM', 5), n.window_dpi_context(app.frame):
+            with deadline.operation('measure visible editor references via TOM'), n.window_dpi_context(app.frame):
                 document = n.rich_edit_document(editor)
                 _, _, width, height = n.rectangle(editor, client=True)
                 visible = []
@@ -432,7 +432,7 @@ def test_real_ctrl_hover_preserves_scrolled_reading_state(launch, settings, prof
             top = n.send(editor, win32con.EM_GETFIRSTVISIBLELINE)
             assert top > 0
             selection = editor_selection(app, editor)
-            with deadline.operation('read reference colors via TOM', 5):
+            with deadline.operation('read reference colors via TOM'):
                 colors = [span.Font.ForeColor for span, _ in visible]
             with n.physical_dpi_context():
                 left, top_edge, right, bottom = n.rectangle(app.results)
@@ -447,7 +447,7 @@ def test_real_ctrl_hover_preserves_scrolled_reading_state(launch, settings, prof
             auto.PressKey(win32con.VK_CONTROL, waitTime=0)
             try:
                 for current in (0, 1, 0, 1):
-                    with deadline.operation('read destination reference before hover', 5):
+                    with deadline.operation('read destination reference before hover'):
                         assert visible[current][0].Font.Underline == 0
                     auto.MoveTo(*visible[current][1], waitTime=0)
                     n.wait(lambda: visible[current][0].Font.Underline == 1
@@ -456,7 +456,7 @@ def test_real_ctrl_hover_preserves_scrolled_reading_state(launch, settings, prof
                     assert app.focused() == editor
                     assert editor_selection(app, editor) == selection
                     assert n.send(editor, win32con.EM_GETFIRSTVISIBLELINE) == top
-                    with deadline.operation('read hovered reference colors via TOM', 5):
+                    with deadline.operation('read hovered reference colors via TOM'):
                         assert [span.Font.ForeColor for span, _ in visible] == colors
             finally:
                 auto.ReleaseKey(win32con.VK_CONTROL, waitTime=0)
@@ -601,7 +601,7 @@ def test_real_ctrl_click_and_drag_do_not_confuse_navigation_with_selection(launc
         app = launch([settings[1]])
         n.wait(lambda: app.status_text().startswith(("Ready.", "已就绪")), "loaded", 45)
         with real_foreground(app, inputs):
-            with deadline.operation('restore navigation window via UIA', 5):
+            with deadline.operation('restore navigation window via UIA'):
                 auto.ControlFromHandle(app.frame).Restore()
             with n.window_dpi_context(app.frame):
                 left, top, right, bottom = n.rectangle(app.search)

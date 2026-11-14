@@ -18,34 +18,121 @@ import win32job
 import win32process
 import win32service
 from support import deadline as operation_deadline
+from support import progress, supervisor
+from support.policy import Policy
 from support.results import merge, records
 
 
-def main():
+def arguments():
     parser = argparse.ArgumentParser()
     parser.add_argument("--desktop", choices=("isolated", "current"), default="isolated")
-    parser.add_argument("--timeout", type=float, default=1800)
+    parser.add_argument("--timeout", type=float)
+    parser.add_argument("--case-timeout", type=float)
+    parser.add_argument("--stall-after", type=float)
+    parser.add_argument("--consecutive-timeouts", type=int)
+    parser.add_argument("--engine", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--output")
     args, tests = parser.parse_known_args()
     interactive = "--real-input" in tests
     if interactive and args.desktop != "current":
         parser.error("--real-input requires --desktop current")
     output = Path(args.output or ("tmp/gui-tests/" + uuid.uuid4().hex)).resolve()
-    if (output / "run.json").exists():
+    if not args.engine and (output / "run.json").exists():
         parser.error("Output contains a completed run; select a fresh directory")
-    args.until = time.monotonic() + args.timeout
+    output.mkdir(parents=True, exist_ok=True)
+    base = Policy.load()
+    args.policy = base.overrides(run=args.timeout, call=args.case_timeout,
+                                 stall=args.stall_after,
+                                 consecutive=args.consecutive_timeouts)
+    if min(args.policy.run, args.policy.call, args.policy.stall,
+           args.policy.consecutive) <= 0:
+        parser.error("timeout budgets must be positive")
+    args.output_path = output
+    return args, tests
+
+
+def main():
+    args, tests = arguments()
+    if args.engine:
+        return engine_main(args, tests)
+    return supervised(args, tests)
+
+
+def supervised(args, tests):
+    policy = args.policy
+    output = args.output_path
+    # The engine must watch the directory this supervisor already resolved;
+    # regenerate it only when no explicit --output was supplied.
+    command = [sys.executable, str(Path(__file__).resolve()), '--engine',
+               '--output', str(output), '--desktop', args.desktop,
+               '--timeout', str(policy.run), '--case-timeout', str(policy.call),
+               '--stall-after', str(policy.stall),
+               '--consecutive-timeouts', str(policy.consecutive), *tests]
+    started = time.monotonic()
+    process = subprocess.Popen(command, env=os.environ.copy())
+    state = {'at': 0.0, 'key': None}
+
+    def report(path, now):
+        current = progress.active(path)
+        if not current or not current.get('active') or current['elapsed'] < policy.slow_case:
+            return
+        key = (current['nodeid'], current['phase'], current.get('operation'))
+        if key == state['key'] and now - state['at'] < 5:
+            return
+        state.update(at=now, key=key)
+        print('[slow] %6.1fs %s %s: %s' % (current['elapsed'], current['nodeid'],
+                                           current['phase'], current.get('operation', '')),
+              flush=True)
+
+    try:
+        safe = supervisor.supervise_runner(process, output, policy.run, started,
+                                           on_tick=report, policy=policy)
+    except KeyboardInterrupt:
+        (output / 'cancel').touch()
+        try:
+            safe = supervisor.supervise_runner(process, output, policy.run, started,
+                                               on_tick=report, policy=policy)
+        except KeyboardInterrupt:
+            process.kill()
+            process.wait()
+            raise
+    if not safe:
+        record = output / 'supervisor.json'
+        if record.exists():
+            print(json.loads(record.read_text(encoding='utf-8')).get('error', 'Runner failed'),
+                  file=sys.stderr, flush=True)
+        return 1
+    report_file = output / 'run.json'
+    if not report_file.exists():
+        print('Runner exited without run.json', file=sys.stderr, flush=True)
+        return 1
+    result = json.loads(report_file.read_text(encoding='utf-8'))
+    timing = progress.summary(output, policy.slow_case)
+    if timing['cases']:
+        print('GUI: %d cases, %.1fs, %d slow (>=%.0fs)' %
+              (timing['cases'], timing['seconds'], timing['slow'], policy.slow_case), flush=True)
+        for row in timing['slowest'][:10]:
+            print('  %6.1fs %s' % (row.get('duration', 0), row['nodeid']), flush=True)
+    return 0 if (result.get('exit_code') == 0 and result.get('cleanup_complete')
+                 and not result.get('cancelled') and not result.get('timed_out')) else 1
+
+
+def engine_main(args, tests):
+    policy = args.policy
+    output = args.output_path
+    args.until = time.monotonic() + policy.run
+    os.environ['WINLEX_TEST_POLICY'] = policy.dump()
     attempts, excluded = [], set()
     folder = output
-    output.mkdir(parents=True, exist_ok=True)
     operation_deadline.configure(output, prefix='runner-')
-    operation_deadline.phase('runner', 'startup', 15)
+    operation_deadline.phase('runner', 'startup', policy.startup)
     while True:
         with (output / 'attempts.jsonl').open('a', encoding='utf-8') as stream:
             stream.write(json.dumps({'directory': str(folder.relative_to(output))}) + '\n')
-        result = run_attempt(args, tests, folder, output, excluded)
+        result = run_attempt(args, tests, folder, output, excluded, policy)
         attempts.append((folder, result))
         timeout = result.get('timeout')
-        if (output / 'cancel').exists():
+        if (output / "cancel").exists():
             result['cancelled'] = True
         if not timeout or not result['cleanup_complete'] or result['cancelled']:
             break
@@ -57,19 +144,41 @@ def main():
             break  # A collection failure has no safely resumable case boundary.
         excluded.update(row['nodeid'] for row in records(folder / 'timings.jsonl') if row['phase'] == 'teardown')
         excluded.add(timeout['nodeid'])
-        if not any(nodeid not in excluded for nodeid in selection) or time.monotonic() >= args.until:
+        remaining = args.until - time.monotonic()
+        if not any(nodeid not in excluded for nodeid in selection) or remaining <= operation_deadline.DIAGNOSTIC_GRACE:
+            break
+        if sum(1 for _, attempt in attempts if attempt.get('timed_out')) >= policy.consecutive:
+            result['termination_reason'] = 'repeated_timeouts'
             break
         folder = output / 'continued' / str(len(attempts))
-        operation_deadline.phase('runner', 'startup', min(15, args.until - time.monotonic()))
+        operation_deadline.phase('runner', 'startup', min(policy.startup, remaining))
     if any(result.get('timeout') for _, result in attempts):
         counts = merge(attempts, output)
+        timeouts = [row['timeout'] for _, row in attempts if row.get('timeout')]
+        source = next((row for _, row in attempts
+                       if row.get('timeout') and row.get('termination_reason')), None)
         result = dict(result, exit_code=1, timed_out=True, case_counts=counts,
-                      timeout=next(row['timeout'] for _, row in attempts if row.get('timeout')),
-                      case_timeouts=[row['timeout'] for _, row in attempts if row.get('timeout')])
+                      timeout=timeouts[0], case_timeouts=timeouts,
+                      termination_reason=(result.get('termination_reason') or
+                                          (source or {}).get('termination_reason') or
+                                          'case_timeout'),
+                      stalled=any(row.get('stalled') for _, row in attempts))
     elif result['cleanup_complete'] and (result['timed_out'] or result['cancelled']):
         # A stopped first worker cannot flush pytest's JUnit. Retain committed
         # phases and mark its interrupted case without authorizing continuation.
         result['case_counts'] = merge(attempts, output)
+    if result.get('timed_out') or result.get('cancelled'):
+        selection_path = output / 'selection.json'
+        if selection_path.exists():
+            selection = json.loads(selection_path.read_text(encoding='utf-8'))
+            completed = [row['nodeid'] for folder, _ in attempts
+                         for row in records(folder / 'timings.jsonl')
+                         if row['phase'] == 'teardown']
+            if completed:
+                result['last_completed'] = completed[-1]
+            timed_out = {row['timeout']['nodeid'] for _, row in attempts if row.get('timeout')}
+            result['remaining'] = sum(1 for nodeid in selection
+                                      if nodeid not in completed and nodeid not in timed_out)
     publication = output / 'run.new'
     publication.write_text(json.dumps(result, indent=2), encoding='utf-8')
     publication.replace(output / 'run.json')
@@ -78,7 +187,7 @@ def main():
                  and not result['cancelled'] and not result['timed_out']) else 1
 
 
-def run_attempt(args, tests, output, root, excluded):
+def run_attempt(args, tests, output, root, excluded, policy):
     interactive = '--real-input' in tests
     output.mkdir(parents=True, exist_ok=True)
     job = win32job.CreateJobObject(None, "")
@@ -115,7 +224,8 @@ def run_attempt(args, tests, output, root, excluded):
             "--artifacts", str(output), "--junitxml", str(output / "tests.xml"),
             "-o", "cache_dir=" + str(output / "cache"), *tests,
         ])
-        environment = {**os.environ, "WINLEX_TEST_LEDGER": str(output / "profiles")}
+        environment = {**os.environ, "WINLEX_TEST_LEDGER": str(output / "profiles"),
+                       "WINLEX_TEST_POLICY": policy.dump()}
         environment['WINLEX_TEST_DEADLINE'] = str(args.until)
         exclusion_file = output / 'excluded.json'
         exclusion_file.write_text(json.dumps(sorted(excluded)), encoding='utf-8')
@@ -130,23 +240,27 @@ def run_attempt(args, tests, output, root, excluded):
         assigned = True
         win32process.ResumeThread(thread)
         operation_deadline.phase('runner', 'execution', max(.001, args.until - time.monotonic()))
-        while win32event.WaitForSingleObject(process, 100) == win32con.WAIT_TIMEOUT:
-            if (root / "cancel").exists():
-                result["cancelled"] = True
-                break
-            if time.monotonic() >= args.until:
-                result.update(timed_out=True, termination_reason='budget_exhausted',
-                              budget_deadline=args.until,
-                              active_context=operation_deadline.current_record(output / 'deadlines.jsonl'),
-                              pytest_stack=str(output / 'timeout-stacks.log'))
-                break
-            overdue = operation_deadline.expired(operation_deadline.current_record(output / 'deadlines.jsonl'))
-            if overdue:
-                result['timed_out'] = True
-                result['timeout'] = overdue
-                break
-        if not result["timed_out"] and not result["cancelled"]:
-            result["exit_code"] = win32process.GetExitCodeProcess(process)
+        outcome = supervisor.monitor_pytest(
+            process, output, policy, args.until, root / 'cancel',
+            on_tick=operation_deadline.progress,
+            poll=lambda: (None if win32event.WaitForSingleObject(process, 0) == win32con.WAIT_TIMEOUT
+                          else win32process.GetExitCodeProcess(process)))
+        if outcome.get('cancelled'):
+            result['cancelled'] = True
+        elif outcome.get('timed_out'):
+            result['timed_out'] = True
+            result['stalled'] = bool(outcome.get('stalled'))
+            result['termination_reason'] = ('stalled' if outcome.get('stalled') else
+                                            'budget_exhausted' if outcome.get('budget_exhausted') else
+                                            'case_timeout')
+            if outcome.get('timeout'):
+                result['timeout'] = outcome['timeout']
+            if outcome.get('budget_exhausted'):
+                result['budget_deadline'] = args.until
+                result['active_context'] = operation_deadline.current_record(output / 'deadlines.jsonl')
+                result['pytest_stack'] = str(output / 'timeout-stacks.log')
+        else:
+            result['exit_code'] = outcome.get('exit_code')
     except KeyboardInterrupt:
         result["cancelled"] = True
     except Exception as error:
@@ -155,7 +269,7 @@ def run_attempt(args, tests, output, root, excluded):
         # Stop writers before freezing the cleanup inventory. This preparation
         # has its own absolute ceiling; it cannot renew the execution budget.
         cleanup_started = time.monotonic()
-        inventory_budget = 10 + (10 if process and not assigned else 0) + 10
+        inventory_budget = policy.inventory + (policy.inventory if process and not assigned else 0) + policy.inventory
         operation_deadline.phase('runner', 'cleanup-inventory', inventory_budget)
         try:
             if result.get('termination_reason') == 'budget_exhausted':
@@ -164,10 +278,10 @@ def run_attempt(args, tests, output, root, excluded):
                 time.sleep(max(0, args.until + operation_deadline.DIAGNOSTIC_GRACE - time.monotonic()))
             if process and not assigned:
                 win32process.TerminateProcess(process, 1)
-                if win32event.WaitForSingleObject(process, 10000) != win32con.WAIT_OBJECT_0:
+                if win32event.WaitForSingleObject(process, int(policy.cleanup_wait * 1000)) != win32con.WAIT_OBJECT_0:
                     raise RuntimeError("Unassigned test process did not terminate")
             win32job.TerminateJobObject(job, 1)
-            deadline = time.monotonic() + 10
+            deadline = time.monotonic() + policy.cleanup_wait
             while win32job.QueryInformationJobObject(job, win32job.JobObjectBasicAccountingInformation)["ActiveProcesses"]:
                 if time.monotonic() > deadline:
                     raise RuntimeError("Job still has active processes")
@@ -214,7 +328,7 @@ def run_attempt(args, tests, output, root, excluded):
         handles = [handle for handle in (thread, process, job) if handle]
         # A watchdog may need its native recovery cap (10s) followed by task
         # cleanup (5s). A recovery marker alone is not a final success receipt.
-        cleanup_budget = inventory_budget + 15 * len(receipts) + 10 * (len(profiles) + len(reports) + len(handles)
+        cleanup_budget = inventory_budget + policy.cleanup_receipt * len(receipts) + policy.cleanup_step * (len(profiles) + len(reports) + len(handles)
                                + bool(input_mutex) + bool(desktop) + 1) + sum(ledger_budgets.values())
         plan = {'attempt': str(output.relative_to(root)), 'deadline': cleanup_started + cleanup_budget,
                 'budget': cleanup_budget, 'profiles': len(profiles), 'receipts': len(receipts),
@@ -225,7 +339,7 @@ def run_attempt(args, tests, output, root, excluded):
         operation_deadline.phase('runner', 'cleanup', max(.001, plan['deadline'] - time.monotonic()))
         for entry in profiles:
             try:
-                with operation_deadline.operation('remove test profile', 10):
+                with operation_deadline.operation('remove test profile', policy.cleanup_step):
                     profile_root = entry.read_text(encoding="utf-8")
                     assert profile_root == "Software\\Winlex\\Tests\\" + entry.stem
                     try:
@@ -251,7 +365,7 @@ def run_attempt(args, tests, output, root, excluded):
             result["cleanup_errors"].append("Input ledger exists without ownership of the active desktop")
         for report in reports:
             try:
-                with operation_deadline.operation('read cleanup report', 10):
+                with operation_deadline.operation('read cleanup report', policy.cleanup_step):
                     recorded = json.loads(report.read_text(encoding="utf-8"))
                     if not recorded["cleanup_complete"]:
                         result["cleanup_errors"].extend(recorded["errors"])
@@ -259,8 +373,8 @@ def run_attempt(args, tests, output, root, excluded):
                 result["cleanup_errors"].append(str(error))
         for receipt in receipts:
             try:
-                with operation_deadline.operation('verify high-contrast recovery receipt', 15):
-                    until = time.monotonic() + 15
+                with operation_deadline.operation('verify high-contrast recovery receipt', policy.cleanup_receipt):
+                    until = time.monotonic() + policy.cleanup_receipt
                     while not receipt.exists() and time.monotonic() < until:
                         time.sleep(.05)
                     if not receipt.exists() or not json.loads(receipt.read_text(encoding='utf-8')).get('ok'):
@@ -270,13 +384,13 @@ def run_attempt(args, tests, output, root, excluded):
         for handle in handles:
             if handle:
                 try:
-                    with operation_deadline.operation('close test process/job handle', 10):
+                    with operation_deadline.operation('close test process/job handle', policy.cleanup_step):
                         win32api.CloseHandle(handle)
                 except Exception as error:
                     result["cleanup_errors"].append(str(error))
         if input_mutex:
             try:
-                with operation_deadline.operation('release input ownership', 10):
+                with operation_deadline.operation('release input ownership', policy.cleanup_step):
                     if input_owned:
                         win32event.ReleaseMutex(input_mutex)
                     win32api.CloseHandle(input_mutex)
@@ -284,7 +398,7 @@ def run_attempt(args, tests, output, root, excluded):
                 result["cleanup_errors"].append(str(error))
         if desktop:
             try:
-                with operation_deadline.operation('close test desktop', 10):
+                with operation_deadline.operation('close test desktop', policy.cleanup_step):
                     desktop.CloseDesktop()
             except Exception as error:
                 result["cleanup_errors"].append(str(error))

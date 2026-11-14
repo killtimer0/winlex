@@ -287,7 +287,7 @@ HC_COLOR_ROLES = {
 }
 
 
-@deadline.operation('read explicit high contrast appearance fixture', 5)
+@deadline.operation('read explicit high contrast appearance fixture')
 def read_high_contrast_appearance(path):
     path = path.resolve(strict=True)
     with path.open('rb') as stream:
@@ -357,7 +357,7 @@ def temporary_high_contrast(snapshot, artifact, appearance=None):
     created = False
     launch_requested = False
     try:
-        with deadline.operation('register independent high contrast recovery', 15):
+        with deadline.operation('register independent high contrast recovery'):
             from support.task_scheduler import new_work_item
             task = new_work_item(name)
             created = True
@@ -397,7 +397,7 @@ def temporary_high_contrast(snapshot, artifact, appearance=None):
                 'original_palette': original_palette, 'high_contrast_palettes': []}
     try:
         watchdog_record(cleanup, json.dumps(evidence))
-        with deadline.operation('enable native system high contrast', 10):
+        with deadline.operation('enable native system high contrast'):
             set_high_contrast((snapshot[0] | HCF_HIGHCONTRASTON, snapshot[1]))
         n.wait(lambda: high_contrast()[0] & HCF_HIGHCONTRASTON,
                'real system high contrast is enabled', 10)
@@ -430,7 +430,7 @@ def temporary_high_contrast(snapshot, artifact, appearance=None):
             if high_contrast()[0] & HCF_HIGHCONTRASTON:
                 evidence['high_contrast_palettes'].append(native_system_palette())
             watchdog_record(cleanup, json.dumps(evidence))
-            with deadline.operation('restore native system high contrast', 10):
+            with deadline.operation('restore native system high contrast'):
                 until = time.monotonic() + 10
                 set_high_contrast(snapshot)
                 remaining = until - time.monotonic()

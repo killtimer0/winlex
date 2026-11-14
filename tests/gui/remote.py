@@ -16,6 +16,9 @@ import time
 import uuid
 import zipfile
 
+from support import progress, supervisor
+from support.policy import Policy
+
 
 def atomic(path, value):
     temporary = path.with_suffix(".new")
@@ -51,45 +54,6 @@ def transfer_path(config, path):
     if prefix is not None and len(path) > 2 and path[1:3] == ":/":
         return prefix.rstrip("/") + "/" + path[0].upper() + path[2:]
     return path
-
-
-def last_record(path):
-    try:
-        with path.open("rb") as stream:
-            stream.seek(0, 2)
-            stream.seek(max(0, stream.tell() - 8192))
-            lines = stream.read().splitlines()
-    except FileNotFoundError:
-        return None
-    for line in reversed(lines):
-        try:
-            record = json.loads(line)
-        except ValueError:
-            continue
-        if isinstance(record, dict):
-            return record
-    return None
-
-
-def run_progress(path):
-    if (path / "actual" / "progress.jsonl").exists():
-        path = path / "actual"
-    attempt = last_record(path / 'attempts.jsonl')
-    if attempt:
-        path = path / attempt['directory']
-    started = last_record(path / "progress.jsonl")
-    if started is None:
-        return None
-    completed = last_record(path / "timings.jsonl")
-    active = completed is None or any(completed[key] != started[key] for key in ("nodeid", "phase"))
-    result = {"nodeid": started["nodeid"], "phase": started["phase"], "active": active,
-              "elapsed": max(0, time.monotonic() - started["monotonic"]) if active else completed["duration"]}
-    operation = last_record(path / 'deadlines.jsonl')
-    if active and operation and all(operation.get(key) == started[key] for key in ('nodeid', 'phase')):
-        result['operation'] = operation['operation']
-        result['budget'] = operation['budget']
-        result['remaining'] = max(0, operation['deadline'] - time.monotonic())
-    return result
 
 
 def rpc(root, request):
@@ -148,8 +112,8 @@ def rpc(root, request):
             result = rpc(root, {**request, "action": "status"})
             if result.get("state") not in ("running", "queued"):
                 return {**result, "watch_event": "finished"}
-            progress = result.get("progress")
-            if progress and progress["active"] and progress["elapsed"] >= request["slow_after"]:
+            state = result.get("progress")
+            if state and state["active"] and state["elapsed"] >= request["slow_after"]:
                 return {**result, "watch_event": "slow_phase"}
             if time.monotonic() >= deadline:
                 return {**result, "watch_event": "watch_timeout"}
@@ -163,16 +127,16 @@ def rpc(root, request):
         (path / "cancel").touch()
         return {"cancel_requested": True}
     if action == "status":
-        supervisor = path / 'supervisor.json'
-        if supervisor.exists():
-            return json.loads(supervisor.read_text(encoding='utf-8'))
+        failure = path / 'supervisor.json'
+        if failure.exists():
+            return json.loads(failure.read_text(encoding='utf-8'))
         result = path / "run.json"
         if result.exists():
             return json.loads(result.read_text(encoding="utf-8"))
         result = {"state": "running" if (path / "started.json").exists() else "queued"}
-        progress = run_progress(path)
-        if progress is not None:
-            result["progress"] = progress
+        active = progress.active(path)
+        if active is not None:
+            result["progress"] = active
         return result
     if action == "collect":
         from support.paths import extended
@@ -184,67 +148,6 @@ def rpc(root, request):
                     output.write(file, str(file.relative_to(root)))
         return {"archive": str(archive)}
     raise ValueError(action)
-
-
-def supervise_runner(process, path, timeout, started, heartbeat):
-    """Observe the runner; never replay input or take over its cleanup."""
-    from support import deadline
-    plans = {}
-    startup = True
-    ceiling = started + 15
-    while process.poll() is None:
-        heartbeat()
-        now = time.monotonic()
-        operation = deadline.current_record(path / 'runner-deadlines.jsonl')
-        if operation:
-            if operation.get('phase') != 'startup':
-                startup = False
-            ceiling = started + 15 + timeout
-            if startup:
-                ceiling = started + 15
-            elif operation.get('phase') == 'cleanup-inventory':
-                ceiling = operation['deadline']
-            elif operation.get('phase') == 'cleanup':
-                plan = last_record(path / 'runner-cleanup.jsonl')
-                if plan:
-                    ceiling = plans.setdefault(plan['attempt'], plan['deadline'])
-                else:
-                    ceiling = min(ceiling, operation['deadline'])
-        overdue = deadline.expired(operation, now)
-        if overdue or now > ceiling + deadline.DIAGNOSTIC_GRACE:
-            reason = 'Runner deadline exceeded'
-            if overdue:
-                reason += ': ' + overdue['operation']
-            break
-        time.sleep(.05)
-    else:
-        if (path / 'run.json').exists():
-            try:
-                report = json.loads((path / 'run.json').read_text(encoding='utf-8'))
-                if isinstance(report, dict) and report.get('cleanup_complete'):
-                    return True
-                reason = 'Runner cleanup incomplete'
-            except (ValueError, OSError) as error:
-                reason = 'Invalid runner cleanup report: ' + str(error)
-        else:
-            reason = 'Runner exited without cleanup report'
-    # Killing the runner only closes its job; it does not establish recovery of
-    # input, profiles or independent watchdogs. Preserve run.json as evidence,
-    # but never let an old success override this authoritative terminal status.
-    killed = False
-    try:
-        if process.poll() is None:
-            process.kill()
-        process.wait(timeout=10)
-        killed = True
-    except (OSError, subprocess.TimeoutExpired) as error:
-        reason += ': ' + str(error)
-    atomic(path / 'supervisor.json', {
-        'state': 'supervisor_failed', 'exit_code': process.returncode,
-        'cleanup_complete': False, 'error': reason, 'runner_terminated': killed,
-        'worker_available': False,
-    })
-    return False
 
 
 def worker(root, once=False):
@@ -284,19 +187,28 @@ def worker(root, once=False):
             if (path / "cancel").exists():
                 atomic(path / "run.json", {"cancelled": True, "cleanup_complete": True, "state": "cancelled_before_start"})
                 continue
-            command = [sys.executable, str(Path(__file__).with_name("run.py")), "--output", str(path),
-                       "--timeout", str(data["timeout"]), "--desktop", data["desktop"], *data["tests"]]
+            policy = Policy.load().overrides(
+                run=data["timeout"], call=data.get("case_timeout"),
+                stall=data.get("stall_after"),
+                consecutive=data.get("consecutive_timeouts"))
+            command = [sys.executable, str(Path(__file__).with_name("run.py")), "--engine",
+                       "--output", str(path), "--timeout", str(policy.run),
+                       "--case-timeout", str(policy.call), "--stall-after", str(policy.stall),
+                       "--consecutive-timeouts", str(policy.consecutive),
+                       "--desktop", data["desktop"], *data["tests"]]
             with (path / "output.log").open("w", encoding="utf-8") as log:
                 started = time.monotonic()
                 process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
                                            env={**os.environ, "PYTHONUTF8": "1"})
                 try:
-                    safe = supervise_runner(process, path, data['timeout'], started,
-                        lambda: atomic(root / 'capabilities.json', {**capabilities, 'heartbeat': time.time()}))
+                    safe = supervisor.supervise_runner(process, path, policy.run, started,
+                        lambda: atomic(root / 'capabilities.json', {**capabilities, 'heartbeat': time.time()}),
+                        policy=policy)
                 except KeyboardInterrupt:
                     (path / "cancel").touch()
-                    safe = supervise_runner(process, path, data['timeout'], started,
-                        lambda: atomic(root / 'capabilities.json', {**capabilities, 'heartbeat': time.time()}))
+                    safe = supervisor.supervise_runner(process, path, policy.run, started,
+                        lambda: atomic(root / 'capabilities.json', {**capabilities, 'heartbeat': time.time()}),
+                        policy=policy)
                     if safe:
                         raise
             if not safe:
@@ -320,13 +232,20 @@ def main():
     parser.add_argument("--source", type=Path)
     parser.add_argument("--destination")
     parser.add_argument("--run-id")
-    parser.add_argument("--timeout", type=int, default=1800)
+    parser.add_argument("--timeout", type=int, default=900)
+    parser.add_argument("--case-timeout", type=int)
+    parser.add_argument("--stall-after", type=float)
+    parser.add_argument("--consecutive-timeouts", type=int)
     parser.add_argument("--slow-after", type=float, default=15)
     parser.add_argument("--desktop", choices=("isolated", "current"), default="isolated")
     parser.add_argument("--output", type=Path, default=Path("tmp/remote-tests"))
     args, tests = parser.parse_known_args()
     if args.slow_after <= 0:
         parser.error("--slow-after must be positive")
+    if args.timeout <= 0 or any(value is not None and value <= 0
+                                for value in (args.case_timeout, args.stall_after,
+                                              args.consecutive_timeouts)):
+        parser.error("timeout budgets must be positive")
     if args.action == "submit" and "--real-input" in tests and args.desktop != "current":
         parser.error("--real-input requires --desktop current")
     if args.action == "worker":
@@ -352,7 +271,10 @@ def main():
         print(json.dumps({"deployed": args.destination}))
         return
     request = {"action": args.action, "run_id": args.run_id or uuid.uuid4().hex,
-               "timeout": args.timeout, "slow_after": args.slow_after, "desktop": args.desktop, "tests": tests}
+               "timeout": args.timeout, "case_timeout": args.case_timeout,
+               "stall_after": args.stall_after,
+               "consecutive_timeouts": args.consecutive_timeouts,
+               "slow_after": args.slow_after, "desktop": args.desktop, "tests": tests}
     if config["transport"] == "local":
         result = rpc(Path(config["root"]).resolve(), request)
     else:

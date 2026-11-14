@@ -1,4 +1,4 @@
-"""Publish operation deadlines for the supervising process; retain blocked stacks."""
+"""Publish run progress and deadlines; retain blocked stacks."""
 from contextlib import contextmanager
 import faulthandler
 import json
@@ -7,10 +7,16 @@ from pathlib import Path
 import threading
 import time
 
+from .policy import Policy
+
 DIAGNOSTIC_GRACE = .25
+_HEARTBEAT_INTERVAL = .25
 
 _path = None
 _log = None
+_heartbeat = None
+_last_beat = 0.0
+_stall = None
 _current = None
 _until = None
 _condition = threading.Condition()
@@ -19,14 +25,40 @@ _pending = None
 
 
 def configure(output, prefix=''):
-    global _path, _log, _until
+    global _path, _log, _until, _heartbeat, _last_beat, _stall
     close()
     with _condition:
         _path = Path(output) / (prefix + 'deadlines.jsonl')
         _log = (Path(output) / (prefix + 'timeout-stacks.log')).open('a', encoding='utf-8')
+        _heartbeat = Path(output) / (prefix + 'heartbeat')
+        _heartbeat.touch()
+        _last_beat = time.monotonic()
+        _stall = Policy.load().stall
         # The runner has its own cleanup timers. Only pytest's diagnostics share
         # its absolute execution ceiling; published operation budgets stay intact.
         _until = float(os.environ['WINLEX_TEST_DEADLINE']) if not prefix and 'WINLEX_TEST_DEADLINE' in os.environ else None
+
+
+def progress():
+    """Refresh the liveness heartbeat from a polling test thread."""
+    global _last_beat
+    if _heartbeat is None:
+        return
+    now = time.monotonic()
+    if now - _last_beat < _HEARTBEAT_INTERVAL:
+        return
+    _last_beat = now
+    try:
+        os.utime(_heartbeat, None)
+    except OSError:
+        pass
+
+
+def heartbeat_age(path, now=None):
+    try:
+        return max(0.0, (time.time() if now is None else now) - Path(path).stat().st_mtime)
+    except OSError:
+        return None
 
 
 def _diagnose():
@@ -57,8 +89,12 @@ def _publish(value):
         faulthandler.cancel_dump_traceback_later()
         _pending = None
         if value is not None:
-            _pending = min(value['deadline'], _until) if _until is not None else value['deadline']
             now = time.monotonic()
+            # Sample a long-running operation once. The supervisor decides
+            # whether the stale heartbeat is a stall; this timer only retains
+            # the stack needed to tell a blocked call from a slow one.
+            soft = now + _stall if _stall else value['deadline']
+            _pending = min(value['deadline'], soft, _until) if _until is not None else min(value['deadline'], soft)
             if _pending <= now:
                 # Restoring an overdue enclosing operation must not arm an
                 # immediate asynchronous dump while Python is active again.
@@ -87,11 +123,27 @@ def phase(nodeid, name, seconds):
 
 
 @contextmanager
-def operation(description, seconds):
+def operation(description, seconds=None):
+    """Name the current operation. Only an explicit budget ends the process."""
     if _path is None:
         yield
         return
     previous = _current
+    if seconds is None:
+        if previous is None:
+            value = {'operation': description, 'deadline': time.monotonic() + 3600,
+                     'budget': 3600}
+        else:
+            value = dict(previous, operation=description)
+        changed = value != previous
+        if changed:
+            _publish(value)
+        try:
+            yield
+        finally:
+            if changed:
+                _publish(previous)
+        return
     value = dict(previous or {}, operation=description,
                  deadline=time.monotonic() + seconds, budget=seconds)
     if previous and previous['deadline'] < value['deadline']:
@@ -107,7 +159,7 @@ def operation(description, seconds):
         if time.monotonic() > value['deadline']:
             raise AssertionError('Timeout: ' + value['operation'])
     finally:
-        if previous and changed:
+        if changed:
             _publish(previous)
 
 
@@ -135,7 +187,7 @@ def expired(value, now=None):
 
 
 def close():
-    global _path, _log, _current, _until
+    global _path, _log, _current, _until, _heartbeat, _stall
     with _condition:
         try:
             if _path is not None:
@@ -145,3 +197,5 @@ def close():
                     _log.close()
         finally:
             _path = _log = _current = _until = None
+            _heartbeat = None
+            _stall = None

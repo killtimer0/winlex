@@ -3,6 +3,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import threading
@@ -67,6 +68,81 @@ def test_second_deadline_contract_probe():
             stack = (output / 'timeout-stacks.log').read_text()
             self.assertIn('blocked_native_with_gil', stack)
 
+    def test_local_cli_resolves_one_output_directory_for_engine_and_supervisor(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / 'tmp') as directory:
+            folder = Path(directory)
+            probe = gui_probe.write_probe(folder, 'def test_output_probe():\n    pass\n')
+            process = subprocess.run([
+                sys.executable, str(ROOT / 'tests' / 'gui' / 'run.py'),
+                '--exe', sys.executable, str(probe),
+                '-o', 'python_files=' + probe.name, '--ignore-glob=*', '-q',
+            ], cwd=folder, capture_output=True, text=True, encoding='utf-8', timeout=60)
+            self.assertEqual(process.returncode, 0, process.stdout + process.stderr)
+            runs = list((folder / 'tmp' / 'gui-tests').iterdir())
+            self.assertEqual(len(runs), 1, 'CLI and engine selected different output directories')
+            self.assertTrue((runs[0] / 'run.json').exists())
+            self.assertFalse((runs[0] / 'supervisor.json').exists())
+
+    def test_stalled_native_call_is_detected_by_heartbeat_and_continued(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / 'tmp') as directory:
+            folder = Path(directory)
+            sentinel = folder / 'continued-after-stall'
+            started = time.monotonic()
+            output, result = self.run_probe(folder, '''
+import ctypes
+from pathlib import Path
+
+def blocked_native_with_gil():
+    sleep = ctypes.PyDLL('kernel32').Sleep
+    sleep.argtypes = [ctypes.c_ulong]
+    sleep.restype = None
+    sleep(60000)
+
+def test_first_deadline_contract_probe():
+    blocked_native_with_gil()
+
+def test_second_deadline_contract_probe():
+    Path(%r).touch()
+''' % str(sentinel), timeout=30,
+                extra=['--stall-after', '1', '--case-timeout', '30'])
+            self.assertLess(time.monotonic() - started, 15, result)
+            self.assertTrue(result['timed_out'], result)
+            self.assertEqual(result['termination_reason'], 'stalled')
+            self.assertTrue(result['timeout']['stalled'])
+            self.assertTrue(sentinel.exists(), 'stalled case prevented continuation')
+            self.assertEqual(result['remaining'], 0)
+            self.assertTrue(result['last_completed'].endswith('::test_second_deadline_contract_probe'))
+            stack = (output / 'timeout-stacks.log').read_text(encoding='utf-8')
+            self.assertIn('blocked_native_with_gil', stack)
+
+    def test_repeated_stalls_stop_before_remaining_cases(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / 'tmp') as directory:
+            folder = Path(directory)
+            sentinel = folder / 'unexpected-following-test'
+            output, result = self.run_probe(folder, '''
+import time
+from pathlib import Path
+from support import deadline
+
+def test_first_deadline_contract_probe():
+    with deadline.operation('first stalled operation', .1):
+        time.sleep(60)
+
+def test_second_deadline_contract_probe():
+    with deadline.operation('second stalled operation', .1):
+        time.sleep(60)
+
+def test_after_deadline_contract_probe():
+    Path(%r).touch()
+''' % str(sentinel))
+            self.assertTrue(result['timed_out'], result)
+            self.assertEqual(result['termination_reason'], 'repeated_timeouts')
+            self.assertFalse(sentinel.exists(), 'repeated stalls must stop the run')
+            self.assertFalse((output / 'continued' / '2').exists())
+            self.assertEqual(len(result['case_timeouts']), 2)
+            self.assertEqual(result['remaining'], 1)
+            self.assertNotIn('last_completed', result)
+
     def supervise_probe(self, folder, script, timeout=5):
         started = time.monotonic()
         output, safe, remote = gui_probe.supervise(folder, script, timeout=timeout)
@@ -92,7 +168,8 @@ run.operation_deadline.phase = phase
 run.win32api.CloseHandle = lambda handle: time.sleep(60)
 sys.argv = ['run.py', '--output', sys.argv[1], '--exe', sys.executable, %r,
             '--ignore-glob=*', '-k', 'deadline_contract_probe', '-q']
-raise SystemExit(run.main())
+args, tests = run.arguments()
+raise SystemExit(run.engine_main(args, tests))
 ''' % str(probe))
             self.assertEqual(status['state'], 'supervisor_failed', status)
             self.assertTrue(status['runner_terminated'], status)
@@ -120,7 +197,8 @@ output = Path(sys.argv[1])
 ledger = output / 'profiles' / 'input.json'
 ledger.write_text(json.dumps({'held': [], 'foreground': 0, 'cursor': [0, 0]}))
 sys.argv = ['run.py', '--output', str(output), '--desktop', 'current', '--real-input']
-raise SystemExit(run.main())
+args, tests = run.arguments()
+raise SystemExit(run.engine_main(args, tests))
 ''')
                 ledger = output / 'profiles' / 'input.json'
                 self.assertTrue(ledger.exists(), 'denied ownership must not consume the ledger')
@@ -166,7 +244,8 @@ def close(handle):
             time.sleep(3)
     original_close(handle)
 run.win32api.CloseHandle = close
-raise SystemExit(run.main())
+args, tests = run.arguments()
+raise SystemExit(run.engine_main(args, tests))
 ''' % (cancel, str(output / 'cancel')), [
                     '--output', str(output), '--timeout', '2',
                     '--exe', sys.executable, str(probe), '--ignore-glob=*',
@@ -179,8 +258,8 @@ raise SystemExit(run.main())
                 self.assertFalse(sentinel.exists())
                 self.assertFalse((output / 'continued').exists())
 
-    def run_probe(self, folder, code, cleanup_complete=True, timeout=10, exit_code=None):
-        output, process = gui_probe.run_probe(folder, code, timeout=timeout)
+    def run_probe(self, folder, code, cleanup_complete=True, timeout=10, exit_code=None, extra=()):
+        output, process = gui_probe.run_probe(folder, code, timeout=timeout, extra=extra)
         if exit_code is None:
             self.assertNotEqual(process.returncode, 0, process.stdout + process.stderr)
         else:
@@ -201,14 +280,15 @@ raise SystemExit(run.main())
             output, result = self.run_probe(folder, '''
 import time
 from pathlib import Path
-from support import native as n
+from support import deadline
 
 def test_before_deadline_contract_probe():
     with Path(%r).open('a') as stream:
         stream.write('once')
 
 def test_first_deadline_contract_probe():
-    n.wait(lambda: time.sleep(60), 'blocked callback contract', timeout=.5)
+    with deadline.operation('blocked callback contract', .5):
+        time.sleep(60)
 
 def test_second_deadline_contract_probe():
     Path(%r).touch()
@@ -310,7 +390,7 @@ def test_second_deadline_contract_probe():
 
 def test_third_deadline_contract_probe():
     Path(%r).touch()
-''' % str(sentinel))
+''' % str(sentinel), extra=['--consecutive-timeouts', '5'])
             self.assertEqual(result['exit_code'], 1)
             self.assertTrue(sentinel.exists())
             timeouts = result['case_timeouts']
@@ -352,7 +432,7 @@ def test_second_deadline_contract_probe():
 
 def test_after_deadline_contract_probe():
     record('after')
-''' % str(executions))
+''' % str(executions), extra=['--consecutive-timeouts', '5'])
             self.assertEqual(executions.read_text().splitlines(),
                              ['before', 'first', 'skipped', 'second', 'after'])
             self.assertEqual(len(result['case_timeouts']), 2)
@@ -390,7 +470,7 @@ def test_teardown_deadline_contract_probe(blocked_teardown):
 
 def test_after_deadline_contract_probe():
     Path(%r).touch()
-''' % str(sentinel))
+''' % str(sentinel), extra=['--consecutive-timeouts', '5'])
             self.assertTrue(sentinel.exists())
             self.assertEqual([row['phase'] for row in result['case_timeouts']], ['setup', 'teardown'])
             self.assertEqual(result['case_counts'], dict(tests=3, failures=1, errors=2, skipped=0))
@@ -433,8 +513,8 @@ def test_after_deadline_contract_probe():
 import run
 original_attempt = run.run_attempt
 
-def cancel_after_exit(args, tests, attempt, root, excluded):
-    result = original_attempt(args, tests, attempt, root, excluded)
+def cancel_after_exit(args, tests, attempt, root, excluded, policy):
+    result = original_attempt(args, tests, attempt, root, excluded, policy)
     assert result['exit_code'] == 0 and result['cleanup_complete'], result
     # Request cancellation at the real worker-exit/whole-run publication boundary.
     (root / 'cancel').touch()
@@ -443,7 +523,8 @@ def cancel_after_exit(args, tests, attempt, root, excluded):
 run.run_attempt = cancel_after_exit
 sys.argv = ['run.py', '--timeout', '10', '--output', %r, '--exe', sys.executable,
             %r, '-o', 'python_files=test_deadline_probe.py', '--ignore-glob=*', '-q']
-raise SystemExit(run.main())
+args, tests = run.arguments()
+raise SystemExit(run.engine_main(args, tests))
 ''' % (str(output), str(probe)))
             result = gui_probe.read_run(output)
             self.assertTrue(result['cancelled'], result)

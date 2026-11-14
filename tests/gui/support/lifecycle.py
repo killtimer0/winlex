@@ -7,12 +7,14 @@ import win32api
 import win32con
 import win32service
 from . import deadline
+from .policy import Policy
 
 
 def _phase_started(item, phase):
     output = Path(item.config.getoption('--artifacts'))
+    policy = Policy.load()
     marker = item.get_closest_marker('phase_timeout')
-    budget = marker.args[0] if marker and phase == 'call' else {'setup': 30, 'call': 120, 'teardown': 30}[phase]
+    budget = marker.args[0] if marker and phase == 'call' else policy.phase(phase)
     deadline.phase(item.nodeid, phase, budget)
     with (output / 'progress.jsonl').open('a', encoding='utf-8') as stream:
         stream.write(json.dumps({'nodeid': item.nodeid, 'phase': phase,

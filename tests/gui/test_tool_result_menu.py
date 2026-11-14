@@ -26,7 +26,7 @@ def test_tool_action_reuses_recent_instance_and_queries_default_scope(launch, se
     assert set(tools(app)) == {first, second}
     for identifier in (1811, 1812):
         control = n.get_item(first, identifier)
-        with deadline.operation('read tool default selection via UIA', 5):
+        with deadline.operation('read tool default selection via UIA'):
             selected = auto.ControlFromHandle(control).GetValuePattern().Value
         assert selected == app.choices(control)[0]
     assert n.window_text(n.get_item(first, 1810)) == "0x00000005"

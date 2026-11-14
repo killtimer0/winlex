@@ -22,7 +22,7 @@ def token_ranges(editor):
         yield token, document.Range(start, start + len(token))
 
 
-@deadline.operation('read declaration token font styles via TOM', 5)
+@deadline.operation('read declaration token font styles via TOM')
 def font_styles(editor):
     return {token: {'name': span.Font.Name, 'points': span.Font.Size,
                     'bold': span.Font.Bold, 'italic': span.Font.Italic,
@@ -30,7 +30,7 @@ def font_styles(editor):
             for token, span in token_ranges(editor)}
 
 
-@deadline.operation('measure rendered declaration tokens via TOM', 5)
+@deadline.operation('measure rendered declaration tokens via TOM')
 def rendered_metrics(editor):
     """Measure physical text advances and line boxes, including RichEdit zoom.
 
@@ -70,7 +70,7 @@ def assert_scaled(actual, baseline, ratio, *, readiness=False):
     return True
 
 
-@deadline.operation('read declaration token colors via UIA', 5)
+@deadline.operation('read declaration token colors via UIA')
 def text_colors(editor):
     # UIA range queries do not disturb the user's selection, unlike querying
     # EM_GETCHARFORMAT with a temporarily selected token.
@@ -162,7 +162,7 @@ def move_frame(frame, monitor, expected_dpi, records, artifact, layout_ready=lam
                 and state['dpi'] == expected_dpi)
 
     try:
-        with deadline.operation('move frame and adopt destination layout', 5), n.physical_dpi_context():
+        with deadline.operation('move frame and adopt destination layout'), n.physical_dpi_context():
             until = started + 5
             row['target'] = from_point(n.w.POINT(*row['requested']), 0)
             assert row['target'], 'Requested point has no native monitor'
@@ -237,7 +237,7 @@ def test_rich_edit_colors_and_selection_after_frame_dpi_update(
     selected = (start + 2, start + 9)
     n.send(editor, win32con.EM_SETSEL, *selected)
 
-    @deadline.operation('read declaration selection via TOM', 5)
+    @deadline.operation('read declaration selection via TOM')
     def selection():
         current = n.rich_edit_document(editor).Selection
         return current.Start, current.End

@@ -7,7 +7,7 @@ import uiautomation as auto
 from support import deadline, native as n
 from test_context import select_text, selection_packed
 
-@deadline.operation('set document window state via UIA', 5)
+@deadline.operation('set document window state via UIA')
 def window_state(hwnd, state):
     pattern = auto.ControlFromHandle(hwnd).GetPattern(auto.PatternId.WindowPattern)
     assert pattern.SetWindowVisualState(state, waitTime=0)
@@ -16,7 +16,7 @@ def window_state(hwnd, state):
         "requested native window state")
 
 
-@deadline.operation('resize document window via UIA', 5)
+@deadline.operation('resize document window via UIA')
 def resize(hwnd, width, height):
     pattern = auto.ControlFromHandle(hwnd).GetPattern(auto.PatternId.TransformPattern)
     assert pattern.Resize(width, height, waitTime=0)
@@ -302,7 +302,7 @@ def test_constant_summary_pseudocode_and_information_copy(launch, settings, copy
                            (1205, ("Source:", "来源：")),
                            (1203, ("Declaration", "声明"))]:
         hwnd = n.get_item(doc, control)
-        with deadline.operation('read summary accessibility name via UIA', 5):
+        with deadline.operation('read summary accessibility name via UIA'):
             accessible = auto.ControlFromHandle(hwnd).GetLegacyIAccessiblePattern()
             assert accessible.Name in names
     if not copy:
@@ -316,7 +316,7 @@ def test_constant_summary_pseudocode_and_information_copy(launch, settings, copy
             assert app.focused() == button
             wait_clipboard_available()
             sequence = clipboard.GetClipboardSequenceNumber()
-            with deadline.operation('open information menu via UIA', 5):
+            with deadline.operation('open information menu via UIA'):
                 auto.ControlFromHandle(button).Click(waitTime=0)
             find_popup(app)
             window = popup_window(app.process.pid)
@@ -330,7 +330,7 @@ def test_constant_summary_pseudocode_and_information_copy(launch, settings, copy
             assert clipboard_text() == value
             assert app.focused() == button
         sequence = clipboard.GetClipboardSequenceNumber()
-        with deadline.operation('open information menu via UIA', 5):
+        with deadline.operation('open information menu via UIA'):
             auto.ControlFromHandle(button).Click(waitTime=0)
         find_popup(app)
         window = popup_window(app.process.pid)

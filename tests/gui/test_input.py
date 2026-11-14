@@ -31,12 +31,12 @@ def test_real_sidebar_context_keys(launch, settings, command, control):
                 else:
                     inputs.state["held"].append(win32con.VK_SHIFT)
                     inputs.save()
-                    with deadline.operation('hold Shift for context menu gesture', 5):
+                    with deadline.operation('hold Shift for context menu gesture'):
                         auto.PressKey(win32con.VK_SHIFT, waitTime=0)
                     try:
                         inputs.key(win32con.VK_F10)
                     finally:
-                        with deadline.operation('release Shift after context menu gesture', 5):
+                        with deadline.operation('release Shift after context menu gesture'):
                             auto.ReleaseKey(win32con.VK_SHIFT, waitTime=0)
                         inputs.state["held"].remove(win32con.VK_SHIFT)
                         inputs.save()
@@ -52,15 +52,15 @@ def test_real_tool_toolbar_and_list_click(launch):
         app = launch()
         with foreground(app, input_state):
             toolbar = n.get_item(app.frame, 1113)
-            with deadline.operation('click tool toolbar button', 5):
+            with deadline.operation('click tool toolbar button'):
                 button = auto.ControlFromHandle(toolbar).Control(Name=app.toolbar_text(1800))
                 button.Click(waitTime=0)
             panel = n.wait(lambda: app.tool_list, "tool panel opened by toolbar click")
-            with deadline.operation('click tool list row', 15):
+            with deadline.operation('click tool list row'):
                 item = app.row(0, panel)
                 item.Click()
             assert app.active_document() is None
-            with deadline.operation('double click tool list row', 5):
+            with deadline.operation('double click tool list row'):
                 item.DoubleClick()
             n.wait(lambda: n.get_item(app.active_document(), 1816), "tool opened by list double click")
 
@@ -124,12 +124,12 @@ def test_real_tool_find_keyboard(launch):
             app.focus(n.get_item(doc, 1820))
             inputs.state["held"].append(win32con.VK_CONTROL)
             inputs.save()
-            with deadline.operation('hold Control for find gesture', 5):
+            with deadline.operation('hold Control for find gesture'):
                 auto.PressKey(win32con.VK_CONTROL, waitTime=0)
             try:
                 inputs.key(ord("F"))
             finally:
-                with deadline.operation('release Control after find gesture', 5):
+                with deadline.operation('release Control after find gesture'):
                     auto.ReleaseKey(win32con.VK_CONTROL, waitTime=0)
                 inputs.state["held"].remove(win32con.VK_CONTROL)
                 inputs.save()
@@ -143,12 +143,12 @@ def test_real_tool_find_keyboard(launch):
             n.wait(lambda: editor_selection(app, editor)[0] > first[0], "F3 finds next")
             inputs.state["held"].append(win32con.VK_SHIFT)
             inputs.save()
-            with deadline.operation('hold Shift for previous match gesture', 5):
+            with deadline.operation('hold Shift for previous match gesture'):
                 auto.PressKey(win32con.VK_SHIFT, waitTime=0)
             try:
                 inputs.key(win32con.VK_F3)
             finally:
-                with deadline.operation('release Shift after previous match gesture', 5):
+                with deadline.operation('release Shift after previous match gesture'):
                     auto.ReleaseKey(win32con.VK_SHIFT, waitTime=0)
                 inputs.state["held"].remove(win32con.VK_SHIFT)
                 inputs.save()

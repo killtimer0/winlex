@@ -14,7 +14,7 @@ def show_panel(app, command, control):
     app.focus(target)
 
 
-@deadline.operation('observe background search results via UIA', 5)
+@deadline.operation('observe background search results via UIA')
 def search_completed(app, results):
     return any(row.Name.splitlines()[0].endswith('.CreateFileW') for row in app.rows(results))
 
@@ -52,7 +52,7 @@ def test_search_completion_does_not_replace_other_panel_or_tool_status(launch, s
     ready = app.status_text()
     app.command(1040)
     results = app.results
-    with deadline.operation('submit background search via UIA', 5):
+    with deadline.operation('submit background search via UIA'):
         value = auto.ControlFromHandle(app.search).GetValuePattern()
         assert value.SetValue('CreateFileW', waitTime=0)
         n.wait(lambda: value.Value == 'CreateFileW', 'background search text updated', 15)
@@ -63,7 +63,7 @@ def test_search_completion_does_not_replace_other_panel_or_tool_status(launch, s
     app.focus(n.get_item(doc, 1810))
     assert app.status_text() == ready
     app.command(1040)
-    with deadline.operation('submit second background search via UIA', 5):
+    with deadline.operation('submit second background search via UIA'):
         value = auto.ControlFromHandle(app.search).GetValuePattern()
         assert value.SetValue('ERROR_ACCESS_DENIED', waitTime=0)
         n.wait(lambda: value.Value == 'ERROR_ACCESS_DENIED', 'second background search text updated', 15)

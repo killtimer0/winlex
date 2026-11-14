@@ -35,7 +35,7 @@ def activate(doc):
     n.wait(lambda: n.send(mdi, win32con.WM_MDIGETACTIVE) == doc, "tool document activated")
 
 
-@deadline.operation('close tool document via UIA', 5)
+@deadline.operation('close tool document via UIA')
 def close(doc):
     until = time.monotonic() + 5
     assert auto.ControlFromHandle(doc).GetWindowPattern().Close(waitTime=0)
@@ -44,7 +44,7 @@ def close(doc):
     n.wait(lambda: not n.is_window(doc), 'tool document closed', remaining)
 
 
-@deadline.operation('set tool window state via UIA', 5)
+@deadline.operation('set tool window state via UIA')
 def visual_state(hwnd, state):
     assert auto.ControlFromHandle(hwnd).GetWindowPattern().SetWindowVisualState(state)
 
@@ -67,7 +67,7 @@ def choose_scope(app, doc, index):
     select_combo(combo, app.choices(combo)[index])
 
 
-@deadline.operation('edit tool value via UIA', 5)
+@deadline.operation('edit tool value via UIA')
 def edit(doc, identifier, value):
     until = time.monotonic() + 5
     hwnd = n.get_item(doc, identifier)

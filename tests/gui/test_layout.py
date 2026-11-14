@@ -53,7 +53,7 @@ def test_list_selection_paint_follows_focus(launch, settings, sources):
             n.wait(lambda: background() == selected, "selection painting returns with focus")
 
 
-@deadline.operation('read toolbar button bounds via UIA', 5)
+@deadline.operation('read toolbar button bounds via UIA')
 def toolbar_button_rects(toolbar):
     buttons = auto.ControlFromHandle(toolbar).GetChildren()
     def button_rect(index):
@@ -82,7 +82,7 @@ def check_toolbar_and_search(app):
     assert n.send(toolbar, messages.TB_ISBUTTONCHECKED, 1021)
     assert not n.send(toolbar, messages.TB_ISBUTTONCHECKED, 1040)
     n.wait(lambda: app.focused() == app.sources, "mouse activation focuses sources")
-    with deadline.operation('read frame bounds via UIA', 5):
+    with deadline.operation('read frame bounds via UIA'):
         rect = auto.ControlFromHandle(app.frame).BoundingRectangle
         width, height = rect.width(), rect.height()
     resize(app.frame, width + 1, height)

@@ -13,7 +13,7 @@ from support.languages import LANGUAGES
 from support.input_state import InputState, foreground
 
 
-@deadline.operation('set settings category mask via UIA', 5)
+@deadline.operation('set settings category mask via UIA')
 def mask(app, sheet, value):
     page = app.settings_page(sheet, 1)
     for index in range(8):
@@ -23,7 +23,7 @@ def mask(app, sheet, value):
     return page
 
 
-@deadline.operation('read settings category mask via UIA', 5)
+@deadline.operation('read settings category mask via UIA')
 def checked(app, sheet):
     page = app.settings_page(sheet, 1)
     return sum(auto.ControlFromHandle(n.get_item(page, 1310 + index)).GetTogglePattern().ToggleState << index
@@ -186,7 +186,7 @@ def test_settings_refresh_preserves_document(launch, profile, settings, action):
     doc = app.open_row()
     n.wait(lambda: "CreateFileW(" in app.content(doc), "original declaration", 45)
     body = app.content(doc)
-    with deadline.operation('set search text before settings refresh', 5):
+    with deadline.operation('set search text before settings refresh'):
         value = auto.ControlFromHandle(app.search).GetValuePattern()
         assert value.SetValue('file', waitTime=0)
         n.wait(lambda: value.Value == 'file', 'settings refresh search text updated', 15)
@@ -278,7 +278,7 @@ def test_settings_dpi_pages(launch, settings, mode):
     get_dpi = n.api(n.user, "GetDpiForWindow", n.w.UINT, n.w.HWND) if hasattr(n.user, "GetDpiForWindow") else lambda _h: None
     for monitor in n.monitors():
         with n.window_dpi_context(app.frame):
-            with deadline.operation('move application frame via UIA', 5):
+            with deadline.operation('move application frame via UIA'):
                 auto.ControlFromHandle(app.frame).GetPattern(auto.PatternId.TransformPattern).Move(
                     monitor[0] + 30, monitor[1] + 30)
         sheet = app.settings()
@@ -287,7 +287,7 @@ def test_settings_dpi_pages(launch, settings, mode):
             with n.window_dpi_context(sheet):
                 outer = n.rectangle(page)
                 controls = []
-                with deadline.operation('observe settings page children via UIA', 5):
+                with deadline.operation('observe settings page children via UIA'):
                     for element in auto.ControlFromHandle(page).GetChildren():
                         control = element.NativeWindowHandle
                         rect = element.BoundingRectangle
@@ -315,7 +315,7 @@ def test_settings_dpi_pages(launch, settings, mode):
             initial = n.rectangle(sheet)
             returns = []
             for destination in (list(n.monitors()) + [monitor]) * 3:
-                with deadline.operation('move settings sheet via UIA', 5):
+                with deadline.operation('move settings sheet via UIA'):
                     auto.ControlFromHandle(sheet).GetPattern(auto.PatternId.TransformPattern).Move(
                         destination[0] + 40, destination[1] + 40)
                 app.settings_page(sheet, 1)
