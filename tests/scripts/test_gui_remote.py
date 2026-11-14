@@ -41,6 +41,27 @@ class WorkerAvailability(unittest.TestCase):
 @unittest.skipUnless(os.name == 'nt' and importlib.util.find_spec('uiautomation'),
                      'requires the Windows GUI test dependencies')
 class WholeRunCompletion(unittest.TestCase):
+    def test_completed_cleanup_is_accepted_by_the_supervisor(self):
+        remote = gui_probe.load_remote()
+        with tempfile.TemporaryDirectory(dir=ROOT / 'tmp') as directory:
+            output = Path(directory)
+            script = '''
+import json, sys, time
+from pathlib import Path
+output = Path(sys.argv[1])
+time.sleep(.2)
+(output / 'run.json').write_text(json.dumps({'exit_code': 0, 'cleanup_complete': True}))
+'''
+            started = time.monotonic()
+            process = subprocess.Popen([sys.executable, '-c', script, str(output)])
+            try:
+                self.assertTrue(remote.supervise_runner(process, output, 2, started, lambda: None))
+                self.assertEqual(process.returncode, 0)
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                process.wait(timeout=5)
+
     def test_status_and_watch_wait_for_real_timeout_continuation(self):
         remote = gui_probe.load_remote()
         with tempfile.TemporaryDirectory(dir=ROOT / 'tmp') as directory:
