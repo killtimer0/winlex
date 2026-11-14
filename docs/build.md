@@ -86,6 +86,14 @@ python -m unittest discover -s tests/scripts -v
 
 `tests/metadata/run.py` 自动构建开发用 CLI，验证布局、泛型及跨源引用，报告写入 `tmp/verify/`。默认使用 Debug 和 Cargo 配置，可用 `--target`、`--target-dir`、`--profile` 覆盖。
 
+GUI crate 单元测试覆盖原生控件行为，会创建真实窗口；默认在远程目标执行，经明确允许才在本机运行：
+
+```powershell
+cargo test --target x86_64-pc-windows-msvc -p winlex-gui --locked
+```
+
+必须带 `--target`：属性表用例从 `target/<triple>/debug/winlex-gui.exe` 加载对话框模板，先运行 `scripts/build.ps1`，或用 `WINLEX_TEST_GUI_EXE` 指定其他构建。`-- --ignored` 的用例会移动指针、注入进程级导入或修改前台／uxtheme 全局状态，须在已解锁的独占桌面上单独运行；运行时跳过原因需加 `-- --nocapture` 才显示。
+
 使用 CLR 参考程序集验证基础类型与 COM 结构体的原生布局：
 
 ```powershell
@@ -127,7 +135,7 @@ dotnet build tests/gui/fixtures/SearchEntries.csproj -c Debug -o tmp/search-fixt
 Copy-Item tmp/search-fixtures/SearchEntries.dll inputs/SearchEntries.dll
 ```
 
-GUI 测试使用 pytest；普通契约测试默认在独立的非活动桌面执行 UI Automation：
+GUI 测试使用 pytest；普通契约测试默认在独立的非活动桌面执行 UI Automation。clippy 只编译 crate 测试，执行入口见上文的 `cargo test ... -p winlex-gui`：
 
 ```powershell
 cargo clippy -p winlex-gui --all-targets --locked -- -D warnings
