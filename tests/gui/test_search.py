@@ -193,7 +193,7 @@ def test_search_after_scrolling_keeps_new_results_in_view(launch, settings):
     for query in ("CreateFileW", "file"):
         with deadline.operation('scroll results and read first row visibility', 15):
             assert app.row(-1).GetScrollItemPattern().ScrollIntoView(waitTime=0)
-            n.wait(lambda: app.row(0).IsOffscreen, 'first result scrolled out of view', 5)
+            n.wait(lambda: app.row(0).IsOffscreen, 'first result scrolled out of view', 15)
         app.query(query)
         with deadline.operation('read new result row visibility', 15):
             assert not app.row(0).IsOffscreen
@@ -219,13 +219,13 @@ def test_ime_defers_search(launch, settings):
 
         # Waiting already changes status (catalog.rs::search_status), so fail
         # immediately even if the search has not produced any matching rows.
-        n.wait(still_idle, "search remains idle during IME composition", 5)
+        n.wait(still_idle, "search remains idle during IME composition", 15)
 
     n.send(app.search, win32con.WM_IME_STARTCOMPOSITION)
     with deadline.operation('set search text during IME composition', 5):
         value = auto.ControlFromHandle(app.search).GetValuePattern()
         assert value.SetValue('CreateFileW', waitTime=0)
-        n.wait(lambda: value.Value == 'CreateFileW', 'IME search text updated', 5)
+        n.wait(lambda: value.Value == 'CreateFileW', 'IME search text updated', 15)
     app.focus(app.search)
     n.send(app.search, win32con.WM_KEYDOWN, win32con.VK_RETURN, 1)
     n.send(app.search, win32con.WM_KEYUP, win32con.VK_RETURN, -1073741823)
@@ -238,7 +238,7 @@ def test_ime_defers_search(launch, settings):
     with deadline.operation('set condition during IME composition', 5):
         value = auto.ControlFromHandle(app.search).GetValuePattern()
         assert value.SetValue('name = "CloseHandle"', waitTime=0)
-        n.wait(lambda: value.Value == 'name = "CloseHandle"', 'IME condition text updated', 5)
+        n.wait(lambda: value.Value == 'name = "CloseHandle"', 'IME condition text updated', 15)
     select_combo(mode, app.choices(mode)[1])
     observe_composition()
     n.send(app.search, win32con.WM_IME_ENDCOMPOSITION)

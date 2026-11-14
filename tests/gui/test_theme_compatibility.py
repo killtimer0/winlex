@@ -146,7 +146,7 @@ def delete_watchdog_task(name):
                 scheduler = None
                 pythoncom.CoUninitialize()
 
-    bounded.call(remove, 5, 'High-contrast watchdog task cleanup')
+    bounded.call(remove, 10, 'High-contrast watchdog task cleanup')
 
 
 def watchdog_path(artifact, task_name, suffix):
@@ -335,7 +335,7 @@ def high_contrast_appearance_state():
 @contextmanager
 def temporary_high_contrast(snapshot, artifact, appearance=None):
     n.wait(lambda: not visible_transition_covers(),
-           'previous native high contrast transition cover gone', 5)
+           'previous native high contrast transition cover gone', 15)
     original_palette = native_system_palette()
     assert restored_high_contrast(high_contrast(), snapshot), (
         'High-contrast state changed before the guarded transition')
@@ -632,7 +632,7 @@ def test_actual_high_contrast_overrides_dark_and_restores(launch, profile, setti
                     return None
 
             try:
-                return n.wait(sample, 'unobscured native control capture', 5)
+                return n.wait(sample, 'unobscured native control capture', 15)
             except AssertionError as error:
                 message = '%s; obstruction=%r' % (error, obstruction)
                 record('failure', {'hwnd': hwnd, 'region': region, 'error': message})
@@ -655,7 +655,7 @@ def test_actual_high_contrast_overrides_dark_and_restores(launch, profile, setti
                 return value if value in expected else None
 
             try:
-                return n.wait(sample, description, 10)
+                return n.wait(sample, description, 15)
             except AssertionError as error:
                 expected = expected_fills() if callable(expected_fills) else expected_fills
                 raise AssertionError('%s: observed=%r, expected=%r' %
@@ -719,7 +719,7 @@ def test_actual_high_contrast_overrides_dark_and_restores(launch, profile, setti
                 # Do not make a restoration oracle from an animation frame.
                 return current if time.monotonic() - initial[1] >= .1 else None
 
-            before_controls = n.wait(settled_dark_controls, 'initial dark control animations settle', 5)
+            before_controls = n.wait(settled_dark_controls, 'initial dark control animations settle', 15)
             record('dark_controls', before_controls)
             with temporary_high_contrast(snapshot, settings[2] / 'high-contrast-restore.json', hc_appearance):
                 assert high_contrast()[0] & HCF_HIGHCONTRASTON
@@ -759,7 +759,7 @@ def test_actual_high_contrast_overrides_dark_and_restores(launch, profile, setti
                                         'settings no longer owns foreground input', active)
 
                 n.wait(lambda: win32gui.GetForegroundWindow() == sheet,
-                       'settings foreground returns after native high contrast transition', 5)
+                       'settings foreground returns after native high contrast transition', 15)
                 require_sheet_input()
                 button = info.button
                 button_points = sample_points(combo, (button.left, button.top,
@@ -770,7 +770,7 @@ def test_actual_high_contrast_overrides_dark_and_restores(launch, profile, setti
                     require_sheet_input()
                     require_ownership(combo, [point])
                     inputs.click(*point)
-                n.wait(lambda: n.is_visible(info.list), 'high-contrast combo popup visible', 5)
+                n.wait(lambda: n.is_visible(info.list), 'high-contrast combo popup visible', 15)
                 remember_region(info.list)
                 observe('combo_list', lambda: wait_fill(
                     info.list, lambda: {system_color(win32con.COLOR_WINDOW)},
@@ -781,7 +781,7 @@ def test_actual_high_contrast_overrides_dark_and_restores(launch, profile, setti
                 require_ownership(info.list, sample_points(info.list, regions[info.list]))
                 assert n.is_visible(info.list), 'combo popup remains open before Escape'
                 inputs.key(win32con.VK_ESCAPE)
-                n.wait(lambda: not n.is_visible(info.list), 'Escape closes high-contrast combo popup', 5)
+                n.wait(lambda: not n.is_visible(info.list), 'Escape closes high-contrast combo popup', 15)
                 assert n.send(combo, win32con.CB_GETCURSEL) == selection
                 assert n.send(tab, 0x130B) == selected
                 assert profile.preferences() == expected

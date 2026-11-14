@@ -185,7 +185,7 @@ def test_document_minimum_limits_normal_not_maximized_windows(launch, settings):
                     if stable_since is None:
                         stable_since = time.monotonic()
                     return time.monotonic() - stable_since >= 0.2
-                n.wait(aligned, "stable maximized document fills MDI client", 5)
+                n.wait(aligned, "stable maximized document fills MDI client", 15)
         assert n.rectangle(app.mdi, client=True)[3] < height
         window_state(doc, auto.WindowVisualState.Normal)
         resize(doc, 100, 100)

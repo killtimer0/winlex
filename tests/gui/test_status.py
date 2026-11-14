@@ -55,7 +55,7 @@ def test_search_completion_does_not_replace_other_panel_or_tool_status(launch, s
     with deadline.operation('submit background search via UIA', 5):
         value = auto.ControlFromHandle(app.search).GetValuePattern()
         assert value.SetValue('CreateFileW', waitTime=0)
-        n.wait(lambda: value.Value == 'CreateFileW', 'background search text updated', 5)
+        n.wait(lambda: value.Value == 'CreateFileW', 'background search text updated', 15)
     show_panel(app, 1021, 1112)
     n.wait(lambda: search_completed(app, results),
            "search completed in background", 45)
@@ -66,7 +66,7 @@ def test_search_completion_does_not_replace_other_panel_or_tool_status(launch, s
     with deadline.operation('submit second background search via UIA', 5):
         value = auto.ControlFromHandle(app.search).GetValuePattern()
         assert value.SetValue('ERROR_ACCESS_DENIED', waitTime=0)
-        n.wait(lambda: value.Value == 'ERROR_ACCESS_DENIED', 'second background search text updated', 5)
+        n.wait(lambda: value.Value == 'ERROR_ACCESS_DENIED', 'second background search text updated', 15)
     app.focus(n.get_item(doc, 1810))
     n.wait(lambda: app.named_rows("ERROR_ACCESS_DENIED"), "second search completed", 45)
     assert app.status_text() == ready

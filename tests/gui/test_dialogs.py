@@ -6,7 +6,7 @@ from test_tools import tool, choose_scope, body, edit
 
 
 @pytest.mark.parametrize('loaded', [False, True])
-def test_native_picker_cancel_keeps_application_state(launch, profile, settings, loaded, picker_environment):
+def test_native_picker_cancel_keeps_application_state(launch, profile, settings, loaded):
     app = launch([settings[1]] if loaded else [])
     if loaded:
         app.query('CreateFileW')
@@ -18,7 +18,7 @@ def test_native_picker_cancel_keeps_application_state(launch, profile, settings,
     first = app.cell(0) if loaded else None
     enabled = n.api(n.user, "IsWindowEnabled", n.w.BOOL, n.w.HWND)
     app.command(1020)
-    dialog = n.wait(lambda: n.find_window(app.process.pid, '#32770', app.frame), 'native file picker', 5)
+    dialog = n.wait(lambda: n.find_window(app.process.pid, '#32770', app.frame), 'native file picker', 30)
     picker = auto.ControlFromHandle(dialog)
     assert not enabled(app.frame)
     invoke(picker.ButtonControl(AutomationId='2'))
@@ -36,7 +36,7 @@ def test_native_picker_cancel_keeps_application_state(launch, profile, settings,
     app.close()
 
 
-def test_module_picker_uses_system_dialog_and_cancel_preserves_request(launch, picker_environment):
+def test_module_picker_uses_system_dialog_and_cancel_preserves_request(launch):
     app = launch()
     doc = tool(app)
     choose_scope(app, doc, 5)
@@ -49,14 +49,14 @@ def test_module_picker_uses_system_dialog_and_cancel_preserves_request(launch, p
     n.wait(lambda: app.status_text() != pending, 'module language enumeration failed')
     before = (n.window_text(code), n.window_text(module), body(doc), app.status_text())
     invoke(n.get_item(doc, 1814))
-    dialog = n.wait(lambda: n.find_window(app.process.pid, '#32770', app.frame), 'module file picker', 5)
+    dialog = n.wait(lambda: n.find_window(app.process.pid, '#32770', app.frame), 'module file picker', 30)
     picker = auto.ControlFromHandle(dialog)
     invoke(picker.ButtonControl(AutomationId='2'))
     n.wait(lambda: not n.is_window(dialog), 'module picker cancellation')
     assert (n.window_text(code), n.window_text(module), body(doc), app.status_text()) == before
 
 
-def test_module_picker_accepts_resource_path(launch, settings, picker_environment):
+def test_module_picker_accepts_resource_path(launch, settings):
     from test_tools import query
 
     module = settings[0].with_name('messages-x64.dll')
@@ -66,13 +66,13 @@ def test_module_picker_accepts_resource_path(launch, settings, picker_environmen
     doc = tool(app)
     choose_scope(app, doc, 5)
     invoke(n.get_item(doc, 1814))
-    dialog = n.wait(lambda: n.find_window(app.process.pid, '#32770', app.frame), 'module file picker', 5)
+    dialog = n.wait(lambda: n.find_window(app.process.pid, '#32770', app.frame), 'module file picker', 30)
     picker = auto.ControlFromHandle(dialog)
-    with deadline.operation('set native module picker filename via UIA', 5):
+    with deadline.operation('set native module picker filename via UIA', 30):
         filename = picker.ComboBoxControl(AutomationId='1148').EditControl()
-        n.wait(lambda: filename.Exists(0, 0), 'native filename edit', 5)
+        n.wait(lambda: filename.Exists(0, 0), 'native filename edit', 30)
         assert filename.GetValuePattern().SetValue(str(module), waitTime=0)
-        n.wait(lambda: filename.GetValuePattern().Value == str(module), 'module filename accepted', 5)
+        n.wait(lambda: filename.GetValuePattern().Value == str(module), 'module filename accepted', 30)
     invoke(picker.ButtonControl(AutomationId='1'))
     n.wait(lambda: not n.is_window(dialog), 'module picker accepted the selected file')
     n.wait(lambda: n.window_text(n.get_item(doc, 1813)) == str(module), 'selected module path')

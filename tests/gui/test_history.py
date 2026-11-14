@@ -312,7 +312,7 @@ def test_long_declaration_restores_full_utf16_selection_and_top_anchor(launch, s
         assert auto.ControlFromHandle(editor).GetPattern(auto.PatternId.ScrollPattern).SetScrollPercent(
             -1, 75, waitTime=0)
         top = n.wait(lambda: n.send(editor, win32con.EM_GETFIRSTVISIBLELINE),
-                     "long declaration scrolled below its first line", 5)
+                     "long declaration scrolled below its first line", 15)
         assert top > 0
     assert visit(app, "CloseHandle") == doc
     replay(app, HISTORY_BACK, "Apis", document=doc)

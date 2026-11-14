@@ -189,7 +189,7 @@ def test_settings_refresh_preserves_document(launch, profile, settings, action):
     with deadline.operation('set search text before settings refresh', 5):
         value = auto.ControlFromHandle(app.search).GetValuePattern()
         assert value.SetValue('file', waitTime=0)
-        n.wait(lambda: value.Value == 'file', 'settings refresh search text updated', 5)
+        n.wait(lambda: value.Value == 'file', 'settings refresh search text updated', 15)
     sheet = app.settings()
     mask(app, sheet, 1)
     if action == "apply":
@@ -256,7 +256,7 @@ def test_settings_save_failure_preserves_state(launch, profile, button):
     sheet = app.settings()
     mask(app, sheet, 0)
     invoke(n.get_item(sheet, button))
-    error = n.wait(lambda: n.find_window(app.process.pid, '#32770', sheet), 'settings save error', 5)
+    error = n.wait(lambda: n.find_window(app.process.pid, '#32770', sheet), 'settings save error', 15)
     error_control = auto.ControlFromHandle(error)
     invoke(error_control.ButtonControl())
     n.wait(lambda: not n.is_window(error), "save error dismissed")
@@ -357,7 +357,7 @@ def test_settings_pmv1_initial_paint(launch, settings):
         frame.SendKeys('{Alt}fs', waitTime=0)
         inputs.state['held'].remove(win32con.VK_MENU)
         inputs.save()
-        sheet = n.wait(lambda: n.find_window(app.process.pid, '#32770', app.frame), 'settings first paint', 5)
+        sheet = n.wait(lambda: n.find_window(app.process.pid, '#32770', app.frame), 'settings first paint', 15)
         sheet_control = auto.ControlFromHandle(sheet)
         assert get_dpi(sheet) != system_dpi
         page = sheet_control.ComboBoxControl(AutomationId='1300').GetParentControl()

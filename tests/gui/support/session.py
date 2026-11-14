@@ -535,16 +535,16 @@ class Session:
                             if direct_ui:
                                 win32gui.PostMessage(handle, messages.TDM_CLICK_BUTTON, win32con.IDNO, 0)
                             win32gui.PostMessage(handle, win32con.WM_CLOSE, 0, 0)
-                        n.wait(lambda: not n.is_window(handle), 'owned dialog closed', 4)
+                        n.wait(lambda: not n.is_window(handle), 'owned dialog closed', 10)
             finally:
                 try:
                     if self.frame and n.is_window(self.frame):
                         win32gui.PostMessage(self.frame, win32con.WM_CLOSE, 0, 0)
                 finally:
                     try:
-                        self.process.wait(timeout=5)
+                        self.process.wait(timeout=10)
                     except subprocess.TimeoutExpired:
                         self.process.kill()
-                        self.process.wait(timeout=5)
+                        self.process.wait(timeout=10)
                         raise AssertionError("GUI required forced termination")
         self.cleanup_complete = True

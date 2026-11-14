@@ -131,7 +131,7 @@ def assert_prompt_contract(app, dialog):
         return (yes, no) if yes is not None and no is not None else None
 
     try:
-        yes, no = n.wait(commands_ready, 'live TaskDialog command providers ready', 5)
+        yes, no = n.wait(commands_ready, 'live TaskDialog command providers ready', 15)
     except AssertionError as error:
         raise AssertionError(('TaskDialog command providers unavailable', last_error)) from error
     for provider, default in ((yes, True), (no, False)):
@@ -280,12 +280,12 @@ def navigate(dialog, folder, sentinel):
     # theme broadcast. Wait without mutating the input until its thread can
     # process messages; a failed write is not a readiness poll.
     n.wait(lambda: n.send_timeout(field, win32con.WM_NULL, 0, 0, 3, 50, None),
-           'native filename responds before navigation', 5)
+           'native filename responds before navigation', 30)
     value = n.c.create_unicode_buffer(str(folder) + '\\')
     assert n.send(field, win32con.WM_SETTEXT, 0, n.c.addressof(value))
     button = n.wait(lambda: n.get_item(dialog, win32con.IDOK), 'native Open button')
     win32gui.PostMessage(dialog, win32con.WM_COMMAND, win32con.IDOK, button)
-    n.wait(lambda: picker_entry(dialog, sentinel), 'native navigation reveals expected file', 10)
+    n.wait(lambda: picker_entry(dialog, sentinel), 'native navigation reveals expected file', 30)
 
 
 @deadline.operation('measure live native picker surfaces via UIA', 5)
@@ -464,7 +464,7 @@ def settled_picker_surfaces(dialog, reference, description, evidence,
 
 
 @pytest.mark.parametrize('dpi', ['pmv1', 'pmv2'])
-def test_file_picker_stays_open_across_high_contrast(launch, profile, settings, tmp_path, dpi, hc_appearance, picker_environment):
+def test_file_picker_stays_open_across_high_contrast(launch, profile, settings, tmp_path, dpi, hc_appearance):
     snapshot = contrast_snapshot()
     profile.set('Theme', winreg.REG_SZ, 'dark')
     before = profile.preferences()

@@ -2,7 +2,7 @@ import shutil
 from support import native as n
 
 
-def test_same_name_sources_open_and_unload_independently_with_failed_load_rollback(launch, profile, settings, picker_environment):
+def test_same_name_sources_open_and_unload_independently_with_failed_load_rollback(launch, profile, settings):
     directory = settings[2] / "independent"
     directory.mkdir()
     alias = directory / settings[1].name

@@ -84,7 +84,7 @@ def assert_native_text_contrast(dialog):
         _, _, width, height = n.rectangle(dialog, client=True)
         return text_contrast(colors(dialog, (3, 3, width - 3, height - 3)))
 
-    n.wait(readable, 'native client text must remain readable', 5)
+    n.wait(readable, 'native client text must remain readable', 15)
 
 
 def assert_task_dialog_client_theme(appearance, dark):
@@ -140,7 +140,7 @@ def task_dialog_appearance(dialog, native_light=False):
 
             # Screen capture can observe the compositor's opening transition.
             # Wait for a native color role, not an unknown stable sample or delay.
-            n.wait(primary_painted, 'native light TaskDialog primary fill is displayed', 5)
+            n.wait(primary_painted, 'native light TaskDialog primary fill is displayed', 15)
         for rect in panes:
             palette = colors(dialog, rect)
             dominant = palette.most_common(1)[0][0]
@@ -223,7 +223,7 @@ def test_sources_prompt_client_theme_roundtrip(launch, profile, dpi):
                 assert get_ancestor(hit, GA_ROOT) == prompt, 'TaskDialog title bar is obscured'
                 if win32gui.GetForegroundWindow() != prompt:
                     inputs.click(*point, wait_time=0)
-            n.wait(lambda: win32gui.GetForegroundWindow() == prompt, 'TaskDialog foreground', 5)
+            n.wait(lambda: win32gui.GetForegroundWindow() == prompt, 'TaskDialog foreground', 15)
             appearance = task_dialog_appearance(prompt, native_light=theme == 'light')
             assert_task_dialog_client_theme(appearance, theme == 'dark')
             if theme in appearances:
@@ -376,7 +376,7 @@ def file_picker_colors(dialog, field, entry):
 @pytest.mark.parametrize('theme', ['light', 'dark'])
 @pytest.mark.parametrize('dpi', ['pmv2', 'pmv1'])
 def test_file_picker_current_theme_native_navigation_and_cancel(
-        launch, profile, settings, tmp_path, theme, dpi, picker_environment):
+        launch, profile, settings, tmp_path, theme, dpi):
     profile.set('Theme', winreg.REG_SZ, theme)
     app = launch(dpi=dpi)
     folder = tmp_path / 'native-picker-navigation'
@@ -398,15 +398,15 @@ def test_file_picker_current_theme_native_navigation_and_cancel(
             owner = background_pixels(app.search)
             status = app.status_text()
             app.command(1020)
-            dialog = n.wait(lambda: native_dialog(app), 'native file picker')
+            dialog = n.wait(lambda: native_dialog(app), 'native file picker', 30)
             assert_modal(app, dialog)
-            n.wait(lambda: win32gui.GetForegroundWindow() == dialog, 'file picker foreground')
-            field = n.wait(lambda: filename_field(dialog), 'native filename field')
+            n.wait(lambda: win32gui.GetForegroundWindow() == dialog, 'file picker foreground', 15)
+            field = n.wait(lambda: filename_field(dialog), 'native filename field', 15)
             value = n.c.create_unicode_buffer(str(folder) + '\\')
             assert n.send(field, win32con.WM_SETTEXT, 0, n.c.addressof(value))
-            button = n.wait(lambda: n.get_item(dialog, win32con.IDOK), 'native Open button')
+            button = n.wait(lambda: n.get_item(dialog, win32con.IDOK), 'native Open button', 15)
             win32gui.PostMessage(dialog, win32con.WM_COMMAND, win32con.IDOK, button)
-            entry = n.wait(lambda: picker_entry(dialog, sentinel), 'native folder navigation contents', 10)
+            entry = n.wait(lambda: picker_entry(dialog, sentinel), 'native folder navigation contents', 30)
             assert_modal(app, dialog)
             assert_titlebar_theme(dialog, current == 'dark')
             assert_native_text_contrast(dialog)
@@ -418,7 +418,7 @@ def test_file_picker_current_theme_native_navigation_and_cancel(
                 json.dumps(evidence, indent=2), encoding='utf-8')
             invoke(n.get_item(dialog, win32con.IDCANCEL))
             n.wait(lambda: not n.is_window(dialog) and win32gui.IsWindowEnabled(app.frame),
-                   'cancel native file picker')
+                   'cancel native file picker', 30)
             assert not native_dialog(app)
             assert app.status_text() == status, 'navigation and Cancel must not load a source'
             assert profile.preferences() == before

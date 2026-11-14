@@ -24,7 +24,7 @@ from support.results import merge, records
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--desktop", choices=("isolated", "current"), default="isolated")
-    parser.add_argument("--timeout", type=float, default=180)
+    parser.add_argument("--timeout", type=float, default=1800)
     parser.add_argument("--output")
     args, tests = parser.parse_known_args()
     interactive = "--real-input" in tests

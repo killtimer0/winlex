@@ -171,7 +171,7 @@ def test_tool_list_context_menu_offers_instance_actions_without_opening(launch):
     panel = app.tool_list
     app.select(0, panel)
     app.row(0, panel).GetSelectionItemPattern().RemoveFromSelection(waitTime=0)
-    n.wait(lambda: app.selected_row(panel) == -1, "tool row deselected", 5)
+    n.wait(lambda: app.selected_row(panel) == -1, "tool row deselected", 15)
     assert app.selected_row(panel) == -1
     for command in (1049, 1050):
         app.command(command)
@@ -190,7 +190,7 @@ def test_tool_list_context_menu_offers_instance_actions_without_opening(launch):
 
 
 @pytest.mark.parametrize("active_panel", [0, 2])
-def test_tool_list_rows_align_after_initialization_and_panel_switches(launch, settings, profile, active_panel, picker_environment):
+def test_tool_list_rows_align_after_initialization_and_panel_switches(launch, settings, profile, active_panel):
     profile.set("ActivePanel", winreg.REG_DWORD, active_panel)
     app = launch()
     panel = app.tool_list

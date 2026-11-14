@@ -65,7 +65,7 @@ def test_source_actions_remain_visible_and_disjoint(launch, profile, sidebar_wid
                 assert x2 <= other[0] or other[2] <= x1 or y2 <= other[1] or other[3] <= y1
 
 
-def test_source_actions_preserve_identity_and_recover_failed_reload(launch, profile, settings, ui_language, picker_environment):
+def test_source_actions_preserve_identity_and_recover_failed_reload(launch, profile, settings, ui_language):
     paths = [settings[2] / name / "same.winmd" for name in ("first", "second", "third")]
     for path in paths:
         path.parent.mkdir(exist_ok=True)
@@ -153,7 +153,7 @@ def test_source_context_menu_copies_full_native_path(launch, settings, mouse, so
         assert app.selected_row(app.sources) == int(mouse)
 
 
-def test_open_loads_and_close_keeps_document_snapshot(launch, profile, settings, picker_environment):
+def test_open_loads_and_close_keeps_document_snapshot(launch, profile, settings):
     app = launch()
     app.pick([settings[1]])
     app.command(1021)

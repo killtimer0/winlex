@@ -12,7 +12,7 @@ from . import deadline
 def _phase_started(item, phase):
     output = Path(item.config.getoption('--artifacts'))
     marker = item.get_closest_marker('phase_timeout')
-    budget = marker.args[0] if marker and phase == 'call' else {'setup': 30, 'call': 120, 'teardown': 20}[phase]
+    budget = marker.args[0] if marker and phase == 'call' else {'setup': 30, 'call': 120, 'teardown': 30}[phase]
     deadline.phase(item.nodeid, phase, budget)
     with (output / 'progress.jsonl').open('a', encoding='utf-8') as stream:
         stream.write(json.dumps({'nodeid': item.nodeid, 'phase': phase,

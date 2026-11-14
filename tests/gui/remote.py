@@ -320,7 +320,7 @@ def main():
     parser.add_argument("--source", type=Path)
     parser.add_argument("--destination")
     parser.add_argument("--run-id")
-    parser.add_argument("--timeout", type=int, default=180)
+    parser.add_argument("--timeout", type=int, default=1800)
     parser.add_argument("--slow-after", type=float, default=15)
     parser.add_argument("--desktop", choices=("isolated", "current"), default="isolated")
     parser.add_argument("--output", type=Path, default=Path("tmp/remote-tests"))

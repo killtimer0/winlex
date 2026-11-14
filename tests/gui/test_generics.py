@@ -119,7 +119,7 @@ def bind_dialog(app, document):
 def set_argument(hwnd, value):
     pattern = auto.ControlFromHandle(hwnd).GetValuePattern()
     assert pattern.SetValue(value, waitTime=0), "type argument write failed"
-    n.wait(lambda: pattern.Value == value, "type argument value updated", 5)
+    n.wait(lambda: pattern.Value == value, "type argument value updated", 15)
 
 
 @pytest.mark.parametrize("member, argument, name", [

@@ -53,7 +53,7 @@ def popup_window(pid):
 
 
 def find_popup(app):
-    window = n.wait(lambda: popup_window(app.process.pid), "context menu", 10)
+    window = n.wait(lambda: popup_window(app.process.pid), "context menu", 15)
     menu = n.send(window, messages.MN_GETHMENU)
     assert menu, "context menu handle"
     info = ThreadInfo()

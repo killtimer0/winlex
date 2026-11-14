@@ -118,14 +118,6 @@ def settings(request, automation_client):
 
 
 @pytest.fixture
-def picker_environment(request, settings):
-    from support.picker_environment import require_picker_environment
-
-    node = hashlib.sha256(request.node.nodeid.encode('utf-8')).hexdigest()[:16]
-    require_picker_environment(settings[2] / ('picker-environment-%s.json' % node))
-
-
-@pytest.fixture
 def hc_appearance(request, settings):
     from test_theme_compatibility import read_high_contrast_appearance
 

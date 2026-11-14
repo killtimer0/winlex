@@ -139,11 +139,11 @@ python tests/gui/resources.py --exe "$guiExe"
 
 `$guiExe` 为构建显示的 GUI 完整路径。`--dpi` 可改为 `pmv1`、`system`、`unaware` 或 `auto`。默认使用 `--desktop isolated`；也可使用 `--desktop current` 在当前桌面运行契约测试。
 结果写入 `tmp/gui-tests/<run-id>/`：`run.json` 和 JUnit 汇总结果，失败时保留无损截图，`progress.jsonl` 与 `timings.jsonl` 用于定位中断或慢阶段；输入来源与 fixture 哈希见 `environment.json` 和 `fixture-hashes.json`。与标准输入相同的 fixture 副本会在收尾时移除，变异或损坏的输入保留。
-超时排查查看 `run.json`、`deadlines.jsonl` 和 `timeout-stacks.log`；阶段预算见 [`tests/gui/support/lifecycle.py`](../tests/gui/support/lifecycle.py)。
+超时排查查看 `run.json`、`deadlines.jsonl` 和 `timeout-stacks.log`；阶段预算见 [`tests/gui/support/lifecycle.py`](../tests/gui/support/lifecycle.py)。等待预算是存活保险，不是延迟断言：UI 同步等待至少 15 秒，原生对话框 30 秒，元数据加载 45 秒；慢机器只会更慢。`--timeout` 为整轮上限，默认 1800 秒。
 单用例超时且清理成功后，驱动继续尚未执行的用例，记录位于 `continued/`，根目录 JUnit 汇总结果。取消、整轮预算耗尽或清理失败时停止。
 `--desktop current --real-input` 只选择 `interactive` 交互与屏幕呈现测试，不指定时运行其余用例；可用 `--collect-only -q` 检查选择结果。交互测试须独占已解锁的活动桌面，运行期间不要操作键鼠。独立桌面也不隔离剪贴板等会话共享资源。
 真实高对比测试使用 `--hc-theme PATH` 指定目标机的 `.theme` 预期外观文件，例如 `%SystemRoot%\Resources\Ease of Access Themes\hcblack.theme`；此参数读取预期外观，不应用主题。
-新增原生文件选择器用例须在 setup 中请求 `picker_environment` fixture；环境检查见 [`tests/gui/support/picker_environment.py`](../tests/gui/support/picker_environment.py)。
+原生文件选择器用例直接使用真实系统对话框；测试不读取、也不修改宿主机的网络位置、Shell 扩展或 WSL 状态。宿主 Shell 较慢只会让用例更慢，真正挂起由阶段预算记录 stack；端到端 picker 用例的可靠运行依赖独立的测试账户或测试桌面。
 
 XP 目标执行端需有兼容 XP 的 Python 3.8 和 UI Automation 组件；通过 `python -m pip install -r tests/gui/requirements.lock` 安装目标端依赖，不使用开发机的 `.venv` 或 uv 锁文件。
 目标 Python 安装须保留同目录的 `pythonw.exe`，供计划任务启动 worker。

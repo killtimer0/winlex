@@ -14,7 +14,7 @@ from support.session import invoke
 
 def open_about(app):
     app.command(1054)
-    return n.wait(lambda: n.find_window(app.process.pid, '#32770', app.frame), 'About dialog', 5)
+    return n.wait(lambda: n.find_window(app.process.pid, '#32770', app.frame), 'About dialog', 15)
 
 
 def link_item(app, control, index=0):

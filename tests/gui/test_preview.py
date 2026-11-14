@@ -44,7 +44,7 @@ def deselect_result(app):
     item = app.row(row)
     with deadline.operation('deselect result via UIA', 5):
         item.GetSelectionItemPattern().RemoveFromSelection(waitTime=0)
-    n.wait(lambda: app.selected_row() == -1, "result deselected", 5)
+    n.wait(lambda: app.selected_row() == -1, "result deselected", 15)
 
 
 def test_open_without_selected_result_preserves_existing_document(launch, settings):

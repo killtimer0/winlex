@@ -202,7 +202,7 @@ def test_link_clicks_keep_selection_and_require_a_complete_ctrl_gesture(launch, 
                     inputs.state["held"].append("mouse")
                     inputs.save()
                     auto.PressMouse(x, y, waitTime=0)
-                    n.wait(mouse_down_captured, "plain mouse-down captured before adding Ctrl", 5)
+                    n.wait(mouse_down_captured, "plain mouse-down captured before adding Ctrl", 15)
                 inputs.state["held"].append(win32con.VK_CONTROL)
                 inputs.save()
                 try:
@@ -287,14 +287,8 @@ def test_primitives_unresolved_types_and_whitespace_have_no_navigation(launch, s
             assert app.documents() == [source]
 
 
-@pytest.fixture
-def source_snapshot_environment(request, reload):
-    if not reload:
-        request.getfixturevalue('picker_environment')
-
-
 @pytest.mark.parametrize("reload", [True, False], ids=["reload", "unload-reopen"])
-def test_navigation_uses_source_snapshot_not_current_catalog(launch, settings, reload, source_snapshot_environment):
+def test_navigation_uses_source_snapshot_not_current_catalog(launch, settings, reload):
     path = settings[2] / "navigation-snapshot😀.winmd"
     shutil.copyfile(settings[1], path)
     app = launch([path])
@@ -613,7 +607,7 @@ def test_real_ctrl_click_and_drag_do_not_confuse_navigation_with_selection(launc
                 left, top, right, bottom = n.rectangle(app.search)
                 inputs.click((left + right) // 2, (top + bottom) // 2)
             try:
-                n.wait(lambda: win32gui.GetForegroundWindow() == app.frame, "foreground ownership", 5)
+                n.wait(lambda: win32gui.GetForegroundWindow() == app.frame, "foreground ownership", 15)
             except AssertionError as error:
                 foreground = win32gui.GetForegroundWindow()
                 raise AssertionError(f"foreground acquisition failed: frame={app.frame}, foreground={foreground}, "

@@ -10,7 +10,7 @@ from test_document import resize
 
 def open_help(app):
     app.command(1053)
-    return n.wait(lambda: n.find_window(app.process.pid, '#32770', app.frame), 'search help dialog', 5)
+    return n.wait(lambda: n.find_window(app.process.pid, '#32770', app.frame), 'search help dialog', 15)
 
 
 @pytest.mark.parametrize('language,mode', [
@@ -48,7 +48,7 @@ def test_search_help_readonly_resize_and_dpi(launch, profile, language, mode):
                     bounds = control.BoundingRectangle
                     return (bounds.left, bounds.top) == target
 
-                n.wait(moved, 'search help reached requested screen position', 5)
+                n.wait(moved, 'search help reached requested screen position', 15)
             left, top = win32gui.ClientToScreen(dialog, (0, 0))
             _, _, width, height = win32gui.GetClientRect(dialog)
             for control in (edit, button):

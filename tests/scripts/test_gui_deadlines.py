@@ -193,58 +193,6 @@ raise SystemExit(run.main())
                          '%r\n%s%s' % (result, process.stdout, process.stderr))
         return output, result
 
-    def test_picker_preflight_timeout_and_unconfirmed_cleanup_queue_boundary(self):
-        import win32api
-        import win32con
-        import win32event
-
-        for denied in (False, True):
-            with self.subTest(termination_denied=denied), tempfile.TemporaryDirectory(dir=ROOT / 'tmp') as directory:
-                output, result = self.run_probe(Path(directory), '''
-import json
-from pathlib import Path
-import subprocess
-import sys
-import pytest
-from support import picker_environment
-
-def test_first_deadline_contract_probe(request, monkeypatch):
-    output = Path(request.config.getoption('--artifacts'))
-    ready = output / 'owned-probe-ready.json'
-    real_popen = subprocess.Popen
-    program = ('import os,threading; from pathlib import Path; '
-               'Path(%%r).write_text(str(os.getpid())); threading.Event().wait(60)' %% str(ready))
-    class StalledProbe(real_popen):
-        def __init__(self, command, *args, **kwargs):
-            super().__init__([sys.executable, '-c', program], *args, **kwargs)
-        def kill(self):
-            if %r:
-                raise PermissionError(5, 'Injected child termination denial')
-            return super().kill()
-    with monkeypatch.context() as patch:
-        patch.setattr(picker_environment.subprocess, 'Popen', StalledProbe)
-        if %r:
-            picker_environment.require_picker_environment(output / 'preflight.json')
-            pytest.fail('Unconfirmed cleanup did not stop the queue')
-        with pytest.raises(RuntimeError):
-            picker_environment.require_picker_environment(output / 'preflight.json')
-
-def test_second_deadline_contract_probe(request):
-    (Path(request.config.getoption('--artifacts')) / 'following-case-ran').touch()
-''' % (denied, denied), cleanup_complete=not denied, exit_code=None if denied else 0)
-                self.assertEqual((output / 'following-case-ran').exists(), not denied)
-                self.assertFalse(result['timed_out'], result)
-                pid = int((output / 'owned-probe-ready.json').read_text())
-                try:
-                    process = win32api.OpenProcess(win32con.SYNCHRONIZE, False, pid)
-                except win32api.error as error:
-                    self.assertEqual(error.winerror, 87)  # ERROR_INVALID_PARAMETER: PID no longer exists.
-                else:
-                    try:
-                        self.assertEqual(win32event.WaitForSingleObject(process, 0), win32con.WAIT_OBJECT_0)
-                    finally:
-                        win32api.CloseHandle(process)
-
     def test_blocked_callback_is_terminated_at_operation_deadline_with_stack(self):
         with tempfile.TemporaryDirectory(dir=ROOT / 'tmp') as directory:
             folder = Path(directory)

@@ -32,7 +32,7 @@ def assert_no_dialog(app):
     assert not owned_dialogs(app)
 
 
-def test_empty_startup_prompt_dismissal_and_runtime_removal(launch, profile, settings, ui_language, picker_environment):
+def test_empty_startup_prompt_dismissal_and_runtime_removal(launch, profile, settings, ui_language):
     app = launch(metadata_prompt=True)
     prompt = n.wait(lambda: next(iter(owned_dialogs(app)), None), "metadata guide prompt")
     try:
