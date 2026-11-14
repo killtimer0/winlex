@@ -82,6 +82,9 @@ def _diagnose():
 
 def _publish(value):
     global _current, _pending, _watchdog
+    # Publishing a phase or operation is progress by the running test; only a
+    # thread blocked inside one call leaves the heartbeat stale.
+    progress()
     with _condition:
         _current = value
         if _path is None:

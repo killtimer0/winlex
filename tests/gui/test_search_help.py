@@ -36,7 +36,8 @@ def test_search_help_readonly_resize_and_dpi(launch, profile, language, mode):
         assert after_edit[:2] == before_edit[:2]
         assert (after_edit[2] - before_edit[2], after_edit[3] - before_edit[3]) == (120, 80)
         assert (after_button[0] - before_button[0], after_button[1] - before_button[1]) == (120, 80)
-    monitors = n.monitors()
+    with n.window_dpi_context(dialog):
+        monitors = n.monitors()
     for monitor in monitors * (2 if len(monitors) > 1 else 1):
         with n.window_dpi_context(dialog):
             with deadline.operation('move search help across monitors via UIA'):

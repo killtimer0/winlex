@@ -179,7 +179,12 @@ def worker(root, once=False):
                 stall=data.get("stall_after"),
                 consecutive=data.get("consecutive_timeouts"))
             command = engine.command(path, data["tests"], policy, data["desktop"])
-            with (path / "output.log").open("w", encoding="utf-8") as log:
+            # Read-write so the engine and pytest can query the redirected
+            # standard handle; a write-only handle is rejected on XP.
+            log = os.fdopen(os.open(path / "output.log",
+                                    os.O_RDWR | os.O_CREAT | os.O_TRUNC),
+                            "w", encoding="utf-8")
+            with log:
                 started = time.monotonic()
                 process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
                                            env={**os.environ, "PYTHONUTF8": "1"})
@@ -220,7 +225,7 @@ def main():
     parser.add_argument("--stall-after", type=float)
     parser.add_argument("--consecutive-timeouts", type=int)
     parser.add_argument("--slow-after", type=float, default=15)
-    parser.add_argument("--desktop", choices=("isolated", "current"), default="isolated")
+    parser.add_argument("--desktop", choices=("isolated", "current"))
     parser.add_argument("--output", type=Path, default=Path("tmp/remote-tests"))
     args, tests = parser.parse_known_args()
     if args.slow_after <= 0:
@@ -229,8 +234,6 @@ def main():
                                 for value in (args.case_timeout, args.stall_after,
                                               args.consecutive_timeouts)):
         parser.error("timeout budgets must be positive")
-    if args.action == "submit" and "--real-input" in tests and args.desktop != "current":
-        parser.error("--real-input requires --desktop current")
     if args.action == "worker":
         worker(args.root.resolve(), args.once)
         return
@@ -238,6 +241,13 @@ def main():
         print(json.dumps(rpc(args.root.resolve(), json.loads(base64.b64decode(args.request)))))
         return
     config = json.loads(args.config.read_text(encoding="utf-8"))
+    # A target may pin its desktop: on XP the automation provider times out for
+    # about 2s per method call whenever the window is not on the input desktop.
+    desktop = args.desktop or config.get("desktop", "isolated")
+    if desktop not in ("isolated", "current"):
+        parser.error("desktop must be isolated or current")
+    if args.action == "submit" and "--real-input" in tests and desktop != "current":
+        parser.error("--real-input requires --desktop current")
     if args.action == "deploy":
         if not args.source or not args.destination:
             parser.error("deploy requires --source and --destination")
@@ -257,7 +267,7 @@ def main():
                "timeout": args.timeout, "case_timeout": args.case_timeout,
                "stall_after": args.stall_after,
                "consecutive_timeouts": args.consecutive_timeouts,
-               "slow_after": args.slow_after, "desktop": args.desktop, "tests": tests}
+               "slow_after": args.slow_after, "desktop": desktop, "tests": tests}
     if config["transport"] == "local":
         result = rpc(Path(config["root"]).resolve(), request)
     else:

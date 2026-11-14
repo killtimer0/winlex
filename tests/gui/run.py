@@ -256,6 +256,13 @@ def run_attempt(args, tests, output, root, excluded, policy):
             name = "Winlex.Test." + uuid.uuid4().hex
             desktop = win32service.CreateDesktop(name, 0, 0x1ff, None)
             startup.lpDesktop = "winsta0\\" + name
+        # pytest is a console program. Pass this runner's redirected handles
+        # explicitly: inheriting a console that a detached worker no longer has
+        # leaves pytest without usable stdout and exits before writing evidence.
+        startup.dwFlags |= win32process.STARTF_USESTDHANDLES
+        startup.hStdInput = win32api.GetStdHandle(win32api.STD_INPUT_HANDLE)
+        startup.hStdOutput = win32api.GetStdHandle(win32api.STD_OUTPUT_HANDLE)
+        startup.hStdError = win32api.GetStdHandle(win32api.STD_ERROR_HANDLE)
         command = subprocess.list2cmdline([
             sys.executable, "-X", "utf8", "-m", "pytest",
             "--rootdir", str(Path(__file__).resolve().parents[2]), str(Path(__file__).parent),
@@ -271,9 +278,21 @@ def run_attempt(args, tests, output, root, excluded, policy):
         environment.pop("WINLEX_TEST_REAL_INPUT", None)
         if interactive:
             environment["WINLEX_TEST_REAL_INPUT"] = "1"
-        # Keep redirected standard handles available to pytest.
-        process, thread, _, _ = win32process.CreateProcess(None, command, None, None, True,
-            win32process.CREATE_SUSPENDED, environment, str(Path(__file__).resolve().parents[2]), startup)
+        # pytest inherits this runner's redirected handles. Handles received from
+        # the worker lost the inherit flag, so restore it for the child spawns.
+        console_handles = {int(value) for value in
+                           (startup.hStdInput, startup.hStdOutput, startup.hStdError) if value}
+        saved = {handle: win32api.GetHandleInformation(handle) for handle in console_handles}
+        for handle in console_handles:
+            win32api.SetHandleInformation(handle, win32con.HANDLE_FLAG_INHERIT,
+                                          win32con.HANDLE_FLAG_INHERIT)
+        try:
+            process, thread, _, _ = win32process.CreateProcess(
+                None, command, None, None, True, win32process.CREATE_SUSPENDED,
+                environment, str(Path(__file__).resolve().parents[2]), startup)
+        finally:
+            for handle, flags in saved.items():
+                win32api.SetHandleInformation(handle, win32con.HANDLE_FLAG_INHERIT, flags)
         win32job.AssignProcessToJobObject(job, process)
         assigned = True
         win32process.ResumeThread(thread)

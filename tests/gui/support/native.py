@@ -59,6 +59,15 @@ def dispatch_pending_messages():
         win32gui.DispatchMessage(message)
 
 
+def text_prefix(hwnd, size=64):
+    """Bounded native text read: fast enough to observe transient labels."""
+    buffer = c.create_unicode_buffer(size)
+    result = c.c_size_t()
+    assert send_timeout(hwnd, 0x000D, size, c.addressof(buffer), 3, 3000,
+                        c.byref(result)), "Message timeout: WM_GETTEXT"
+    return buffer.value
+
+
 @deadline.operation('read control text via UIA')
 def window_text(hwnd):
     control = auto.ControlFromHandle(hwnd)
