@@ -74,6 +74,29 @@ def background(hwnd, rect, client=True):
     return colors(hwnd, rect, client).most_common(1)[0][0]
 
 
+def contrast_ratio(first, second):
+    """WCAG contrast ratio for native BGR palette entries."""
+    def luminance(color):
+        def linear(value):
+            value /= 255
+            return value / 12.92 if value <= .03928 else ((value + .055) / 1.055) ** 2.4
+        red, green, blue = color[2], color[1], color[0]
+        return .2126 * linear(red) + .7152 * linear(green) + .0722 * linear(blue)
+    high, low = sorted((luminance(first), luminance(second)), reverse=True)
+    return (high + .05) / (low + .05)
+
+
+def text_contrast(palette, minimum=4.5, minimum_count=4):
+    """Check that the displayed palette has readable text against its fill."""
+    rows = list(palette.items()) if hasattr(palette, 'items') else list(palette)
+    if not rows:
+        return False
+    background = max(rows, key=lambda row: row[1])[0]
+    return any(color != background and count >= minimum_count
+               and contrast_ratio(color, background) >= minimum
+               for color, count in rows)
+
+
 class ScrollbarInfo(n.c.Structure):
     _fields_ = [('size', n.w.DWORD), ('rect', n.w.RECT), ('line', n.c.c_int),
                 ('top', n.c.c_int), ('bottom', n.c.c_int), ('reserved', n.c.c_int),
@@ -162,8 +185,7 @@ def test_dark_status_text_remains_visible_after_search_and_theme_switch(launch, 
                         min(width, bounds.right - origin[0]) - 3,
                         min(height, bounds.bottom - origin[1]) - 3)
                 palette = colors(app.status, rect)
-                fill = palette.most_common(1)[0][0]
-                assert any(color != fill for color in palette), 'status pane text must be painted'
+                assert text_contrast(palette), 'status pane text must remain readable'
             screenshot(app.status, settings[2] / ('theme-status-%s.png' % mode))
 
 

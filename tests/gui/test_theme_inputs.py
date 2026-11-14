@@ -10,7 +10,7 @@ from support import deadline, messages, native as n
 from support.diagnostics import capture, screenshot
 from support.input_state import InputState
 from test_theme import background_pixels, select_theme
-from test_theme_surfaces import background, center, colors, dark_app, foreground, inset, move
+from test_theme_surfaces import background, center, colors, dark_app, foreground, inset, move, text_contrast
 
 pytestmark = pytest.mark.interactive
 
@@ -66,7 +66,7 @@ def test_theme_combo_dropdown_pixels_and_keyboard_commit(launch, profile, settin
             if dark not in dropdowns and dropdowns:
                 assert fill != next(iter(dropdowns.values())), 'dropdown follows the theme change'
             dropdowns[dark] = fill
-            assert any(color != fill for color in palette), 'dropdown option text must be painted'
+            assert text_contrast(palette), 'dropdown option text must remain readable'
             screenshot(sheet, settings[2] / ('theme-combo-%s.png' % dark))
             # A native dropdown retains the navigated row on Escape; cancellation
             # must not commit preferences or close the surrounding property sheet.
@@ -241,8 +241,7 @@ def test_settings_tabs_hover_keyboard_focus_and_navigation(launch, profile, sett
             rectangles = [tab_rect(tab, item) for item in items]
             for rect in rectangles:
                 palette = colors(tab, inset(rect))
-                fill = palette.most_common(1)[0][0]
-                assert any(color != fill for color in palette), 'tab label must be painted'
+                assert text_contrast(palette), 'tab label must remain readable'
             # Include unused header space, not just the labels.
             _, _, width, _ = n.rectangle(tab, client=True)
             left = max(rect[2] for rect in rectangles) + 4

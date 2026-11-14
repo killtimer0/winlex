@@ -19,7 +19,7 @@ from support.diagnostics import assert_unobscured, screenshot
 from support.input_state import GA_ROOT, InputState, foreground, get_ancestor
 from support.session import invoke, message_button
 from test_theme import background_pixels, modern_theme, select_theme
-from test_theme_surfaces import observed_colors as colors
+from test_theme_surfaces import observed_colors as colors, text_contrast
 
 
 def native_dialog(app):
@@ -79,14 +79,18 @@ def test_sources_prompt_native_version_buttons_and_default(launch, profile, dpi)
     assert profile.get('AutoLoad') == []
 
 
-def assert_native_content_painted(dialog):
-    def painted():
+def assert_native_text_contrast(dialog):
+    def readable():
         _, _, width, height = n.rectangle(dialog, client=True)
-        palette = colors(dialog, (3, 3, width - 3, height - 3))
-        background = palette.most_common(1)[0][0]
-        return any(color != background for color in palette)
+        return text_contrast(colors(dialog, (3, 3, width - 3, height - 3)))
 
-    n.wait(painted, 'native client content must be painted', 5)
+    n.wait(readable, 'native client text must remain readable', 5)
+
+
+def assert_task_dialog_client_theme(appearance, dark):
+    for name, dominant in zip(('content', 'commands'), appearance[:2]):
+        assert (max(dominant) < 128) == dark, (
+            'native TaskDialog pane must follow the selected theme', name, dominant)
 
 
 @deadline.operation('read current native TaskDialog theme', 5)
@@ -186,7 +190,7 @@ def test_sources_prompt_theme_and_escape_preserve_yes_no(launch, profile, settin
         n.wait(lambda: win32gui.GetForegroundWindow() == prompt, 'sources prompt foreground')
         assert_modal(app, prompt)
         assert_titlebar_theme(prompt, theme == 'dark')
-        assert_native_content_painted(prompt)
+        assert_native_text_contrast(prompt)
         screenshot(prompt, settings[2] / ('sources-prompt-%s-%s.png' % (theme, dpi)))
         inputs.key(win32con.VK_ESCAPE)
         until = time.monotonic() + .3
@@ -221,6 +225,7 @@ def test_sources_prompt_client_theme_roundtrip(launch, profile, dpi):
                     inputs.click(*point, wait_time=0)
             n.wait(lambda: win32gui.GetForegroundWindow() == prompt, 'TaskDialog foreground', 5)
             appearance = task_dialog_appearance(prompt, native_light=theme == 'light')
+            assert_task_dialog_client_theme(appearance, theme == 'dark')
             if theme in appearances:
                 assert appearance == appearances[theme], 'client theme roundtrip restores its appearance'
             elif appearances:
@@ -404,7 +409,7 @@ def test_file_picker_current_theme_native_navigation_and_cancel(
             entry = n.wait(lambda: picker_entry(dialog, sentinel), 'native folder navigation contents', 10)
             assert_modal(app, dialog)
             assert_titlebar_theme(dialog, current == 'dark')
-            assert_native_content_painted(dialog)
+            assert_native_text_contrast(dialog)
             artifact = 'file-picker-%s-%s-from-%s' % (current, dpi, theme)
             screenshot(dialog, settings[2] / (artifact + '.png'))
             evidence = {'theme': current, 'dpi': dpi,

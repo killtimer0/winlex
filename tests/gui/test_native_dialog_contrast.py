@@ -14,7 +14,7 @@ from support.diagnostics import screenshot
 from support.input_state import GA_ROOT, InputState, foreground, get_ancestor
 from support.session import invoke, message_button
 from test_system_dialogs import (
-    assert_modal, assert_native_content_painted,
+    assert_modal, assert_native_text_contrast,
     dismiss_no, file_picker_colors, filename_field, native_dialog, picker_entry,
 )
 from test_theme import modern_theme
@@ -22,7 +22,7 @@ from test_theme_compatibility import (
     HCF_AVAILABLE, HCF_HIGHCONTRASTON, high_contrast, restored_high_contrast, system_color,
     temporary_high_contrast,
 )
-from test_theme_surfaces import observed_colors as colors
+from test_theme_surfaces import observed_colors as colors, text_contrast
 
 
 pytestmark = [modern_theme, pytest.mark.interactive]
@@ -77,10 +77,7 @@ def task_surfaces(dialog):
 
 
 def task_text_painted(surfaces):
-    palette = surfaces['text']['colors_bgr']
-    background = palette[0][0]
-    return any(color != background
-               for color, count in palette)
+    return text_contrast(surfaces['text']['colors_bgr'])
 
 
 def surface_backgrounds(surfaces):
@@ -258,7 +255,7 @@ def test_task_dialog_stays_open_across_high_contrast(launch, profile, settings, 
                                         (dialog, settings[2], 'task-live-%s-hc-failed' % dpi))
             record(dialog, settings[2], 'task-live-%s-hc' % dpi, surfaces)
             assert_prompt_contract(app, dialog)
-            assert_native_content_painted(dialog)
+            assert_native_text_contrast(dialog)
             inputs.key(win32con.VK_ESCAPE)
             assert_prompt_contract(app, dialog)
         assert restored_high_contrast(high_contrast(), snapshot)
@@ -271,7 +268,7 @@ def test_task_dialog_stays_open_across_high_contrast(launch, profile, settings, 
                                     (dialog, settings[2], 'task-live-%s-restored-failed' % dpi))
         record(dialog, settings[2], 'task-live-%s-restored' % dpi, surfaces)
         assert_prompt_contract(app, dialog)
-        assert_native_content_painted(dialog)
+        assert_native_text_contrast(dialog)
         dismiss_no(app, dialog)
         assert n.is_visible(app.search)
         assert profile.preferences() == before
