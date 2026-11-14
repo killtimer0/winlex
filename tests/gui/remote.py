@@ -177,7 +177,7 @@ def worker(root, once=False):
             policy = Policy.load().overrides(
                 run=data["timeout"], call=data.get("case_timeout"),
                 stall=data.get("stall_after"),
-                consecutive=data.get("consecutive_timeouts"))
+                consecutive_stalls=data.get("consecutive_stalls"))
             command = engine.command(path, data["tests"], policy, data["desktop"])
             # Read-write so the engine and pytest can query the redirected
             # standard handle; a write-only handle is rejected on XP.
@@ -223,7 +223,7 @@ def main():
     parser.add_argument("--timeout", type=float, default=Policy.load().run)
     parser.add_argument("--case-timeout", type=int)
     parser.add_argument("--stall-after", type=float)
-    parser.add_argument("--consecutive-timeouts", type=int)
+    parser.add_argument("--consecutive-stalls", type=int)
     parser.add_argument("--slow-after", type=float, default=15)
     parser.add_argument("--desktop", choices=("isolated", "current"))
     parser.add_argument("--output", type=Path, default=Path("tmp/remote-tests"))
@@ -232,7 +232,7 @@ def main():
         parser.error("--slow-after must be positive")
     if args.timeout <= 0 or any(value is not None and value <= 0
                                 for value in (args.case_timeout, args.stall_after,
-                                              args.consecutive_timeouts)):
+                                              args.consecutive_stalls)):
         parser.error("timeout budgets must be positive")
     if args.action == "worker":
         worker(args.root.resolve(), args.once)
@@ -266,7 +266,7 @@ def main():
     request = {"action": args.action, "run_id": args.run_id or uuid.uuid4().hex,
                "timeout": args.timeout, "case_timeout": args.case_timeout,
                "stall_after": args.stall_after,
-               "consecutive_timeouts": args.consecutive_timeouts,
+               "consecutive_stalls": args.consecutive_stalls,
                "slow_after": args.slow_after, "desktop": desktop, "tests": tests}
     if config["transport"] == "local":
         result = rpc(Path(config["root"]).resolve(), request)

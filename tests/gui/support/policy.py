@@ -18,7 +18,7 @@ class Policy:
     collection: float = 60
     stall: float = 20
     slow_case: float = 10
-    consecutive: int = 2
+    consecutive_stalls: int = 2
     inventory: float = 10
     cleanup_step: float = 10
     cleanup_receipt: float = 15
@@ -57,6 +57,6 @@ class Policy:
         policy = cls(**values)
         if min(policy.run, policy.startup, policy.setup, policy.call, policy.teardown,
                policy.collection, policy.stall, policy.slow_case, policy.inventory,
-               policy.cleanup_step, policy.cleanup_receipt, policy.cleanup_wait) <= 0 or policy.consecutive <= 0:
+               policy.cleanup_step, policy.cleanup_receipt, policy.cleanup_wait) <= 0 or policy.consecutive_stalls <= 0:
             return cls()
         return policy

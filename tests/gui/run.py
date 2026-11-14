@@ -30,7 +30,7 @@ def arguments():
     parser.add_argument("--timeout", type=float)
     parser.add_argument("--case-timeout", type=float)
     parser.add_argument("--stall-after", type=float)
-    parser.add_argument("--consecutive-timeouts", type=int)
+    parser.add_argument("--consecutive-stalls", type=int)
     parser.add_argument("--engine", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--output")
     args, tests = parser.parse_known_args()
@@ -44,9 +44,9 @@ def arguments():
     base = Policy.load()
     args.policy = base.overrides(run=args.timeout, call=args.case_timeout,
                                  stall=args.stall_after,
-                                 consecutive=args.consecutive_timeouts)
+                                 consecutive_stalls=args.consecutive_stalls)
     if min(args.policy.run, args.policy.call, args.policy.stall,
-           args.policy.consecutive) <= 0:
+           args.policy.consecutive_stalls) <= 0:
         parser.error("timeout budgets must be positive")
     args.output_path = output
     return args, tests
@@ -163,6 +163,7 @@ def engine_main(args, tests):
     args.until = time.monotonic() + policy.run
     os.environ['WINLEX_TEST_POLICY'] = policy.dump()
     attempts, excluded = [], set()
+    stalls = 0
     folder = output
     operation_deadline.configure(output, prefix='runner-')
     operation_deadline.phase('runner', 'startup', policy.startup)
@@ -182,13 +183,18 @@ def engine_main(args, tests):
         selection = json.loads(selection_path.read_text(encoding='utf-8'))
         if timeout['nodeid'] not in selection:
             break  # A collection failure has no safely resumable case boundary.
-        excluded.update(row['nodeid'] for row in records(folder / 'timings.jsonl') if row['phase'] == 'teardown')
+        timings = records(folder / 'timings.jsonl')
+        excluded.update(row['nodeid'] for row in timings if row['phase'] == 'teardown')
         excluded.add(timeout['nodeid'])
         remaining = args.until - time.monotonic()
         if not any(nodeid not in excluded for nodeid in selection) or remaining <= operation_deadline.DIAGNOSTIC_GRACE:
             break
-        if sum(1 for _, attempt in attempts if attempt.get('timed_out')) >= policy.consecutive:
-            result['termination_reason'] = 'repeated_timeouts'
+        # A stall inside a case that already completed work is an isolated hang.
+        # Only a retry that completes nothing keeps the environment unproductive.
+        progressed = any(row['phase'] == 'teardown' for row in timings)
+        stalls = stalls + 1 if result.get('stalled') and not progressed else 0
+        if stalls >= policy.consecutive_stalls:
+            result['termination_reason'] = 'repeated_stalls'
             break
         folder = output / 'continued' / str(len(attempts))
         operation_deadline.phase('runner', 'startup', min(policy.startup, remaining))

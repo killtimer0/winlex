@@ -9,4 +9,4 @@ def command(output, tests, policy, desktop):
             '--output', str(output), '--desktop', desktop,
             '--timeout', str(policy.run), '--case-timeout', str(policy.call),
             '--stall-after', str(policy.stall),
-            '--consecutive-timeouts', str(policy.consecutive), *tests]
+            '--consecutive-stalls', str(policy.consecutive_stalls), *tests]

@@ -120,28 +120,68 @@ def test_second_deadline_contract_probe():
             folder = Path(directory)
             sentinel = folder / 'unexpected-following-test'
             output, result = self.run_probe(folder, '''
-import time
+import ctypes
 from pathlib import Path
-from support import deadline
+
+def blocked_native_with_gil():
+    sleep = ctypes.PyDLL('kernel32').Sleep
+    sleep.argtypes = [ctypes.c_ulong]
+    sleep.restype = None
+    sleep(60000)
 
 def test_first_deadline_contract_probe():
-    with deadline.operation('first stalled operation', .1):
-        time.sleep(60)
+    blocked_native_with_gil()
 
 def test_second_deadline_contract_probe():
-    with deadline.operation('second stalled operation', .1):
-        time.sleep(60)
+    blocked_native_with_gil()
 
 def test_after_deadline_contract_probe():
     Path(%r).touch()
-''' % str(sentinel))
+''' % str(sentinel), timeout=30, extra=['--stall-after', '1', '--case-timeout', '30'])
             self.assertTrue(result['timed_out'], result)
-            self.assertEqual(result['termination_reason'], 'repeated_timeouts')
+            self.assertEqual(result['termination_reason'], 'repeated_stalls')
             self.assertFalse(sentinel.exists(), 'repeated stalls must stop the run')
             self.assertFalse((output / 'continued' / '2').exists())
             self.assertEqual(len(result['case_timeouts']), 2)
             self.assertEqual(result['remaining'], 1)
             self.assertNotIn('last_completed', result)
+
+    def test_stall_after_completed_case_does_not_stop_the_run(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / 'tmp') as directory:
+            folder = Path(directory)
+            sentinel = folder / 'following-test-ran'
+            output, result = self.run_probe(folder, '''
+import ctypes
+from pathlib import Path
+
+def blocked_native_with_gil():
+    sleep = ctypes.PyDLL('kernel32').Sleep
+    sleep.argtypes = [ctypes.c_ulong]
+    sleep.restype = None
+    sleep(60000)
+
+def test_before_first_deadline_contract_probe():
+    pass
+
+def test_first_stalled_deadline_contract_probe():
+    blocked_native_with_gil()
+
+def test_before_second_deadline_contract_probe():
+    pass
+
+def test_second_stalled_deadline_contract_probe():
+    blocked_native_with_gil()
+
+def test_after_deadline_contract_probe():
+    Path(%r).touch()
+''' % str(sentinel), timeout=30, extra=['--stall-after', '1', '--case-timeout', '30'])
+            self.assertTrue(sentinel.exists(), 'isolated stalls stopped the run')
+            self.assertTrue(result['timed_out'], result)
+            self.assertEqual(result['termination_reason'], 'stalled', result)
+            self.assertEqual(len(result['case_timeouts']), 2)
+            self.assertEqual(result['remaining'], 0)
+            self.assertEqual(result['case_counts'], dict(tests=5, failures=2, errors=0, skipped=0))
+            self.assertFalse((output / 'continued' / '3').exists())
 
     def supervise_probe(self, folder, script, timeout=5):
         started = time.monotonic()
@@ -390,7 +430,7 @@ def test_second_deadline_contract_probe():
 
 def test_third_deadline_contract_probe():
     Path(%r).touch()
-''' % str(sentinel), extra=['--consecutive-timeouts', '5'])
+''' % str(sentinel))
             self.assertEqual(result['exit_code'], 1)
             self.assertTrue(sentinel.exists())
             timeouts = result['case_timeouts']
@@ -432,7 +472,7 @@ def test_second_deadline_contract_probe():
 
 def test_after_deadline_contract_probe():
     record('after')
-''' % str(executions), extra=['--consecutive-timeouts', '5'])
+''' % str(executions))
             self.assertEqual(executions.read_text().splitlines(),
                              ['before', 'first', 'skipped', 'second', 'after'])
             self.assertEqual(len(result['case_timeouts']), 2)
@@ -470,7 +510,7 @@ def test_teardown_deadline_contract_probe(blocked_teardown):
 
 def test_after_deadline_contract_probe():
     Path(%r).touch()
-''' % str(sentinel), extra=['--consecutive-timeouts', '5'])
+''' % str(sentinel))
             self.assertTrue(sentinel.exists())
             self.assertEqual([row['phase'] for row in result['case_timeouts']], ['setup', 'teardown'])
             self.assertEqual(result['case_counts'], dict(tests=3, failures=1, errors=2, skipped=0))

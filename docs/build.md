@@ -139,8 +139,8 @@ python tests/gui/resources.py --exe "$guiExe"
 
 `$guiExe` 为构建显示的 GUI 完整路径。`--dpi` 可改为 `pmv1`、`system`、`unaware` 或 `auto`。默认使用 `--desktop isolated`；也可使用 `--desktop current` 在当前桌面运行契约测试。
 结果写入 `tmp/gui-tests/<run-id>/`：`run.json` 和 JUnit 汇总结果，失败时保留无损截图，`progress.jsonl` 与 `timings.jsonl` 用于定位中断或慢阶段；输入来源与 fixture 哈希见 `environment.json` 和 `fixture-hashes.json`。与标准输入相同的 fixture 副本会在收尾时移除，变异或损坏的输入保留。
-超时排查查看 `run.json`、`deadlines.jsonl` 和 `timeout-stacks.log`。各阶段、清理与停滞预算集中定义在 [`tests/gui/support/policy.py`](../tests/gui/support/policy.py)；`--timeout`、`--case-timeout`、`--stall-after`、`--consecutive-timeouts` 分别覆盖整轮、单例、停滞和连续超时预算。`n.wait` 轮询与阶段／操作发布都会更新心跳，调用阶段超过停滞预算仍无进展时记录堆栈并终止当前 worker。
-单用例超时且清理成功后，驱动继续尚未执行的用例，记录位于 `continued/`，根目录 JUnit 汇总结果；连续超时达到 `--consecutive-timeouts`、取消、整轮预算耗尽或清理失败时停止。运行期间按慢用例阈值实时打印 `[slow]` 行，结束时列出最慢用例；超时结果记录用例、阶段、操作、`termination_reason`、最后完成用例和剩余用例数。
+超时排查查看 `run.json`、`deadlines.jsonl` 和 `timeout-stacks.log`。各阶段、清理与停滞预算集中定义在 [`tests/gui/support/policy.py`](../tests/gui/support/policy.py)；`--timeout`、`--case-timeout`、`--stall-after`、`--consecutive-stalls` 分别覆盖整轮、单例、停滞和连续停滞预算。`n.wait` 轮询与阶段／操作发布都会更新心跳，调用阶段超过停滞预算仍无进展时记录堆栈并终止当前 worker。
+单用例超时且清理成功后，驱动继续尚未执行的用例，记录位于 `continued/`，根目录 JUnit 汇总结果；连续停滞达到 `--consecutive-stalls`（重试的工作进程在完成任何用例前再次停滞）、取消、整轮预算耗尽或清理失败时停止。运行期间按慢用例阈值实时打印 `[slow]` 行，结束时列出最慢用例；超时结果记录用例、阶段、操作、`termination_reason`、最后完成用例和剩余用例数。
 `--desktop current --real-input` 只选择 `interactive` 交互与屏幕呈现测试，不指定时运行其余用例；可用 `--collect-only -q` 检查选择结果。交互测试须独占已解锁的活动桌面，运行期间不要操作键鼠。独立桌面也不隔离剪贴板等会话共享资源。
 真实高对比测试使用 `--hc-theme PATH` 指定目标机的 `.theme` 预期外观文件，例如 `%SystemRoot%\Resources\Ease of Access Themes\hcblack.theme`；此参数读取预期外观，不应用主题。
 
@@ -193,7 +193,7 @@ python tests/gui/remote.py --config tests/gui/config/win10.json collect --run-id
 `start-worker` 通过任务计划程序请求在当前用户已登录的交互会话中启动 worker，使用配置指定的 Python；`capabilities` 显示解释器路径、桌面和心跳。修改配置并完成部署后，用 `capabilities` 确认 `worker_available` 为 `true`，并核对 `executable`、`desktop` 和 `heartbeat_age`。需要该用户已登录以及创建计划任务的权限。也可在目标交互桌面手动执行 `python tests/gui/remote.py worker --root C:/WinlexTests/runs`。
 远程提交默认使用独立桌面，目标配置可用 `desktop` 固定为 `current`，提交时的 `--desktop` 覆盖配置。
 XP 的 UI Automation 在非输入桌面上完成每次控件操作都要等待固定超时（读取属性不受影响），因此 XP 目标使用 `current`；该桌面须解锁、无屏保并独占，同一桌面只运行一个 worker。
-远程 worker 启动与本地相同的 `run.py --engine`，由同一 supervisor 和同一份预算监督；`submit` 的 `--timeout`、`--case-timeout`、`--stall-after`、`--consecutive-timeouts` 原样传给远端。`status` 和 `watch` 读取相同的进度与慢用例摘要，停滞和超时结果与本地结构一致。
+远程 worker 启动与本地相同的 `run.py --engine`，由同一 supervisor 和同一份预算监督；`submit` 的 `--timeout`、`--case-timeout`、`--stall-after`、`--consecutive-stalls` 原样传给远端。`status` 和 `watch` 读取相同的进度与慢用例摘要，停滞和超时结果与本地结构一致。
 `deploy` 的目标父目录须已存在。SSH 负责调度和传输，GUI 由交互 worker 启动。收集 ZIP 默认回收到 `tmp/remote-tests/`。选择交互测试可在提交时增加 `--desktop current --real-input -k real_search_keyboard`。
 
 WinMD 输入部署到目标端固定位置，通过 `--winmd` 复用。收集结果以 ZIP 保存，可解压查看报告和故障截图。
