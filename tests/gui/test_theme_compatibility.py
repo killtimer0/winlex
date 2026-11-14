@@ -12,6 +12,8 @@ import time
 import traceback
 import uuid
 
+from support import bounded
+
 
 SPI_GETHIGHCONTRAST = 0x0042
 SPI_SETHIGHCONTRAST = 0x0043
@@ -127,10 +129,6 @@ def delete_watchdog_task(name):
     prefix = 'Winlex.Tests.HighContrast.'
     if not name.startswith(prefix) or uuid.UUID(hex=name[len(prefix):]).hex != name[len(prefix):]:
         raise ValueError('Invalid owned watchdog task name')
-    import threading
-    finished = threading.Event()
-    errors = []
-
     def remove():
         initialized = False
         scheduler = None
@@ -143,21 +141,12 @@ def delete_watchdog_task(name):
             if (name + '.job').casefold() in {entry.casefold() for entry in scheduler.Enum()}:
                 from support.task_scheduler import delete_work_item
                 delete_work_item(name)
-        except BaseException:
-            errors.append(traceback.format_exc())
         finally:
-            try:
-                if initialized:
-                    scheduler = None
-                    pythoncom.CoUninitialize()
-            finally:
-                finished.set()
+            if initialized:
+                scheduler = None
+                pythoncom.CoUninitialize()
 
-    threading.Thread(target=remove, daemon=True).start()
-    if not finished.wait(5):
-        raise RuntimeError('High-contrast watchdog task cleanup exceeded 5 seconds')
-    if errors:
-        raise RuntimeError(errors[0])
+    bounded.call(remove, 5, 'High-contrast watchdog task cleanup')
 
 
 def watchdog_path(artifact, task_name, suffix):
@@ -201,34 +190,27 @@ def watchdog(parent_pid, artifact, task_name, receipt):
                 receipt['emergency'] = emergency
                 receipt['recovery_needed'] = not restored_high_contrast(actual, snapshot)
                 if emergency or receipt['recovery_needed']:
-                    # Keep native recovery bounded without importing pytest or
-                    # the GUI support package in this standalone supervisor.
-                    import threading
-                    finished = threading.Event()
+                    # Keep native recovery bounded in this standalone supervisor.
                     recovery = {}
-                    errors = []
 
                     def recover():
-                        try:
-                            recovery['recovery_context'] = execution_context()
-                            if recovery['recovery_context'] != saved['context']:
-                                raise RuntimeError('Native recovery context does not match caller')
-                            set_high_contrast(snapshot)
-                            restored = high_contrast()
-                            recovery['restored'] = {'flags': restored[0], 'scheme': restored[1]}
-                            if not restored_high_contrast(restored, snapshot):
-                                raise RuntimeError('Watchdog could not restore entire HIGHCONTRAST snapshot')
-                        except BaseException:
-                            errors.append(traceback.format_exc())
-                        finally:
-                            finished.set()
+                        recovery['recovery_context'] = execution_context()
+                        if recovery['recovery_context'] != saved['context']:
+                            raise RuntimeError('Native recovery context does not match caller')
+                        set_high_contrast(snapshot)
+                        restored = high_contrast()
+                        recovery['restored'] = {'flags': restored[0], 'scheme': restored[1]}
+                        if not restored_high_contrast(restored, snapshot):
+                            raise RuntimeError('Watchdog could not restore entire HIGHCONTRAST snapshot')
+                        return recovery
 
-                    threading.Thread(target=recover, daemon=True).start()
-                    if not finished.wait(10):
-                        raise RuntimeError('Watchdog native recovery exceeded 10 seconds')
+                    task = bounded.start(recover)
+                    try:
+                        task.wait(10, 'Watchdog native recovery')
+                    except BaseException:
+                        receipt.update(recovery)
+                        raise
                     receipt.update(recovery)
-                    if errors:
-                        raise RuntimeError(errors[0])
                 else:
                     receipt['restored'] = receipt['actual']
                 if not emergency and receipt['recovery_needed']:

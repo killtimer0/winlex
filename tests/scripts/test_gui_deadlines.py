@@ -11,6 +11,8 @@ import time
 import unittest
 import xml.etree.ElementTree as ET
 
+import gui_probe
+
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -126,26 +128,8 @@ def test_second_deadline_contract_probe():
             self.assertIn('Timeout (', stack)
 
     def supervise_probe(self, folder, script, timeout=5):
-        gui = ROOT / 'tests' / 'gui'
-        wrapper = folder / 'runner_wrapper.py'
-        wrapper.write_text('import sys\nsys.path.insert(0, %r)\n' % str(gui) + script, encoding='utf-8')
-        output = folder / ('0' * 32)
-        output.mkdir(exist_ok=True)
-        spec = importlib.util.spec_from_file_location('deadline_remote', gui / 'remote.py')
-        remote = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(remote)
         started = time.monotonic()
-        with (folder / 'wrapper.log').open('w', encoding='utf-8') as log:
-            process = subprocess.Popen([sys.executable, str(wrapper), str(output)], cwd=ROOT,
-                                       stdout=log, stderr=subprocess.STDOUT)
-            sys.path.insert(0, str(gui))
-            try:
-                safe = remote.supervise_runner(process, output, timeout, started, lambda: None)
-            finally:
-                sys.path.remove(str(gui))
-                if process.poll() is None:
-                    process.kill()
-                    process.wait(timeout=10)
+        output, safe, remote = gui_probe.supervise(folder, script, timeout=timeout)
         self.assertFalse(safe, (folder / 'wrapper.log').read_text(encoding='utf-8'))
         self.assertLess(time.monotonic() - started, 15)
         status = remote.rpc(folder, {'action': 'status', 'run_id': '0' * 32})
@@ -246,10 +230,7 @@ def test_after_deadline_contract_probe():
     Path(%r).touch()
 ''' % str(sentinel), encoding='utf-8')
                 output = folder / 'artifacts'
-                wrapper = folder / 'runner_wrapper.py'
-                wrapper.write_text('''
-import sys
-sys.path.insert(0, %r)
+                process = gui_probe.run_wrapper(folder, '''
 import time
 from pathlib import Path
 import run
@@ -266,14 +247,13 @@ def close(handle):
     original_close(handle)
 run.win32api.CloseHandle = close
 raise SystemExit(run.main())
-''' % (str(ROOT / 'tests' / 'gui'), cancel, str(output / 'cancel')), encoding='utf-8')
-                process = subprocess.run([
-                    sys.executable, str(wrapper), '--output', str(output), '--timeout', '2',
+''' % (cancel, str(output / 'cancel')), [
+                    '--output', str(output), '--timeout', '2',
                     '--exe', sys.executable, str(probe), '--ignore-glob=*',
                     '-k', 'deadline_contract_probe', '-q',
-                ], cwd=ROOT, capture_output=True, text=True, encoding='utf-8', timeout=20)
+                ])
                 self.assertNotEqual(process.returncode, 0, process.stdout + process.stderr)
-                report = json.loads((output / 'run.json').read_text())
+                report = gui_probe.read_run(output)
                 self.assertTrue(report['cleanup_complete'], report)
                 self.assertEqual(report['cancelled'], cancel, report)
                 self.assertFalse(sentinel.exists())
@@ -388,14 +368,7 @@ def test_first_deadline_contract_probe(request):
             self.assertFalse(publisher.is_alive())
 
     def run_probe(self, folder, code, cleanup_complete=True, timeout=10, exit_code=None):
-        probe = folder / 'test_deadline_probe.py'
-        probe.write_text(code, encoding='utf-8')
-        output = folder / 'artifacts'
-        process = subprocess.run([
-            sys.executable, 'tests/gui/run.py', '--timeout', str(timeout), '--output', str(output),
-            '--exe', sys.executable, str(probe), '-o', 'python_files=test_deadline_probe.py',
-            '--ignore-glob=*', '-q',
-        ], cwd=ROOT, capture_output=True, text=True, encoding='utf-8', timeout=20)
+        output, process = gui_probe.run_probe(folder, code, timeout=timeout)
         if exit_code is None:
             self.assertNotEqual(process.returncode, 0, process.stdout + process.stderr)
         else:
@@ -403,7 +376,7 @@ def test_first_deadline_contract_probe(request):
         self.assertTrue((output / 'run.json').exists(),
                         'Runner exit %s without report:\n%s%s' %
                         (process.returncode, process.stdout, process.stderr))
-        result = json.loads((output / 'run.json').read_text(encoding='utf-8'))
+        result = gui_probe.read_run(output)
         self.assertEqual(result['cleanup_complete'], cleanup_complete,
                          '%r\n%s%s' % (result, process.stdout, process.stderr))
         return output, result
@@ -729,12 +702,9 @@ def test_after_deadline_contract_probe():
         with tempfile.TemporaryDirectory(dir=ROOT / 'tmp') as directory:
             folder = Path(directory)
             output = folder / 'artifacts'
-            probe = folder / 'test_deadline_probe.py'
-            probe.write_text('def test_completed_deadline_contract_probe():\n    pass\n', encoding='utf-8')
-            wrapper = folder / 'cancel_after_exit.py'
-            wrapper.write_text('''
-import sys
-sys.path.insert(0, %r)
+            probe = gui_probe.write_probe(
+                folder, 'def test_completed_deadline_contract_probe():\n    pass\n')
+            process = gui_probe.run_wrapper(folder, '''
 import run
 original_attempt = run.run_attempt
 
@@ -749,10 +719,8 @@ run.run_attempt = cancel_after_exit
 sys.argv = ['run.py', '--timeout', '10', '--output', %r, '--exe', sys.executable,
             %r, '-o', 'python_files=test_deadline_probe.py', '--ignore-glob=*', '-q']
 raise SystemExit(run.main())
-''' % (str(ROOT / 'tests/gui'), str(output), str(probe)), encoding='utf-8')
-            process = subprocess.run([sys.executable, str(wrapper)], cwd=ROOT,
-                                     capture_output=True, text=True, encoding='utf-8', timeout=20)
-            result = json.loads((output / 'run.json').read_text(encoding='utf-8'))
+''' % (str(output), str(probe)))
+            result = gui_probe.read_run(output)
             self.assertTrue(result['cancelled'], result)
             self.assertFalse(result['timed_out'], result)
             self.assertTrue(result['cleanup_complete'], result)
