@@ -187,6 +187,13 @@ def window_dpi_context(hwnd):
             assert set_context(previous), "Cannot restore test DPI context"
 
 
+def window_dpi(hwnd):
+    """Actual window DPI, or None when the OS has no per-monitor DPI."""
+    if not hasattr(user, 'GetDpiForWindow'):
+        return None
+    return api(user, 'GetDpiForWindow', w.UINT, w.HWND)(hwnd)
+
+
 def wait(probe, description, timeout=15):
     with deadline.operation(description):
         until = time.monotonic() + timeout

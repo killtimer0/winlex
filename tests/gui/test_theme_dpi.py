@@ -117,7 +117,6 @@ def monitor_dpis(monitors):
                    c.c_int, c.c_int, c.c_int, c.c_int,
                    n.w.HWND, n.w.HMENU, n.w.HINSTANCE, c.c_void_p)
     destroy = n.api(n.user, 'DestroyWindow', n.w.BOOL, n.w.HWND)
-    get_dpi = n.api(n.user, 'GetDpiForWindow', n.w.UINT, n.w.HWND)
     values = []
     with n.physical_dpi_context():
         for left, top, _right, _bottom in monitors:
@@ -125,7 +124,7 @@ def monitor_dpis(monitors):
                           left + 1, top + 1, 1, 1, None, None, None, None)
             assert hwnd, 'Cannot create native monitor DPI probe'
             try:
-                value = get_dpi(hwnd)
+                value = n.window_dpi(hwnd)
                 assert value, 'Cannot read native monitor DPI'
                 values.append(value)
             finally:
@@ -137,7 +136,7 @@ def monitor_dpis(monitors):
 
 def move_frame(frame, monitor, expected_dpi, records, artifact, layout_ready=lambda dpi: True):
     """Observe destination state, not exact UIA placement or a queue fence."""
-    get_dpi = n.api(n.user, 'GetDpiForWindow', n.w.UINT, n.w.HWND)
+    get_dpi = n.window_dpi
     from_point = n.api(n.user, 'MonitorFromPoint', n.w.HANDLE, n.w.POINT, n.w.DWORD)
     from_window = n.api(n.user, 'MonitorFromWindow', n.w.HANDLE, n.w.HWND, n.w.DWORD)
     context = n.api(n.user, 'GetWindowDpiAwarenessContext', c.c_void_p, n.w.HWND)
@@ -208,7 +207,7 @@ def test_rich_edit_colors_and_selection_after_frame_dpi_update(
     profile.set('Language', winreg.REG_SZ, 'en-US')
     profile.set('Theme', winreg.REG_SZ, theme)
     app = launch([settings[1]], dpi=dpi)
-    get_dpi = n.api(n.user, 'GetDpiForWindow', n.w.UINT, n.w.HWND)
+    get_dpi = n.window_dpi
     moves = []
     artifact = settings[2] / ('rich-edit-moves-%s-%s-%s.json' % (theme, dpi, transition))
     if transition != 'simulated':

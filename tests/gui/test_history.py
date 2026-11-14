@@ -390,15 +390,13 @@ def test_real_foreground_history_gestures(launch, settings, gesture):
                 app.focus(app.search)
                 assert win32gui.GetForegroundWindow() == app.frame, "real history input requires foreground ownership"
                 if gesture == "alt-arrows":
-                    inputs.state['held'].append(win32con.VK_MENU)
-                    inputs.save()
+                    inputs.hold(win32con.VK_MENU)
                     auto.PressKey(win32con.VK_MENU, waitTime=0)
                     try:
                         inputs.key(win32con.VK_LEFT if command == HISTORY_BACK else win32con.VK_RIGHT)
                     finally:
                         auto.ReleaseKey(win32con.VK_MENU, waitTime=0)
-                        inputs.state['held'].remove(win32con.VK_MENU)
-                        inputs.save()
+                        inputs.release(win32con.VK_MENU)
                 elif gesture == "menu":
                     menu, index, _ = history_menu(app)
                     rect = n.w.RECT()

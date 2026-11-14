@@ -29,8 +29,7 @@ def test_real_sidebar_context_keys(launch, settings, command, control):
                 if gesture == "apps":
                     inputs.key(win32con.VK_APPS)
                 else:
-                    inputs.state["held"].append(win32con.VK_SHIFT)
-                    inputs.save()
+                    inputs.hold(win32con.VK_SHIFT)
                     with deadline.operation('hold Shift for context menu gesture'):
                         auto.PressKey(win32con.VK_SHIFT, waitTime=0)
                     try:
@@ -38,8 +37,7 @@ def test_real_sidebar_context_keys(launch, settings, command, control):
                     finally:
                         with deadline.operation('release Shift after context menu gesture'):
                             auto.ReleaseKey(win32con.VK_SHIFT, waitTime=0)
-                        inputs.state["held"].remove(win32con.VK_SHIFT)
-                        inputs.save()
+                        inputs.release(win32con.VK_SHIFT)
                 _, ids = find_popup(app)
                 assert ids
                 inputs.key(win32con.VK_ESCAPE)
@@ -122,8 +120,7 @@ def test_real_tool_find_keyboard(launch):
         n.wait(lambda: "foo" in n.rich_edit_text(editor), "demangle result")
         with foreground(app, inputs):
             app.focus(n.get_item(doc, 1820))
-            inputs.state["held"].append(win32con.VK_CONTROL)
-            inputs.save()
+            inputs.hold(win32con.VK_CONTROL)
             with deadline.operation('hold Control for find gesture'):
                 auto.PressKey(win32con.VK_CONTROL, waitTime=0)
             try:
@@ -131,8 +128,7 @@ def test_real_tool_find_keyboard(launch):
             finally:
                 with deadline.operation('release Control after find gesture'):
                     auto.ReleaseKey(win32con.VK_CONTROL, waitTime=0)
-                inputs.state["held"].remove(win32con.VK_CONTROL)
-                inputs.save()
+                inputs.release(win32con.VK_CONTROL)
             find = n.get_item(doc, 1220)
             n.wait(lambda: n.is_visible(find) and app.focused() == find, "Ctrl+F opens tool find")
             inputs.disable_ime(find)
@@ -141,8 +137,7 @@ def test_real_tool_find_keyboard(launch):
             first = editor_selection(app, editor)
             inputs.key(win32con.VK_F3)
             n.wait(lambda: editor_selection(app, editor)[0] > first[0], "F3 finds next")
-            inputs.state["held"].append(win32con.VK_SHIFT)
-            inputs.save()
+            inputs.hold(win32con.VK_SHIFT)
             with deadline.operation('hold Shift for previous match gesture'):
                 auto.PressKey(win32con.VK_SHIFT, waitTime=0)
             try:
@@ -150,8 +145,7 @@ def test_real_tool_find_keyboard(launch):
             finally:
                 with deadline.operation('release Shift after previous match gesture'):
                     auto.ReleaseKey(win32con.VK_SHIFT, waitTime=0)
-                inputs.state["held"].remove(win32con.VK_SHIFT)
-                inputs.save()
+                inputs.release(win32con.VK_SHIFT)
             n.wait(lambda: editor_selection(app, editor) == first, "Shift+F3 finds previous")
             inputs.key(win32con.VK_ESCAPE)
             n.wait(lambda: not n.is_visible(find) and app.focused() == editor, "Esc returns to result")

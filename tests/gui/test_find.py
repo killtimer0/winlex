@@ -84,8 +84,7 @@ def test_document_find_controls_remain_visible_and_disjoint_when_narrow(launch, 
         assert auto.ControlFromHandle(query).GetValuePattern().SetValue('HANDLE', waitTime=0)
     n.wait(lambda: n.window_text(n.get_item(doc, 1223)).startswith("1/"), "first match")
     with n.window_dpi_context(doc):
-        dpi = (n.api(n.user, "GetDpiForWindow", n.w.UINT, n.w.HWND)(doc)
-               if hasattr(n.user, "GetDpiForWindow") else 96)
+        dpi = n.window_dpi(doc) or 96
         scale = lambda value: round(value * dpi / 96)
         n.send(doc, win32con.WM_SYSCOMMAND, win32con.SC_RESTORE, 0)
         for width in (900, 320, 220, 900):

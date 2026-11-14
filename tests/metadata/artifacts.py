@@ -21,6 +21,14 @@ def run_query(command, *, timeout=30, **options):
         raise
 
 
+def query_command(files, arch, command, name, limit=None):
+    """Host CLI invocation for one JSON metadata query."""
+    args = [str(executable("host-cli")), *map(str, files)]
+    if limit is not None:
+        args += ["--limit", str(limit)]
+    return args + ["--json", "--arch", arch, command, name]
+
+
 def select_executable(messages, name):
     paths = {
         message["executable"]

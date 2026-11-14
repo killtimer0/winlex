@@ -68,15 +68,13 @@ def ctrl_click(app, inputs, doc, index):
         position(app, editor, index)
         point = character_point(app, editor, index)
         assert win32gui.GetForegroundWindow() == app.frame, "Application lost foreground"
-        inputs.state["held"].append(win32con.VK_CONTROL)
-        inputs.save()
+        inputs.hold(win32con.VK_CONTROL)
         try:
             auto.PressKey(win32con.VK_CONTROL, waitTime=0)
             inputs.click(n.c.c_short(point & 0xffff).value, n.c.c_short(point >> 16).value)
         finally:
             auto.ReleaseKey(win32con.VK_CONTROL, waitTime=0)
-            inputs.state["held"].remove(win32con.VK_CONTROL)
-            inputs.save()
+            inputs.release(win32con.VK_CONTROL)
 
 
 def pin_active_tab(app):
@@ -199,22 +197,18 @@ def test_link_clicks_keep_selection_and_require_a_complete_ctrl_gesture(launch, 
                 assert win32gui.GetForegroundWindow() == app.frame, "Application lost foreground"
                 auto.MoveTo(x, y, waitTime=0)
                 if press:
-                    inputs.state["held"].append("mouse")
-                    inputs.save()
+                    inputs.hold("mouse")
                     auto.PressMouse(x, y, waitTime=0)
                     n.wait(mouse_down_captured, "plain mouse-down captured before adding Ctrl", 15)
-                inputs.state["held"].append(win32con.VK_CONTROL)
-                inputs.save()
+                inputs.hold(win32con.VK_CONTROL)
                 try:
                     auto.PressKey(win32con.VK_CONTROL)
                     auto.ReleaseMouse()
                     if press:
-                        inputs.state["held"].remove("mouse")
-                        inputs.save()
+                        inputs.release("mouse")
                 finally:
                     auto.ReleaseKey(win32con.VK_CONTROL, waitTime=0)
-                    inputs.state["held"].remove(win32con.VK_CONTROL)
-                    inputs.save()
+                    inputs.release(win32con.VK_CONTROL)
                 n.send(app.frame, win32con.WM_NULL)
                 assert app.documents() == [source]
                 assert app.active_document() == source
@@ -442,8 +436,7 @@ def test_real_ctrl_hover_preserves_scrolled_reading_state(launch, settings, prof
                    and all(span.Font.Underline == 0 for span, _ in visible),
                    "pointer starts outside the editor with no hovered reference")
             assert app.focused() == editor
-            inputs.state["held"].append(win32con.VK_CONTROL)
-            inputs.save()
+            inputs.hold(win32con.VK_CONTROL)
             auto.PressKey(win32con.VK_CONTROL, waitTime=0)
             try:
                 for current in (0, 1, 0, 1):
@@ -526,8 +519,8 @@ def test_real_unfocused_scrolled_reference_navigates_on_first_gesture(launch, se
                                   win32gui.GetForegroundWindow(),
                                   win32gui.GetWindowText(win32gui.GetForegroundWindow()))
             if gesture == "ctrl-click":
-                inputs.state["held"].extend((win32con.VK_CONTROL, "mouse"))
-                inputs.save()
+                inputs.hold(win32con.VK_CONTROL)
+                inputs.hold("mouse")
                 auto.PressKey(win32con.VK_CONTROL)
                 try:
                     auto.MoveTo(*point)
@@ -545,16 +538,14 @@ def test_real_unfocused_scrolled_reference_navigates_on_first_gesture(launch, se
                     assert n.send(editor, win32con.EM_GETFIRSTVISIBLELINE) == top
                     assert foreground(), "Ctrl-click release requires foreground ownership"
                     auto.ReleaseMouse()
-                    inputs.state["held"].remove("mouse")
-                    inputs.save()
+                    inputs.release("mouse")
                     assert destination(app, source, "HDC", "x86") == source
                 finally:
-                    if "mouse" in inputs.state["held"]:
+                    if inputs.holding("mouse"):
                         auto.ReleaseMouse()
-                        inputs.state["held"].remove("mouse")
+                        inputs.release("mouse")
                     auto.ReleaseKey(win32con.VK_CONTROL)
-                    inputs.state["held"].remove(win32con.VK_CONTROL)
-                    inputs.save()
+                    inputs.release(win32con.VK_CONTROL)
             else:
                 auto.MoveTo(*point)
                 # InputState recovery owns left mouse releases, so deliver the right pair together.
@@ -649,8 +640,7 @@ def test_real_ctrl_click_and_drag_do_not_confuse_navigation_with_selection(launc
                 return info.capture
 
             def hold(key):
-                inputs.state["held"].append(key)
-                inputs.save()
+                inputs.hold(key)
                 if key == "mouse":
                     auto.PressMouse(*auto.GetCursorPos(), waitTime=0)
                 else:
@@ -661,8 +651,7 @@ def test_real_ctrl_click_and_drag_do_not_confuse_navigation_with_selection(launc
                     auto.ReleaseMouse(waitTime=0)
                 else:
                     auto.ReleaseKey(key, waitTime=0)
-                inputs.state["held"].remove(key)
-                inputs.save()
+                inputs.release(key)
 
             def press(point, control_editor=editor):
                 auto.MoveTo(*point, waitTime=0)

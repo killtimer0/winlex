@@ -683,7 +683,7 @@ def test_actual_high_contrast_overrides_dark_and_restores(launch, profile, setti
             win32gui.SetWindowLong(tab, win32con.GWL_STYLE, style & ~0x0200)  # TCS_MULTILINE
             bounds = win32gui.GetWindowRect(tab)
             origin = win32gui.ScreenToClient(win32gui.GetParent(tab), bounds[:2])
-            dpi = n.api(n.user, 'GetDpiForWindow', w.UINT, w.HWND)(tab)
+            dpi = n.window_dpi(tab)
             win32gui.MoveWindow(tab, origin[0], origin[1], 80 * dpi // 96,
                                 bounds[3] - bounds[1], True)
             overflow = n.wait(lambda: win32gui.FindWindowEx(tab, 0, 'msctls_updown32', None),

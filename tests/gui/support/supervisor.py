@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 import time
 
-from . import deadline, progress
+from . import atomic, deadline, jsonl, progress
 from .policy import Policy
 
 
@@ -22,7 +22,7 @@ def monitor_pytest(process, attempt, policy, budget_until, cancel, on_tick=None,
         if code is not None:
             return {'exit_code': code}
         now = time.monotonic()
-        record = deadline.current_record(deadlines)
+        record = jsonl.committed(deadlines)
         if record:
             if record.get('phase') == 'call':
                 age = deadline.heartbeat_age(heartbeat, time.time())
@@ -53,7 +53,7 @@ def supervise_runner(process, path, timeout, started, heartbeat=None, on_tick=No
         now = time.monotonic()
         if on_tick:
             on_tick(path, now)
-        operation = deadline.current_record(path / 'runner-deadlines.jsonl')
+        operation = jsonl.committed(path / 'runner-deadlines.jsonl')
         if operation:
             phase = operation.get('phase', phase)
             if phase != 'startup':
@@ -64,7 +64,7 @@ def supervise_runner(process, path, timeout, started, heartbeat=None, on_tick=No
             elif phase == 'cleanup-inventory':
                 ceiling = operation['deadline']
             elif phase == 'cleanup':
-                plan = _last_record(path / 'runner-cleanup.jsonl')
+                plan = jsonl.last(path / 'runner-cleanup.jsonl')
                 if plan:
                     ceiling = plans.setdefault(plan['attempt'], plan['deadline'])
                 else:
@@ -103,40 +103,9 @@ def supervise_runner(process, path, timeout, started, heartbeat=None, on_tick=No
         killed = True
     except (OSError, Exception) as error:
         reason += ': ' + str(error)
-    _atomic(path / 'supervisor.json', {
+    atomic.write_json(path / 'supervisor.json', {
         'state': 'supervisor_failed', 'exit_code': process.returncode,
         'cleanup_complete': False, 'error': reason, 'runner_terminated': killed,
         'worker_available': False, 'active': progress.active(path),
     })
     return False
-
-
-def _last_record(path):
-    try:
-        with path.open('rb') as stream:
-            stream.seek(0, 2)
-            stream.seek(max(0, stream.tell() - 8192))
-            lines = stream.read().splitlines()
-    except OSError:
-        return None
-    for line in reversed(lines):
-        try:
-            record = json.loads(line)
-        except ValueError:
-            continue
-        if isinstance(record, dict):
-            return record
-    return None
-
-
-def _atomic(path, value):
-    temporary = path.with_suffix('.new')
-    temporary.write_text(json.dumps(value, indent=2), encoding='utf-8')
-    for attempt in range(10):
-        try:
-            temporary.replace(path)
-            return
-        except PermissionError:
-            if attempt == 9:
-                raise
-            time.sleep(.02)

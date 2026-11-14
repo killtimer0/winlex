@@ -6,17 +6,14 @@ from pathlib import Path
 import re
 import subprocess
 import sys
-from artifacts import executable, run_query
+from artifacts import executable, query_command, run_query
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "tmp/verify/winrt"
 
 
 def query(files, command, name, error=None):
-    args = [executable("host-cli"), "--json", "--arch", "x64", "--limit", "1000"]
-    for file in files:
-        args.append(file)
-    p = run_query(args + [command, name], capture_output=True)
+    p = run_query(query_command(files, "x64", command, name, limit=1000), capture_output=True)
     data = json.loads(p.stdout)
     if error:
         assert p.returncode == 3 and error in data["error"]["message"], data

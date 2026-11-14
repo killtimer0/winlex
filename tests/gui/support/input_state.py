@@ -9,7 +9,7 @@ import win32api
 import win32con
 import win32gui
 import win32service
-from . import deadline, native as n
+from . import atomic, deadline, native as n
 
 IMC_GETOPENSTATUS = 5
 IMC_SETOPENSTATUS = 6
@@ -115,9 +115,19 @@ class InputState:
                       "foreground": foreground, "raw_foreground": raw_foreground}
 
     def save(self):
-        temporary = self.path.with_suffix(".new")
-        temporary.write_text(json.dumps(self.state), encoding="utf-8")
-        temporary.replace(self.path)
+        atomic.write_json(self.path, self.state, indent=None)
+
+    def hold(self, code):
+        """Record ownership before delivery so the outer runner can undo it."""
+        self.state["held"].append(code)
+        self.save()
+
+    def release(self, code):
+        self.state["held"].remove(code)
+        self.save()
+
+    def holding(self, code):
+        return code in self.state["held"]
 
     def __enter__(self):
         current = win32service.GetThreadDesktop(win32api.GetCurrentThreadId())
@@ -133,15 +143,12 @@ class InputState:
         return self
 
     def click(self, x, y, *, wait_time=auto.OPERATION_WAIT_TIME):
-        self.state["held"].append("mouse")
-        self.save()
+        self.hold("mouse")
         auto.Click(x, y, waitTime=wait_time)
-        self.state["held"].remove("mouse")
-        self.save()
+        self.release("mouse")
 
     def double_click(self, x, y):
-        self.state["held"].append("mouse")
-        self.save()
+        self.hold("mouse")
         try:
             auto.Click(x, y, waitTime=0)
             auto.Click(x, y, waitTime=0)
@@ -149,20 +156,17 @@ class InputState:
             auto.ReleaseMouse(waitTime=0)
             raise
         finally:
-            self.state["held"].remove("mouse")
-            self.save()
+            self.release("mouse")
 
     def key(self, code):
-        self.state["held"].append(code)
-        self.save()
         # A key() is a tap, not a held key. The provider's default 500 ms pause
         # occurs before key-up and can cross the Windows auto-repeat threshold.
+        self.hold(code)
         auto.PressKey(code, waitTime=0)
         # SendInput preserves event order. Callers observe focus/results after
         # their gesture; the provider's post-key-up pause is not synchronization.
         auto.ReleaseKey(code, waitTime=0)
-        self.state["held"].remove(code)
-        self.save()
+        self.release(code)
 
     def disable_ime(self, control):
         window = ime_window(control)

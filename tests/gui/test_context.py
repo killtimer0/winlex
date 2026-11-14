@@ -160,15 +160,13 @@ def test_readonly_result_context_input_preserves_selection(launch, settings, kin
             context_input.key(win32con.VK_APPS)
             find_popup(app)
         else:
-            context_input.state['held'].append(win32con.VK_SHIFT)
-            context_input.save()
+            context_input.hold(win32con.VK_SHIFT)
             auto.PressKey(win32con.VK_SHIFT, waitTime=0)
             try:
                 context_input.key(win32con.VK_F10)
             finally:
                 auto.ReleaseKey(win32con.VK_SHIFT, waitTime=0)
-                context_input.state['held'].remove(win32con.VK_SHIFT)
-                context_input.save()
+                context_input.release(win32con.VK_SHIFT)
             find_popup(app)
         try:
             assert n.send(editor, win32con.EM_GETSEL) == selection

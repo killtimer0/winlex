@@ -288,8 +288,7 @@ def test_tool_compact_layout_and_narrow_fallback(launch, find_visible):
     if find_visible:
         app.command(1060)
     with n.window_dpi_context(doc):
-        dpi = (n.api(n.user, "GetDpiForWindow", n.w.UINT, n.w.HWND)(doc)
-               if hasattr(n.user, "GetDpiForWindow") else 96)
+        dpi = n.window_dpi(doc) or 96
         scale = lambda value: round(value * dpi / 96)
         visual_state(doc, auto.WindowVisualState.Normal)
         for width, paired in [(900, True), (320, False), (220, False), (900, True)]:
@@ -343,8 +342,7 @@ def test_tool_resize_preserves_combo_dropdowns_and_selection(launch):
     choices = [app.choices(combo) for combo in combos]
     selected = [n.window_text(combo) for combo in combos]
     with n.window_dpi_context(doc):
-        dpi = (n.api(n.user, 'GetDpiForWindow', n.w.UINT, n.w.HWND)(doc)
-               if hasattr(n.user, 'GetDpiForWindow') else 96)
+        dpi = n.window_dpi(doc) or 96
         for width, height in [(900, 560), (900, 600), (400, 600), (900, 560)]:
             assert auto.ControlFromHandle(doc).GetTransformPattern().Resize(
                 round(width * dpi / 96), round(height * dpi / 96))

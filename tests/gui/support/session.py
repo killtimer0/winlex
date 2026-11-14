@@ -92,8 +92,7 @@ class Session:
             self.frame = n.wait(self.find_frame, "main window")
             self.status = self.item(self.frame, 1105)
             self.mdi = n.wait(lambda: win32gui.FindWindowEx(self.frame, 0, 'MDIClient', None), 'MDI client')
-            if hasattr(n.user, "GetDpiForWindow"):
-                self.actual_dpi = n.api(n.user, "GetDpiForWindow", w.UINT, w.HWND)(self.frame)
+            self.actual_dpi = n.window_dpi(self.frame)
         except BaseException:
             self.close()
             raise

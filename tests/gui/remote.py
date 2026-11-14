@@ -16,21 +16,8 @@ import time
 import uuid
 import zipfile
 
-from support import progress, supervisor
+from support import atomic, engine, progress, supervisor
 from support.policy import Policy
-
-
-def atomic(path, value):
-    temporary = path.with_suffix(".new")
-    temporary.write_text(json.dumps(value, indent=2), encoding="utf-8")
-    for attempt in range(10):
-        try:
-            temporary.replace(path)
-            return
-        except PermissionError:
-            if attempt == 9:
-                raise
-            time.sleep(.02)
 
 
 def run_path(root, run_id):
@@ -121,7 +108,7 @@ def rpc(root, request):
     path = run_path(root, request["run_id"])
     if action == "submit":
         path.mkdir()
-        atomic(path / "request.json", request)
+        atomic.write_json(path / "request.json", request)
         return {"run_id": request["run_id"], "state": "queued"}
     if action == "cancel":
         (path / "cancel").touch()
@@ -172,7 +159,7 @@ def worker(root, once=False):
                     "python": sys.version, "executable": sys.executable, "desktop": desktop_name,
                     **native.capabilities()}
     while True:
-        atomic(root / "capabilities.json", {**capabilities, "heartbeat": time.time()})
+        atomic.write_json(root / "capabilities.json", {**capabilities, "heartbeat": time.time()})
         for request in sorted(root.glob("*/request.json")):
             path = request.parent
             if (path / "run.json").exists() or (path / "started.json").exists():
@@ -185,34 +172,30 @@ def worker(root, once=False):
                 continue
             data = json.loads(request.read_text(encoding="utf-8"))
             if (path / "cancel").exists():
-                atomic(path / "run.json", {"cancelled": True, "cleanup_complete": True, "state": "cancelled_before_start"})
+                atomic.write_json(path / "run.json", {"cancelled": True, "cleanup_complete": True, "state": "cancelled_before_start"})
                 continue
             policy = Policy.load().overrides(
                 run=data["timeout"], call=data.get("case_timeout"),
                 stall=data.get("stall_after"),
                 consecutive=data.get("consecutive_timeouts"))
-            command = [sys.executable, str(Path(__file__).with_name("run.py")), "--engine",
-                       "--output", str(path), "--timeout", str(policy.run),
-                       "--case-timeout", str(policy.call), "--stall-after", str(policy.stall),
-                       "--consecutive-timeouts", str(policy.consecutive),
-                       "--desktop", data["desktop"], *data["tests"]]
+            command = engine.command(path, data["tests"], policy, data["desktop"])
             with (path / "output.log").open("w", encoding="utf-8") as log:
                 started = time.monotonic()
                 process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
                                            env={**os.environ, "PYTHONUTF8": "1"})
                 try:
                     safe = supervisor.supervise_runner(process, path, policy.run, started,
-                        lambda: atomic(root / 'capabilities.json', {**capabilities, 'heartbeat': time.time()}),
+                        lambda: atomic.write_json(root / 'capabilities.json', {**capabilities, 'heartbeat': time.time()}),
                         policy=policy)
                 except KeyboardInterrupt:
                     (path / "cancel").touch()
                     safe = supervisor.supervise_runner(process, path, policy.run, started,
-                        lambda: atomic(root / 'capabilities.json', {**capabilities, 'heartbeat': time.time()}),
+                        lambda: atomic.write_json(root / 'capabilities.json', {**capabilities, 'heartbeat': time.time()}),
                         policy=policy)
                     if safe:
                         raise
             if not safe:
-                atomic(root / 'capabilities.json', {**capabilities, 'heartbeat': time.time(),
+                atomic.write_json(root / 'capabilities.json', {**capabilities, 'heartbeat': time.time(),
                     'worker_available': False, 'error': 'Runner cleanup unverified; queue stopped'})
                 return
         if once:
@@ -232,7 +215,7 @@ def main():
     parser.add_argument("--source", type=Path)
     parser.add_argument("--destination")
     parser.add_argument("--run-id")
-    parser.add_argument("--timeout", type=int, default=900)
+    parser.add_argument("--timeout", type=float, default=Policy.load().run)
     parser.add_argument("--case-timeout", type=int)
     parser.add_argument("--stall-after", type=float)
     parser.add_argument("--consecutive-timeouts", type=int)

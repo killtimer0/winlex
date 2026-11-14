@@ -346,7 +346,7 @@ def test_many_arguments_scroll_keyboard_and_dpi_keep_values(launch, generic_meta
                 x1, y1, x2, y2 = n.rectangle(control)
                 assert left <= x1 < x2 <= left + width
                 assert top <= y1 < y2 <= top + height
-            dpi = n.api(n.user, "GetDpiForWindow", n.w.UINT, n.w.HWND)(hwnd) if hasattr(n.user, "GetDpiForWindow") else None
+            dpi = n.window_dpi(hwnd)
             observations.append({"monitor": monitor, "effective_dpi": dpi, "bounds": n.rectangle(hwnd)})
     (settings[2] / "type-arguments-monitors.json").write_text(json.dumps(observations), encoding="utf-8")
     assert all(n.window_text(field) == "int32" for field in fields[:-1])
@@ -374,7 +374,7 @@ def test_argument_form_simulated_pmv1_scaling_keeps_input_focus_and_scroll(launc
     n.send(fields[-1], win32con.EM_SETSEL, 1, 4)
     with n.window_dpi_context(hwnd):
         original = n.rectangle(hwnd)
-        actual = n.api(n.user, "GetDpiForWindow", n.w.UINT, n.w.HWND)(hwnd)
+        actual = n.window_dpi(hwnd)
         for dpi in (96, 144, 192, actual):
             # Simulate only the PMv1 notification path, not an effective monitor change.
             rect = n.w.RECT(original[0], original[1],

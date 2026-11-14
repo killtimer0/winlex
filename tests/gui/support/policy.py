@@ -27,6 +27,11 @@ class Policy:
     def phase(self, name):
         return {'setup': self.setup, 'call': self.call, 'teardown': self.teardown}[name]
 
+    def ledger_budget(self, held, ime):
+        """Cleanup ceiling for one owned input ledger."""
+        # One release per held key, IME send/wait/overrun, cursor delivery, IO.
+        return 5 * (held + 1) + (21 if ime else 0) + 5 + 10
+
     def overrides(self, **values):
         return replace(self, **{key: value for key, value in values.items()
                                 if value is not None})

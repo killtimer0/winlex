@@ -177,7 +177,6 @@ def edit_pixels(hwnd):
 def test_win11_edit_real_dpi_corners_and_theme_restore(launch, profile, settings, dpi):
     profile.set('Theme', winreg.REG_SZ, 'dark')
     app = launch(dpi='pmv2')
-    get_dpi = n.api(n.user, 'GetDpiForWindow', n.w.UINT, n.w.HWND)
     with InputState() as inputs, foreground(app, inputs), n.window_dpi_context(app.frame):
         left, top, right, bottom = monitor_with_dpi(dpi)
         width, height = 1000 * dpi // 96, 650 * dpi // 96
@@ -185,7 +184,7 @@ def test_win11_edit_real_dpi_corners_and_theme_restore(launch, profile, settings
         win32gui.SetWindowPos(app.frame, 0, left + 64, top + 64, width, height,
                               win32con.SWP_NOZORDER | win32con.SWP_NOACTIVATE)
         edit = app.search
-        n.wait(lambda: get_dpi(app.frame) == dpi and get_dpi(edit) == dpi,
+        n.wait(lambda: n.window_dpi(app.frame) == dpi and n.window_dpi(edit) == dpi,
                'frame and Edit adopt actual monitor DPI')
         inputs.disable_ime(edit)
         appearances = {}

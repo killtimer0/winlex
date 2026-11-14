@@ -12,12 +12,18 @@ from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[2]
-spec = importlib.util.spec_from_file_location("gui_artifacts", ROOT / "tests/gui/support/artifacts.py")
-artifacts = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(artifacts)
-spec = importlib.util.spec_from_file_location("gui_paths", ROOT / "tests/gui/support/paths.py")
-paths = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(paths)
+
+
+def load(name):
+    spec = importlib.util.spec_from_file_location(
+        "gui_" + name, ROOT / "tests/gui/support" / (name + ".py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+artifacts = load("artifacts")
+paths = load("paths")
 
 
 class GuiArtifactContracts(unittest.TestCase):
@@ -25,9 +31,7 @@ class GuiArtifactContracts(unittest.TestCase):
                          "Requires GUI and media dependencies")
     def test_png_preserves_rgb_orientation_and_ignores_unused_bitmap_alpha(self):
         from PIL import Image
-        spec = importlib.util.spec_from_file_location("gui_diagnostics", ROOT / "tests/gui/support/diagnostics.py")
-        diagnostics = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(diagnostics)
+        diagnostics = load("diagnostics")
         width, height = 3, 2
         top = [(255, 0, 0), (0, 255, 0), (0, 0, 255)]
         bottom = [(17, 33, 65), (0, 0, 0), (255, 255, 255)]

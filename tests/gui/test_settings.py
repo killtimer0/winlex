@@ -275,7 +275,7 @@ def test_settings_dpi_pages(launch, settings, mode):
     app = launch(dpi=mode)
     evidence = []
     output = settings[2] / ("settings-dpi-" + mode + ".json")
-    get_dpi = n.api(n.user, "GetDpiForWindow", n.w.UINT, n.w.HWND) if hasattr(n.user, "GetDpiForWindow") else lambda _h: None
+    get_dpi = n.window_dpi
     for monitor in n.monitors():
         with n.window_dpi_context(app.frame):
             with deadline.operation('move application frame via UIA'):
@@ -339,7 +339,7 @@ def test_settings_pmv1_initial_paint(launch, settings):
         pytest.skip("per-monitor DPI unavailable")
     with InputState() as inputs:
         app = launch(dpi="pmv1")
-        get_dpi = n.api(n.user, "GetDpiForWindow", n.w.UINT, n.w.HWND)
+        get_dpi = n.window_dpi
         get_system_dpi = n.api(n.user, "GetDpiForSystem", n.w.UINT)
         with foreground(app, inputs), n.window_dpi_context(app.frame):
             system_dpi = get_system_dpi()
@@ -352,11 +352,9 @@ def test_settings_pmv1_initial_paint(launch, settings):
                 pytest.skip("no monitor with a different DPI")
         # Do not select pages or render a screenshot before observing the first paint.
         assert win32gui.GetForegroundWindow() == app.frame, 'settings first-paint foreground'
-        inputs.state['held'].append(win32con.VK_MENU)
-        inputs.save()
+        inputs.hold(win32con.VK_MENU)
         frame.SendKeys('{Alt}fs', waitTime=0)
-        inputs.state['held'].remove(win32con.VK_MENU)
-        inputs.save()
+        inputs.release(win32con.VK_MENU)
         sheet = n.wait(lambda: n.find_window(app.process.pid, '#32770', app.frame), 'settings first paint', 15)
         sheet_control = auto.ControlFromHandle(sheet)
         assert get_dpi(sheet) != system_dpi

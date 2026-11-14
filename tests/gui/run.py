@@ -17,8 +17,9 @@ import win32event
 import win32job
 import win32process
 import win32service
+from support import atomic, engine
 from support import deadline as operation_deadline
-from support import progress, supervisor
+from support import jsonl, progress, supervisor
 from support.policy import Policy
 from support.results import merge, records
 
@@ -61,13 +62,8 @@ def main():
 def supervised(args, tests):
     policy = args.policy
     output = args.output_path
-    # The engine must watch the directory this supervisor already resolved;
-    # regenerate it only when no explicit --output was supplied.
-    command = [sys.executable, str(Path(__file__).resolve()), '--engine',
-               '--output', str(output), '--desktop', args.desktop,
-               '--timeout', str(policy.run), '--case-timeout', str(policy.call),
-               '--stall-after', str(policy.stall),
-               '--consecutive-timeouts', str(policy.consecutive), *tests]
+    # The engine must watch the directory this supervisor already resolved.
+    command = engine.command(output, tests, policy, args.desktop)
     started = time.monotonic()
     process = subprocess.Popen(command, env=os.environ.copy())
     state = {'at': 0.0, 'key': None}
@@ -115,6 +111,50 @@ def supervised(args, tests):
             print('  %6.1fs %s' % (row.get('duration', 0), row['nodeid']), flush=True)
     return 0 if (result.get('exit_code') == 0 and result.get('cleanup_complete')
                  and not result.get('cancelled') and not result.get('timed_out')) else 1
+
+
+def _cleanup(result, description, budget, action, *args):
+    """Run one bounded cleanup step and retain its failure."""
+    try:
+        with operation_deadline.operation(description, budget):
+            action(*args)
+    except Exception as error:
+        result['cleanup_errors'].append(str(error))
+
+
+def remove_profile(entry):
+    profile_root = entry.read_text(encoding='utf-8')
+    assert profile_root == "Software\\Winlex\\Tests\\" + entry.stem
+    try:
+        winreg.DeleteKey(winreg.HKEY_CURRENT_USER, profile_root)
+    except FileNotFoundError:
+        pass
+    entry.unlink()
+
+
+def recover_ledger(path):
+    from support.input_state import recover
+    recover(path)
+
+
+def read_report(result, report):
+    recorded = json.loads(report.read_text(encoding='utf-8'))
+    if not recorded['cleanup_complete']:
+        result['cleanup_errors'].extend(recorded['errors'])
+
+
+def verify_receipt(receipt, budget):
+    until = time.monotonic() + budget
+    while not receipt.exists() and time.monotonic() < until:
+        time.sleep(.05)
+    if not receipt.exists() or not json.loads(receipt.read_text(encoding='utf-8')).get('ok'):
+        raise RuntimeError('High-contrast recovery incomplete: ' + str(receipt))
+
+
+def release_input(mutex, owned):
+    if owned:
+        win32event.ReleaseMutex(mutex)
+    win32api.CloseHandle(mutex)
 
 
 def engine_main(args, tests):
@@ -179,9 +219,7 @@ def engine_main(args, tests):
             timed_out = {row['timeout']['nodeid'] for _, row in attempts if row.get('timeout')}
             result['remaining'] = sum(1 for nodeid in selection
                                       if nodeid not in completed and nodeid not in timed_out)
-    publication = output / 'run.new'
-    publication.write_text(json.dumps(result, indent=2), encoding='utf-8')
-    publication.replace(output / 'run.json')
+    atomic.write_json(output / 'run.json', result)
     operation_deadline.close()
     return 0 if (result['exit_code'] == 0 and result['cleanup_complete']
                  and not result['cancelled'] and not result['timed_out']) else 1
@@ -257,7 +295,7 @@ def run_attempt(args, tests, output, root, excluded, policy):
                 result['timeout'] = outcome['timeout']
             if outcome.get('budget_exhausted'):
                 result['budget_deadline'] = args.until
-                result['active_context'] = operation_deadline.current_record(output / 'deadlines.jsonl')
+                result['active_context'] = jsonl.committed(output / 'deadlines.jsonl')
                 result['pytest_stack'] = str(output / 'timeout-stacks.log')
         else:
             result['exit_code'] = outcome.get('exit_code')
@@ -320,9 +358,7 @@ def run_attempt(args, tests, output, root, excluded, policy):
         for path in ledgers:
             try:
                 state = json.loads(path.read_text(encoding='utf-8'))
-                # UIA key releases + cursor delivery, IME send/wait/overrun,
-                # foreground restoration and ledger IO, using existing caps.
-                ledger_budgets[path] = 5 * (len(state['held']) + 1) + (21 if state.get('ime') else 0) + 5 + 10
+                ledger_budgets[path] = policy.ledger_budget(len(state['held']), state.get('ime'))
             except Exception as error:
                 result['cleanup_errors'].append(str(error))
         handles = [handle for handle in (thread, process, job) if handle]
@@ -338,75 +374,32 @@ def run_attempt(args, tests, output, root, excluded, policy):
             stream.write(json.dumps(plan) + '\n')
         operation_deadline.phase('runner', 'cleanup', max(.001, plan['deadline'] - time.monotonic()))
         for entry in profiles:
-            try:
-                with operation_deadline.operation('remove test profile', policy.cleanup_step):
-                    profile_root = entry.read_text(encoding="utf-8")
-                    assert profile_root == "Software\\Winlex\\Tests\\" + entry.stem
-                    try:
-                        winreg.DeleteKey(winreg.HKEY_CURRENT_USER, profile_root)
-                    except FileNotFoundError:
-                        pass
-                    entry.unlink()
-            except Exception as error:
-                result["cleanup_errors"].append(str(error))
+            _cleanup(result, 'remove test profile', policy.cleanup_step, remove_profile, entry)
         if input_owned and ledgers:
-            try:
-                from support.input_state import recover
-                for path in ledgers:
-                    try:
-                        if path in ledger_budgets:
-                            with operation_deadline.operation('recover owned input ledger', ledger_budgets[path]):
-                                recover(path)
-                    except Exception as error:
-                        result["cleanup_errors"].append(str(error))
-            except Exception as error:
-                result["cleanup_errors"].append(str(error))
+            for path in ledgers:
+                if path in ledger_budgets:
+                    _cleanup(result, 'recover owned input ledger', ledger_budgets[path],
+                             recover_ledger, path)
         elif ledgers:
             result["cleanup_errors"].append("Input ledger exists without ownership of the active desktop")
         for report in reports:
-            try:
-                with operation_deadline.operation('read cleanup report', policy.cleanup_step):
-                    recorded = json.loads(report.read_text(encoding="utf-8"))
-                    if not recorded["cleanup_complete"]:
-                        result["cleanup_errors"].extend(recorded["errors"])
-            except Exception as error:
-                result["cleanup_errors"].append(str(error))
+            _cleanup(result, 'read cleanup report', policy.cleanup_step, read_report, result, report)
         for receipt in receipts:
-            try:
-                with operation_deadline.operation('verify high-contrast recovery receipt', policy.cleanup_receipt):
-                    until = time.monotonic() + policy.cleanup_receipt
-                    while not receipt.exists() and time.monotonic() < until:
-                        time.sleep(.05)
-                    if not receipt.exists() or not json.loads(receipt.read_text(encoding='utf-8')).get('ok'):
-                        result['cleanup_errors'].append('High-contrast recovery incomplete: ' + str(receipt))
-            except Exception as error:
-                result['cleanup_errors'].append(str(error))
+            _cleanup(result, 'verify high-contrast recovery receipt', policy.cleanup_receipt,
+                     verify_receipt, receipt, policy.cleanup_receipt)
         for handle in handles:
-            if handle:
-                try:
-                    with operation_deadline.operation('close test process/job handle', policy.cleanup_step):
-                        win32api.CloseHandle(handle)
-                except Exception as error:
-                    result["cleanup_errors"].append(str(error))
+            _cleanup(result, 'close test process/job handle', policy.cleanup_step,
+                     win32api.CloseHandle, handle)
         if input_mutex:
-            try:
-                with operation_deadline.operation('release input ownership', policy.cleanup_step):
-                    if input_owned:
-                        win32event.ReleaseMutex(input_mutex)
-                    win32api.CloseHandle(input_mutex)
-            except Exception as error:
-                result["cleanup_errors"].append(str(error))
+            _cleanup(result, 'release input ownership', policy.cleanup_step,
+                     release_input, input_mutex, input_owned)
         if desktop:
-            try:
-                with operation_deadline.operation('close test desktop', policy.cleanup_step):
-                    desktop.CloseDesktop()
-            except Exception as error:
-                result["cleanup_errors"].append(str(error))
+            _cleanup(result, 'close test desktop', policy.cleanup_step, desktop.CloseDesktop)
         result["cleanup_complete"] = not result["cleanup_errors"]
         # The root run.json is the queue's whole-run completion signal. Keep
         # first-attempt evidence without publishing completion before resumes.
         report = output / ('attempt-result.json' if output == root else 'run.json')
-        report.write_text(json.dumps(result, indent=2), encoding="utf-8")
+        atomic.write_json(report, result)
     return result
 
 

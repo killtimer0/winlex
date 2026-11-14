@@ -139,7 +139,7 @@ python tests/gui/resources.py --exe "$guiExe"
 
 `$guiExe` 为构建显示的 GUI 完整路径。`--dpi` 可改为 `pmv1`、`system`、`unaware` 或 `auto`。默认使用 `--desktop isolated`；也可使用 `--desktop current` 在当前桌面运行契约测试。
 结果写入 `tmp/gui-tests/<run-id>/`：`run.json` 和 JUnit 汇总结果，失败时保留无损截图，`progress.jsonl` 与 `timings.jsonl` 用于定位中断或慢阶段；输入来源与 fixture 哈希见 `environment.json` 和 `fixture-hashes.json`。与标准输入相同的 fixture 副本会在收尾时移除，变异或损坏的输入保留。
-超时排查查看 `run.json`、`deadlines.jsonl` 和 `timeout-stacks.log`；预算集中定义在 [`tests/gui/support/policy.py`](../tests/gui/support/policy.py)。等待预算是存活保险，不是延迟断言：UI 同步等待至少 15 秒，原生对话框 30 秒，元数据加载 45 秒；慢机器只会更慢。调用阶段默认 120 秒，setup/teardown 各 30 秒，收集 60 秒。`n.wait` 每轮更新心跳，调用阶段超过 20 秒没有进展即记录堆栈、终止当前 worker，并在清理成功后继续其余用例。`--timeout` 为整轮上限，默认 900 秒；`--case-timeout`、`--stall-after`、`--consecutive-timeouts` 覆盖单例、停滞和连续超时预算。
+超时排查查看 `run.json`、`deadlines.jsonl` 和 `timeout-stacks.log`；等待预算是存活兜底，不是延迟断言。各阶段、清理与停滞预算集中定义在 [`tests/gui/support/policy.py`](../tests/gui/support/policy.py)；`--timeout`、`--case-timeout`、`--stall-after`、`--consecutive-timeouts` 分别覆盖整轮、单例、停滞和连续超时预算。`n.wait` 每轮更新心跳，调用阶段超过停滞预算没有进展即记录堆栈并终止当前 worker。
 单用例超时且清理成功后，驱动继续尚未执行的用例，记录位于 `continued/`，根目录 JUnit 汇总结果；连续超时达到 `--consecutive-timeouts`、取消、整轮预算耗尽或清理失败时停止。运行期间按慢用例阈值实时打印 `[slow]` 行，结束时列出最慢用例；超时结果记录用例、阶段、操作、`termination_reason`、最后完成用例和剩余用例数。
 `--desktop current --real-input` 只选择 `interactive` 交互与屏幕呈现测试，不指定时运行其余用例；可用 `--collect-only -q` 检查选择结果。交互测试须独占已解锁的活动桌面，运行期间不要操作键鼠。独立桌面也不隔离剪贴板等会话共享资源。
 真实高对比测试使用 `--hc-theme PATH` 指定目标机的 `.theme` 预期外观文件，例如 `%SystemRoot%\Resources\Ease of Access Themes\hcblack.theme`；此参数读取预期外观，不应用主题。

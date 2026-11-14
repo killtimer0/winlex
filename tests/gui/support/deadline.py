@@ -163,21 +163,6 @@ def operation(description, seconds=None):
             _publish(previous)
 
 
-def current_record(path):
-    try:
-        with Path(path).open('rb') as stream:
-            stream.seek(0, 2)
-            size = stream.tell()
-            stream.seek(max(0, size - 65536))
-            lines = stream.read().splitlines(keepends=True)
-    except FileNotFoundError:
-        return None
-    complete = [line for line in lines if line.endswith(b'\n')]
-    if not complete:
-        return None
-    return json.loads(complete[-1])
-
-
 def expired(value, now=None):
     if value is None:
         return None

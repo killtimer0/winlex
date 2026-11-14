@@ -12,7 +12,6 @@ from test_tools import visual_state
 def test_cross_monitor_layout(launch, settings, maximized):
     if not hasattr(n.user, "GetDpiForWindow"):
         pytest.skip("GetDpiForWindow unavailable; no actual-DPI assertion")
-    get_dpi = n.api(n.user, "GetDpiForWindow", w.UINT, w.HWND)
     with n.physical_dpi_context():
         displays = n.monitors()
     references = monitor_dpis(displays)
@@ -21,7 +20,7 @@ def test_cross_monitor_layout(launch, settings, maximized):
     assert context, 'Cannot read frame DPI awareness context'
     awareness = n.api(n.user, 'GetAwarenessFromDpiAwarenessContext', c.c_int, c.c_void_p)(context)
     assert awareness in (0, 1, 2), 'Invalid frame DPI awareness'
-    initial_dpi = get_dpi(app.frame)
+    initial_dpi = n.window_dpi(app.frame)
     assert initial_dpi > 0
     if awareness == 0:
         assert initial_dpi == 96
@@ -33,7 +32,7 @@ def test_cross_monitor_layout(launch, settings, maximized):
     assert bool(n.is_zoomed(doc)) == maximized
 
     def layout_ready(value):
-        child_dpis = (get_dpi(app.results), get_dpi(doc))
+        child_dpis = (n.window_dpi(app.results), n.window_dpi(doc))
         assert all(child_dpis), 'Cannot read results/document DPI'
         if child_dpis != (value, value):
             return False

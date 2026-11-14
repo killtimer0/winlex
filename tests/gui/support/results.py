@@ -1,15 +1,7 @@
 """Retain all case outcomes when a blocked pytest worker must be replaced."""
-import json
 import xml.etree.ElementTree as ET
 
-
-def records(path):
-    if not path.exists():
-        return []
-    # A killed worker may leave its final write incomplete, including a split
-    # UTF-8 code point. Only newline-terminated records have been committed.
-    return [json.loads(line) for line in path.read_bytes().splitlines(keepends=True)
-            if line.endswith(b'\n') and line.strip()]
+from .jsonl import records
 
 
 def merge(attempts, output):
