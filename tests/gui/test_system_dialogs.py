@@ -96,6 +96,10 @@ def native_text_surfaces(dialog):
     def client_rect(bounds):
         # UIA reports physical screen pixels; capture_pixels crops in the
         # target's coordinate space.
+        if bounds.right <= bounds.left or bounds.bottom <= bounds.top:
+            # Named elements can still report an empty rectangle; it cannot be
+            # converted or sampled, and every caller rejects it through inside().
+            return (0, 0, 0, 0)
         first = n.w.POINT(bounds.left, bounds.top)
         last = n.w.POINT(bounds.right, bounds.bottom)
         if convert is not None:
@@ -108,6 +112,57 @@ def native_text_surfaces(dialog):
         left, top, right, bottom = rect
         return (left >= 0 and top >= 0 and right <= width and bottom <= height
                 and left + 2 < right - 2 and top + 2 < bottom - 2)
+
+    def contained(outer, inner):
+        return (outer[0] - 1 <= inner[0] and outer[1] - 1 <= inner[1]
+                and inner[2] <= outer[2] + 1 and inner[3] <= outer[3] + 1)
+
+    def text_ranges(control):
+        """Text-provider bounds are real glyph geometry; empty means unavailable."""
+        try:
+            pattern = control.GetPattern(auto.PatternId.TextPattern)
+            if pattern is None:
+                return []
+            return [client_rect(bounds)
+                    for visible in pattern.GetVisibleRanges()
+                    for bounds in visible.GetBoundingRectangles()]
+        except COMError:
+            return []
+
+    def row_text_rects(item):
+        """Real text bounds inside one row, never the row minus guessed padding."""
+        row = client_rect(item.BoundingRectangle)
+        cells = []
+
+        def collect(control, depth=0):
+            if depth > 4:
+                return
+            for child in control.GetChildren():
+                try:
+                    kind = child.ControlType
+                    if kind == auto.ControlType.TitleBarControl:
+                        continue
+                    rect = client_rect(child.BoundingRectangle)
+                except COMError:
+                    continue
+                if (kind in (auto.ControlType.TextControl, auto.ControlType.EditControl)
+                        and inside(rect) and contained(row, rect)):
+                    cells.append(rect)
+                elif depth < 4:
+                    collect(child, depth + 1)
+
+        collect(item)
+        if not cells:
+            # Some providers expose row text only through TextPattern ranges.
+            ranges = text_ranges(item)
+            if not ranges:
+                parent = item.GetParentControl()
+                if parent and parent.ControlType in (auto.ControlType.ListControl,
+                                                     auto.ControlType.DataGridControl):
+                    ranges = [rect for rect in text_ranges(parent)
+                              if contained(row, rect)]
+            cells = [rect for rect in ranges if inside(rect)]
+        return cells[:2]
 
     texts, rows = [], []
 
@@ -123,23 +178,25 @@ def native_text_surfaces(dialog):
                 if kind == auto.ControlType.TitleBarControl:
                     continue
                 name, offscreen = child.Name, child.IsOffscreen
-                if offscreen or not name.strip():
-                    continue
-                rect = client_rect(child.BoundingRectangle)
+                if not offscreen and name.strip():
+                    rect = client_rect(child.BoundingRectangle)
+                    if kind == auto.ControlType.TextControl and len(texts) < 3 and inside(rect):
+                        left, top, right, bottom = rect
+                        texts.append(('text', name,
+                                      (left + 2, top + 2, right - 2, bottom - 2)))
+                # Sample the node itself, but always keep traversing unnamed
+                # Pane/Group containers: their children still carry the text.
+                if (not offscreen and len(rows) < 3
+                        and kind in (auto.ControlType.ListItemControl,
+                                     auto.ControlType.DataItemControl)):
+                    for rect in row_text_rects(child):
+                        if len(rows) >= 3:
+                            break
+                        left, top, right, bottom = rect
+                        rows.append(('row', name,
+                                     (left + 1, top + 1, right - 1, bottom - 1)))
             except COMError:
-                continue
-            if inside(rect):
-                left, top, right, bottom = rect
-                if kind == auto.ControlType.TextControl and len(texts) < 3:
-                    texts.append((name, (left + 2, top + 2, right - 2, bottom - 2)))
-                elif kind in (auto.ControlType.ListItemControl,
-                              auto.ControlType.DataItemControl) and len(rows) < 3:
-                    # Skip the leading item icon and row padding; keep the
-                    # text columns so icon or border pixels cannot pass as text.
-                    inset_x = max(3, (bottom - top) * 2 // 5)
-                    inset_y = max(2, (bottom - top) // 5)
-                    rows.append((name, (left + inset_x, top + inset_y,
-                                        right - 3, bottom - inset_y)))
+                pass
             visit(child, depth + 1)
 
     visit(root)
@@ -151,9 +208,10 @@ def assert_native_text_contrast(dialog):
                       'native dialog text surfaces', 15)
 
     def readable():
-        return all(text_contrast(colors(dialog, rect)) for _name, rect in surfaces)
+        return all(text_contrast(colors(dialog, rect)) for _kind, _name, rect in surfaces)
 
     n.wait(readable, 'native client text must remain readable', 15)
+    return surfaces
 
 
 def assert_task_dialog_client_theme(appearance, dark):
@@ -478,10 +536,18 @@ def test_file_picker_current_theme_native_navigation_and_cancel(
             entry = n.wait(lambda: picker_entry(dialog, sentinel), 'native folder navigation contents', 30)
             assert_modal(app, dialog)
             assert_titlebar_theme(dialog, current == 'dark')
-            assert_native_text_contrast(dialog)
+
+            def row_text():
+                found = assert_native_text_contrast(dialog)
+                return found if any(kind == 'row' for kind, _name, _rect in found) else None
+
+            surfaces = n.wait(row_text, 'native picker list-row text bounds')
             artifact = 'file-picker-%s-%s-from-%s' % (current, dpi, theme)
             screenshot(dialog, settings[2] / (artifact + '.png'))
             evidence = {'theme': current, 'dpi': dpi,
+                        'text_surfaces': [{'kind': kind, 'name': name,
+                                           'rect': list(rect)}
+                                          for kind, name, rect in surfaces],
                         'surfaces': file_picker_colors(dialog, field, entry)}
             (settings[2] / (artifact + '-colors.json')).write_text(
                 json.dumps(evidence, indent=2), encoding='utf-8')
