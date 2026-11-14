@@ -45,6 +45,11 @@ def background_pixels(hwnd):
             return pixels[:3]
 
 
+def dark_background(hwnd):
+    """Require a blank displayed client patch to use the dark theme fill."""
+    return max(background_pixels(hwnd)) < 128
+
+
 @modern_theme
 def test_settings_apply_theme_without_closing(launch, profile):
     profile.set('Theme', winreg.REG_SZ, 'light')

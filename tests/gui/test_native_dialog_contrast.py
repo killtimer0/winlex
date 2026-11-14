@@ -17,7 +17,7 @@ from test_system_dialogs import (
     assert_modal, assert_native_text_contrast,
     dismiss_no, file_picker_colors, filename_field, native_dialog, picker_entry,
 )
-from test_theme import modern_theme
+from test_theme import dark_background, modern_theme
 from test_theme_compatibility import (
     HCF_AVAILABLE, HCF_HIGHCONTRASTON, high_contrast, restored_high_contrast, system_color,
     temporary_high_contrast,
@@ -270,7 +270,8 @@ def test_task_dialog_stays_open_across_high_contrast(launch, profile, settings, 
         assert_prompt_contract(app, dialog)
         assert_native_text_contrast(dialog)
         dismiss_no(app, dialog)
-        assert n.is_visible(app.search)
+        n.wait(lambda: dark_background(app.mdi) and dark_background(app.search),
+               'dark owner after live TaskDialog closes')
         assert profile.preferences() == before
 
 
@@ -524,6 +525,7 @@ def test_file_picker_stays_open_across_high_contrast(launch, profile, settings, 
         invoke(n.get_item(dialog, win32con.IDCANCEL))
         n.wait(lambda: not n.is_window(dialog) and win32gui.IsWindowEnabled(app.frame), 'native Cancel')
         assert not native_dialog(app)
-        assert n.is_visible(app.search)
+        n.wait(lambda: dark_background(app.mdi) and dark_background(app.search),
+               'dark owner after live picker closes')
         assert app.status_text() == status
         assert profile.preferences() == before

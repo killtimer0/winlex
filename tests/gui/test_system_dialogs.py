@@ -13,13 +13,14 @@ import win32con
 import win32gui
 import win32process
 import winreg
+from comtypes import COMError
 
 from support import deadline, native as n
 from support.diagnostics import assert_unobscured, screenshot
 from support.input_state import GA_ROOT, InputState, foreground, get_ancestor
 from support.session import invoke, message_button
-from test_theme import background_pixels, modern_theme, select_theme
-from test_theme_surfaces import observed_colors as colors, text_contrast
+from test_theme import background_pixels, dark_background, modern_theme, select_theme
+from test_theme_surfaces import dark_color, observed_colors as colors, text_contrast
 
 
 def native_dialog(app):
@@ -79,10 +80,78 @@ def test_sources_prompt_native_version_buttons_and_default(launch, profile, dpi)
     assert profile.get('AutoLoad') == []
 
 
-def assert_native_text_contrast(dialog):
-    def readable():
+@deadline.operation('locate native dialog text surfaces via UIA')
+def native_text_surfaces(dialog):
+    """Locate displayed text and list-row text without sampling icons or borders."""
+    root = auto.ControlFromHandle(dialog)
+    with n.window_dpi_context(dialog):
         _, _, width, height = n.rectangle(dialog, client=True)
-        return text_contrast(colors(dialog, (3, 3, width - 3, height - 3)))
+        origin = win32gui.ClientToScreen(dialog, (0, 0))
+    try:
+        convert = n.api(n.user, 'PhysicalToLogicalPointForPerMonitorDPI', n.w.BOOL,
+                        n.w.HWND, n.c.POINTER(n.w.POINT))
+    except AttributeError:
+        convert = None
+
+    def client_rect(bounds):
+        # UIA reports physical screen pixels; capture_pixels crops in the
+        # target's coordinate space.
+        first = n.w.POINT(bounds.left, bounds.top)
+        last = n.w.POINT(bounds.right, bounds.bottom)
+        if convert is not None:
+            assert convert(dialog, n.c.byref(first)), 'Cannot convert native text bounds'
+            assert convert(dialog, n.c.byref(last)), 'Cannot convert native text bounds'
+        return (first.x - origin[0], first.y - origin[1],
+                last.x - origin[0], last.y - origin[1])
+
+    def inside(rect):
+        left, top, right, bottom = rect
+        return (left >= 0 and top >= 0 and right <= width and bottom <= height
+                and left + 2 < right - 2 and top + 2 < bottom - 2)
+
+    texts, rows = [], []
+
+    def visit(control, depth=0):
+        if depth > 12 or (len(texts) >= 3 and len(rows) >= 3):
+            return
+        for child in control.GetChildren():
+            if len(texts) >= 3 and len(rows) >= 3:
+                return
+            try:
+                kind = child.ControlType
+                # Non-client text is outside the captured client area.
+                if kind == auto.ControlType.TitleBarControl:
+                    continue
+                name, offscreen = child.Name, child.IsOffscreen
+                if offscreen or not name.strip():
+                    continue
+                rect = client_rect(child.BoundingRectangle)
+            except COMError:
+                continue
+            if inside(rect):
+                left, top, right, bottom = rect
+                if kind == auto.ControlType.TextControl and len(texts) < 3:
+                    texts.append((name, (left + 2, top + 2, right - 2, bottom - 2)))
+                elif kind in (auto.ControlType.ListItemControl,
+                              auto.ControlType.DataItemControl) and len(rows) < 3:
+                    # Skip the leading item icon and row padding; keep the
+                    # text columns so icon or border pixels cannot pass as text.
+                    inset_x = max(3, (bottom - top) * 2 // 5)
+                    inset_y = max(2, (bottom - top) // 5)
+                    rows.append((name, (left + inset_x, top + inset_y,
+                                        right - 3, bottom - inset_y)))
+            visit(child, depth + 1)
+
+    visit(root)
+    return texts + rows
+
+
+def assert_native_text_contrast(dialog):
+    surfaces = n.wait(lambda: native_text_surfaces(dialog),
+                      'native dialog text surfaces', 15)
+
+    def readable():
+        return all(text_contrast(colors(dialog, rect)) for _name, rect in surfaces)
 
     n.wait(readable, 'native client text must remain readable', 15)
 
@@ -424,7 +493,14 @@ def test_file_picker_current_theme_native_navigation_and_cancel(
             assert profile.preferences() == before
             n.wait(lambda: background_pixels(app.search) == owner,
                    'owner repaint preserves theme after picker closes')
+            n.wait(lambda: dark_background(app.mdi) == (current == 'dark'),
+                   'owner main window restores theme after picker closes')
             assert 'contents' in evidence['surfaces'], 'native folder surface must be measurable'
+            for name, measured in evidence['surfaces'].items():
+                dominant = tuple(measured['colors_bgr'][0][0])
+                assert dark_color(dominant) == (current == 'dark'), (
+                    'file picker client surface must follow the selected theme',
+                    name, current, dominant, measured['colors_bgr'][:3])
             appearance = {name: value['colors_bgr'][0][0] for name, value in evidence['surfaces'].items()}
             if appearances:
                 assert appearance != appearances[-1], 'native picker follows the owner theme change'

@@ -74,6 +74,19 @@ def background(hwnd, rect, client=True):
     return colors(hwnd, rect, client).most_common(1)[0][0]
 
 
+def dark_color(color):
+    """Theme contract: a dark native surface stays below the midpoint."""
+    return max(color) < 128
+
+
+def dark_fill(palette):
+    """Require a predominantly dark displayed fill for a dark surface."""
+    color, count = palette.most_common(1)[0]
+    assert count > sum(palette.values()) // 3, palette.most_common(5)
+    assert dark_color(color), ('light native surface', color)
+    return color
+
+
 def contrast_ratio(first, second):
     """WCAG contrast ratio for native BGR palette entries."""
     def luminance(color):
@@ -282,6 +295,17 @@ def test_dark_list_native_tooltip_pixels(launch, profile, settings, sources):
             assert path in text
         else:
             assert text.startswith(app.cell(0, control).splitlines()[0] + '\r\n\r\n')
+        # infotip restores the pointer on return, so show the tip again before
+        # sampling its displayed fill and text pixels.
+        tooltip = n.send(control, messages.LVM_GETTOOLTIPS)
+        rect = app.item_rect(0, control)
+        move(control, (min(rect[0] + 120, rect[2] - 8),
+                       rect[1] + (rect[3] - rect[1]) // 4))
+        n.wait(lambda: n.is_visible(tooltip), 'dark native infotip visible')
+        _, _, width, height = n.rectangle(tooltip, client=True)
+        palette = colors(tooltip, (3, 3, width - 3, height - 3))
+        dark_fill(palette)
+        assert text_contrast(palette), 'tooltip text must remain readable'
 
 
 def menu_items(app):
@@ -315,7 +339,11 @@ def test_dark_tool_menu_icon_is_visible_on_creation(launch, profile, settings):
             palette = colors(app.frame, inset((left - x, top - y, right - x, bottom - y), 2),
                              client=False)
             bg = palette.most_common(1)[0][0]
-            assert any(color != bg for color in palette), 'merged tool icon must be painted'
+            assert dark_color(bg), ('merged tool icon background must be dark',
+                                    bg, palette.most_common(5))
+            # WCAG 1.4.11 non-text contrast keeps the glyph distinguishable.
+            assert text_contrast(palette, minimum=3, minimum_count=3), (
+                'merged tool icon must contrast with its background', palette.most_common(10))
 
 
 def test_dark_mdi_merged_menu_glyph_pixels_and_native_actions(launch, profile, settings):
@@ -339,11 +367,12 @@ def test_dark_mdi_merged_menu_glyph_pixels_and_native_actions(launch, profile, s
             bg = palette.most_common(1)[0][0]
             evidence[name] = {'rect': rect, 'background': bg,
                               'colors': palette.most_common(10),
-                              'visible': any(color != bg for color in palette)}
+                              'dark': dark_color(bg),
+                              'contrast': text_contrast(palette, minimum=3, minimum_count=3)}
         (settings[2] / 'dark-mdi-menu-colors.json').write_text(json.dumps(evidence, indent=2), encoding='utf-8')
         screenshot(app.frame, settings[2] / 'dark-mdi-native-screen.png')
         screenshot(app.frame, settings[2] / 'dark-mdi-merged-menu.png')
-        assert all(item['visible'] for item in evidence.values()), evidence
+        assert all(item['dark'] and item['contrast'] for item in evidence.values()), evidence
         # Open the actual merged icon popup, then dismiss without changing the document.
         inputs.click(*center(menu_rect(app, menu, 0)), wait_time=0)
         popup = n.wait(lambda: popup_window(app.process.pid), 'merged document system popup')
