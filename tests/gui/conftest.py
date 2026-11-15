@@ -8,6 +8,7 @@ import time
 import uuid
 
 import pytest
+from verify_faults import FAULT_MODES
 
 
 def pytest_addoption(parser):
@@ -17,8 +18,7 @@ def pytest_addoption(parser):
     group.addoption('--output', default='tmp/gui-results', help='Evidence directory')
     group.addoption('--desktop-authorized', action='store_true', help='Authorize this input desktop')
     group.addoption('--real-input', action='store_true', help='Include exclusive desktop input scenarios')
-    group.addoption('--fault-mode', choices=('assertion', 'driver-crash', 'application-crash',
-                                            'driver-hang', 'application-hang'),
+    group.addoption('--fault-mode', choices=FAULT_MODES,
                     help='Run one infrastructure fault probe')
 
 
@@ -46,6 +46,8 @@ def pytest_configure(config):
         mutex.Close()
         raise pytest.UsageError('Another GUI test run owns this desktop')
     config._winlex_desktop_mutex = mutex
+    from progress import CaseProgress
+    config.pluginmanager.register(CaseProgress(config.getoption('--output')), 'winlex-progress')
 
 
 def pytest_unconfigure(config):
@@ -58,9 +60,6 @@ def pytest_unconfigure(config):
 
 def pytest_collection_modifyitems(config, items):
     for item in items:
-        fault_case = item.name == 'test_execution_fault_contract'
-        if fault_case != bool(config.getoption('--fault-mode')):
-            item.add_marker(pytest.mark.skip(reason='fault probes run separately from behavior tests'))
         if 'real_input' in item.keywords and not config.getoption('--real-input'):
             item.add_marker(pytest.mark.skip(reason='use --real-input on an exclusive desktop'))
 

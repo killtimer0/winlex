@@ -648,6 +648,7 @@ gui = [
     { name = "pywin32", marker = "sys_platform == 'win32'" },
 ]
 tests = [
+    { name = "pytest" },
     { name = "pywin32", marker = "sys_platform == 'win32'" },
     { name = "pyyaml" },
 ]
@@ -664,6 +665,7 @@ gui = [
     { name = "pywin32", marker = "sys_platform == 'win32'", specifier = ">=310" },
 ]
 tests = [
+    { name = "pytest", specifier = "==8.3.5" },
     { name = "pywin32", marker = "sys_platform == 'win32'", specifier = ">=310" },
     { name = "pyyaml", specifier = ">=6.0" },
 ]

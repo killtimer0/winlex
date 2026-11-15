@@ -163,9 +163,19 @@ python tests/gui/run.py --local --allow-local-desktop --exe target/x86_64-pc-win
 
 ### 结果、超时与中断
 
+终端在每个用例（含 teardown）结束后追加 `.`（通过）、`S`（跳过）或 `F`（任一阶段失败）。本机直接读取 `progress.txt`，SSH 随现有结果轮询增量读取；硬退出前未完成的用例不追加标记。进度不代表整轮完成，最终状态以 `result.json` 为准。
+
 先检查输出目录的 `result.json`（退出码、超时及清理结果）和 `pytest.log`，pytest 报告为 `junit.xml`；硬超时可能来不及写出完整 JUnit。`input-hashes.json`、`execution-environment.json` 分别记录部署校验与环境，各用例目录保存进程和驱动记录。失败证据包括动作、窗口信息；目标另有可用 Pillow 时尝试截图。
 
 单例调用超时会终止整个 pytest，不重试或续跑剩余用例。`--timeout` 限制整轮预算，SSH 模式包括部署与等待；收尾和回收有界执行。每例使用独立应用 Job 和私有注册表配置，执行器另行核对应用退出及配置清理。
+
+执行框架的故障回归独立运行，不参与普通行为测试：
+
+```powershell
+python tests/gui/verify_faults.py --config tests/gui/config/target.json --exe target/x86_64-pc-windows-msvc/debug/winlex-gui.exe --winmd inputs/Windows.Win32.winmd --output tmp/gui-faults
+```
+
+入口逐项核对故障注入、预期退出及独立清理，全部通过后写出 `verification.json`。验收项目定义在 [`verify_faults.py`](../tests/gui/verify_faults.py)；单项注入的 `--fault-mode` 取值由 [`conftest.py`](../tests/gui/conftest.py) 注册。
 
 Ctrl+C 尝试取消本轮并检查清理。出现 `RESULT UNKNOWN` 时保留打印出的目标 UUID 路径和任务名，不自动重跑。断线后通过 `scp` 或 `sftp` 取回同一 UUID 下的 `output/` 或已有 `artifacts.zip`，核对结果与清理状态。
 

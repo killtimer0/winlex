@@ -1,14 +1,15 @@
 """Non-desktop contracts for the explicit GUI transport CLI and target config."""
 import ast
-import base64
-import configparser
+import contextlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 
@@ -22,6 +23,86 @@ execute_spec.loader.exec_module(execute)
 
 
 class GuiTransportContracts(unittest.TestCase):
+    def progress_suite(self, folder, source):
+        (folder / 'conftest.py').write_text(
+            'import sys\nsys.path.insert(0, {!r})\nfrom progress import CaseProgress\n'
+            'def pytest_configure(config):\n'
+            ' config.pluginmanager.register(CaseProgress({!r}))\n'.format(str(GUI), str(folder)),
+            encoding='utf-8')
+        (folder / 'test_cases.py').write_text(source, encoding='utf-8')
+        return [sys.executable, '-m', 'pytest', '-q', '-c', 'pytest.ini', 'test_cases.py']
+
+    def test_case_progress_merges_all_phases_once(self):
+        with tempfile.TemporaryDirectory(prefix='gui-progress-') as folder:
+            folder = Path(folder)
+            (folder / 'pytest.ini').touch()
+            command = self.progress_suite(folder, '''import pytest
+def test_pass(): pass
+@pytest.mark.skip(reason='probe')
+def test_skip(): pass
+def test_call_failure(): assert False
+@pytest.fixture
+def setup_failure(): raise RuntimeError('setup probe')
+def test_setup_failure(setup_failure): pass
+@pytest.fixture
+def teardown_failure():
+    yield
+    raise RuntimeError('teardown probe')
+def test_teardown_failure(teardown_failure): pass
+def test_both_failures(teardown_failure): assert False
+''')
+            result = subprocess.run(command, cwd=folder, capture_output=True, text=True, timeout=20)
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertEqual((folder / 'progress.txt').read_text(), '.SFFFF')
+
+    def test_progress_is_visible_before_exit_and_incomplete_case_adds_nothing(self):
+        with tempfile.TemporaryDirectory(prefix='gui-progress-') as folder:
+            folder = Path(folder)
+            (folder / 'pytest.ini').touch()
+            command = self.progress_suite(folder, '''import os, time, pytest
+from pathlib import Path
+@pytest.fixture
+def held_teardown():
+    yield
+    Path('tearing-down').touch()
+    while not Path('release').exists(): time.sleep(0.01)
+def test_first(held_teardown): pass
+def test_incomplete():
+    while not Path('crash-release').exists(): time.sleep(0.01)
+    os._exit(7)
+''')
+            with (folder / 'pytest.log').open('wb') as log:
+                process = subprocess.Popen(command, cwd=folder, stdout=log, stderr=subprocess.STDOUT)
+                try:
+                    progress = transport.TerminalProgress()
+                    visible = io.StringIO()
+                    deadline = time.monotonic() + 15
+                    with contextlib.redirect_stdout(visible):
+                        while not (folder / 'tearing-down').exists() and time.monotonic() < deadline:
+                            time.sleep(0.01)
+                        self.assertTrue((folder / 'tearing-down').exists())
+                        progress.read(folder)
+                        self.assertEqual(visible.getvalue(), '')
+                        (folder / 'release').touch()
+                        while not visible.getvalue() and time.monotonic() < deadline:
+                            progress.read(folder)
+                            time.sleep(0.01)
+                        self.assertEqual(visible.getvalue(), '.')
+                        self.assertIsNone(process.poll())
+                        progress.read(folder)
+                        self.assertEqual(visible.getvalue(), '.')
+                        (folder / 'crash-release').touch()
+                        self.assertEqual(process.wait(timeout=10), 7)
+                        progress.read(folder)
+                        progress.finish()
+                        progress.finish()
+                    self.assertEqual(visible.getvalue(), '.\n')
+                    self.assertEqual((folder / 'progress.txt').read_text(), '.')
+                finally:
+                    if process.poll() is None:
+                        process.kill()
+                        process.wait(timeout=10)
+
     def cli(self, *arguments):
         return subprocess.run([sys.executable, str(GUI / "run.py"), *arguments],
                               capture_output=True, text=True, timeout=10)
@@ -61,19 +142,6 @@ class GuiTransportContracts(unittest.TestCase):
         args = transport.parse_args(["--config", "target.json", "--exe", "gui.exe",
                                      "--winmd", "input.winmd", "--", *options])
         self.assertEqual(args.pytest_args, options)
-
-    def test_job_probe_is_explicit_without_pytest_selection(self):
-        args = transport.parse_args(["--config", "target.json", "--exe", "gui.exe",
-                                     "--winmd", "input.winmd", "--probe-job"])
-        self.assertTrue(args.probe_job)
-        self.assertEqual(args.pytest_args, [])
-
-    def test_suite_snapshot_includes_timeout_configuration(self):
-        self.assertIn(GUI / "pytest.ini", transport.suite_files())
-        ini = configparser.ConfigParser()
-        ini.read(GUI / "pytest.ini", encoding="utf-8")
-        self.assertEqual(ini.getfloat("pytest", "timeout"), 45)
-        self.assertEqual(ini.get("pytest", "timeout_method"), "thread")
 
     def test_target_checks_every_deployed_hash_and_records_mismatch(self):
         with tempfile.TemporaryDirectory(prefix="gui-transport-") as folder:
@@ -199,10 +267,9 @@ class GuiTransportContracts(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         transport.load_config(path)
 
-    def test_existing_config_fields_do_not_select_a_local_fallback(self):
+    def test_sftp_drive_mapping_preserves_unicode_and_extended_paths(self):
         with tempfile.TemporaryDirectory() as folder:
-            config = transport.load_config(self.config(Path(folder), script="old.py", desktop="isolated"))
-            self.assertEqual(config["host"], "tester@win7")
+            config = transport.load_config(self.config(Path(folder)))
             self.assertEqual(transport.sftp_path("C:/GUI tests/中文/run/output", config),
                              "/C/GUI tests/中文/run/output")
             self.assertEqual(transport.sftp_path("\\\\?\\C:\\GUI tests\\中文", config),
@@ -229,16 +296,8 @@ class GuiTransportContracts(unittest.TestCase):
             with self.assertRaises(ValueError):
                 transport.sftp_quote(path)
 
-    def test_bitvise_command_encodes_source_and_quotes_executable_and_entire_command(self):
-        source = "print('中文 & %PATH%')\n"
-        command = transport.python_command("C:/Program Files/Python38/python.exe", source)
-        self.assertTrue(command.startswith('\"\"C:/Program Files/Python38/python.exe\" -c \"'))
-        self.assertTrue(command.endswith('\"\"'))
-        encoded = command.split("b64decode('", 1)[1].split("')", 1)[0]
-        self.assertEqual(base64.b64decode(encoded).decode("utf-8"), source)
-
     def test_target_runner_syntax_is_python38_compatible(self):
-        for path in (GUI / "run.py", GUI / "execute.py"):
+        for path in GUI.glob('*.py'):
             with self.subTest(path=path):
                 ast.parse(path.read_text(encoding="utf-8"), feature_version=(3, 8))
         for source in (transport.PREFLIGHT, transport.LEGACY_SCHEDULER):

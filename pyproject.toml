@@ -6,6 +6,7 @@ dependencies = ["py7zr>=1.1.4"]
 
 [dependency-groups]
 tests = [
+    "pytest==8.3.5",
     "PyYAML>=6.0",
     "pywin32>=310; sys_platform == 'win32'",
 ]

@@ -313,9 +313,11 @@ def pytest_command(manifest, directory):
     # execute itself is launched with pythonw; pytest needs real stdout/stderr.
     python = str(Path(sys.executable).with_name("python.exe"))
     arguments = manifest["pytest_args"]
+    fault_probe = any(option.split('=', 1)[0] == '--fault-mode' for option in arguments)
+    selection = Path(directory) / 'fault_probe.py' if fault_probe else directory
     # An explicit path is needed for initial conftest option registration, but
     # must not broaden a caller's explicit node selection to the whole suite.
-    return [python, "-m", "pytest"] + ([] if manifest.get('explicit_nodes') else [str(directory)]) + [
+    return [python, "-m", "pytest"] + ([] if manifest.get('explicit_nodes') else [str(selection)]) + [
             "-c", str(Path(directory) / "pytest.ini"),
             "--strict-config",
             "--exe", manifest["exe"], "--winmd", manifest["winmd"],

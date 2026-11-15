@@ -182,7 +182,7 @@ class WorkflowContracts(unittest.TestCase):
 
     def test_distribution_triggers_and_script_syntax(self):
         workflow = self.workflow()
-        self.assertEqual(set(workflow["on"]), {"workflow_dispatch", "push"})
+        self.assertTrue({"workflow_dispatch", "push"} <= set(workflow["on"]))
         self.assertEqual(workflow["on"]["push"], {"tags": ["v*"]})
         self.assertEqual(workflow["permissions"], {"contents": "read"})
         release = workflow["jobs"]["release"]

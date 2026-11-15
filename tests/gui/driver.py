@@ -109,16 +109,13 @@ class Winlex:
         assert auto.AU3_ControlSetTextByHandle(self.frame, hwnd, text), 'AutoItX edit failed'
 
     def list_command(self, hwnd, command, extra=''):
-        result = c.create_unicode_buffer(32)
+        result = c.create_unicode_buffer(4096)
         auto.AU3_ControlListViewByHandle(self.frame, hwnd, command, extra, '', result, len(result))
         assert not auto.AU3_error(), 'AutoItX ListView ' + command
         return result.value
 
-    def status(self):
-        return self.text(self.child(1105))
-
     def ready(self):
-        until('metadata ready', lambda: self.status().startswith(('Ready.', 'Sources:')), 30)
+        until('loaded source available', lambda: self.source_count() > 0, 30)
 
     def command(self, identifier):
         self.record('command {}'.format(identifier))
@@ -128,15 +125,22 @@ class Winlex:
         self.record('search ' + name)
         win32gui.SendMessage(self.frame, win32con.WM_COMMAND, 1024, 0)
         self.set_text(self.child(1102), name)
-        until('search complete', lambda: self.status().startswith('Results '))
+        return self.wait_result(name)
+
+    def wait_result(self, name):
         results = self.child(1103)
-        assert int(self.list_command(results, 'GetItemCount')) > 0, 'No results for ' + name
-        return results
+        def matching():
+            for index in range(int(self.list_command(results, 'GetItemCount'))):
+                full_name = self.list_command(results, 'GetText', str(index)).split('\r\n', 1)[0]
+                if full_name.rsplit('.', 1)[-1] == name:
+                    return results, index
+            return None
+        return until('search result ' + name, matching)
 
     def open_symbol(self, name):
-        results = self.search(name)
+        results, index = self.search(name)
         self.list_command(results, 'SelectClear')
-        self.list_command(results, 'Select', '0')
+        self.list_command(results, 'Select', str(index))
         self.command(1050)
         def declaration():
             editor = self.editor()
@@ -211,10 +215,17 @@ class Winlex:
         # with no composition it invokes the public search action instead.
         auto.AU3_Send('{ENTER}', 0)
         until('typed search text', lambda: self.text(search) == name)
-        until('typed search complete', lambda: self.status().startswith('Results '))
-        auto.AU3_Send('{TAB 2}', 0)
-        until('results keyboard focus', lambda: focused(self.child(1103)), 5)
-        auto.AU3_Send('{HOME}{ENTER}', 0)
+        results, index = self.wait_result(name)
+        def tab_to_results():
+            if focused(results):
+                return True
+            auto.AU3_Send('{TAB}', 0)
+            return False
+        until('results reachable by keyboard', tab_to_results, 5)
+        auto.AU3_Send('{HOME}', 0)
+        if index:
+            auto.AU3_Send('{DOWN ' + str(index) + '}', 0)
+        auto.AU3_Send('{ENTER}', 0)
         until('keyboard-opened declaration', lambda: name in self.editor().text_block())
 
     def is_running(self):

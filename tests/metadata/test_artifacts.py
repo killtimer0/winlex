@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -31,16 +32,31 @@ class ArtifactContracts(unittest.TestCase):
                 select_executable(messages, "host-cli")
 
     def test_build_preserves_spaces_and_defers_target_configuration_to_cargo(self):
-        output = Path.cwd() / "configured target/custom profile/host-cli.exe"
-        result = subprocess.CompletedProcess([], 0, json.dumps(artifact(output)) + "\n")
-        with patch("artifacts.subprocess.run", return_value=result) as run:
-            self.assertEqual(build_example("winlex-cli", "host-cli", ["--profile", "dev"]), output)
-            command = run.call_args.args[0]
-            self.assertNotIn("--target", command)
-            self.assertNotIn("--target-dir", command)
-            self.assertNotIn("--release", command)
-            build_example("winlex-cli", "host-cli", ["--profile", "dev", "--target-dir", "output with spaces"])
-            self.assertEqual(run.call_args.args[0][-2:], ["--target-dir", "output with spaces"])
+        with tempfile.TemporaryDirectory() as folder:
+            cargo = Path(folder) / 'cargo.py'
+            cargo.write_text('''import argparse, json
+from pathlib import Path
+p = argparse.ArgumentParser()
+p.add_argument('command', choices=['build'])
+p.add_argument('-p', required=True)
+p.add_argument('--example', required=True)
+p.add_argument('--locked', action='store_true')
+p.add_argument('--message-format', required=True)
+p.add_argument('--profile')
+p.add_argument('--target-dir', type=Path, default=Path('configured target'))
+a = p.parse_args()
+print(json.dumps({'reason': 'compiler-artifact',
+    'target': {'name': a.example, 'kind': ['example']},
+    'executable': str(a.target_dir / 'custom profile' / (a.example + '.exe'))}))
+''', encoding='utf-8')
+            real_run = subprocess.run
+            def fake_cargo(command, **kwargs):
+                return real_run([sys.executable, str(cargo), *command[1:]], **kwargs)
+            with patch('artifacts.subprocess.run', side_effect=fake_cargo):
+                for directory, options in [('configured target', []),
+                                           ('output with spaces', ['--target-dir', 'output with spaces'])]:
+                    self.assertEqual(build_example('winlex-cli', 'host-cli', ['--profile', 'dev', *options]),
+                                     Path.cwd() / directory / 'custom profile/host-cli.exe')
 
     def test_failed_build_cannot_select_reported_artifact(self):
         result = subprocess.CompletedProcess([], 1, json.dumps(artifact("stale.exe")))

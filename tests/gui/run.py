@@ -211,6 +211,31 @@ def extract_artifacts(archive, output):
         package.extractall(output)
 
 
+class TerminalProgress:
+    def __init__(self):
+        self.offset = 0
+        self.open_line = False
+
+    def append(self, text):
+        if text:
+            print(text, end='', flush=True)
+            self.offset += len(text)
+            self.open_line = True
+
+    def read(self, output):
+        try:
+            with (output / 'progress.txt').open('rb') as stream:
+                stream.seek(self.offset)
+                self.append(stream.read().decode('ascii'))
+        except FileNotFoundError:
+            pass
+
+    def finish(self):
+        if self.open_line:
+            print(flush=True)
+            self.open_line = False
+
+
 def remote_run(config, args, output, run_id):
     deadline = time.monotonic() + args.timeout
     ssh = SSH(config, deadline)
@@ -223,6 +248,7 @@ def remote_run(config, args, output, run_id):
     launched = False
     task_created = False
     result_received = False
+    progress = TerminalProgress()
     try:
         ssh.call("from pathlib import Path\np=Path({!r})\np.mkdir(parents=True, exist_ok=False)\n"
                  "[(p/n).mkdir() for n in ('bin', 'input', 'output')]".format(str(remote)))
@@ -292,16 +318,26 @@ def remote_run(config, args, output, run_id):
                      "stdout=subprocess.PIPE,stderr=subprocess.STDOUT)".format(
                          ["schtasks.exe", "/Run", "/TN", task]))
         while time.monotonic() < deadline:
-            text = ssh.call("from pathlib import Path\np=Path({!r})\n"
-                            "print(p.read_text(encoding='utf-8') if p.is_file() else '')".format(
-                                str(remote / "output" / "result.json")))
-            if text:
-                result = json.loads(text)
+            # Read completion first: a published result guarantees the progress
+            # writer has exited, so this same query also drains the final bytes.
+            state = json.loads(ssh.call("import json\nfrom pathlib import Path\np=Path({!r})\n"
+                                       "r=p/'result.json'\n"
+                                       "result=json.loads(r.read_text(encoding='utf-8')) if r.is_file() else None\n"
+                                       "try:\n"
+                                       " with (p/'progress.txt').open('rb') as f:\n"
+                                       "  f.seek({!r})\n  progress=f.read().decode('ascii')\n"
+                                       "except FileNotFoundError:\n progress=''\n"
+                                       "print(json.dumps(dict(result=result,progress=progress)))".format(
+                                           str(remote / "output"), progress.offset)))
+            progress.append(state['progress'])
+            if state['result'] is not None:
+                result = state['result']
                 result_received = True
                 break
             time.sleep(min(1, max(0, deadline - time.monotonic())))
         else:
             raise TimeoutError("Whole-run timeout expired")
+        progress.finish()
         # Collection has a bounded grace period; it never restarts target execution.
         ssh.call("import zipfile\nfrom pathlib import Path\np=Path({!r})\n"
                  "with zipfile.ZipFile(str(p/'artifacts.zip'),'w',zipfile.ZIP_DEFLATED) as z:\n"
@@ -315,6 +351,7 @@ def remote_run(config, args, output, run_id):
         archive.unlink()
         return int(result["exit_code"])
     except BaseException:
+        progress.finish()
         if launched and not result_received:
             try:
                 stop = (LEGACY_SCHEDULER + "scheduler.Activate({!r}).Terminate()".format(task)
@@ -340,6 +377,7 @@ def remote_run(config, args, output, run_id):
         print("Preserved target run: {}  task: {}".format(remote, task), file=sys.stderr)
         raise
     finally:
+        progress.finish()
         if task_created:
             try:
                 if legacy:
@@ -374,9 +412,22 @@ def local_run(args, output):
                     encoding="utf-8")
     process = subprocess.Popen([sys.executable, str(folder / "execute.py"), "--manifest", str(path)],
                                creationflags=subprocess.CREATE_NO_WINDOW)
+    progress = TerminalProgress()
     try:
-        return process.wait(timeout=args.timeout + 20)
+        deadline = time.monotonic() + args.timeout + 20
+        while process.poll() is None:
+            progress.read(output)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(process.args, args.timeout + 20)
+            try:
+                process.wait(timeout=min(0.1, remaining))
+            except subprocess.TimeoutExpired:
+                pass
+        progress.read(output)
+        return process.returncode
     except BaseException:
+        progress.finish()
         try:
             result_path = output / "result.json"
             if process.poll() is None:
@@ -395,6 +446,8 @@ def local_run(args, output):
         except Exception as error:
             print("RESULT UNKNOWN; cleanup unconfirmed: {}; run: {}".format(error, folder), file=sys.stderr)
         raise
+    finally:
+        progress.finish()
 
 
 def parse_args(argv=None):
@@ -424,7 +477,7 @@ def parse_args(argv=None):
     value_options = {"-k", "-m", "-o", "--override-ini", "--fault-mode", "--tb", "--capture",
                      "--color", "--durations", "--maxfail", "--timeout", "--timeout-method"}
     skip = False
-    suite_names = {path.name for path in HERE.glob("test_*.py")}
+    suite_names = {path.name for path in HERE.glob("test_*.py")} | {'fault_probe.py'}
     args.explicit_nodes = False
     for option in args.pytest_args:
         if skip:
