@@ -157,7 +157,7 @@ def test_document_minimum_limits_normal_not_maximized_windows(launch, settings):
     doc = app.open_row()
     window_state(doc, auto.WindowVisualState.Normal)
     with n.window_dpi_context(app.frame):
-        dpi = n.window_dpi(doc) or 96
+        dpi = n.layout_dpi(doc, app.dpi_mode)
         width, height = (320 * dpi + 48) // 96, (400 * dpi + 48) // 96
         resize(doc, 100, 100)
         left, top, right, bottom = n.rectangle(doc)
@@ -231,7 +231,7 @@ def test_document_source_and_responsive_reading_layout(launch, settings):
 
     with n.window_dpi_context(app.frame):
         window_state(doc, auto.WindowVisualState.Normal)
-        dpi = n.window_dpi(doc) or 96
+        dpi = n.layout_dpi(doc, app.dpi_mode)
         counts = []
         for width in [850, 320, 850]:
             resize(doc, width * dpi // 96, 450 * dpi // 96)
@@ -349,7 +349,7 @@ def test_tiny_maximized_document_clips_summary_without_control_overlap(launch, s
     n.wait(lambda: "CreateFileW(" in app.content(doc), "declaration", 45)
     editor = n.get_item(doc, 1203)
     with n.window_dpi_context(app.frame):
-        dpi = n.window_dpi(doc) or 96
+        dpi = n.layout_dpi(doc, app.dpi_mode)
         window_state(doc, auto.WindowVisualState.Maximized)
         resize(app.frame, 650 * dpi // 96, 140 * dpi // 96)
         for control in [1047, 1206, 1211]:

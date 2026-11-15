@@ -212,6 +212,25 @@ def window_dpi(hwnd):
     return api(user, 'GetDpiForWindow', w.UINT, w.HWND)(hwnd)
 
 
+def layout_dpi(hwnd, mode):
+    """Window layout DPI, using the requested mode on pre-GetDpiForWindow systems."""
+    dpi = window_dpi(hwnd)
+    if dpi is not None:
+        return dpi
+    # Legacy GetDeviceCaps reports the test process's system DPI even when the
+    # target was explicitly launched unaware and lays out its content at 96 DPI.
+    if mode == 'unaware':
+        return 96
+    dc = api(user, 'GetDC', w.HDC, w.HWND)(None)
+    assert dc, 'Cannot get desktop DC for layout DPI'
+    try:
+        dpi = api(c.WinDLL('gdi32'), 'GetDeviceCaps', c.c_int, w.HDC, c.c_int)(dc, 88)  # LOGPIXELSX
+        assert dpi > 0, 'Cannot get layout DPI'
+        return dpi
+    finally:
+        api(user, 'ReleaseDC', c.c_int, w.HWND, w.HDC)(None, dc)
+
+
 def wait(probe, description, timeout=15):
     with deadline.operation(description):
         until = time.monotonic() + timeout

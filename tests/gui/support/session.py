@@ -86,6 +86,7 @@ class Session:
     def __init__(self, exe, profile, arguments=(), dpi="auto"):
         self.process = self.frame = None
         self.cleanup_complete = False
+        self.dpi_mode = dpi
         self.actual_dpi = None
         try:
             self.process = subprocess.Popen([str(exe), *map(str, arguments)], env=profile.environment(dpi=dpi))

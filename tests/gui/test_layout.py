@@ -166,7 +166,7 @@ def test_mdi_maximize_inheritance_and_one_shot_arrangement(launch, settings):
     other = app.open_new()
     assert n.is_zoomed(other), "new document must inherit MDI maximization"
     with n.window_dpi_context(app.frame):
-        dpi = n.window_dpi(original) or 96
+        dpi = n.layout_dpi(original, app.dpi_mode)
         for command in (1011, 1012, None):
             if command is None:
                 # The application exposes no cascade command; exercise the MDI contract directly.

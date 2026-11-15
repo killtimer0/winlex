@@ -1,8 +1,17 @@
-"""Shared UI Automation test support and XP pywin32 DLL initialization."""
+"""Shared UI Automation initialization for legacy Windows."""
 import ctypes
 import importlib.util
 from pathlib import Path
 import sys
+
+# Before UIA initializes, keep legacy geometry and real input in physical pixels.
+# Modern Windows uses the per-thread contexts in native.py and conftest.py.
+_user = ctypes.WinDLL('user32', use_last_error=True)
+if not hasattr(_user, 'SetThreadDpiAwarenessContext') and hasattr(_user, 'SetProcessDPIAware'):
+    _user.IsProcessDPIAware.restype = ctypes.c_int
+    _user.SetProcessDPIAware.restype = ctypes.c_int
+    if not _user.IsProcessDPIAware():
+        assert _user.SetProcessDPIAware(), 'Cannot enable test process DPI awareness'
 
 if sys.version_info < (3, 9):
     spec = importlib.util.find_spec("pywin32_system32")

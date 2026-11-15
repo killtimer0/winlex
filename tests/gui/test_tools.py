@@ -288,7 +288,7 @@ def test_tool_compact_layout_and_narrow_fallback(launch, find_visible):
     if find_visible:
         app.command(1060)
     with n.window_dpi_context(doc):
-        dpi = n.window_dpi(doc) or 96
+        dpi = n.layout_dpi(doc, app.dpi_mode)
         scale = lambda value: round(value * dpi / 96)
         visual_state(doc, auto.WindowVisualState.Normal)
         for width, paired in [(900, True), (320, False), (220, False), (900, True)]:
@@ -342,7 +342,7 @@ def test_tool_resize_preserves_combo_dropdowns_and_selection(launch):
     choices = [app.choices(combo) for combo in combos]
     selected = [n.window_text(combo) for combo in combos]
     with n.window_dpi_context(doc):
-        dpi = n.window_dpi(doc) or 96
+        dpi = n.layout_dpi(doc, app.dpi_mode)
         for width, height in [(900, 560), (900, 600), (400, 600), (900, 560)]:
             assert auto.ControlFromHandle(doc).GetTransformPattern().Resize(
                 round(width * dpi / 96), round(height * dpi / 96))
@@ -497,7 +497,7 @@ def test_explicit_query_stale_results_checked_numbers_and_language(launch, setti
     edit(doc, 1810, "4294967296")
     assert body(doc) == old
     assert app.status_text()
-    invoke(n.get_item(doc, 1815))
+    app.command(1815, doc)
     assert body(doc) == old
     invalid = resource_text(settings[0], 2334, ui_language.langid) + ':'
     assert app.status_text().startswith(invalid)
@@ -506,7 +506,7 @@ def test_explicit_query_stale_results_checked_numbers_and_language(launch, setti
     language = n.get_item(doc, 1812)
     edit(doc, 1812, "-1")
     old = body(doc)
-    invoke(n.get_item(doc, 1815))
+    app.command(1815, doc)
     assert body(doc) == old
     assert app.status_text().startswith(invalid)
     edit(doc, 1812, "0x0409")
