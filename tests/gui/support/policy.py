@@ -10,7 +10,7 @@ ENVIRONMENT = 'WINLEX_TEST_POLICY'
 class Policy:
     """Backstops are liveness bounds, not latency assertions."""
 
-    run: float = 900
+    run: float = 1800
     startup: float = 15
     setup: float = 30
     call: float = 120

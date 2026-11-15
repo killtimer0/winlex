@@ -28,6 +28,10 @@ paths = load("paths")
 
 
 class GuiArtifactContracts(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        (ROOT / "tmp").mkdir(exist_ok=True)
+
     @unittest.skipUnless(importlib.util.find_spec("uiautomation") and importlib.util.find_spec("PIL"),
                          "Requires GUI and media dependencies")
     def test_png_preserves_rgb_orientation_and_ignores_unused_bitmap_alpha(self):

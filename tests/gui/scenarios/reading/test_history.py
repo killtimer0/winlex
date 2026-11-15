@@ -1,5 +1,6 @@
 """Back/forward restores exact targets, source snapshots and reading positions."""
 import shutil
+import json
 import pytest
 import win32con
 import uiautomation as auto
@@ -7,9 +8,10 @@ import uiautomation as auto
 from support import native as n
 from support import deadline
 from support.input_state import InputState, foreground
+from support.paths import extended
 from driver.menus import find_popup, wait_closed
 from driver.navigation import editor_selection as selection, follow_caret, reference
-from driver.history import HISTORY_BACK, HISTORY_FORWARD, history_menu, state
+from driver.history import HISTORY_BACK, HISTORY_FORWARD, history_menu, state, replay_with_modifiers
 
 
 def current(app, name, architecture=None, document=None):
@@ -29,11 +31,11 @@ def current(app, name, architecture=None, document=None):
 
 def visit(app, name, pin=False):
     app.query(name)
-    rows = app.named_rows(name.rsplit(".", 1)[-1])
+    row = app.first_named_row(name.rsplit(".", 1)[-1])
     if pin:
-        doc = app.open_row(rows[0])
+        doc = app.open_row(row)
     else:
-        doc = app.preview_row(rows[0])
+        doc = app.preview_row(row)
     current(app, name.rsplit(".", 1)[-1], document=doc)
     if not pin:
         n.wait(lambda: app.focused() == app.results, "preview preserves result focus")
@@ -308,23 +310,17 @@ def test_rapid_history_replay_does_not_apply_stale_restore_to_final_target(launc
     selection(app, editor, (3, 9))
     loading = ("Loading declaration...", "正在加载声明…")
     pending_modifiers = 0
-    # A bounded native read stays inside the short-lived loading label; the
-    # UIA text read can finish after the declaration replaced it.
-    def loading_text():
-        return n.text_prefix(editor).strip() in loading
-
-    # Send replay and modifier gestures without waiting for intermediate loads.
+    observations = []
+    # Queue each gesture without controller round trips between its messages;
+    # recipient-side snapshots still have to prove delivery during loading.
     for _ in range(12):
         for command in (HISTORY_BACK, HISTORY_FORWARD):
-            app.command(command)
-            pending = loading_text()
-            for message, key in ((win32con.WM_SYSKEYDOWN, win32con.VK_MENU),
-                                 (win32con.WM_KEYDOWN, win32con.VK_CONTROL),
-                                 (win32con.WM_KEYDOWN, win32con.VK_SHIFT)):
-                n.send(editor, message, key, 1)
-                n.send(editor, win32con.WM_KEYUP, key, 0xc0000001)
-            if pending and loading_text():
+            before, after = replay_with_modifiers(app, editor, command)
+            observations.append(dict(command=command, before=before, after=after))
+            if before in loading and after in loading:
                 pending_modifiers += 1
+    extended(settings[2] / 'history-replay-gestures.json').write_text(
+        json.dumps(observations, indent=2), encoding='utf-8')
     assert pending_modifiers, "modifier delivery must be observed during public loading state"
     # Finish on a different target so the pre-burst body cannot satisfy the wait.
     app.command(HISTORY_BACK)

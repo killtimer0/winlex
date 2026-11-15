@@ -160,14 +160,15 @@ def launch(request, settings, profile):
         return session
     yield start
     errors = []
+    output = extended(settings[2])
     for index, session in enumerate(sessions):
         try:
             if session.process.poll() is None and getattr(request.node, "test_failed", False):
                 try:
-                    screenshot(session.frame, settings[2] / (request.node.name + "-%d.png" % index))
+                    screenshot(session.frame, output / (request.node.name + "-%d.png" % index))
                 except Exception as error:
-                    (settings[2] / (request.node.name + "-capture-error.txt")).write_text(str(error), encoding="utf-8")
-                session.diagnostics(settings[2] / (request.node.name + "-%d-windows.json" % index))
+                    (output / (request.node.name + "-capture-error.txt")).write_text(str(error), encoding="utf-8")
+                session.diagnostics(output / (request.node.name + "-%d-windows.json" % index))
         except Exception as error:
             errors.append(str(error))
         finally:
@@ -175,10 +176,10 @@ def launch(request, settings, profile):
                 session.close()
             except Exception as error:
                 errors.append(str(error))
-            (settings[2] / (request.node.name + "-%d-process.json" % index)).write_text(json.dumps({
+            (output / (request.node.name + "-%d-process.json" % index)).write_text(json.dumps({
                 "pid": session.process.pid, "exit_code": session.process.poll(),
                 "actual_dpi": session.actual_dpi, "cleanup_complete": session.cleanup_complete}), encoding="utf-8")
-    (settings[2] / (request.node.name + "-cleanup.json")).write_text(json.dumps({
+    (output / (request.node.name + "-cleanup.json")).write_text(json.dumps({
         "cleanup_complete": not errors and all(s.cleanup_complete for s in sessions),
         "errors": errors,
     }), encoding="utf-8")

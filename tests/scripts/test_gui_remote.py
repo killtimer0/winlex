@@ -67,14 +67,25 @@ class QueueContracts(unittest.TestCase):
 
     def test_claim_owner_exit_and_pid_reuse_are_interrupted_not_running(self):
         import win32api
+        import win32con
         import win32process
         remote, root = remote_module(), evidence()
         request = submit(remote, root, '0' * 32)
         folder = root / request['run_id']
         process = subprocess.Popen([sys.executable, '-c', 'import time;time.sleep(60)'])
         try:
-            claim = {'worker': process.pid, 'time': time.time()}
+            handle = win32api.OpenProcess(win32con.PROCESS_QUERY_INFORMATION, False, process.pid)
+            try:
+                created = win32process.GetProcessTimes(handle)['CreationTime'].timestamp()
+            finally:
+                win32api.CloseHandle(handle)
+            claim = {'worker': process.pid, 'created': created, 'time': time.time()}
             (folder / 'started.json').write_text(json.dumps(claim), encoding='utf-8')
+            self.assertEqual(remote.rpc(root, dict(request, action='status'))['state'], 'running')
+            # Historical claims lack a birth identity. Use the known birth as
+            # their timestamp: time.time() can lag GetProcessTimes on Windows.
+            legacy = {'worker': process.pid, 'time': created}
+            (folder / 'started.json').write_text(json.dumps(legacy), encoding='utf-8')
             self.assertEqual(remote.rpc(root, dict(request, action='status'))['state'], 'running')
             process.terminate()
             process.wait(timeout=5)

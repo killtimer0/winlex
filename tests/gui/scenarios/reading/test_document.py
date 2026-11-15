@@ -8,6 +8,7 @@ import uiautomation as auto
 from support import deadline, native as n
 from support.native import select_text, selection_packed
 from support.session import resize, window_state
+from support.paths import extended
 from driver.history import HISTORY_BACK
 from driver.navigation import destination, editor_selection, follow_caret, reference
 from driver.reading import open_declaration, select_read_only_text
@@ -236,7 +237,7 @@ def test_tab_traverses_document_controls(launch, settings):
 
 def test_document_source_and_responsive_reading_layout(launch, settings):
     path = settings[2] / ("来源😀" + "-metadata" * 12 + ".winmd")
-    shutil.copyfile(settings[1], path)
+    shutil.copyfile(extended(settings[1]), extended(path))
     app = launch([path])
     app.query("Windows.Win32.Storage.FileSystem.CreateFileW")
     doc = app.open_row()

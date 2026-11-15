@@ -156,7 +156,7 @@ python tests/gui/resources.py --exe "$guiExe"
 `$guiExe` 为构建显示的 GUI 完整路径。`--dpi` 可改为 `pmv1`、`system`、`unaware` 或 `auto`。默认使用 `--desktop isolated`；也可使用 `--desktop current` 在当前桌面运行契约测试。
 结果写入 `tmp/gui-tests/<run-id>/`：根目录的 `run.json` 与 `tests.xml` 为整轮结果，`attempts.jsonl` 列出各次执行目录。协调器在确认资源托管进程退出并核对清理证据后，才发布 `run.json`；单次执行的 `custody-result.json` 不是完成信号。
 各次执行记录位于 `attempts/<序号>/`：`events.jsonl` 按顺序记录阶段、操作与结果，`timeout-stacks.log` 保留阻塞堆栈，失败时保留无损截图；输入来源与 fixture 哈希见 `environment.json` 和 `fixture-hashes.json`。与标准输入相同的 fixture 副本会在收尾时移除，变异或损坏的输入保留。
-超时排查先读 `run.json`，再定位相应执行目录中的事件与堆栈。各阶段、清理与停滞预算集中定义在 [`tests/gui/support/policy.py`](../tests/gui/support/policy.py)；`--timeout`、`--case-timeout`、`--stall-after`、`--consecutive-stalls` 分别覆盖整轮、单例、停滞和连续停滞预算。`n.wait` 轮询与阶段／操作发布都会更新心跳，调用阶段超过停滞预算仍无进展时记录堆栈并停止当前 pytest 进程树。
+超时排查先读 `run.json`，再定位相应执行目录中的事件与堆栈。各阶段、清理与停滞预算集中定义在 [`tests/gui/support/policy.py`](../tests/gui/support/policy.py)；`--timeout`、`--case-timeout`、`--stall-after`、`--consecutive-stalls` 分别覆盖整轮、单例、停滞和连续停滞预算。XP 等慢速目标跑完整套件时，可按实际进度用 `--timeout` 延长整轮上限，不必同时放宽单例或停滞预算。`n.wait` 轮询与阶段／操作发布都会更新心跳，调用阶段超过停滞预算仍无进展时记录堆栈并停止当前 pytest 进程树。
 单用例超时且清理得到确认后，协调器创建新的资源托管进程，继续尚未执行的用例，不重放已完成或已超时的用例，也不重置整轮预算。连续停滞达到 `--consecutive-stalls`（替换的工作进程在完成任何用例前再次停滞）、取消、整轮预算耗尽或清理失败时停止。运行期间按慢用例阈值实时打印 `[slow]` 行，结束时列出最慢用例；超时结果记录用例、阶段、操作、`termination_reason`、最后完成用例和剩余用例数。
 `--desktop current --real-input` 只选择 `interactive` 交互与屏幕呈现测试，不指定时运行其余用例；可用 `--collect-only -q` 检查选择结果。交互测试须独占已解锁的活动桌面，运行期间不要操作键鼠。独立桌面也不隔离剪贴板等会话共享资源。
 真实高对比测试使用 `--hc-theme PATH` 指定目标机的 `.theme` 预期外观文件，例如 `%SystemRoot%\Resources\Ease of Access Themes\hcblack.theme`；此参数读取预期外观，不应用主题。

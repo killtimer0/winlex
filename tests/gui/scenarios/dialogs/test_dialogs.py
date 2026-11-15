@@ -1,5 +1,6 @@
 """Native file selection accepts paths and cancellation preserves requests."""
 import pytest
+import win32con
 import uiautomation as auto
 from support import deadline, native as n
 from support.session import invoke
@@ -74,7 +75,8 @@ def test_module_picker_accepts_resource_path(launch, settings):
         n.wait(lambda: filename.Exists(0, 0), 'native filename edit', 30)
         assert filename.GetValuePattern().SetValue(str(module), waitTime=0)
         n.wait(lambda: filename.GetValuePattern().Value == str(module), 'module filename accepted', 30)
-    invoke(picker.ButtonControl(AutomationId='1'))
+    # IDOK is exposed as a SplitButton rather than a Button on Windows 7.
+    invoke(n.get_item(dialog, win32con.IDOK))
     n.wait(lambda: not n.is_window(dialog), 'module picker accepted the selected file')
     n.wait(lambda: n.window_text(n.get_item(doc, 1813)) == str(module), 'selected module path')
     language = n.get_item(doc, 1812)

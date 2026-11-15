@@ -121,6 +121,22 @@ def test_after(request):
             diagnostic = (attempts[0] / 'test_native_path_failure-failure.txt').read_text(encoding='utf-8')
             self.assertIn(r'native-path-\ud800-control-', diagnostic)
 
+    def test_long_failure_attachment_survives_and_next_case_runs(self):
+        name = 'test_' + 'long_diagnostic_' * 13
+        with self.runner('''
+def %s(request):
+    pytest.fail('intentional long-path diagnostic')
+
+def test_after(request):
+    from support.paths import extended
+    path = output(request) / %r
+    assert len(str(path)) > 260, 'probe must exercise an extended artifact path'
+    assert 'intentional long-path diagnostic' in extended(path).read_text(encoding='utf-8')
+''' % (name, name + '-failure.txt')) as runner:
+            runner.start()
+            result = self.final(runner, state='failed')
+            self.assertEqual(result['case_counts'], dict(tests=2, failures=1, errors=0, skipped=0))
+
     def test_native_held_gil_timeout_retains_stack_kills_tree_and_never_replays(self):
         with self.runner('''
 def test_before(request):

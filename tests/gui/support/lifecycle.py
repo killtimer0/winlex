@@ -11,6 +11,7 @@ import win32con
 import win32service
 from . import deadline
 from .policy import Policy
+from .paths import extended
 
 
 def _phase_started(item, phase):
@@ -60,7 +61,7 @@ def pytest_collectreport(report):
 def pytest_runtest_makereport(item, call):
     outcome = yield
     report = outcome.get_result()
-    output = Path(item.config.getoption('--artifacts'))
+    output = extended(Path(item.config.getoption('--artifacts')))
     deadline.result(report.nodeid, report.when, report.outcome, report.duration,
                     report.start, report.stop, report.longreprtext if not report.passed else '')
     if report.when == 'call':
