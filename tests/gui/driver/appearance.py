@@ -1,5 +1,6 @@
 """Choose appearance and observe displayed fills without a palette oracle."""
 import sys
+import time
 import pytest
 import uiautomation as auto
 from support import deadline, native as n
@@ -46,3 +47,24 @@ def background_pixels(hwnd):
 def dark_background(hwnd):
     """Require a blank displayed client patch to use the dark theme fill."""
     return max(background_pixels(hwnd)) < 128
+
+
+def settled_colors(sample, description):
+    """Do not retain an animation's transient frame as an equality baseline."""
+    last = None
+    unchanged_since = time.monotonic()
+
+    def settled():
+        nonlocal last, unchanged_since
+        color = sample()
+        now = time.monotonic()
+        if color != last:
+            last, unchanged_since = color, now
+        return color if now - unchanged_since >= .25 else None
+
+    return n.wait(settled, description)
+
+
+def settled_background_pixels(hwnd):
+    return settled_colors(lambda: background_pixels(hwnd),
+                          'displayed background settles before baseline capture')

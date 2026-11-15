@@ -159,6 +159,71 @@ def watchdog_record(path, text):
     temporary.replace(path)
 
 
+def restoration_observation():
+    """Native-only observation for a new process, independent of UIA/pytest."""
+    user = c.WinDLL('user32', use_last_error=True)
+    user.GetSysColor.argtypes, user.GetSysColor.restype = (c.c_int,), w.DWORD
+    palette = []
+    for index in (5, 15, 13):  # COLOR_WINDOW, COLOR_BTNFACE, COLOR_HIGHLIGHT
+        color = user.GetSysColor(index)
+        palette.append([(color >> 16) & 255, (color >> 8) & 255, color & 255])
+    covers = []
+    callback_type = c.WINFUNCTYPE(w.BOOL, w.HWND, w.LPARAM)
+    user.IsWindowVisible.argtypes, user.IsWindowVisible.restype = (w.HWND,), w.BOOL
+    user.GetClassNameW.argtypes = (w.HWND, w.LPWSTR, c.c_int)
+    user.EnumWindows.argtypes, user.EnumWindows.restype = (callback_type, w.LPARAM), w.BOOL
+
+    def visit(hwnd, _):
+        name = c.create_unicode_buffer(256)
+        if user.IsWindowVisible(hwnd) and user.GetClassNameW(hwnd, name, len(name)):
+            if name.value == 'CoverWindowClass':
+                covers.append(hwnd)
+        return True
+
+    if not user.EnumWindows(callback_type(visit), 0):
+        raise c.WinError(c.get_last_error())
+    return {'state': high_contrast(), 'palette': palette, 'covers': covers,
+            'context': execution_context()}
+
+
+def verify_restoration(artifact, restore=False):
+    """Fresh-process evidence, only after a verified application boundary."""
+    saved = json.loads(artifact.read_text(encoding='utf-8'))
+    if execution_context() != saved['context']:
+        raise RuntimeError('Native verification context does not match caller')
+    if restore:
+        set_high_contrast((saved['flags'], saved['scheme']))
+    actual = restoration_observation()
+    if actual['context'] != saved['context']:
+        raise RuntimeError('Native verification context does not match caller')
+    print(json.dumps(actual), flush=True)
+
+
+def fresh_restoration(artifact, until, restore=False):
+    saved = json.loads(artifact.read_text(encoding='utf-8'))
+    actual = None
+    while time.monotonic() < until:
+        action = '--restore-native' if restore else '--verify-restoration'
+        result = subprocess.run([sys.executable, str(Path(__file__).resolve()),
+                                 action, str(artifact)],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                timeout=max(.001, until - time.monotonic()))
+        if result.returncode:
+            raise RuntimeError(result.stderr.decode('utf-8', errors='replace'))
+        actual = json.loads(result.stdout)
+        was_setter = restore
+        restore = False
+        if was_setter:
+            # SET can update only the caller's cached view before Windows
+            # finishes the transition. Never let the setter certify itself.
+            continue
+        if (restored_high_contrast(actual['state'], (saved['flags'], saved['scheme']))
+                and actual['palette'] == saved['original_palette'] and not actual['covers']):
+            return actual
+        time.sleep(min(.05, max(0, until - time.monotonic())))
+    raise RuntimeError('Fresh native restoration unverified: ' + json.dumps(actual))
+
+
 def watchdog(parent_pid, artifact, task_name, receipt):
     """Scheduler-launched supervisor, independent of the pytest process/job."""
     kernel = c.WinDLL('kernel32', use_last_error=True)
@@ -185,6 +250,10 @@ def watchdog(parent_pid, artifact, task_name, receipt):
             result = kernel.WaitForSingleObject(handle, 100)
             emergency = result == 0 or time.monotonic() >= deadline
             if emergency or completed.exists():
+                # The application acknowledgement is committed after the
+                # independent snapshot was first published, before enable.
+                saved = json.loads(artifact.read_text(encoding='utf-8'))
+                receipt['expected'] = saved
                 actual = high_contrast()
                 receipt['actual'] = {'flags': actual[0], 'scheme': actual[1]}
                 receipt['emergency'] = emergency
@@ -192,13 +261,15 @@ def watchdog(parent_pid, artifact, task_name, receipt):
                 if emergency or receipt['recovery_needed']:
                     # Keep native recovery bounded in this standalone supervisor.
                     recovery = {}
+                    recovery_until = time.monotonic() + 10
 
                     def recover():
                         recovery['recovery_context'] = execution_context()
                         if recovery['recovery_context'] != saved['context']:
                             raise RuntimeError('Native recovery context does not match caller')
-                        set_high_contrast(snapshot)
-                        restored = high_contrast()
+                        recovery['native_verification'] = fresh_restoration(
+                            artifact, recovery_until, restore=True)
+                        restored = recovery['native_verification']['state']
                         recovery['restored'] = {'flags': restored[0], 'scheme': restored[1]}
                         if not restored_high_contrast(restored, snapshot):
                             raise RuntimeError('Watchdog could not restore entire HIGHCONTRAST snapshot')
@@ -206,13 +277,16 @@ def watchdog(parent_pid, artifact, task_name, receipt):
 
                     task = bounded.start(recover)
                     try:
-                        task.wait(10, 'Watchdog native recovery')
+                        task.wait(max(.001, recovery_until - time.monotonic()), 'Watchdog native recovery')
                     except BaseException:
                         receipt.update(recovery)
                         raise
                     receipt.update(recovery)
                 else:
                     receipt['restored'] = receipt['actual']
+                    receipt['native_verification'] = fresh_restoration(artifact, time.monotonic() + 10)
+                if not saved.get('application_verified'):
+                    raise RuntimeError('HC application was interrupted; restoration settlement is unverified')
                 if not emergency and receipt['recovery_needed']:
                     raise RuntimeError('Parent restoration did not stick; watchdog recovery was needed')
                 return
@@ -226,7 +300,9 @@ def watchdog(parent_pid, artifact, task_name, receipt):
 
 
 if __name__ == '__main__':
-    if sys.argv[1:] == ['--probe-high-contrast']:
+    if len(sys.argv) == 3 and sys.argv[1] in ('--verify-restoration', '--restore-native'):
+        verify_restoration(Path(sys.argv[2]), restore=sys.argv[1] == '--restore-native')
+    elif sys.argv[1:] == ['--probe-high-contrast']:
         probe_high_contrast()
     elif len(sys.argv) == 5 and sys.argv[1] == '--watch-high-contrast':
         if os.environ.get('PYTHONMALLOC') != 'malloc':

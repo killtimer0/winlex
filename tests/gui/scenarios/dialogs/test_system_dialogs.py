@@ -13,7 +13,9 @@ from support import deadline, native as n
 from support.diagnostics import assert_unobscured, screenshot
 from support.input_state import GA_ROOT, InputState, foreground, get_ancestor
 from support.session import invoke, message_button
-from driver.appearance import background_pixels, dark_background, modern_theme, select_theme
+from driver.appearance import (
+    background_pixels, dark_background, modern_theme, select_theme, settled_background_pixels,
+)
 from driver.surfaces import dark_color, observed_colors as colors
 from driver.native_dialogs import (
     assert_modal, assert_native_text_contrast, dismiss_no, file_picker_colors,
@@ -186,7 +188,7 @@ def test_file_picker_current_theme_native_navigation_and_cancel(
     sentinel.write_bytes(b'')
     with InputState() as inputs, foreground(app, inputs):
         appearances = []
-        owner = background_pixels(app.search)
+        owner = settled_background_pixels(app.search)
         # Reopen after changing the owner theme, guarding against a stale per-process preference.
         for current in (theme, 'dark' if theme == 'light' else 'light'):
             if current != theme:
@@ -196,7 +198,7 @@ def test_file_picker_current_theme_native_navigation_and_cancel(
                 n.wait(lambda: background_pixels(app.search) != owner, 'owner paints changed theme')
             before = profile.preferences()
             assert before[2] == current
-            owner = background_pixels(app.search)
+            owner = settled_background_pixels(app.search)
             status = app.status_text()
             app.command(1020)
             dialog = n.wait(lambda: native_dialog(app), 'native file picker', 30)

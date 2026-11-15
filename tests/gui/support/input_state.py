@@ -94,7 +94,10 @@ def recover(path):
     except Exception as error:
         logging.getLogger(__name__).warning("Could not restore previous foreground window: %s", error)
     finally:
-        auto.MoveTo(*state["cursor"], waitTime=0)
+        # Recovery is an exact placement, not a simulated hover gesture. UIA's
+        # interpolated MoveTo ignores failed SetCursorPos calls along its path.
+        win32api.SetCursorPos(tuple(state["cursor"]))
+        assert auto.GetCursorPos() == tuple(state["cursor"]), "Cannot restore cursor position"
     path.unlink()
 
 

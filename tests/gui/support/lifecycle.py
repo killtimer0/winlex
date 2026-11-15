@@ -67,4 +67,5 @@ def pytest_runtest_makereport(item, call):
         item.test_failed = report.failed
         if report.failed:
             captured = ''.join('\n\n%s\n%s' % section for section in report.sections)
-            (output / (item.name + '-failure.txt')).write_text(report.longreprtext + captured, encoding='utf-8')
+            (output / (item.name + '-failure.txt')).write_text(
+                report.longreprtext + captured, encoding='utf-8', errors='backslashreplace')

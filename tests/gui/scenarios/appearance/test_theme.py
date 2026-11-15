@@ -9,7 +9,9 @@ from support import messages, native as n
 from support.session import invoke
 from support.diagnostics import screenshot
 from driver.dialogs import open_about, open_help
-from driver.appearance import background_pixels, modern_theme, select_theme, selected_index
+from driver.appearance import (
+    background_pixels, modern_theme, select_theme, selected_index, settled_background_pixels,
+)
 
 
 @modern_theme
@@ -46,11 +48,11 @@ def test_theme_switch_persistence_and_dialogs(launch, profile, settings, languag
     profile.set('Theme', winreg.REG_SZ, 'dark')
     original = profile.preferences()
     app = launch(dpi=dpi)
-    dark = background_pixels(app.search)
+    dark = settled_background_pixels(app.search)
     dialogs = {}
     for opener in (open_about, open_help):
         dialog = opener(app)
-        dialogs[opener] = background_pixels(dialog)
+        dialogs[opener] = settled_background_pixels(dialog)
         screenshot(dialog, settings[2] / ('dark-%s-%s-%s.png' % (language, dpi, opener.__name__)))
         invoke(n.get_item(dialog, 1))
         n.wait(lambda: not n.is_window(dialog), 'close themed dialog')
@@ -58,10 +60,10 @@ def test_theme_switch_persistence_and_dialogs(launch, profile, settings, languag
     page = app.settings_page(sheet, 0)
     combo = n.get_item(page, 1301)
     assert selected_index(app, combo) == 2
-    dark_page = background_pixels(page)
+    dark_page = settled_background_pixels(page)
     tab = n.send(sheet, messages.PSM_GETTABCONTROL)
     assert tab, 'settings tab control'
-    dark_tab = background_pixels(tab)
+    dark_tab = settled_background_pixels(tab)
     screenshot(sheet, settings[2] / ('dark-%s-%s-settings.png' % (language, dpi)))
     select_theme(page, 1)
     app.close_settings(sheet, accept=False)
@@ -107,7 +109,7 @@ def test_theme_change_preserves_document(launch, profile, settings):
     doc = app.open_row()
     n.wait(lambda: 'CreateFileW(' in app.content(doc), 'loaded declaration', 45)
     original = app.content(doc)
-    light = background_pixels(app.search)
+    light = settled_background_pixels(app.search)
     dark = None
     for mode in (2, 1, 2):
         sheet = app.settings()
@@ -121,7 +123,7 @@ def test_theme_change_preserves_document(launch, profile, settings):
         else:
             n.wait(lambda: background_pixels(app.search) != light, 'theme change is painted')
             if dark is None:
-                dark = background_pixels(app.search)
+                dark = settled_background_pixels(app.search)
             else:
                 assert background_pixels(app.search) == dark
     screenshot(app.frame, settings[2] / 'dark-document.png')
@@ -140,7 +142,7 @@ def test_system_theme_uses_windows_preference(launch, profile):
     except FileNotFoundError:
         expected = False
     app = launch()
-    system = background_pixels(app.search)
+    system = settled_background_pixels(app.search)
     sheet = app.settings()
     page = app.settings_page(sheet, 0)
     assert selected_index(app, n.get_item(page, 1301)) == 0
@@ -148,7 +150,7 @@ def test_system_theme_uses_windows_preference(launch, profile):
     assert profile.preferences() == original
     profile.set('Theme', winreg.REG_SZ, 'dark' if expected else 'light')
     explicit = launch()
-    assert background_pixels(explicit.search) == system, 'system preference matches explicit appearance'
+    assert settled_background_pixels(explicit.search) == system, 'system preference matches explicit appearance'
 
 
 @modern_theme

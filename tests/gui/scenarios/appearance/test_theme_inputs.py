@@ -7,9 +7,9 @@ import win32gui
 
 from support import deadline, messages, native as n
 from support.diagnostics import capture, screenshot
-from support.input_state import InputState
+from support.input_state import InputState, foreground
 from driver.appearance import background_pixels, select_theme
-from driver.surfaces import background, center, colors, dark_app, foreground, inset, move, text_contrast
+from driver.surfaces import background, center, colors, dark_app, inset, move, text_contrast
 from driver.controls import combo_info
 
 pytestmark = pytest.mark.interactive
@@ -114,9 +114,6 @@ def test_edit_focus_disabled_and_theme_roundtrip(launch, profile, settings):
             if position:
                 change_theme(app, mode)
                 n.wait(lambda: background_pixels(edit) != previous, 'search edit repaints after theme changes')
-            if mode in appearances:
-                assert background_pixels(edit) == appearances[mode], 'search edit restores its appearance'
-            appearances[mode] = background_pixels(edit)
             app.focus(app.results)
             move(app.status, (8, 3))
             click_control(inputs, edit)
@@ -139,6 +136,15 @@ def test_edit_focus_disabled_and_theme_roundtrip(launch, profile, settings):
             n.send(edit, win32con.EM_SETSEL, -1, -1)
             inputs.key(ord('A'))
             n.wait(lambda: n.window_text(edit) == before + 'a', 'reenabled edit accepts real keyboard input')
+            move(app.status, (8, 3))
+            assert app.focused() == edit and win32gui.IsWindowEnabled(edit)
+            if mode in appearances:
+                n.wait(lambda: background_pixels(edit) == appearances[mode],
+                       'search edit restores its appearance')
+            else:
+                # Establish the baseline after real focus/enable/input gestures,
+                # not from the native edit's initial presentation transition.
+                appearances[mode] = background_pixels(edit)
         assert n.window_text(edit) == 'aaa', 'theme switches must preserve edit contents'
 
 

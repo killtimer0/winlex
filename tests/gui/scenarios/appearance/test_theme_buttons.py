@@ -7,10 +7,10 @@ import win32gui
 import uiautomation as auto
 
 from support import deadline, native as n
-from support.input_state import InputState
+from support.input_state import InputState, foreground
 from support.diagnostics import screenshot
 from driver.dialogs import open_about, open_help
-from driver.surfaces import background, center, colors, dark_app, foreground, move
+from driver.surfaces import background, center, colors, dark_app, move
 
 pytestmark = pytest.mark.interactive
 

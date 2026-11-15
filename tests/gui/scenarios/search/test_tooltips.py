@@ -11,6 +11,12 @@ from support.session import select_combo
 from driver.tooltips import infotip, registered_tip
 
 
+@pytest.fixture
+def tooltip_pointer():
+    with InputState():
+        yield
+
+
 def test_search_tooltip_registers_and_tracks_mode_without_hover(launch, settings):
     app = launch()
     selector = n.get_item(app.frame, 1114)
@@ -57,6 +63,7 @@ def test_toolbar_names_on_hover(launch, settings):
 
 
 @pytest.mark.interactive
+@pytest.mark.usefixtures('tooltip_pointer')
 def test_structured_infotips_preserve_paths_and_report_reload_errors(launch, settings):
     from support.paths import extended
     from driver.metadata import complete_list_text
@@ -87,6 +94,7 @@ def test_structured_infotips_preserve_paths_and_report_reload_errors(launch, set
 
 
 @pytest.mark.interactive
+@pytest.mark.usefixtures('tooltip_pointer')
 def test_infotips_include_values_and_full_guids(launch, settings):
     app = launch([settings[1]])
     mode = n.get_item(app.frame, 1114)

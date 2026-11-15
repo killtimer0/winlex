@@ -1,6 +1,5 @@
 """Displayed pixel/contrast evidence and protected real-input acquisition."""
 from collections import Counter
-from contextlib import contextmanager
 import pytest
 import win32con
 import win32gui
@@ -8,25 +7,7 @@ import winreg
 import uiautomation as auto
 from support import deadline
 from support.diagnostics import capture_pixels
-from support.input_state import foreground as acquire_foreground
 from driver.appearance import THEME_SUPPORTED
-
-
-@contextmanager
-def foreground(app, inputs):
-    for attempt in range(3):
-        owner = acquire_foreground(app, inputs)
-        try:
-            owner.__enter__()
-        except pytest.skip.Exception:
-            if attempt == 2:
-                raise AssertionError('Cannot acquire current desktop for dark-surface contract')
-            continue
-        try:
-            yield
-        finally:
-            owner.__exit__(None, None, None)
-        return
 
 
 def dark_app(launch, profile, arguments=()):

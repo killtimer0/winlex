@@ -6,7 +6,6 @@ import win32gui
 import win32process
 import uiautomation as auto
 from support import deadline, messages, native as n
-from support.input_state import InputState
 from support.diagnostics import assert_unobscured, screenshot
 
 
@@ -54,6 +53,7 @@ def registered_tip(app, target, bits):
 
 
 def infotip(app, control, row, image):
+    """Exercise hover and dismissal within the caller's InputState ownership."""
     with deadline.operation('prepare list infotip row'):
         assert control and n.is_visible(control)
         item = app.row(row, control)
@@ -67,7 +67,7 @@ def infotip(app, control, row, image):
         assert initial > 0 and autopop > 0, 'native tooltip must have finite display delays'
     # Cover initial display and eventual hiding using the control's actual
     # timing and pointer delivery, not a whole-case timeout.
-    with InputState(), deadline.operation('list infotip hover and dismissal'):
+    with deadline.operation('list infotip hover and dismissal'):
         auto.ControlFromHandle(app.frame).SetActive()
         assert win32gui.GetForegroundWindow() == app.frame, 'infotip foreground'
         # Neither list content nor the search Edit is a neutral hover target:

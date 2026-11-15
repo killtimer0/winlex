@@ -98,6 +98,29 @@ def test_after(request):
                 if fail:
                     self.assertIn('intentional contract failure', (runner.output / 'tests.xml').read_text())
 
+    def test_native_utf16_failure_retains_diagnostics_and_continues(self):
+        with self.runner('''
+def test_native_path_failure(request):
+    record(request, 'failed')
+    text = 'native-path-' + chr(0xd800) + '-control-' + chr(1) + '-end'
+    print(text)
+    pytest.fail(text)
+
+def test_after(request):
+    record(request, 'after')
+''') as runner:
+            runner.start()
+            result = self.final(runner, state='failed')
+            self.assertEqual(self.executions(runner), ['failed', 'after'])
+            self.assertEqual(result['case_counts'], dict(tests=2, failures=1, errors=0, skipped=0))
+            failures = ET.parse(runner.output / 'tests.xml').getroot().findall('.//failure')
+            self.assertEqual(len(failures), 1)
+            self.assertIn(r'native-path-\ud800-control-\x01-end', failures[0].text)
+            attempts = gui_probe.attempts(runner.output)
+            self.assertEqual(len(attempts), 1)
+            diagnostic = (attempts[0] / 'test_native_path_failure-failure.txt').read_text(encoding='utf-8')
+            self.assertIn(r'native-path-\ud800-control-', diagnostic)
+
     def test_native_held_gil_timeout_retains_stack_kills_tree_and_never_replays(self):
         with self.runner('''
 def test_before(request):
@@ -377,6 +400,24 @@ def test_after(request):
             self.assertIn('contract recovery failure', result['cleanup_errors'])
             self.assertEqual(self.executions(runner), ['active'])
             self.assertEqual(len(gui_probe.attempts(runner.output)), 1)
+
+    def test_native_hc_requires_appearance_before_registering_or_changing_state(self):
+        with self.runner('''
+from driver.high_contrast import temporary_high_contrast
+from driver.high_contrast_watchdog import high_contrast
+
+def test_invalid_hc_request(request):
+    artifact = output(request) / 'rejected-hc.json'
+    before = high_contrast()
+    with pytest.raises(ValueError):
+        with temporary_high_contrast(before, artifact, None):
+            raise AssertionError('missing appearance must not enter a native transition')
+    assert high_contrast() == before
+    assert not artifact.exists()
+    assert not (output(request) / 'recoveries.jsonl').exists()
+''') as runner:
+            runner.start()
+            self.final(runner, state='passed')
 
     def test_completed_recovery_receipt_accepts_removed_snapshot(self):
         # Ledger evidence acceptance only; no native HC recovery or setting change.

@@ -1,7 +1,14 @@
 """Retain all case outcomes when a blocked pytest worker must be replaced."""
+import re
 import xml.etree.ElementTree as ET
 
 from . import events, jsonl
+
+
+def xml_text(text):
+    # XML 1.0 cannot represent these code points, even as numeric references.
+    return re.sub('[^\x09\x0a\x0d\x20-\ud7ff\ue000-\ufffd\U00010000-\U0010ffff]',
+                  lambda match: match[0].encode('unicode_escape').decode('ascii'), text)
 
 
 def succeeded(result):
@@ -48,7 +55,7 @@ def merge(attempts, output):
         classname = classname.replace('/', '.').replace('\\', '.')
         if classname.endswith('.py'):
             classname = classname[:-3]
-        case = ET.SubElement(suite, 'testcase', classname=classname, name=name,
+        case = ET.SubElement(suite, 'testcase', classname=xml_text(classname), name=xml_text(name),
                              time=str(sum(row['duration'] for row in phases)))
         failed = False
         kinds = set()
@@ -59,7 +66,8 @@ def merge(attempts, output):
                 if kind not in kinds:
                     counts['failures' if kind == 'failure' else 'errors'] += 1
                     kinds.add(kind)
-                ET.SubElement(case, kind, message=row.get('message', '')).text = row.get('message', '')
+                message = xml_text(row.get('message', ''))
+                ET.SubElement(case, kind, message=message).text = message
         if not failed:
             if any(row['outcome'] == 'skipped' for row in phases):
                 counts['skipped'] += 1

@@ -10,13 +10,13 @@ import uiautomation as auto
 from support import messages
 from support import native as n
 from support.diagnostics import screenshot
-from support.input_state import InputState
+from support.input_state import InputState, foreground
 from driver.menus import popup_window
 from driver.results import select_result
 from driver.tooltips import infotip
 from driver.tools import visual_state
 from driver.surfaces import (
-    background, center, colors, dark_app, dark_color, foreground, inset, move, text_contrast,
+    background, center, colors, dark_app, dark_color, inset, move, text_contrast,
 )
 
 pytestmark = pytest.mark.interactive
@@ -190,6 +190,7 @@ def test_dark_list_native_tooltip_pixels(launch, profile, settings, sources):
     app = dark_app(launch, profile, [settings[1]])
     app.query('CreateFileW')
     # The helper checks exposure and disappearance during the same hover.
+    cursor = auto.GetCursorPos()
     with InputState() as inputs, foreground(app, inputs), n.window_dpi_context(app.frame):
         if sources:
             app.command(1021)
@@ -201,8 +202,8 @@ def test_dark_list_native_tooltip_pixels(launch, profile, settings, sources):
             assert path in text
         else:
             assert text.startswith(app.cell(0, control).splitlines()[0] + '\r\n\r\n')
-        # infotip restores the pointer on return, so show the tip again before
-        # sampling its displayed fill and text pixels.
+        # infotip leaves the pointer off the list after checking dismissal.
+        # Show the tip again to sample its displayed fill and text pixels.
         tooltip = n.send(control, messages.LVM_GETTOOLTIPS)
         rect = app.item_rect(0, control)
         move(control, (min(rect[0] + 120, rect[2] - 8),
@@ -212,6 +213,7 @@ def test_dark_list_native_tooltip_pixels(launch, profile, settings, sources):
         palette = colors(tooltip, (3, 3, width - 3, height - 3))
         dark_fill(palette)
         assert text_contrast(palette), 'tooltip text must remain readable'
+    assert auto.GetCursorPos() == cursor, 'tooltip gestures restore the caller pointer'
 
 
 def menu_items(app):

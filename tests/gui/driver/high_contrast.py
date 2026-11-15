@@ -86,7 +86,9 @@ def register_recovery(artifact, task_name):
 
 
 @contextmanager
-def temporary_high_contrast(snapshot, artifact, appearance=None):
+def temporary_high_contrast(snapshot, artifact, appearance):
+    if appearance is None:
+        raise ValueError('Native high-contrast transitions require an explicit appearance fixture')
     n.wait(lambda: not visible_transition_covers(),
            'previous native high contrast transition cover gone', 15)
     original_palette = native_system_palette()
@@ -97,8 +99,10 @@ def temporary_high_contrast(snapshot, artifact, appearance=None):
     context = execution_context()
     name = 'Winlex.Tests.HighContrast.' + uuid.uuid4().hex
     register_recovery(artifact, name)
-    artifact.write_text(json.dumps({'flags': snapshot[0], 'scheme': snapshot[1],
-                                    'context': context}),
+    saved = {'flags': snapshot[0], 'scheme': snapshot[1], 'context': context,
+             'original_palette': [list(color) for color in original_palette],
+             'application_verified': False}
+    artifact.write_text(json.dumps(saved),
                         encoding='utf-8')
     # Match remote.py's Task Scheduler v1 launch: scheduler provenance keeps
     # this supervisor independent without weakening the runner's job limits.
@@ -162,24 +166,25 @@ def temporary_high_contrast(snapshot, artifact, appearance=None):
         n.wait(lambda: high_contrast()[0] & HCF_HIGHCONTRASTON,
                'real system high contrast is enabled', 10)
         evidence['high_contrast_palettes'].append(native_system_palette())
-        if appearance is not None:
-            appearance_path = artifact.with_name(artifact.stem + '-appearance.json')
-            last = []
+        appearance_path = artifact.with_name(artifact.stem + '-appearance.json')
+        last = []
 
-            def applied():
-                actual = high_contrast_appearance_state()
-                if last != [actual]:
-                    watchdog_record(appearance_path, json.dumps({'expected': appearance, 'actual': actual}))
-                    last[:] = [actual]
-                return (restored_high_contrast(tuple(actual['high_contrast']),
-                                               (snapshot[0] | HCF_HIGHCONTRASTON, snapshot[1]))
-                        and actual['style'] == appearance['style']
-                        and actual['colors_bgr'] == appearance['colors_bgr']
-                        and not actual['covers'])
+        def applied():
+            actual = high_contrast_appearance_state()
+            if last != [actual]:
+                watchdog_record(appearance_path, json.dumps({'expected': appearance, 'actual': actual}))
+                last[:] = [actual]
+            return (restored_high_contrast(tuple(actual['high_contrast']),
+                                           (snapshot[0] | HCF_HIGHCONTRASTON, snapshot[1]))
+                    and actual['style'] == appearance['style']
+                    and actual['colors_bgr'] == appearance['colors_bgr']
+                    and not actual['covers'])
 
-            # A real OS-application phase, not repeated UIA/capture. Per-capture
-            # obstruction limits remain independent and unchanged.
-            n.wait(applied, 'system reaches explicit HC fixture appearance (not a product rendering verdict)', 45)
+        # A real OS-application phase, not repeated UIA/capture. Per-capture
+        # obstruction limits remain independent and unchanged.
+        n.wait(applied, 'system reaches explicit HC fixture appearance (not a product rendering verdict)', 45)
+        saved['application_verified'] = True
+        watchdog_record(artifact, json.dumps(saved))
         yield
     finally:
         original_error = sys.exc_info()
@@ -233,12 +238,13 @@ def temporary_high_contrast(snapshot, artifact, appearance=None):
                        'original HIGHCONTRAST, native palette and transition cover restored',
                        remaining)
             evidence['restore_samples'] = restore_samples
+            assert saved['application_verified'], (
+                'HC application was not verified; a baseline-looking sample cannot certify restoration')
             watchdog_record(completed, str(os.getpid()))
             n.wait(result.exists, 'scheduler watchdog cleanup complete', 15)
             outcome = json.loads(result.read_text(encoding='utf-8'))
             assert outcome['ok'], outcome.get('error', 'High-contrast watchdog failed')
-            assert outcome['context'] == context and outcome['expected'] == {
-                'flags': snapshot[0], 'scheme': snapshot[1], 'context': context}
+            assert outcome['context'] == context and outcome['expected'] == saved
             assert not outcome['emergency'] and not outcome['recovery_needed'], outcome
             assert restored_high_contrast(
                 (outcome['restored']['flags'], outcome['restored']['scheme']), snapshot), outcome

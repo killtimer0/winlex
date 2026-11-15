@@ -255,9 +255,10 @@ def test_list_text_preserves_native_utf16_path(launch, settings, unc):
     try:
         app.command(1021)
         n.wait(lambda: app.count(app.sources) == 1, "source loaded", 45)
-        assert app.cell(0, app.sources).splitlines()[0] == str(path)
+        bits = 64 if is_64_bit(settings[0]) else 32
+        assert complete_list_text(app, app.sources, 0, bits).splitlines()[0] == str(path)
         app.query("CreateFileW")
-        lines = app.cell(0).splitlines()
+        lines = complete_list_text(app, app.results, 0, bits).splitlines()
         assert lines[1].endswith(path.name)
         assert lines[3] == str(path)
         doc = app.open_row()

@@ -34,6 +34,9 @@ def test_list_selection_paint_follows_focus(launch, settings, sources):
             _, _, width, height = n.rectangle(control, client=True)
             left, top, right, bottom = app.item_rect(0, control)
             x, y = min(right, width) - 4, (top + bottom) // 2 - 3
+            point = n.physical_screen_point(control, win32gui.ClientToScreen(control, (x, y)))
+            with n.physical_dpi_context():
+                assert win32gui.WindowFromPoint(point) == control, 'list paint sample is obscured'
             with capture(control, client=True, rect=(x, y, x + 1, y + 1)) as (bitmap, _, _):
                 rgb = bitmap.GetPixelColor(0, 0)
                 return ((rgb & 255) << 16) | (rgb & 0xff00) | ((rgb >> 16) & 255)

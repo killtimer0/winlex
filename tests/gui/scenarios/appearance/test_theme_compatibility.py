@@ -11,8 +11,8 @@ import winreg
 
 from support import native as n
 from support.diagnostics import screenshot
-from support.input_state import InputState
-from driver.appearance import THEME_SUPPORTED, modern_theme
+from support.input_state import InputState, foreground
+from driver.appearance import THEME_SUPPORTED, modern_theme, settled_colors
 from driver.controls import combo_info
 from driver.high_contrast import (
     assert_dark_preference, edit_background, set_edit_text, system_color,
@@ -22,7 +22,6 @@ from driver.high_contrast_watchdog import (
     HCF_AVAILABLE, HCF_HIGHCONTRASTON, ObscuredSample, high_contrast,
     restored_high_contrast,
 )
-from driver.surfaces import foreground
 
 
 pytestmark = pytest.mark.interactive
@@ -130,7 +129,7 @@ def test_actual_high_contrast_overrides_dark_and_restores(launch, profile, setti
             remember_region(app.search, (width - 10, height - 8, width - 5, height - 4))
 
         remember_edit_region()
-        original_edit = fill(app.search)
+        original_edit = settled_colors(lambda: fill(app.search), 'initial edit background settles')
 
         def wait_fill(hwnd, expected_fills, description):
             observed = []
@@ -149,7 +148,7 @@ def test_actual_high_contrast_overrides_dark_and_restores(launch, profile, setti
                                      (description, observed, expected) +
                                      '; cause=' + str(error)) from error
 
-        dark_status = fill(app.status)
+        dark_status = settled_colors(lambda: fill(app.status), 'initial status background settles')
         sheet = app.settings()
 
         try:
