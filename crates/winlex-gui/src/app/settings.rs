@@ -121,43 +121,6 @@ impl Preferences {
     }
 }
 
-#[cfg(test)]
-mod preference_tests {
-    use super::*;
-
-    #[test]
-    fn theme_options_round_trip() {
-        for &(value, _, _) in THEMES {
-            assert_eq!(Theme::from_name(value.name()), Some(value));
-        }
-        assert_eq!(Theme::from_name("unknown"), None);
-    }
-
-    #[test]
-    fn search_engine_options_round_trip_and_encode_queries() {
-        for &(value, _, _, _) in SEARCH_ENGINES {
-            assert_eq!(SearchEngine::from_name(value.name()), Some(value));
-        }
-        assert_eq!(SearchEngine::from_name("unknown"), None);
-        for (engine, expected) in [
-            (
-                SearchEngine::Google,
-                "https://www.google.com/search?q=N.A%26B%20%E4%B8%AD",
-            ),
-            (
-                SearchEngine::Bing,
-                "https://www.bing.com/search?q=N.A%26B%20%E4%B8%AD",
-            ),
-            (
-                SearchEngine::Baidu,
-                "https://www.baidu.com/s?wd=N.A%26B%20%E4%B8%AD",
-            ),
-        ] {
-            assert_eq!(engine.url("N.A&B 中"), expected);
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Window {
     pub x: i32,

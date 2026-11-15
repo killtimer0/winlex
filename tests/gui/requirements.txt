@@ -1,4 +1,0 @@
-pytest==8.3.5
-pywin32==228
-uiautomation==2.0.29
-comtypes==1.4.12

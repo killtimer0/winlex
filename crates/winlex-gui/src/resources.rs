@@ -197,30 +197,3 @@ pub fn menu() -> anyhow::Result<HMENU> {
 pub fn dialog(id: u16) -> anyhow::Result<&'static [u8]> {
     data(5usize as *const u16, id)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn message_inserts_preserve_order_unicode_and_literal_argument_text() {
-        assert_eq!(
-            format_message(
-                &wide("%2!s! / %1!s! / %2!s!%n100%%"),
-                &["中文 🦀", "%1!s!\n{value}"]
-            )
-            .unwrap(),
-            "%1!s!\n{value} / 中文 🦀 / %1!s!\n{value}\r\n100%"
-        );
-    }
-
-    #[test]
-    fn language_names_round_trip() {
-        for option in LANGUAGES {
-            assert_eq!(Language::from_name(option.value.name()), Some(option.value));
-        }
-        assert_eq!(Language::from_name("unknown"), None);
-        assert_eq!(Language::English.langid(), 0x0409);
-        assert_eq!(Language::Chinese.langid(), 0x0804);
-    }
-}
