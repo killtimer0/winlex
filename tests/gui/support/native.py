@@ -1,6 +1,7 @@
 """UIA control queries and native measurements for Windows-specific assertions."""
 import ctypes as c
 from ctypes import wintypes as w
+import sys
 import time
 from contextlib import contextmanager
 import uiautomation as auto
@@ -36,10 +37,17 @@ send_timeout = api(
     w.HWND, w.UINT, c.c_size_t, c.c_ssize_t, w.UINT, w.UINT, c.POINTER(c.c_size_t),
 )
 
+# XP Text Services Framework marshals focus notifications in msctf's desktop
+# message hook under a mutex shared with ctfmon and Explorer, so a GUI thread can
+# stay inside PeekMessage for seconds. The budget stays below the stall watchdog,
+# which still bounds a real hang; other platforms keep a tight budget.
+MESSAGE_TIMEOUT = 10000 if sys.getwindowsversion().major < 6 else 3000
+
 
 def send(hwnd, message, wp=0, lp=0):
     result = c.c_size_t()
-    assert send_timeout(hwnd, message, wp, lp, 3, 3000, c.byref(result)), "Message timeout: %#x" % message
+    delivered = send_timeout(hwnd, message, wp, lp, 3, MESSAGE_TIMEOUT, c.byref(result))
+    assert delivered, "Message timeout after %dms: %#x" % (MESSAGE_TIMEOUT, message)
     return c.c_ssize_t(result.value).value
 
 
@@ -63,8 +71,9 @@ def text_prefix(hwnd, size=64):
     """Bounded native text read: fast enough to observe transient labels."""
     buffer = c.create_unicode_buffer(size)
     result = c.c_size_t()
-    assert send_timeout(hwnd, 0x000D, size, c.addressof(buffer), 3, 3000,
-                        c.byref(result)), "Message timeout: WM_GETTEXT"
+    delivered = send_timeout(hwnd, 0x000D, size, c.addressof(buffer), 3, MESSAGE_TIMEOUT,
+                             c.byref(result))
+    assert delivered, "Message timeout after %dms: WM_GETTEXT" % MESSAGE_TIMEOUT
     return buffer.value
 
 

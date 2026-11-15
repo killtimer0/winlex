@@ -75,6 +75,7 @@ python scripts/readme-media.py --exe target/x86_64-pc-windows-msvc/debug/winlex-
 运行库测试、静态检查和独立验证：
 
 ```powershell
+$env:WINLEX_TEST_WINMD = (Resolve-Path inputs/Windows.Win32.winmd).Path
 cargo test -p winlex-core -p winlex-format -p winlex-cli --all-targets --locked
 cargo fmt --all --check
 cargo clippy -p winlex-core -p winlex-format -p winlex-cli --all-targets --locked -- -D warnings
@@ -86,13 +87,20 @@ python -m unittest discover -s tests/scripts -v
 
 `tests/metadata/run.py` 自动构建开发用 CLI，验证布局、泛型及跨源引用，报告写入 `tmp/verify/`。默认使用 Debug 和 Cargo 配置，可用 `--target`、`--target-dir`、`--profile` 覆盖。
 
+Rust 测试统一通过 `WINLEX_TEST_WINMD` 读取 Win32 输入；直接执行测试时须设置为执行机上的路径，`tests/metadata/run.py` 会在校验输入后设置此变量。
+
 GUI crate 单元测试覆盖原生控件行为，会创建真实窗口；默认在远程目标执行，经明确允许才在本机运行：
 
 ```powershell
+$env:WINLEX_TEST_WINMD = (Resolve-Path inputs/Windows.Win32.winmd).Path
 cargo test --target x86_64-pc-windows-msvc -p winlex-gui --locked
 ```
 
 必须带 `--target`：属性表用例从 `target/<triple>/debug/winlex-gui.exe` 加载对话框模板，先运行 `scripts/build.ps1`，或用 `WINLEX_TEST_GUI_EXE` 指定其他构建。`-- --ignored` 的用例会移动指针、注入进程级导入或修改前台／uxtheme 全局状态，须在已解锁的独占桌面上单独运行；运行时跳过原因需加 `-- --nocapture` 才显示。
+
+跨机执行原生测试时，在开发机使用 `cargo test --no-run --message-format=json` 编译，从 `compiler-artifact` 记录中取得测试 EXE。测试链接也须复用构建记录中的 VC-LTL／YY-Thunks 配置，XP x86 使用 `/SUBSYSTEM:CONSOLE,5.01`。将测试 EXE、GUI EXE 和 `crates/winlex-gui/res/gui.manifest` 部署到目标机，分别设置 `WINLEX_TEST_WINMD`、`WINLEX_TEST_GUI_EXE` 和 `WINLEX_TEST_GUI_MANIFEST` 为目标机路径；普通批次使用 `--test-threads=1`，每个 ignored 用例在独立进程中以 `--ignored --exact <用例名> --test-threads=1` 执行。
+
+XP 的 TSF 在 msctf 的消息钩子内用全局互斥锁串行化焦点通知，GUI 线程可能被系统阻塞数秒；`tests/gui` 在该平台的跨进程消息预算相应放宽，仍低于停滞监控阈值（见 `tests/gui/support/native.py`）。
 
 使用 CLR 参考程序集验证基础类型与 COM 结构体的原生布局：
 

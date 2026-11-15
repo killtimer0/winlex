@@ -132,6 +132,7 @@ struct State {
 thread_local! {
     static STATE: RefCell<State> = RefCell::new(State::default());
     static APPLYING: Cell<bool> = const { Cell::new(false) };
+    static REFRESHING_SETTINGS: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Reentrancy guard for a UI-thread flag; dropping it clears the flag.
@@ -343,6 +344,11 @@ fn repaint(hwnd: HWND) {
 }
 
 fn set_native_theme(hwnd: HWND, dark_name: &str, light_name: Option<&str>) {
+    // An unrelated settings notification does not invalidate the assigned class.
+    // Resetting it sends WM_THEMECHANGED and dismisses native combo dropdowns.
+    if REFRESHING_SETTINGS.with(Cell::get) {
+        return;
+    }
     let name = if is_dark() {
         (!dark_name.is_empty()).then_some(dark_name)
     } else {
@@ -524,6 +530,13 @@ unsafe extern "system" fn subclass(
                 if changed {
                     apply_roots();
                 } else {
+                    // Keep native class assignments when the palette is unchanged,
+                    // but still restore our colors after native default processing.
+                    let _settings = if msg == WM_SETTINGCHANGE {
+                        Reentry::enter(&REFRESHING_SETTINGS)
+                    } else {
+                        None
+                    };
                     apply(hwnd);
                 }
             }

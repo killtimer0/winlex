@@ -267,22 +267,17 @@ fn italic_titles_keep_overhang_without_painting_outside_their_bounds() {
 #[test]
 fn focus_cue_changes_repaint_without_changing_accessible_focus() {
     let f = Fixture::new();
+    // Windows only accumulates an update region while the window is on screen;
+    // an off-screen host cannot observe WM_UPDATEUISTATE invalidation on XP.
     unsafe {
-        SetWindowPos(
-            f.parent,
-            ptr::null_mut(),
-            -10000,
-            -10000,
-            0,
-            0,
-            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
-        );
         ShowWindow(f.parent, SW_SHOWNOACTIVATE);
     }
     set_items(f.tabs, vec![item(11, "Alpha")]);
     select(f.tabs, Some(11));
     focus(f.tabs);
     let root = f.accessible();
+    // A plain host child supplies the native DefWindowProc UI-state baseline.
+    let native = unsafe { child(f.parent, w!("Winlex.Test.TabHost"), &[0], 0, 43).unwrap() };
     for action in [UIS_SET, UIS_CLEAR] {
         unsafe {
             ValidateRect(f.tabs, ptr::null());
@@ -293,9 +288,16 @@ fn focus_cue_changes_repaint_without_changing_accessible_focus() {
             action as usize | ((UISF_HIDEFOCUS as usize) << 16),
             0,
         );
+        send(
+            native,
+            WM_UPDATEUISTATE,
+            action as usize | ((UISF_HIDEFOCUS as usize) << 16),
+            0,
+        );
         assert_eq!(
-            send(f.tabs, WM_QUERYUISTATE, 0, 0) & UISF_HIDEFOCUS as isize != 0,
-            action == UIS_SET
+            send(f.tabs, WM_QUERYUISTATE, 0, 0),
+            send(native, WM_QUERYUISTATE, 0, 0),
+            "focus cues must follow native UI state, including the always-show preference"
         );
         assert_ne!(unsafe { GetUpdateRect(f.tabs, ptr::null_mut(), 0) }, 0);
         let page = page(unsafe { root.accFocus() }.unwrap());

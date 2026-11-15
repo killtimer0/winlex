@@ -62,6 +62,7 @@ jobs:
       - name: Check formatting, lint and host libraries
         run: |
           $PSNativeCommandUseErrorActionPreference = $true
+          $env:WINLEX_TEST_WINMD = (Resolve-Path -LiteralPath inputs/Windows.Win32.winmd).Path
           cargo fmt --all --check
           cargo clippy -p winlex-core -p winlex-format -p winlex-cli -p winlex-gui --all-targets --locked -- -D warnings
           cargo test -p winlex-format --all-targets --locked

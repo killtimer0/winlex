@@ -684,7 +684,9 @@ unsafe fn status(hwnd: HWND, dc: HDC, resources: &StatusResources) {
             }
             let info = send(hwnd, SB_GETTEXTLENGTHW, index, 0) as u32;
             let flags = info >> 16;
-            if !simple && flags & SBT_NOBORDERS == 0 && part < count - usize::from(grip) {
+            // Separators belong between panes; the last pane's right edge is
+            // the status bar edge (or the grip), not a pane boundary.
+            if !simple && flags & SBT_NOBORDERS == 0 && part + 1 < count {
                 let edge = RECT {
                     left: pane.right - borders[2],
                     top: pane.top + 1,

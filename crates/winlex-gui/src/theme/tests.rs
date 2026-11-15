@@ -427,7 +427,14 @@ fn dark_status_grip_tracks_style_maximized_parent_and_layout() {
                 GWL_EXSTYLE,
                 (style & !WS_EX_LAYOUTRTL | if rtl { WS_EX_LAYOUTRTL } else { 0 }) as i32,
             );
+            let screen = GetDC(status);
+            let native_layout = GetLayout(screen);
+            ReleaseDC(status, screen);
+            assert_ne!(native_layout, u32::MAX);
+            assert_ne!(SetLayout(dc, native_layout), u32::MAX);
             send(status, WM_PRINTCLIENT, dc as usize, PRF_CLIENT as isize);
+            // Sample bitmap pixels in physical left/right order, not mirrored DC coordinates.
+            assert_ne!(SetLayout(dc, 0), u32::MAX);
             let bounds = client(status);
             let mut left = false;
             let mut right = false;

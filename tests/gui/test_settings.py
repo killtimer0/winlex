@@ -18,8 +18,11 @@ def mask(app, sheet, value):
     page = app.settings_page(sheet, 1)
     for index in range(8):
         checkbox = auto.ControlFromHandle(n.get_item(page, 1310 + index))
-        if checkbox.GetTogglePattern().ToggleState != (value >> index) & 1:
+        expected = (value >> index) & 1
+        if checkbox.GetTogglePattern().ToggleState != expected:
             checkbox.GetTogglePattern().Toggle(waitTime=0)
+            n.wait(lambda: checkbox.GetTogglePattern().ToggleState == expected,
+                   "settings category toggle completed")
     return page
 
 

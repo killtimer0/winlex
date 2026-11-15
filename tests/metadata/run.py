@@ -54,6 +54,7 @@ def main():
     source = json.loads((Path(__file__).parent / "source.json").read_text())
     winmd = ROOT / "inputs" / source["file"]
     assert hashlib.sha256(winmd.read_bytes()).hexdigest() == source["sha256"]
+    os.environ["WINLEX_TEST_WINMD"] = str(winmd)
     options = ["--profile", args.profile]
     if args.target_dir:
         options.extend(["--target-dir", args.target_dir])

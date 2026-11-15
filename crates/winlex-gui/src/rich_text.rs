@@ -800,8 +800,15 @@ pub(crate) struct Editor(pub HWND, pub HWND);
 #[cfg(test)]
 impl Editor {
     pub fn new(style: u32, area: RECT) -> Self {
-        let parent = unsafe { test_window(w!("STATIC"), std::ptr::null(), style, area) };
+        let parent =
+            unsafe { test_window(w!("STATIC"), std::ptr::null(), style & !WS_VISIBLE, area) };
         let mut editor = Self(parent, std::ptr::null_mut());
+        unsafe {
+            SetWindowLongW(parent, GWL_EXSTYLE, WS_EX_NOACTIVATE as i32);
+            if style & WS_VISIBLE != 0 {
+                ShowWindow(parent, SW_SHOWNOACTIVATE);
+            }
+        }
         editor.1 = create(parent, 1).unwrap();
         editor
     }
@@ -870,6 +877,24 @@ impl Drop for Editor {
 mod tests {
     use super::*;
     use winlex_core::EntityId;
+
+    #[test]
+    #[ignore = "requires an external foreground window; run this test alone"]
+    fn visible_editor_preserves_external_foreground() {
+        let foreground = unsafe { GetForegroundWindow() };
+        assert!(!foreground.is_null(), "External foreground window required");
+        {
+            let editor = Editor::new(
+                WS_POPUP | WS_VISIBLE,
+                crate::layout::rect(-10000, -10000, 900, 600),
+            );
+            assert_ne!(unsafe { IsWindowVisible(editor.0) }, 0);
+            assert_eq!(unsafe { GetForegroundWindow() }, foreground);
+            set_content(editor.1, &Content::new("中文😀\ntext".into())).unwrap();
+            assert_eq!(unsafe { GetForegroundWindow() }, foreground);
+        }
+        assert_eq!(unsafe { GetForegroundWindow() }, foreground);
+    }
 
     #[test]
     fn hover_underline_preserves_plain_gaps_and_single_selection() {

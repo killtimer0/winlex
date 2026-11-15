@@ -92,6 +92,30 @@ def test_theme_combo_dropdown_pixels_and_keyboard_commit(launch, profile, settin
                    'owner repaints the committed theme after settings closes')
 
 
+def test_theme_combo_unrelated_setting_change_keeps_dropdown_open(launch, profile):
+    app = dark_app(launch, profile)
+    with InputState() as inputs, foreground(app, inputs), n.window_dpi_context(app.frame):
+        sheet = app.settings()
+        combo = n.get_item(app.settings_page(sheet, 0), 1301)
+        info = combo_info(combo)
+        arrow = (info.button.left, info.button.top, info.button.right, info.button.bottom)
+        inputs.click(*win32gui.ClientToScreen(combo, center(arrow)), wait_time=0)
+        n.wait(lambda: n.send(combo, win32con.CB_GETDROPPEDSTATE) and n.is_visible(info.list),
+               'theme dropdown opens before unrelated setting notification')
+        selected = n.send(combo, win32con.CB_GETCURSEL)
+        preferences = profile.preferences()
+        # Native v6 property sheets leave dropdowns open for unrelated settings.
+        # Notify only this sheet; do not change or broadcast any system setting.
+        n.send(sheet, win32con.WM_SETTINGCHANGE, 0x0069)  # SPI_SETWHEELSCROLLLINES
+        assert n.send(combo, win32con.CB_GETDROPPEDSTATE), 'unrelated settings must not dismiss dropdown'
+        assert n.is_visible(combo_info(combo).list)
+        assert n.send(combo, win32con.CB_GETCURSEL) == selected
+        assert profile.preferences() == preferences
+        inputs.key(win32con.VK_ESCAPE)
+        n.wait(lambda: not n.send(combo, win32con.CB_GETDROPPEDSTATE), 'Escape closes dropdown')
+        app.close_settings(sheet, accept=False)
+
+
 def test_edit_focus_disabled_and_theme_roundtrip(launch, profile, settings):
     app = dark_app(launch, profile)
     enable = n.api(n.user, 'EnableWindow', n.w.BOOL, n.w.HWND, n.w.BOOL)

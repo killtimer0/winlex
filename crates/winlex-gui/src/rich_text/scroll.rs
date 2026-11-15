@@ -118,15 +118,20 @@ mod tests {
     }
 
     impl Editor {
-        fn long_document() -> Self {
+        fn scroll_editor() -> Self {
             let editor = Self::new(
                 WS_POPUP | WS_VISIBLE,
                 crate::layout::rect(-10000, -10000, 900, 600),
             );
             let hwnd = editor.1;
             set_bounds(hwnd, crate::layout::rect(0, 0, 750, 500)).unwrap();
+            editor
+        }
+
+        fn long_document() -> Self {
+            let editor = Self::scroll_editor();
             set_content(
-                hwnd,
+                editor.1,
                 &Content::new("const UINT32 value = 42;\n".repeat(15000)),
             )
             .unwrap();
@@ -145,7 +150,7 @@ mod tests {
 
     #[test]
     fn reading_position_survives_replacement_deep_scroll_wrapping_and_font_changes() {
-        let editor = Editor::long_document();
+        let editor = Editor::scroll_editor();
         let hwnd = editor.1;
         editor.font_size(300);
         let content = Content::new(
@@ -216,7 +221,7 @@ mod tests {
     #[test]
     fn wheel_endpoint_matches_native_scrollbar() {
         for rows in [3, 80, 15000] {
-            let editor = Editor::long_document();
+            let editor = Editor::scroll_editor();
             let hwnd = editor.1;
             set_content(hwnd, &Content::new("line\n".repeat(rows))).unwrap();
             send(hwnd, WM_VSCROLL, SB_BOTTOM as usize, 0);
