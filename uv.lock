@@ -720,6 +720,7 @@ media = [
     { name = "uiautomation", marker = "sys_platform == 'win32'" },
 ]
 tests = [
+    { name = "pywin32", marker = "sys_platform == 'win32'" },
     { name = "pyyaml" },
 ]
 
@@ -739,4 +740,7 @@ media = [
     { name = "pywin32", marker = "sys_platform == 'win32'", specifier = ">=310" },
     { name = "uiautomation", marker = "sys_platform == 'win32'", specifier = "==2.0.29" },
 ]
-tests = [{ name = "pyyaml", specifier = ">=6.0" }]
+tests = [
+    { name = "pywin32", marker = "sys_platform == 'win32'", specifier = ">=310" },
+    { name = "pyyaml", specifier = ">=6.0" },
+]
