@@ -1,13 +1,19 @@
-"""Publish run progress and deadlines; retain blocked stacks."""
+"""Publish effective deadlines to events.jsonl and retain blocked stacks.
+
+Phase/operation events are full effective deadline snapshots, including restores
+after nested operations. Result/idle events clear that deadline in the same
+journal; readers never have to reconcile independent files. The heartbeat is
+liveness evidence only, not a second copy of progress (see events.py).
+"""
 from contextlib import contextmanager
 import faulthandler
-import json
 import os
 from pathlib import Path
 import threading
 import time
 
 from .policy import Policy
+from . import events
 
 DIAGNOSTIC_GRACE = .25
 _HEARTBEAT_INTERVAL = .25
@@ -28,7 +34,7 @@ def configure(output, prefix=''):
     global _path, _log, _until, _heartbeat, _last_beat, _stall
     close()
     with _condition:
-        _path = Path(output) / (prefix + 'deadlines.jsonl')
+        _path = events.path(output, prefix)
         _log = (Path(output) / (prefix + 'timeout-stacks.log')).open('a', encoding='utf-8')
         _heartbeat = Path(output) / (prefix + 'heartbeat')
         _heartbeat.touch()
@@ -39,13 +45,13 @@ def configure(output, prefix=''):
         _until = float(os.environ['WINLEX_TEST_DEADLINE']) if not prefix and 'WINLEX_TEST_DEADLINE' in os.environ else None
 
 
-def progress():
+def progress(force=False):
     """Refresh the liveness heartbeat from a polling test thread."""
     global _last_beat
     if _heartbeat is None:
         return
     now = time.monotonic()
-    if now - _last_beat < _HEARTBEAT_INTERVAL:
+    if not force and now - _last_beat < _HEARTBEAT_INTERVAL:
         return
     _last_beat = now
     try:
@@ -80,11 +86,14 @@ def _diagnose():
             _pending = None
 
 
-def _publish(value):
+def _publish(value, event='operation', **fields):
     global _current, _pending, _watchdog
     # Publishing a phase or operation is progress by the running test; only a
     # thread blocked inside one call leaves the heartbeat stale.
-    progress()
+    # A new phase/operation rearms diagnostics from now. Its heartbeat must
+    # have the same origin, rather than a throttled earlier poll that could
+    # let the coordinator kill a held-GIL call before its stack is written.
+    progress(force=True)
     with _condition:
         _current = value
         if _path is None:
@@ -112,17 +121,29 @@ def _publish(value):
                     watchdog.start()
                     _watchdog = watchdog
         try:
-            # Append rather than replace a live file: Windows readers can temporarily
-            # prevent renaming/deleting a file even when the payload is tiny.
-            with _path.open('a', encoding='utf-8') as stream:
-                stream.write(json.dumps(value) + '\n')
+            events.append(_path, event if value is not None or fields else 'idle',
+                          **(value if value is not None else fields))
         finally:
             _condition.notify()
 
 
 def phase(nodeid, name, seconds):
     _publish({'nodeid': nodeid, 'phase': name, 'operation': name,
-              'deadline': time.monotonic() + seconds, 'budget': seconds})
+              'deadline': time.monotonic() + seconds, 'budget': seconds}, event='phase')
+
+
+def result(nodeid, name, outcome, duration, start, stop, message=''):
+    """Commit a pytest phase report and disarm its completed deadline."""
+    _publish(None, event='result', nodeid=nodeid, phase=name, outcome=outcome,
+              duration=duration, start=start, stop=stop, message=message)
+
+
+def collection_result(nodeid, outcome, message):
+    """Retain collection failures/skips without ending the collection deadline."""
+    if _path is not None:
+        progress()
+        events.append(_path, 'collection_result', nodeid=nodeid, outcome=outcome,
+                      message=message)
 
 
 @contextmanager

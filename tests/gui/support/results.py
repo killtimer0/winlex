@@ -1,17 +1,33 @@
 """Retain all case outcomes when a blocked pytest worker must be replaced."""
 import xml.etree.ElementTree as ET
 
-from .jsonl import records
+from . import events, jsonl
+
+
+def succeeded(result):
+    counts = result.get('case_counts') or {}
+    return (result.get('exit_code') == 0 and result.get('cleanup_complete')
+            and not result.get('cancelled') and not result.get('timed_out')
+            and not counts.get('failures') and not counts.get('errors'))
 
 
 def merge(attempts, output):
     cases = {}
     timed_out_cases = set()
     for folder, result in attempts:
-        for record in records(folder / 'progress.jsonl'):
-            cases.setdefault(record['nodeid'], [])
-        for record in records(folder / 'timings.jsonl'):
+        for record in jsonl.records(events.path(folder)):
+            if record.get('event') == 'phase' and record.get('phase') in ('setup', 'call', 'teardown'):
+                cases.setdefault(record['nodeid'], [])
+            elif record.get('event') == 'collection_result':
+                cases.setdefault(record['nodeid'], []).append({
+                    'phase': 'collection', 'outcome': record['outcome'], 'duration': 0,
+                    'message': record['message'],
+                })
+        for record in events.phase_reports(folder):
             cases.setdefault(record['nodeid'], []).append(record)
+        context = result.get('active_context')
+        if context and context.get('nodeid'):
+            cases.setdefault(context['nodeid'], [])
         if result.get('timeout'):
             timeout = result['timeout']
             timed_out_cases.add(timeout['nodeid'])
@@ -23,7 +39,7 @@ def merge(attempts, output):
     suite = ET.Element('testsuite', name='pytest')
     counts = dict(tests=len(cases), failures=0, errors=0, skipped=0)
     for nodeid, phases in cases.items():
-        if nodeid not in timed_out_cases and not any(row['phase'] == 'teardown' for row in phases):
+        if nodeid not in timed_out_cases and not any(row['phase'] in ('teardown', 'collection') for row in phases):
             # Cancellation, a whole-run budget or a worker crash can interrupt
             # a later attempt. A setup/call record alone is not a passed case.
             phases.append({'phase': 'teardown', 'outcome': 'failed', 'duration': 0,

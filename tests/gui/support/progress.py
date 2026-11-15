@@ -1,52 +1,55 @@
-"""Read attempt progress once for local output and remote status."""
-from pathlib import Path
+"""Derive live progress and case summaries from the authoritative events.jsonl.
+
+Phase records establish elapsed time; operation records change only the current
+operation; matching results finish phases. No status cache or mirrored journal
+is written. Across resumed attempts, the latest completed call wins per nodeid.
+"""
 import time
 
-from . import jsonl
-
-
-def _attempt(path):
-    """Directory of the latest attempt, following `attempts.jsonl`."""
-    path = Path(path)
-    attempt = jsonl.last(path / 'attempts.jsonl')
-    return path / attempt['directory'] if attempt else path
+from . import events, jsonl
 
 
 def active(path):
-    path = _attempt(path)
-    started = jsonl.last(path / 'progress.jsonl')
+    started = completed = operation = None
+    for record in jsonl.records(events.path(events.attempt_directories(path)[-1])):
+        kind = record.get('event')
+        if kind == 'phase':
+            started, completed, operation = record, None, record
+        elif kind == 'operation':
+            operation = record
+        elif kind == 'idle':
+            operation = None
+        elif kind == 'result' and started and all(
+                record.get(key) == started[key] for key in ('nodeid', 'phase')):
+            completed, operation = record, None
     if started is None:
         return None
-    completed = jsonl.last(path / 'timings.jsonl')
-    running = completed is None or any(completed[key] != started[key] for key in ('nodeid', 'phase'))
+    running = completed is None
+    now = time.monotonic()
     result = {'nodeid': started['nodeid'], 'phase': started['phase'], 'active': running,
-              'elapsed': max(0, time.monotonic() - started['monotonic']) if running else completed['duration']}
-    operation = jsonl.last(path / 'deadlines.jsonl')
+              'elapsed': max(0, now - started['monotonic']) if running else completed['duration']}
     if running and operation and all(operation.get(key) == started[key] for key in ('nodeid', 'phase')):
-        result['operation'] = operation['operation']
-        result['budget'] = operation['budget']
-        result['remaining'] = max(0, operation['deadline'] - time.monotonic())
+        result.update(operation=operation['operation'], budget=operation['budget'],
+                      remaining=max(0, operation['deadline'] - now))
     return result
 
 
 def _calls(path):
     """Latest completed call per case, across resumed attempts."""
     cases = {}
-    for timing in Path(path).rglob('timings.jsonl'):
-        for row in jsonl.records(timing):
-            if row.get('phase') != 'call':
+    for directory in events.attempt_directories(path):
+        for row in events.phase_reports(directory):
+            if row['phase'] != 'call':
                 continue
-            previous = cases.get(row['nodeid'])
-            if previous is None or row.get('start', 0) >= previous.get('start', 0):
-                cases[row['nodeid']] = row
-    return sorted(cases.values(), key=lambda row: row.get('duration', 0), reverse=True)
+            cases[row['nodeid']] = row
+    return sorted(cases.values(), key=lambda row: row['duration'], reverse=True)
 
 
-def summary(path, slow_case):
+def summary(path, slow_after):
     calls = _calls(path)
     return {
         'cases': len(calls),
-        'seconds': sum(row.get('duration', 0) for row in calls),
-        'slow': sum(1 for row in calls if row.get('duration', 0) >= slow_case),
+        'seconds': sum(row['duration'] for row in calls),
+        'slow': sum(1 for row in calls if row['duration'] >= slow_after),
         'slowest': calls[:10],
     }

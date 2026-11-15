@@ -51,7 +51,10 @@ class Policy:
         for field, default in asdict(cls()).items():
             value = raw.get(field, default)
             try:
-                values[field] = type(default)(value)
+                # Defaults may be written as integer literals, but duration
+                # fields are floats. Preserve fractional CLI/probe budgets
+                # when transferring the same policy to a child process.
+                values[field] = cls.__annotations__[field](value)
             except (TypeError, ValueError):
                 values[field] = default
         policy = cls(**values)

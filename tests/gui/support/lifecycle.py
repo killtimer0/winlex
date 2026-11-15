@@ -1,7 +1,10 @@
-"""Global per-case progress, deadlines and retained failure evidence."""
-import json
+"""Publish phase transitions/results into the worker's one event journal.
+
+Deadline owns the journal and diagnostics: reporting a result ends the active
+phase, rather than leaving an old deadline live until the next phase starts.
+Failure attachments remain separate evidence, not another progress ledger.
+"""
 from pathlib import Path
-import time
 import pytest
 import win32api
 import win32con
@@ -11,14 +14,10 @@ from .policy import Policy
 
 
 def _phase_started(item, phase):
-    output = Path(item.config.getoption('--artifacts'))
     policy = Policy.load()
     marker = item.get_closest_marker('phase_timeout')
     budget = marker.args[0] if marker and phase == 'call' else policy.phase(phase)
     deadline.phase(item.nodeid, phase, budget)
-    with (output / 'progress.jsonl').open('a', encoding='utf-8') as stream:
-        stream.write(json.dumps({'nodeid': item.nodeid, 'phase': phase,
-                                 'start': time.time(), 'monotonic': time.monotonic()}) + '\n')
 
 
 @pytest.hookimpl(tryfirst=True)
@@ -52,16 +51,18 @@ def pytest_runtest_teardown(item):
     _phase_started(item, 'teardown')
 
 
+def pytest_collectreport(report):
+    if not report.passed:
+        deadline.collection_result(report.nodeid, report.outcome, str(report.longrepr))
+
+
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_makereport(item, call):
     outcome = yield
     report = outcome.get_result()
     output = Path(item.config.getoption('--artifacts'))
-    with (output / 'timings.jsonl').open('a', encoding='utf-8') as stream:
-        stream.write(json.dumps({'nodeid': report.nodeid, 'phase': report.when,
-                                 'outcome': report.outcome, 'duration': report.duration,
-                                 'start': report.start, 'stop': report.stop,
-                                 'message': report.longreprtext if not report.passed else ''}) + '\n')
+    deadline.result(report.nodeid, report.when, report.outcome, report.duration,
+                    report.start, report.stop, report.longreprtext if not report.passed else '')
     if report.when == 'call':
         item.test_failed = report.failed
         if report.failed:

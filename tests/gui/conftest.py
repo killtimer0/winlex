@@ -120,7 +120,7 @@ def settings(request, automation_client):
 
 @pytest.fixture
 def hc_appearance(request, settings):
-    from test_theme_compatibility import read_high_contrast_appearance
+    from driver.high_contrast import read_high_contrast_appearance
 
     path = request.config.getoption('--hc-theme')
     if not path:
@@ -144,19 +144,19 @@ def profile(request):
 
 @pytest.fixture
 def launch(request, settings, profile):
-    from support import native as n
+    """Start at the workspace, or leave the guide intact for prompt scenarios."""
+    from driver.startup import enter_workspace
     from support.diagnostics import screenshot
-    from support.session import Session, invoke, message_button
+    from support.session import Session
 
     sessions = []
-    def start(arguments=(), dpi=None, *, metadata_prompt=False):
+    def start(arguments=(), dpi=None, *, startup='workspace'):
+        if startup not in ('workspace', 'metadata-guide'):
+            raise ValueError('Unknown startup behavior: %s' % startup)
         session = Session(settings[0], profile, arguments, dpi or request.config.getoption("--dpi"))
         sessions.append(session)
-        if not metadata_prompt and not arguments and profile.get("Version") == 1 and profile.get("AutoLoad") in (None, []):
-            prompt = n.wait(lambda: n.find_window(session.process.pid, '#32770', session.frame),
-                            'empty-startup metadata guide prompt', 10)
-            invoke(n.wait(lambda: message_button(prompt, win32con.IDNO), 'metadata prompt No button'))
-            n.wait(lambda: not n.is_window(prompt), "metadata guide prompt dismissed")
+        if startup == 'workspace':
+            enter_workspace(session, profile, arguments)
         return session
     yield start
     errors = []

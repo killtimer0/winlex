@@ -16,7 +16,7 @@ import time
 import uuid
 import zipfile
 
-from support import atomic, engine, progress, supervisor
+from support import atomic, execution, progress
 from support.policy import Policy
 
 
@@ -43,6 +43,27 @@ def transfer_path(config, path):
     return path
 
 
+def owner_alive(claim):
+    """A reused PID is not the worker that claimed this run."""
+    import win32api
+    import win32con
+    import win32event
+    import win32process
+    try:
+        process = win32api.OpenProcess(
+            win32con.SYNCHRONIZE | win32con.PROCESS_QUERY_INFORMATION, False, claim['worker'])
+    except win32api.error as error:
+        if error.winerror == 87:  # ERROR_INVALID_PARAMETER: no such process.
+            return False
+        raise
+    try:
+        created = win32process.GetProcessTimes(process)['CreationTime'].timestamp()
+        return (win32event.WaitForSingleObject(process, 0) == win32con.WAIT_TIMEOUT
+                and (created == claim['created'] if 'created' in claim else created <= claim['time']))
+    finally:
+        win32api.CloseHandle(process)
+
+
 def rpc(root, request):
     root.mkdir(parents=True, exist_ok=True)
     action = request["action"]
@@ -54,25 +75,19 @@ def rpc(root, request):
         result["heartbeat_age"] = time.time() - result["heartbeat"]
         result["worker_available"] = result.get('worker_available', True) and result["heartbeat_age"] < 10
         if result['worker_available']:
-            import support
             import win32api
-            import win32con
-            import win32event
             try:
-                process = win32api.OpenProcess(win32con.SYNCHRONIZE, False, result['pid'])
-            except win32api.error:
+                result['worker_available'] = owner_alive({
+                    'worker': result['pid'], 'time': result['heartbeat'],
+                    **({'created': result['created']} if 'created' in result else {}),
+                })
+            except (win32api.error, ValueError, KeyError, TypeError):
                 result['worker_available'] = False
-            else:
-                try:
-                    result['worker_available'] = win32event.WaitForSingleObject(process, 0) == win32con.WAIT_TIMEOUT
-                finally:
-                    win32api.CloseHandle(process)
         return result
     if action == "start-worker":
         current = rpc(root, {"action": "capabilities"})
         if current["worker_available"]:
             return current
-        import support
         import pythoncom
         import win32api
         from win32com.taskscheduler import taskscheduler as t
@@ -120,7 +135,21 @@ def rpc(root, request):
         result = path / "run.json"
         if result.exists():
             return json.loads(result.read_text(encoding="utf-8"))
-        result = {"state": "running" if (path / "started.json").exists() else "queued"}
+        claim = path / 'started.json'
+        result = {'state': 'queued'}
+        if claim.exists():
+            try:
+                alive = owner_alive(json.loads(claim.read_text(encoding='utf-8')))
+                error = None if alive else 'Claiming worker exited; cleanup is unverified'
+            except Exception as failure:
+                error = 'Cannot verify claiming worker: ' + str(failure)
+            if error:
+                # Recheck a terminal publication racing the owner's exit.
+                if (path / 'run.json').exists():
+                    return json.loads((path / 'run.json').read_text(encoding='utf-8'))
+                return {'state': 'interrupted', 'cleanup_complete': False,
+                        'worker_available': False, 'error': error}
+            result['state'] = 'running'
         active = progress.active(path)
         if active is not None:
             result["progress"] = active
@@ -137,6 +166,26 @@ def rpc(root, request):
     raise ValueError(action)
 
 
+def run_request(path, heartbeat):
+    """Queue adapter; resource lifetime and final results belong to the coordinator."""
+    try:
+        data = json.loads((path / 'request.json').read_text(encoding='utf-8'))
+        policy = Policy.load().overrides(
+            run=data['timeout'], call=data.get('case_timeout'),
+            stall=data.get('stall_after'), consecutive_stalls=data.get('consecutive_stalls'))
+        # Read-write so pytest can query its standard handle on XP.
+        log = os.fdopen(os.open(path / 'output.log', os.O_RDWR | os.O_CREAT | os.O_TRUNC),
+                        'w', encoding='utf-8')
+        with log:
+            return execution.execute(path, data['tests'], policy, data['desktop'],
+                                     heartbeat=heartbeat, stream=log)['cleanup_complete']
+    except execution.UnconfirmedExit:
+        return False
+    except Exception as error:
+        execution.reject(path, 'Claimed run failed: ' + str(error))
+        return False
+
+
 def worker(root, once=False):
     from support import native
     import platform
@@ -144,6 +193,7 @@ def worker(root, once=False):
     import win32con
     import win32service
     import win32event
+    import win32process
     desktop = win32service.GetThreadDesktop(win32api.GetCurrentThreadId())
     station = win32service.GetProcessWindowStation()
     station_name = win32service.GetUserObjectInformation(int(station), win32con.UOI_NAME)
@@ -158,54 +208,46 @@ def worker(root, once=False):
     capabilities = {"worker_available": True, "pid": os.getpid(), "os": platform.platform(),
                     "python": sys.version, "executable": sys.executable, "desktop": desktop_name,
                     **native.capabilities()}
-    while True:
-        atomic.write_json(root / "capabilities.json", {**capabilities, "heartbeat": time.time()})
-        for request in sorted(root.glob("*/request.json")):
-            path = request.parent
-            if (path / "run.json").exists() or (path / "started.json").exists():
-                continue
-            # Atomic claim also prevents two workers executing the same request.
-            try:
-                with (path / "started.json").open("x", encoding="utf-8") as stream:
-                    json.dump({"worker": os.getpid(), "time": time.time()}, stream)
-            except FileExistsError:
-                continue
-            data = json.loads(request.read_text(encoding="utf-8"))
-            if (path / "cancel").exists():
-                atomic.write_json(path / "run.json", {"cancelled": True, "cleanup_complete": True, "state": "cancelled_before_start"})
-                continue
-            policy = Policy.load().overrides(
-                run=data["timeout"], call=data.get("case_timeout"),
-                stall=data.get("stall_after"),
-                consecutive_stalls=data.get("consecutive_stalls"))
-            command = engine.command(path, data["tests"], policy, data["desktop"])
-            # Read-write so the engine and pytest can query the redirected
-            # standard handle; a write-only handle is rejected on XP.
-            log = os.fdopen(os.open(path / "output.log",
-                                    os.O_RDWR | os.O_CREAT | os.O_TRUNC),
-                            "w", encoding="utf-8")
-            with log:
-                started = time.monotonic()
-                process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
-                                           env={**os.environ, "PYTHONUTF8": "1"})
+    created = win32process.GetProcessTimes(win32api.GetCurrentProcess())['CreationTime'].timestamp()
+    capabilities['created'] = created
+    try:
+        while True:
+            atomic.write_json(root / 'capabilities.json', {**capabilities, 'heartbeat': time.time()})
+            requests = sorted(root.glob('*/request.json'))
+            # A durable unsafe result or orphan blocks the entire queue, not just
+            # lexicographically later requests. Restart is not recovery evidence.
+            for request in requests:
+                path = request.parent
+                if not any((path / name).exists() for name in ('started.json', 'run.json', 'supervisor.json')):
+                    continue
+                status = rpc(root, {'action': 'status', 'run_id': path.name})
+                if status.get('state') == 'interrupted' or status.get('cleanup_complete') is False:
+                    atomic.write_json(root / 'capabilities.json', {
+                        **capabilities, 'heartbeat': time.time(), 'worker_available': False,
+                        'error': 'Unverified recovery blocks queue: ' + path.name,
+                    })
+                    return
+            for request in requests:
+                path = request.parent
+                if any((path / name).exists() for name in ('run.json', 'supervisor.json', 'started.json')):
+                    continue
+                # Atomic claim also prevents two workers executing the same request.
                 try:
-                    safe = supervisor.supervise_runner(process, path, policy.run, started,
-                        lambda: atomic.write_json(root / 'capabilities.json', {**capabilities, 'heartbeat': time.time()}),
-                        policy=policy)
-                except KeyboardInterrupt:
-                    (path / "cancel").touch()
-                    safe = supervisor.supervise_runner(process, path, policy.run, started,
-                        lambda: atomic.write_json(root / 'capabilities.json', {**capabilities, 'heartbeat': time.time()}),
-                        policy=policy)
-                    if safe:
-                        raise
-            if not safe:
-                atomic.write_json(root / 'capabilities.json', {**capabilities, 'heartbeat': time.time(),
-                    'worker_available': False, 'error': 'Runner cleanup unverified; queue stopped'})
+                    with (path / 'started.json').open('x', encoding='utf-8') as stream:
+                        json.dump({'worker': os.getpid(), 'created': created, 'time': time.time()}, stream)
+                except FileExistsError:
+                    continue
+                safe = run_request(path, lambda: atomic.write_json(
+                    root / 'capabilities.json', {**capabilities, 'heartbeat': time.time()}))
+                if not safe:
+                    atomic.write_json(root / 'capabilities.json', {**capabilities, 'heartbeat': time.time(),
+                        'worker_available': False, 'error': 'Resource recovery unverified; queue stopped'})
+                    return
+            if once:
                 return
-        if once:
-            return
-        time.sleep(.25)
+            time.sleep(.25)
+    finally:
+        win32api.CloseHandle(mutex)
 
 
 def main():

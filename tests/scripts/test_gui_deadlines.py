@@ -1,12 +1,6 @@
-"""Exercise timeout diagnostics and case failure behavior through the real runner."""
-import importlib.util
+"""Public GUI runner fault contracts. Execute only on the remote test target."""
 import json
-import os
 from pathlib import Path
-import subprocess
-import sys
-import tempfile
-import threading
 import time
 import unittest
 import xml.etree.ElementTree as ET
@@ -14,747 +8,758 @@ import xml.etree.ElementTree as ET
 import gui_probe
 
 
-ROOT = Path(__file__).resolve().parents[2]
-
-
-@unittest.skipUnless(os.name == 'nt' and importlib.util.find_spec('uiautomation'),
-                     'requires the Windows GUI test dependencies')
-class GuiDeadlineContracts(unittest.TestCase):
-    def test_probe_collection_ignores_disappearing_neighbor_directories(self):
-        stop = threading.Event()
-
-        def churn():
-            while not stop.is_set():
-                neighbors = [Path(tempfile.mkdtemp(prefix='collection-neighbor-', dir=ROOT / 'tmp'))
-                             for _ in range(32)]
-                for neighbor in neighbors:
-                    neighbor.rmdir()
-
-        thread = threading.Thread(target=churn)
-        thread.start()
-        try:
-            with tempfile.TemporaryDirectory(dir=ROOT / 'tmp') as directory:
-                self.run_probe(Path(directory), '''
-def test_first_deadline_contract_probe():
-    pass
-''', exit_code=0)
-        finally:
-            stop.set()
-            thread.join(timeout=5)
-        self.assertFalse(thread.is_alive())
-
-    def test_native_held_gil_hang_retains_stack_and_safe_continuation(self):
-        with tempfile.TemporaryDirectory(dir=ROOT / 'tmp') as directory:
-            folder = Path(directory)
-            sentinel = folder / 'continued-after-native-hang'
-            output, result = self.run_probe(folder, '''
+# No app, settings fixture, foreground input or UIAutomation calls are needed.
+# The subprocess still loads the real GUI conftest and lifecycle plugin.
+PRELUDE = '''
 import ctypes
-from pathlib import Path
-from support import deadline
-def blocked_native_with_gil():
-    sleep = ctypes.PyDLL('kernel32').Sleep
-    sleep.argtypes = [ctypes.c_ulong]
-    sleep.restype = None
-    sleep(60000)
-def test_first_deadline_contract_probe():
-    with deadline.operation('native call holding the GIL', .1):
-        blocked_native_with_gil()
-def test_second_deadline_contract_probe():
-    Path(%r).touch()
-''' % str(sentinel))
-            self.assertTrue(sentinel.exists())
-            self.assertTrue(result['cleanup_complete'])
-            self.assertEqual(result['case_counts'], dict(tests=2, failures=1, errors=0, skipped=0))
-            stack = (output / 'timeout-stacks.log').read_text()
-            self.assertIn('blocked_native_with_gil', stack)
-
-    def test_local_cli_resolves_one_output_directory_for_engine_and_supervisor(self):
-        with tempfile.TemporaryDirectory(dir=ROOT / 'tmp') as directory:
-            folder = Path(directory)
-            probe = gui_probe.write_probe(folder, 'def test_output_probe():\n    pass\n')
-            process = subprocess.run([
-                sys.executable, str(ROOT / 'tests' / 'gui' / 'run.py'),
-                '--exe', sys.executable, str(probe),
-                '-o', 'python_files=' + probe.name, '--ignore-glob=*', '-q',
-            ], cwd=folder, capture_output=True, text=True, encoding='utf-8', timeout=60)
-            self.assertEqual(process.returncode, 0, process.stdout + process.stderr)
-            runs = list((folder / 'tmp' / 'gui-tests').iterdir())
-            self.assertEqual(len(runs), 1, 'CLI and engine selected different output directories')
-            self.assertTrue((runs[0] / 'run.json').exists())
-            self.assertFalse((runs[0] / 'supervisor.json').exists())
-
-    def test_stalled_native_call_is_detected_by_heartbeat_and_continued(self):
-        with tempfile.TemporaryDirectory(dir=ROOT / 'tmp') as directory:
-            folder = Path(directory)
-            sentinel = folder / 'continued-after-stall'
-            started = time.monotonic()
-            output, result = self.run_probe(folder, '''
-import ctypes
-from pathlib import Path
-
-def blocked_native_with_gil():
-    sleep = ctypes.PyDLL('kernel32').Sleep
-    sleep.argtypes = [ctypes.c_ulong]
-    sleep.restype = None
-    sleep(60000)
-
-def test_first_deadline_contract_probe():
-    blocked_native_with_gil()
-
-def test_second_deadline_contract_probe():
-    Path(%r).touch()
-''' % str(sentinel), timeout=30,
-                extra=['--stall-after', '1', '--case-timeout', '30'])
-            self.assertLess(time.monotonic() - started, 15, result)
-            self.assertTrue(result['timed_out'], result)
-            self.assertEqual(result['termination_reason'], 'stalled')
-            self.assertTrue(result['timeout']['stalled'])
-            self.assertTrue(sentinel.exists(), 'stalled case prevented continuation')
-            self.assertEqual(result['remaining'], 0)
-            self.assertTrue(result['last_completed'].endswith('::test_second_deadline_contract_probe'))
-            stack = (output / 'timeout-stacks.log').read_text(encoding='utf-8')
-            self.assertIn('blocked_native_with_gil', stack)
-
-    def test_repeated_stalls_stop_before_remaining_cases(self):
-        with tempfile.TemporaryDirectory(dir=ROOT / 'tmp') as directory:
-            folder = Path(directory)
-            sentinel = folder / 'unexpected-following-test'
-            output, result = self.run_probe(folder, '''
-import ctypes
-from pathlib import Path
-
-def blocked_native_with_gil():
-    sleep = ctypes.PyDLL('kernel32').Sleep
-    sleep.argtypes = [ctypes.c_ulong]
-    sleep.restype = None
-    sleep(60000)
-
-def test_first_deadline_contract_probe():
-    blocked_native_with_gil()
-
-def test_second_deadline_contract_probe():
-    blocked_native_with_gil()
-
-def test_after_deadline_contract_probe():
-    Path(%r).touch()
-''' % str(sentinel), timeout=30, extra=['--stall-after', '1', '--case-timeout', '30'])
-            self.assertTrue(result['timed_out'], result)
-            self.assertEqual(result['termination_reason'], 'repeated_stalls')
-            self.assertFalse(sentinel.exists(), 'repeated stalls must stop the run')
-            self.assertFalse((output / 'continued' / '2').exists())
-            self.assertEqual(len(result['case_timeouts']), 2)
-            self.assertEqual(result['remaining'], 1)
-            self.assertNotIn('last_completed', result)
-
-    def test_stall_after_completed_case_does_not_stop_the_run(self):
-        with tempfile.TemporaryDirectory(dir=ROOT / 'tmp') as directory:
-            folder = Path(directory)
-            sentinel = folder / 'following-test-ran'
-            output, result = self.run_probe(folder, '''
-import ctypes
-from pathlib import Path
-
-def blocked_native_with_gil():
-    sleep = ctypes.PyDLL('kernel32').Sleep
-    sleep.argtypes = [ctypes.c_ulong]
-    sleep.restype = None
-    sleep(60000)
-
-def test_before_first_deadline_contract_probe():
-    pass
-
-def test_first_stalled_deadline_contract_probe():
-    blocked_native_with_gil()
-
-def test_before_second_deadline_contract_probe():
-    pass
-
-def test_second_stalled_deadline_contract_probe():
-    blocked_native_with_gil()
-
-def test_after_deadline_contract_probe():
-    Path(%r).touch()
-''' % str(sentinel), timeout=30, extra=['--stall-after', '1', '--case-timeout', '30'])
-            self.assertTrue(sentinel.exists(), 'isolated stalls stopped the run')
-            self.assertTrue(result['timed_out'], result)
-            self.assertEqual(result['termination_reason'], 'stalled', result)
-            self.assertEqual(len(result['case_timeouts']), 2)
-            self.assertEqual(result['remaining'], 0)
-            self.assertEqual(result['case_counts'], dict(tests=5, failures=2, errors=0, skipped=0))
-            self.assertFalse((output / 'continued' / '3').exists())
-
-    def supervise_probe(self, folder, script, timeout=5):
-        started = time.monotonic()
-        output, safe, remote = gui_probe.supervise(folder, script, timeout=timeout)
-        self.assertFalse(safe, (folder / 'wrapper.log').read_text(encoding='utf-8'))
-        self.assertLess(time.monotonic() - started, 15)
-        status = remote.rpc(folder, {'action': 'status', 'run_id': '0' * 32})
-        self.assertFalse(status['cleanup_complete'])
-        self.assertFalse(status['worker_available'])
-        return output, status
-
-    def test_real_runner_cleanup_stall_is_forced_and_never_claims_clean(self):
-        with tempfile.TemporaryDirectory(dir=ROOT / 'tmp') as directory:
-            folder = Path(directory)
-            probe = folder / 'test_probe.py'
-            probe.write_text('def test_deadline_contract_probe():\n    pass\n', encoding='utf-8')
-            output, status = self.supervise_probe(folder, '''
-import time
-import run
-original_phase = run.operation_deadline.phase
-def phase(nodeid, name, seconds):
-    original_phase(nodeid, name, .2 if name == 'cleanup' else seconds)
-run.operation_deadline.phase = phase
-run.win32api.CloseHandle = lambda handle: time.sleep(60)
-sys.argv = ['run.py', '--output', sys.argv[1], '--exe', sys.executable, %r,
-            '--ignore-glob=*', '-k', 'deadline_contract_probe', '-q']
-args, tests = run.arguments()
-raise SystemExit(run.engine_main(args, tests))
-''' % str(probe))
-            self.assertEqual(status['state'], 'supervisor_failed', status)
-            self.assertTrue(status['runner_terminated'], status)
-            self.assertFalse(status['cleanup_complete'], status)
-            self.assertFalse(status['worker_available'], status)
-
-    def test_denied_input_mutex_never_authorizes_ledger_recovery(self):
-        import win32api
-        import win32con
-        import win32event
-        mutex = win32event.CreateMutex(None, False, 'Local\\Winlex.Tests.Input')
-        owned = win32event.WaitForSingleObject(mutex, 0) in (win32con.WAIT_OBJECT_0, win32con.WAIT_ABANDONED)
-        if not owned:
-            win32api.CloseHandle(mutex)
-            self.skipTest('another test owns the input mutex')
-        try:
-            with tempfile.TemporaryDirectory(dir=ROOT / 'tmp') as directory:
-                folder = Path(directory)
-                output, _ = self.supervise_probe(folder, '''
 import json
+import os
 from pathlib import Path
-import run
-output = Path(sys.argv[1])
-(output / 'profiles').mkdir()
-ledger = output / 'profiles' / 'input.json'
-ledger.write_text(json.dumps({'held': [], 'foreground': 0, 'cursor': [0, 0]}))
-sys.argv = ['run.py', '--output', str(output), '--desktop', 'current', '--real-input']
-args, tests = run.arguments()
-raise SystemExit(run.engine_main(args, tests))
-''')
-                ledger = output / 'profiles' / 'input.json'
-                self.assertTrue(ledger.exists(), 'denied ownership must not consume the ledger')
-                self.assertEqual(json.loads(ledger.read_text(encoding='utf-8')),
-                                 {'held': [], 'foreground': 0, 'cursor': [0, 0]})
-                report = gui_probe.read_run(output)
-                self.assertIn('Another test owns input', report['error'])
-                self.assertFalse(report['cleanup_complete'])
-        finally:
-            win32event.ReleaseMutex(mutex)
-            win32api.CloseHandle(mutex)
-
-    def test_cleanup_cancellation_and_original_budget_gate_continuation(self):
-        for cancel in (True, False):
-            with self.subTest(cancel=cancel), tempfile.TemporaryDirectory(dir=ROOT / 'tmp') as directory:
-                folder = Path(directory)
-                probe = folder / 'test_cleanup_gate.py'
-                sentinel = folder / 'unexpected-following-test'
-                probe.write_text('''
+import subprocess
+import sys
 import time
-from pathlib import Path
+import pytest
 from support import deadline
-def test_first_deadline_contract_probe():
-    with deadline.operation('blocked before cleanup gate', .1):
+
+def output(request):
+    return Path(request.config.getoption('--artifacts'))
+
+def record(request, name):
+    root = output(request).parents[1]
+    with (root / 'executions').open('a', encoding='utf-8') as stream:
+        stream.write(name + '\\n')
+
+def blocked_native_with_gil():
+    sleep = ctypes.PyDLL('kernel32').Sleep
+    sleep.argtypes = [ctypes.c_ulong]
+    sleep.restype = None
+    sleep(60000)
+
+def tree(request):
+    child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])
+    (output(request) / 'processes.json').write_text(json.dumps({
+        'pytest': os.getpid(), 'custody': os.getppid(), 'descendant': child.pid}), encoding='utf-8')
+'''
+
+
+@unittest.skipUnless(gui_probe.dependencies(), 'requires Windows, pytest, UIAutomation and comtypes')
+class GuiDeadlineContracts(unittest.TestCase):
+    def runner(self, source, **options):
+        return gui_probe.Runner(PRELUDE + source, **options)
+
+    def final(self, runner, *, state, cleanup=True):
+        result = runner.wait()
+        self.assertEqual(result['state'], state, runner.diagnostic())
+        self.assertEqual(result['cleanup_complete'], cleanup, result)
+        self.assertEqual(result['worker_available'], cleanup, result)
+        self.assertEqual(runner.process.returncode, 0 if state == 'passed' else 1, result)
+        return result
+
+    def executions(self, runner):
+        return (runner.output / 'executions').read_text(encoding='utf-8').splitlines()
+
+    def handles(self, attempt):
+        path = attempt / 'processes.json'
+        gui_probe.wait_for(path.exists, 10, 'Probe did not publish its process tree')
+        pids = json.loads(path.read_text(encoding='utf-8'))
+        handles = {name: gui_probe.ProcessHandle(pid) for name, pid in pids.items()}
+        for handle in handles.values():
+            self.addCleanup(handle.close)
+            self.assertTrue(handle.alive(), pids)
+        return handles
+
+    def assert_tree_dead(self, handles):
+        for name, handle in handles.items():
+            self.assertTrue(handle.dead(), name + ' survived recovery')
+
+    def test_success_and_assertion_failure_finalize_after_fixture_cleanup(self):
+        for fail in (False, True):
+            with self.subTest(fail=fail), self.runner('''
+@pytest.fixture
+def cleaned(request):
+    yield
+    (output(request) / 'fixture-cleanup').write_text('complete', encoding='utf-8')
+
+def test_first(request, cleaned):
+    record(request, 'first')
+    assert not %r, 'intentional contract failure'
+
+def test_after(request):
+    record(request, 'after')
+''' % fail) as runner:
+                runner.start()
+                result = self.final(runner, state='failed' if fail else 'passed')
+                self.assertFalse(result['timed_out'])
+                self.assertFalse(result['cancelled'])
+                self.assertEqual(self.executions(runner), ['first', 'after'])
+                self.assertEqual(result['case_counts'], dict(tests=2, failures=int(fail), errors=0, skipped=0))
+                for attempt in gui_probe.attempts(runner.output):
+                    self.assertEqual((attempt / 'fixture-cleanup').read_text(), 'complete')
+                if fail:
+                    self.assertIn('intentional contract failure', (runner.output / 'tests.xml').read_text())
+
+    def test_native_held_gil_timeout_retains_stack_kills_tree_and_never_replays(self):
+        with self.runner('''
+def test_before(request):
+    record(request, 'before')
+
+def test_blocked(request):
+    record(request, 'blocked')
+    tree(request)
+    with deadline.operation('held GIL contract', 2):
+        blocked_native_with_gil()
+
+def test_after(request):
+    record(request, 'after')
+''') as runner:
+            runner.start()
+            attempt, _ = runner.event('call', operation='held GIL contract')
+            handles = self.handles(attempt)
+            result = self.final(runner, state='timed_out')
+            self.assertEqual(result['termination_reason'], 'case_timeout')
+            self.assertEqual(result['timeout']['operation'], 'held GIL contract')
+            self.assertEqual(result['timeout']['phase'], 'call')
+            self.assertEqual(self.executions(runner), ['before', 'blocked', 'after'])
+            self.assertEqual(result['case_counts'], dict(tests=3, failures=1, errors=0, skipped=0))
+            self.assert_tree_dead(handles)
+            self.assertIn('blocked_native_with_gil', (attempt / 'timeout-stacks.log').read_text())
+            cases = ET.parse(runner.output / 'tests.xml').getroot().findall('.//testcase')
+            self.assertEqual([case.get('name') for case in cases], ['test_before', 'test_blocked', 'test_after'])
+            self.assertIsNotNone(cases[1].find('failure'))
+
+    def test_absolute_budget_survives_replacement_custody(self):
+        for phase in ('setup', 'call'):
+            with self.subTest(interrupted_phase=phase), self.runner('''
+def test_first(request):
+    record(request, 'first')
+    (output(request) / 'run-budget').write_text(os.environ['WINLEX_TEST_DEADLINE'])
+    with deadline.operation('first case timeout', .5):
         time.sleep(60)
-def test_after_deadline_contract_probe():
-    Path(%r).touch()
-''' % str(sentinel), encoding='utf-8')
-                output = folder / 'artifacts'
-                process = gui_probe.run_wrapper(folder, '''
-import time
-from pathlib import Path
-import run
-original_close = run.win32api.CloseHandle
-first = True
-def close(handle):
-    global first
-    if first:
-        first = False
-        if %r:
-            Path(%r).touch()
-        else:
-            time.sleep(3)
-    original_close(handle)
-run.win32api.CloseHandle = close
-args, tests = run.arguments()
-raise SystemExit(run.engine_main(args, tests))
-''' % (cancel, str(output / 'cancel')), [
-                    '--output', str(output), '--timeout', '2',
-                    '--exe', sys.executable, str(probe), '--ignore-glob=*',
-                    '-k', 'deadline_contract_probe', '-q',
-                ])
-                self.assertNotEqual(process.returncode, 0, process.stdout + process.stderr)
-                report = gui_probe.read_run(output)
-                self.assertTrue(report['cleanup_complete'], report)
-                self.assertEqual(report['cancelled'], cancel, report)
-                self.assertFalse(sentinel.exists())
-                self.assertFalse((output / 'continued').exists())
 
-    def run_probe(self, folder, code, cleanup_complete=True, timeout=10, exit_code=None, extra=()):
-        output, process = gui_probe.run_probe(folder, code, timeout=timeout, extra=extra)
-        if exit_code is None:
-            self.assertNotEqual(process.returncode, 0, process.stdout + process.stderr)
-        else:
-            self.assertEqual(process.returncode, exit_code, process.stdout + process.stderr)
-        self.assertTrue((output / 'run.json').exists(),
-                        'Runner exit %s without report:\n%s%s' %
-                        (process.returncode, process.stdout, process.stderr))
-        result = gui_probe.read_run(output)
-        self.assertEqual(result['cleanup_complete'], cleanup_complete,
-                         '%r\n%s%s' % (result, process.stdout, process.stderr))
-        return output, result
-
-    def test_blocked_callback_is_terminated_at_operation_deadline_with_stack(self):
-        with tempfile.TemporaryDirectory(dir=ROOT / 'tmp') as directory:
-            folder = Path(directory)
-            sentinel = folder / 'following-test-ran'
-            preceding = folder / 'preceding-test-executions'
-            output, result = self.run_probe(folder, '''
-import time
-from pathlib import Path
-from support import deadline
-
-def test_before_deadline_contract_probe():
-    with Path(%r).open('a') as stream:
-        stream.write('once')
-
-def test_first_deadline_contract_probe():
-    with deadline.operation('blocked callback contract', .5):
+def exhaust_budget(request):
+    record(request, 'second')
+    (output(request) / 'run-budget').write_text(os.environ['WINLEX_TEST_DEADLINE'])
+    with deadline.operation('remaining whole-run budget', 20):
+        for _ in range(10):
+            with deadline.operation('navigation progress delivery', 5):
+                time.sleep(.05)
         time.sleep(60)
 
-def test_second_deadline_contract_probe():
-    Path(%r).touch()
-''' % (str(preceding), str(sentinel)))
-            self.assertTrue(result['timed_out'], result)
-            self.assertEqual(result['timeout']['operation'], 'blocked callback contract')
-            self.assertEqual(result['timeout']['budget'], .5)
-            stack = (output / 'timeout-stacks.log').read_text(encoding='utf-8')
-            self.assertIn('test_first_deadline_contract_probe', stack)
-            self.assertTrue(sentinel.exists(), 'blocked case prevented following test from running')
-            self.assertEqual(preceding.read_text(), 'once', 'completed case ran again after restart')
-            suite = ET.parse(output / 'tests.xml').getroot().find('testsuite')
-            self.assertEqual(suite.get('tests'), '3')
-            self.assertEqual(suite.get('failures'), '1')
+@pytest.fixture
+def interrupt_setup(request):
+    if %r == 'setup':
+        exhaust_budget(request)
 
-    def test_case_failure_does_not_stop_following_test(self):
-        with tempfile.TemporaryDirectory(dir=ROOT / 'tmp') as directory:
-            folder = Path(directory)
-            sentinel = folder / 'following-test-ran'
-            _, result = self.run_probe(folder, '''
-from pathlib import Path
+def test_second(request, interrupt_setup):
+    exhaust_budget(request)
 
-def test_first_deadline_contract_probe():
-    raise AssertionError('intentional contract failure')
+def test_after(request):
+    record(request, 'after')
+''' % phase, timeout=10) as runner:
+                runner.start()
+                result = self.final(runner, state='timed_out')
+                self.assertEqual(result['termination_reason'], 'budget_exhausted')
+                self.assertEqual(self.executions(runner), ['first', 'second'])
+                attempts = gui_probe.attempts(runner.output)
+                self.assertEqual(len(attempts), 2)
+                plans = [json.loads((attempt / 'invocation.json').read_text()) for attempt in attempts]
+                self.assertEqual(plans[0]['until'], plans[1]['until'])
+                self.assertEqual(result['budget_deadline'], plans[0]['until'])
+                for attempt in attempts:
+                    self.assertEqual(float((attempt / 'run-budget').read_text()), plans[0]['until'])
+                self.assertEqual(result['case_counts'], dict(tests=2, failures=1, errors=1, skipped=0))
+                active = result['active_context']
+                self.assertTrue(active['nodeid'].endswith('::test_second'), active)
+                self.assertEqual(active['phase'], phase)
+                self.assertEqual(active['operation'], 'remaining whole-run budget')
+                self.assertEqual(active['budget'], 20)
+                self.assertGreater(active['deadline'], result['budget_deadline'])
+                stack = Path(result['pytest_stack']).read_text()
+                self.assertIn('exhaust_budget', stack)
+                self.assertIn('test_second' if phase == 'call' else 'interrupt_setup', stack)
 
-def test_second_deadline_contract_probe():
-    Path(%r).touch()
-''' % str(sentinel))
-            self.assertFalse(result['timed_out'], result)
-            self.assertEqual(result['exit_code'], 1)
-            self.assertTrue(sentinel.exists(), 'a case failure stopped subsequent tests')
+    def test_cancellation_during_execution_is_not_success_and_stops_selection(self):
+        with self.runner('''
+def test_active(request):
+    record(request, 'active')
+    tree(request)
+    with deadline.operation('cancel barrier', 30):
+        time.sleep(60)
 
-    def test_late_success_is_a_case_failure_and_following_test_runs(self):
-        with tempfile.TemporaryDirectory(dir=ROOT / 'tmp') as directory:
-            folder = Path(directory)
-            sentinel = folder / 'following-test-ran'
-            output, result = self.run_probe(folder, '''
-import time
-from pathlib import Path
-from support import deadline
+def test_after(request):
+    record(request, 'after')
+''') as runner:
+            runner.start()
+            attempt, _ = runner.event('call', operation='cancel barrier')
+            handles = self.handles(attempt)
+            (runner.output / 'cancel').touch()
+            result = self.final(runner, state='cancelled')
+            self.assertTrue(result['cancelled'])
+            self.assertFalse(result['timed_out'])
+            self.assertEqual(self.executions(runner), ['active'])
+            self.assertEqual(len(gui_probe.attempts(runner.output)), 1)
+            self.assert_tree_dead(handles)
 
-def test_first_deadline_contract_probe():
-    with deadline.operation('late successful callback', .1):
-        time.sleep(.2)
+    def test_cancellation_before_start_creates_no_custody(self):
+        with self.runner('def test_never():\n    raise AssertionError("must not start")\n') as runner:
+            (runner.output / 'cancel').touch()
+            runner.start()
+            result = self.final(runner, state='cancelled')
+            self.assertTrue(result['cancelled'])
+            self.assertEqual(gui_probe.records(runner.output / 'attempts.jsonl'), [])
+            self.assertFalse((runner.output / 'attempts').exists())
 
-def test_second_deadline_contract_probe():
-    Path(%r).touch()
-''' % str(sentinel))
-            self.assertEqual(result['exit_code'], 1)
-            self.assertTrue(sentinel.exists())
-            suite = ET.parse(output / 'tests.xml').getroot().find('testsuite')
-            self.assertEqual(suite.get('tests'), '2')
-            self.assertEqual(suite.get('failures'), '1')
-            self.assertIn('late successful callback', ET.tostring(suite, encoding='unicode'))
+    def test_coordinator_death_recovers_held_gil_tree_and_profile_without_final_report(self):
+        import winreg
 
-    def test_late_truthy_wait_predicate_fails_and_following_test_runs(self):
-        with tempfile.TemporaryDirectory(dir=ROOT / 'tmp') as directory:
-            folder = Path(directory)
-            sentinel = folder / 'following-test-ran'
-            output, result = self.run_probe(folder, '''
-import time
-from pathlib import Path
-from support import native as n
+        with self.runner('''
+from support.config import ConfigProfile
 
-def test_first_deadline_contract_probe():
-    def late_result():
-        time.sleep(.2)
-        return True
-    n.wait(late_result, 'late truthy predicate', .1)
+def test_active(request):
+    with ConfigProfile() as profile:
+        (output(request) / 'resource-profile.json').write_text(
+            json.dumps(profile.root), encoding='utf-8')
+        record(request, 'active')
+        tree(request)
+        with deadline.operation('coordinator death barrier', 30):
+            blocked_native_with_gil()
 
-def test_second_deadline_contract_probe():
-    Path(%r).touch()
-''' % str(sentinel))
-            self.assertEqual(result['exit_code'], 1)
-            self.assertTrue(sentinel.exists())
-            suite = ET.parse(output / 'tests.xml').getroot().find('testsuite')
-            self.assertEqual(suite.get('failures'), '1')
-            self.assertIn('late truthy predicate', ET.tostring(suite, encoding='unicode'))
+def test_after(request):
+    record(request, 'after')
+''') as runner:
+            runner.start()
+            attempt, _ = runner.event('call', operation='coordinator death barrier')
+            handles = self.handles(attempt)
+            owner = gui_probe.ProcessHandle(runner.process.pid)
+            self.addCleanup(owner.close)
+            self.assertTrue(owner.alive())
+            profile = json.loads((attempt / 'resource-profile.json').read_text(encoding='utf-8'))
+            ledger = attempt / 'profiles' / (profile.rsplit('\\', 1)[-1] + '.profile')
+            self.assertTrue(ledger.exists())
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, profile):
+                pass
 
-    def test_nested_operations_preserve_and_restore_outer_deadline(self):
-        with tempfile.TemporaryDirectory(dir=ROOT / 'tmp') as directory:
-            folder = Path(directory)
-            sentinel = folder / 'following-test-ran'
-            _, result = self.run_probe(folder, '''
-import time
-from pathlib import Path
-from support import deadline
+            # Kill only the coordinator, not /T: independent custody must recover.
+            owner.kill()
+            self.assertTrue(owner.dead(), runner.diagnostic())
+            self.assertNotEqual(runner.process.wait(timeout=10), 0)
+            self.assert_tree_dead(handles)
+            evidence = attempt / 'custody-result.json'
+            gui_probe.wait_for(evidence.exists, 10, 'Owner-loss recovery did not publish evidence: ' + runner.diagnostic())
+            result = json.loads(evidence.read_text(encoding='utf-8'))
+            self.assertTrue(result['cleanup_complete'], result)
+            self.assertEqual(result['termination_reason'], 'owner_lost')
+            self.assertTrue(result['cancelled'], result)
+            self.assertEqual(result['cleanup_errors'], [])
+            self.assertFalse(ledger.exists(), 'Orphaned test profile ledger was not consumed')
+            with self.assertRaises(FileNotFoundError):
+                winreg.OpenKey(winreg.HKEY_CURRENT_USER, profile)
+            self.assertEqual(self.executions(runner), ['active'])
+            self.assertEqual(len(gui_probe.attempts(runner.output)), 1)
+            self.assertFalse((runner.output / 'run.json').exists(), 'Dead coordinator cannot publish a final result')
 
-def test_first_deadline_contract_probe():
+    def test_first_setup_process_crash_is_an_interrupted_case_error(self):
+        for exit_code in (0, 73):
+            with self.subTest(pytest_exit=exit_code), self.runner('''
+@pytest.fixture
+def crash_setup(request):
+    record(request, 'setup')
+    os._exit(%d)
+
+def test_first(request, crash_setup):
+    record(request, 'first body')
+
+def test_after(request):
+    record(request, 'after')
+''' % exit_code) as runner:
+                runner.start()
+                result = self.final(runner, state='failed')
+                self.assertEqual(result['exit_code'], exit_code or 1, result)
+                self.assertFalse(result['timed_out'])
+                self.assertFalse(result['cancelled'])
+                self.assertEqual(self.executions(runner), ['setup'])
+                self.assertEqual(result['case_counts'], dict(tests=1, failures=0, errors=1, skipped=0))
+                attempt, = gui_probe.attempts(runner.output)
+                journal = gui_probe.records(attempt / 'events.jsonl')
+                self.assertTrue(any(row.get('event') == 'phase' and row.get('phase') == 'setup'
+                                    and row.get('nodeid', '').endswith('::test_first') for row in journal))
+                self.assertFalse(any(row.get('event') == 'result' for row in journal),
+                                 'Crash must precede the first pytest phase report')
+                cases = ET.parse(runner.output / 'tests.xml').getroot().findall('.//testcase')
+                self.assertEqual([case.get('name') for case in cases], ['test_first'])
+                self.assertIsNotNone(cases[0].find('error'), 'First setup crash was omitted or reported as passed')
+                self.assertIsNone(cases[0].find('failure'))
+
+    def test_module_collection_error_is_retained_without_running_cases(self):
+        with self.runner('''
+raise ImportError('intentional module collection failure')
+
+def test_never(request):
+    record(request, 'unexpected body')
+''') as runner:
+            runner.start()
+            result = self.final(runner, state='failed')
+            self.assertFalse(result['timed_out'])
+            self.assertFalse(result['cancelled'])
+            self.assertFalse((runner.output / 'executions').exists())
+            attempt, = gui_probe.attempts(runner.output)
+            self.assertTrue(any(row.get('event') == 'collection_result' and row.get('outcome') == 'failed'
+                                for row in gui_probe.records(attempt / 'events.jsonl')))
+            cases = ET.parse(runner.output / 'tests.xml').getroot().findall('.//testcase')
+            self.assertEqual(len(cases), 1)
+            self.assertIsNotNone(cases[0].find('error'))
+            self.assertIn('intentional module collection failure', ET.tostring(cases[0], encoding='unicode'))
+            self.assertEqual(result['case_counts'], dict(tests=1, failures=0, errors=1, skipped=0))
+
+    def test_custody_death_during_execution_or_cleanup_is_unsafe(self):
+        for phase in ('execution', 'cleanup'):
+            with self.subTest(phase=phase), self.runner('''
+def test_active(request):
+    record(request, 'active')
+    tree(request)
+    # A real registered receipt keeps cleanup observable without replacing code.
+    (output(request) / 'snapshot.json').write_text(json.dumps({
+        'flags': 0, 'scheme': '', 'context': {}}), encoding='utf-8')
+    (output(request) / 'recoveries.jsonl').write_text(json.dumps({
+        'kind': 'high_contrast', 'snapshot': 'snapshot.json',
+        'receipt': 'unresolved-watchdog-result.json'}) + '\\n', encoding='utf-8')
+    with deadline.operation('custody death barrier', 30):
+        time.sleep(60)
+
+def test_after(request):
+    record(request, 'after')
+''', policy={'cleanup_receipt': 10}) as runner:
+                runner.start()
+                attempt, _ = runner.event('call', operation='custody death barrier')
+                handles = self.handles(attempt)
+                if phase == 'cleanup':
+                    (runner.output / 'cancel').touch()
+                    runner.event('cleanup', prefix='runner-', operation='verify high-contrast recovery receipt')
+                handles['custody'].kill()
+                result = self.final(runner, state='unsafe', cleanup=False)
+                self.assertEqual(self.executions(runner), ['active'])
+                self.assertEqual(len(gui_probe.attempts(runner.output)), 1)
+                self.assertTrue(result['error'])
+                self.assert_tree_dead(handles)
+
+    def test_custody_report_is_not_final_until_process_exit(self):
+        with self.runner('def test_success():\n    pass\n', debug=True) as runner:
+            runner.start()
+
+            def inspect(pid):
+                attempts = gui_probe.attempts(runner.output)
+                evidence = json.loads((attempts[0] / 'custody-result.json').read_text())
+                self.assertTrue(evidence['cleanup_complete'], evidence)
+                # The OS is holding the real custody exit, after evidence publication.
+                for _ in range(5):
+                    self.assertFalse((runner.output / 'run.json').exists(), 'evidence was promoted before custody exit')
+                    self.assertIsNone(runner.process.poll())
+                    time.sleep(.1)
+
+            gui_probe.hold_custody_exit(runner, inspect)
+            self.final(runner, state='passed')
+
+    def test_cleanup_failure_rejects_continuation(self):
+        with self.runner('''
+def test_active(request):
+    record(request, 'active')
+    (output(request) / 'fault-cleanup.json').write_text(json.dumps({
+        'cleanup_complete': False, 'errors': ['contract recovery failure']}), encoding='utf-8')
+    with deadline.operation('timeout before failed recovery', .5):
+        time.sleep(60)
+
+def test_after(request):
+    record(request, 'after')
+''') as runner:
+            runner.start()
+            result = self.final(runner, state='unsafe', cleanup=False)
+            self.assertTrue(result['timed_out'])
+            self.assertIn('contract recovery failure', result['cleanup_errors'])
+            self.assertEqual(self.executions(runner), ['active'])
+            self.assertEqual(len(gui_probe.attempts(runner.output)), 1)
+
+    def test_completed_recovery_receipt_accepts_removed_snapshot(self):
+        # Ledger evidence acceptance only; no native HC recovery or setting change.
+        with self.runner('''
+from driver.high_contrast import register_recovery
+
+def test_completed_recovery(request):
+    artifact = output(request) / 'completed-snapshot.json'
+    expected = {'flags': 0, 'scheme': '', 'context': {}}
+    register_recovery(artifact, 'Winlex.Tests.HighContrast.' + 'a' * 32)
+    artifact.write_text(json.dumps(expected), encoding='utf-8')
+    obligation = json.loads((output(request) / 'recoveries.jsonl').read_text(encoding='utf-8'))
+    receipt = output(request) / obligation['receipt']
+    receipt.write_text(json.dumps({'ok': True, 'task_cleanup_complete': True,
+                                  'expected': expected}), encoding='utf-8')
+    artifact.unlink()
+    record(request, 'completed recovery')
+''') as runner:
+            runner.start()
+            result = self.final(runner, state='passed')
+            self.assertFalse(result['timed_out'])
+            self.assertEqual(result['case_counts'], dict(tests=1, failures=0, errors=0, skipped=0))
+            attempt, = gui_probe.attempts(runner.output)
+            obligation, = gui_probe.records(attempt / 'recoveries.jsonl')
+            self.assertFalse((attempt / obligation['snapshot']).exists())
+            receipt = json.loads((attempt / obligation['receipt']).read_text(encoding='utf-8'))
+            self.assertEqual(receipt['expected'], {'flags': 0, 'scheme': '', 'context': {}})
+            self.assertTrue(receipt['ok'])
+            self.assertTrue(receipt['task_cleanup_complete'])
+            self.assertEqual(self.executions(runner), ['completed recovery'])
+
+    def test_older_recovery_receipt_cannot_discharge_new_unready_registration(self):
+        # Ledger obligations only: no task is scheduled and no HC state is changed.
+        with self.runner('''
+from driver.high_contrast import register_recovery
+
+def test_active(request):
+    artifact = output(request) / 'shared-snapshot.json'
+    expected = {'flags': 0, 'scheme': '', 'context': {}}
+    register_recovery(artifact, 'Winlex.Tests.HighContrast.' + 'a' * 32)
+    artifact.write_text(json.dumps(expected), encoding='utf-8')
+    old = json.loads((output(request) / 'recoveries.jsonl').read_text(encoding='utf-8'))
+    (output(request) / old['receipt']).write_text(json.dumps({
+        'ok': True, 'task_cleanup_complete': True, 'expected': expected}), encoding='utf-8')
+    register_recovery(artifact, 'Winlex.Tests.HighContrast.' + 'b' * 32)
+    record(request, 'active')
+    with deadline.operation('timeout after new recovery registration', .5):
+        time.sleep(60)
+
+def test_after(request):
+    record(request, 'after')
+''', policy={'cleanup_receipt': 1}) as runner:
+            runner.start()
+            result = self.final(runner, state='unsafe', cleanup=False)
+            self.assertTrue(result['timed_out'])
+            self.assertEqual(result['timeout']['operation'], 'timeout after new recovery registration')
+            attempt, = gui_probe.attempts(runner.output)
+            old, new = gui_probe.records(attempt / 'recoveries.jsonl')
+            self.assertEqual(old['snapshot'], new['snapshot'])
+            self.assertNotEqual(old['receipt'], new['receipt'])
+            receipt = json.loads((attempt / old['receipt']).read_text(encoding='utf-8'))
+            self.assertTrue(receipt['ok'])
+            self.assertTrue(receipt['task_cleanup_complete'])
+            self.assertFalse((attempt / new['receipt']).exists())
+            self.assertEqual(list(attempt.glob('*.ready')), [])
+            self.assertTrue(any(new['receipt'] in error for error in result['cleanup_errors']), result)
+            self.assertEqual(self.executions(runner), ['active'])
+
+    def test_stall_limit_stops_unproductive_attempts_but_completed_work_resets_it(self):
+        for progress in (False, True):
+            middle = '''
+def test_middle(request):
+    record(request, 'middle')
+''' if progress else ''
+            with self.subTest(completed_work=progress), self.runner('''
+def test_first(request):
+    record(request, 'first')
+    blocked_native_with_gil()
+''' + middle + '''
+def test_second(request):
+    record(request, 'second')
+    blocked_native_with_gil()
+
+def test_after(request):
+    record(request, 'after')
+''', extra=('--stall-after', '.5', '--case-timeout', '30', '--consecutive-stalls', '2')) as runner:
+                runner.start()
+                result = self.final(runner, state='timed_out')
+                self.assertEqual(result['termination_reason'], 'stalled' if progress else 'repeated_stalls')
+                self.assertEqual(self.executions(runner),
+                                 ['first', 'middle', 'second', 'after'] if progress else ['first', 'second'])
+                self.assertEqual(result['remaining'], 0 if progress else 1)
+                self.assertEqual(len(result['case_timeouts']), 2)
+                self.assertTrue(all(row['stalled'] for row in result['case_timeouts']))
+                self.assertEqual(result['case_counts'],
+                                 dict(tests=4 if progress else 2, failures=2, errors=0, skipped=0))
+                for attempt in gui_probe.attempts(runner.output):
+                    if (attempt / 'stop.json').exists():
+                        self.assertIn('blocked_native_with_gil', (attempt / 'timeout-stacks.log').read_text())
+
+    def test_aggregate_preserves_failure_skip_and_timeout_phase_errors_exactly_once(self):
+        with self.runner('''
+@pytest.fixture
+def blocked_setup(request):
+    record(request, 'setup')
+    with deadline.operation('blocked fixture setup', .5):
+        time.sleep(60)
+
+@pytest.fixture
+def blocked_teardown(request):
+    yield
+    record(request, 'teardown')
+    with deadline.operation('blocked fixture teardown', .5):
+        time.sleep(60)
+
+def test_failure(request):
+    record(request, 'failure')
+    raise AssertionError('ordinary failure retained')
+
+def test_skip(request):
+    record(request, 'skip')
+    pytest.skip('intentional capability skip')
+
+def test_blocked_call(request):
+    record(request, 'call timeout')
+    with deadline.operation('blocked call', .5):
+        time.sleep(60)
+
+def test_blocked_setup(request, blocked_setup):
+    record(request, 'unexpected setup body')
+
+def test_blocked_teardown(request, blocked_teardown):
+    record(request, 'teardown body')
+    raise AssertionError('call failure before teardown timeout')
+
+def test_after(request):
+    record(request, 'after')
+''') as runner:
+            runner.start()
+            result = self.final(runner, state='timed_out')
+            self.assertEqual(self.executions(runner),
+                             ['failure', 'skip', 'call timeout', 'setup', 'teardown body', 'teardown', 'after'])
+            self.assertEqual(result['case_counts'], dict(tests=6, failures=3, errors=2, skipped=1))
+            self.assertEqual([(row['phase'], row['operation']) for row in result['case_timeouts']],
+                             [('call', 'blocked call'), ('setup', 'blocked fixture setup'),
+                              ('teardown', 'blocked fixture teardown')])
+            cases = ET.parse(runner.output / 'tests.xml').getroot().findall('.//testcase')
+            self.assertEqual([case.get('name') for case in cases],
+                             ['test_failure', 'test_skip', 'test_blocked_call', 'test_blocked_setup',
+                              'test_blocked_teardown', 'test_after'])
+            by_name = {case.get('name'): case for case in cases}
+            self.assertIn('ordinary failure retained', ET.tostring(by_name['test_failure'], encoding='unicode'))
+            self.assertIsNotNone(by_name['test_skip'].find('skipped'))
+            self.assertIsNotNone(by_name['test_blocked_setup'].find('error'))
+            self.assertIsNotNone(by_name['test_blocked_teardown'].find('error'))
+            self.assertIn('call failure before teardown timeout',
+                          ET.tostring(by_name['test_blocked_teardown'].find('failure'), encoding='unicode'))
+            self.assertIsNone(by_name['test_after'].find('error'))
+            self.assertIsNone(by_name['test_after'].find('failure'))
+
+    def test_nested_deadlines_bound_longer_children_and_restore_after_normal_or_caught_exit(self):
+        with self.runner('''
+def test_longer_inner(request):
+    record(request, 'longer inner')
     with deadline.operation('outer bounds longer inner', .2):
         with deadline.operation('longer inner', 5):
             time.sleep(60)
 
-def test_second_deadline_contract_probe():
+def test_completed_shorter_inner(request):
+    record(request, 'completed shorter inner')
     with deadline.operation('outer restored after inner', .4):
         with deadline.operation('completed shorter inner', .2):
             pass
         time.sleep(60)
 
-def test_third_deadline_contract_probe():
-    Path(%r).touch()
-''' % str(sentinel))
-            self.assertEqual(result['exit_code'], 1)
-            self.assertTrue(sentinel.exists())
-            timeouts = result['case_timeouts']
-            self.assertEqual([(row['operation'], row['budget']) for row in timeouts],
-                             [('outer bounds longer inner', .2), ('outer restored after inner', .4)])
-            self.assertEqual(result['case_counts'], dict(tests=3, failures=2, errors=0, skipped=0))
-
-    def test_multiple_timeouts_preserve_failures_skips_and_completed_cases(self):
-        with tempfile.TemporaryDirectory(dir=ROOT / 'tmp') as directory:
-            folder = Path(directory)
-            executions = folder / 'executions'
-            output, result = self.run_probe(folder, '''
-import time
-from pathlib import Path
-import pytest
-from support import deadline
-
-def record(name):
-    with Path(%r).open('a') as stream:
-        stream.write(name + '\\n')
-
-def test_before_deadline_contract_probe():
-    record('before')
-    raise AssertionError('ordinary failure retained')
-
-def test_first_deadline_contract_probe():
-    record('first')
-    with deadline.operation('first blocked operation', .1):
-        time.sleep(60)
-
-def test_skipped_deadline_contract_probe():
-    record('skipped')
-    pytest.skip('intentional capability skip')
-
-def test_second_deadline_contract_probe():
-    record('second')
-    with deadline.operation('second blocked operation', .1):
-        time.sleep(60)
-
-def test_after_deadline_contract_probe():
-    record('after')
-''' % str(executions))
-            self.assertEqual(executions.read_text().splitlines(),
-                             ['before', 'first', 'skipped', 'second', 'after'])
-            self.assertEqual(len(result['case_timeouts']), 2)
-            self.assertEqual(result['case_counts'], dict(tests=5, failures=3, errors=0, skipped=1))
-            suite = ET.parse(output / 'tests.xml').getroot().find('testsuite')
-            self.assertEqual(len(suite.findall('testcase')), 5)
-            self.assertIn('ordinary failure retained', ET.tostring(suite, encoding='unicode'))
-
-    def test_setup_and_teardown_timeouts_continue_with_phase_errors(self):
-        with tempfile.TemporaryDirectory(dir=ROOT / 'tmp') as directory:
-            folder = Path(directory)
-            sentinel = folder / 'following-test-ran'
-            output, result = self.run_probe(folder, '''
-import time
-from pathlib import Path
-import pytest
-from support import deadline
-
-@pytest.fixture
-def blocked_setup():
-    with deadline.operation('blocked fixture setup', .1):
-        time.sleep(60)
-
-@pytest.fixture
-def blocked_teardown():
-    yield
-    with deadline.operation('blocked fixture teardown', .1):
-        time.sleep(60)
-
-def test_setup_deadline_contract_probe(blocked_setup):
-    raise AssertionError('setup should not complete')
-
-def test_teardown_deadline_contract_probe(blocked_teardown):
-    raise AssertionError('call failure before teardown timeout')
-
-def test_after_deadline_contract_probe():
-    Path(%r).touch()
-''' % str(sentinel))
-            self.assertTrue(sentinel.exists())
-            self.assertEqual([row['phase'] for row in result['case_timeouts']], ['setup', 'teardown'])
-            self.assertEqual(result['case_counts'], dict(tests=3, failures=1, errors=2, skipped=0))
-            text = ET.tostring(ET.parse(output / 'tests.xml').getroot(), encoding='unicode')
-            self.assertIn('call failure before teardown timeout', text)
-            self.assertIn('blocked fixture teardown', text)
-
-    def test_cancellation_does_not_continue_remaining_cases(self):
-        with tempfile.TemporaryDirectory(dir=ROOT / 'tmp') as directory:
-            folder = Path(directory)
-            sentinel = folder / 'unexpected-following-test'
-            output, result = self.run_probe(folder, '''
-import time
-from pathlib import Path
-from support import deadline
-
-def test_cancel_deadline_contract_probe(request):
-    (Path(request.config.getoption('--artifacts')) / 'cancel').touch()
-    with deadline.operation('cancelled operation', 2):
-        time.sleep(60)
-
-def test_after_deadline_contract_probe():
-    Path(%r).touch()
-''' % str(sentinel))
-            self.assertTrue(result['cancelled'], result)
-            self.assertFalse(result['timed_out'], result)
-            self.assertFalse(sentinel.exists())
-            self.assertEqual(result['case_counts'], dict(tests=1, failures=0, errors=1, skipped=0))
-            case = ET.parse(output / 'tests.xml').getroot().find('.//testcase')
-            self.assertEqual(case.attrib['name'], 'test_cancel_deadline_contract_probe')
-            self.assertIsNotNone(case.find('error'))
-
-    def test_cancellation_after_worker_exit_is_not_success(self):
-        with tempfile.TemporaryDirectory(dir=ROOT / 'tmp') as directory:
-            folder = Path(directory)
-            output = folder / 'artifacts'
-            probe = gui_probe.write_probe(
-                folder, 'def test_completed_deadline_contract_probe():\n    pass\n')
-            process = gui_probe.run_wrapper(folder, '''
-import run
-original_attempt = run.run_attempt
-
-def cancel_after_exit(args, tests, attempt, root, excluded, policy):
-    result = original_attempt(args, tests, attempt, root, excluded, policy)
-    assert result['exit_code'] == 0 and result['cleanup_complete'], result
-    # Request cancellation at the real worker-exit/whole-run publication boundary.
-    (root / 'cancel').touch()
-    return result
-
-run.run_attempt = cancel_after_exit
-sys.argv = ['run.py', '--timeout', '10', '--output', %r, '--exe', sys.executable,
-            %r, '-o', 'python_files=test_deadline_probe.py', '--ignore-glob=*', '-q']
-args, tests = run.arguments()
-raise SystemExit(run.engine_main(args, tests))
-''' % (str(output), str(probe)))
-            result = gui_probe.read_run(output)
-            self.assertTrue(result['cancelled'], result)
-            self.assertFalse(result['timed_out'], result)
-            self.assertTrue(result['cleanup_complete'], result)
-            self.assertNotEqual(process.returncode, 0, process.stdout + process.stderr)
-            case = ET.parse(output / 'tests.xml').getroot().find('.//testcase')
-            self.assertEqual(case.attrib['name'], 'test_completed_deadline_contract_probe')
-            self.assertIsNone(case.find('error'))
-            self.assertIsNone(case.find('failure'))
-
-    def test_cleanup_failure_prevents_continuation(self):
-        with tempfile.TemporaryDirectory(dir=ROOT / 'tmp') as directory:
-            folder = Path(directory)
-            sentinel = folder / 'unexpected-following-test'
-            _, result = self.run_probe(folder, '''
-import json
-import time
-from pathlib import Path
-from support import deadline
-
-def test_cleanup_deadline_contract_probe(request):
-    output = Path(request.config.getoption('--artifacts'))
-    (output / 'injected-cleanup.json').write_text(json.dumps({
-        'cleanup_complete': False, 'errors': ['injected recovery failure']}))
-    with deadline.operation('blocked before failed recovery', .1):
-        time.sleep(60)
-
-def test_after_deadline_contract_probe():
-    Path(%r).touch()
-''' % str(sentinel), cleanup_complete=False)
-            self.assertTrue(result['timed_out'], result)
-            self.assertTrue(result['cleanup_errors'], result)
-            self.assertFalse(sentinel.exists())
-
-    def test_collection_timeout_has_no_resumable_case_boundary(self):
-        with tempfile.TemporaryDirectory(dir=ROOT / 'tmp') as directory:
-            folder = Path(directory)
-            output, result = self.run_probe(folder, '''
-import time
-from support import deadline
-
-with deadline.operation('blocked module collection', .1):
-    time.sleep(60)
-
-def test_after_deadline_contract_probe():
-    raise AssertionError('collection must not finish')
-''')
-            self.assertTrue(result['timed_out'], result)
-            self.assertEqual(result['timeout']['phase'], 'collection')
-            self.assertFalse((output / 'continued').exists())
-
-    def test_whole_run_budget_retains_active_context_and_blocked_stack_after_progress(self):
-        with tempfile.TemporaryDirectory(dir=ROOT / 'tmp') as directory:
-            folder = Path(directory)
-            sentinel = folder / 'unexpected-following-test'
-            started = time.monotonic()
-            output, result = self.run_probe(folder, '''
-import time
-from pathlib import Path
-from support import deadline
-def blocked_budget_navigation():
-    time.sleep(60)
-def test_completed_deadline_contract_probe():
-    pass
-def test_active_deadline_contract_probe():
-    with deadline.operation('navigation beyond whole-run budget', 45):
-        for _ in range(10):
-            with deadline.operation('navigation progress delivery', 5):
-                time.sleep(.05)
-        blocked_budget_navigation()
-def test_after_deadline_contract_probe():
-    Path(%r).touch()
-''' % str(sentinel), timeout=2.5)
-            self.assertLess(time.monotonic() - started, 6, result)
-            self.assertEqual(result['termination_reason'], 'budget_exhausted')
-            self.assertTrue(result['timed_out'])
-            self.assertNotIn('timeout', result, 'whole-run exhaustion became a resumable case timeout')
-            self.assertFalse(sentinel.exists())
-            self.assertEqual(result['case_counts'], dict(tests=2, failures=0, errors=1, skipped=0))
-            cases = {case.attrib['name']: case
-                     for case in ET.parse(output / 'tests.xml').getroot().findall('.//testcase')}
-            self.assertIsNone(cases['test_completed_deadline_contract_probe'].find('error'))
-            self.assertIsNone(cases['test_completed_deadline_contract_probe'].find('failure'))
-            self.assertIsNotNone(cases['test_active_deadline_contract_probe'].find('error'))
-            self.assertFalse((output / 'continued').exists())
-            active = result['active_context']
-            self.assertTrue(active['nodeid'].endswith('::test_active_deadline_contract_probe'), active)
-            self.assertEqual(active['phase'], 'call')
-            self.assertEqual(active['operation'], 'navigation beyond whole-run budget')
-            self.assertEqual(active['budget'], 45)
-            self.assertGreater(active['deadline'], result['budget_deadline'])
-            stack = Path(result['pytest_stack']).read_text(encoding='utf-8')
-            self.assertIn('blocked_budget_navigation', stack)
-            self.assertIn('test_active_deadline_contract_probe', stack)
-
-    def test_parent_deadline_survives_caught_nested_exception(self):
-        for child_budget in (.2, 5):
-            with self.subTest(child_budget=child_budget), tempfile.TemporaryDirectory(dir=ROOT / 'tmp') as directory:
-                folder = Path(directory)
-                sentinel = folder / 'continued-after-parent-timeout'
-                _, result = self.run_probe(folder, '''
-import time
-from pathlib import Path
-from support import deadline
-
-def test_first_deadline_contract_probe():
+@pytest.mark.parametrize('child_budget', [.2, 5])
+def test_caught_inner_exception(request, child_budget):
+    record(request, 'caught ' + str(child_budget))
     with deadline.operation('parent after caught child exception', .4):
         try:
-            with deadline.operation('failing nested operation', %r):
+            with deadline.operation('failing nested operation', child_budget):
                 raise ValueError('ordinary child failure')
         except ValueError:
             pass
         time.sleep(60)
 
-def test_second_deadline_contract_probe():
-    Path(%r).touch()
-''' % (child_budget, str(sentinel)))
-                self.assertTrue(sentinel.exists())
-                self.assertEqual(result['case_counts'], dict(tests=2, failures=1, errors=0, skipped=0))
-                self.assertEqual(len(result['case_timeouts']), 1)
-                self.assertEqual(result['case_timeouts'][0]['operation'], 'parent after caught child exception')
-                self.assertEqual(result['case_timeouts'][0]['budget'], .4)
+def test_after(request):
+    record(request, 'after')
+''') as runner:
+            runner.start()
+            result = self.final(runner, state='timed_out')
+            self.assertEqual(self.executions(runner),
+                             ['longer inner', 'completed shorter inner', 'caught 0.2', 'caught 5', 'after'])
+            self.assertEqual([(row['operation'], row['budget']) for row in result['case_timeouts']],
+                             [('outer bounds longer inner', .2), ('outer restored after inner', .4),
+                              ('parent after caught child exception', .4),
+                              ('parent after caught child exception', .4)])
+            self.assertEqual(result['case_counts'], dict(tests=5, failures=4, errors=0, skipped=0))
 
-    def test_whole_run_budget_is_not_reset_and_interrupted_case_is_not_passed(self):
-        for phase in ('setup', 'call'):
-            with self.subTest(interrupted_phase=phase), tempfile.TemporaryDirectory(dir=ROOT / 'tmp') as directory:
-                folder = Path(directory)
-                sentinel = folder / 'unexpected-following-test'
-                output, result = self.run_probe(folder, '''
-import os
-import time
-from pathlib import Path
-import pytest
-from support import deadline
+    def test_collection_and_last_case_timeouts_have_no_replacement_selection(self):
+        scenarios = {
+            'collection': '''
+with deadline.operation('blocked module collection', .5):
+    time.sleep(60)
 
-def record_budget(request):
-    (Path(request.config.getoption('--artifacts')) / 'run-budget').write_text(os.environ['WINLEX_TEST_DEADLINE'])
-
-def block_remaining_budget(request):
-    record_budget(request)
-    with deadline.operation('operation exceeding remaining run budget', 10):
+def test_never(request):
+    record(request, 'unexpected body')
+''',
+            'last case': '''
+def test_only(request):
+    record(request, 'only')
+    with deadline.operation('last selected case blocks', .5):
         time.sleep(60)
+''',
+        }
+        for scenario, source in scenarios.items():
+            with self.subTest(scenario=scenario), self.runner(source) as runner:
+                runner.start()
+                result = self.final(runner, state='timed_out')
+                attempt, = gui_probe.attempts(runner.output)
+                if scenario == 'collection':
+                    self.assertEqual(result['timeout']['phase'], 'collection')
+                    self.assertFalse((attempt / 'selection.json').exists())
+                    self.assertFalse((runner.output / 'executions').exists())
+                else:
+                    self.assertEqual(self.executions(runner), ['only'])
+                    self.assertEqual(result['remaining'], 0)
+                    self.assertEqual(result['case_counts'], dict(tests=1, failures=1, errors=0, skipped=0))
 
-@pytest.fixture(autouse=True)
-def interrupt_setup(request):
-    if %r == 'setup' and request.node.name == 'test_second_deadline_contract_probe':
-        block_remaining_budget(request)
-
-def test_first_deadline_contract_probe(request):
-    record_budget(request)
-    with deadline.operation('first blocked operation', .1):
-        time.sleep(60)
-
-def test_second_deadline_contract_probe(request):
-    block_remaining_budget(request)
-
-def test_after_deadline_contract_probe():
-    Path(%r).touch()
-''' % (phase, str(sentinel)), timeout=3)
-                self.assertFalse(sentinel.exists())
-                self.assertEqual(len(result['case_timeouts']), 1)
-                self.assertEqual(result['case_counts'], dict(tests=2, failures=1, errors=1, skipped=0))
-                first_budget = (output / 'run-budget').read_text()
-                self.assertEqual((output / 'continued/1/run-budget').read_text(), first_budget)
-                self.assertEqual(result['budget_deadline'], float(first_budget))
-
-    def test_last_selected_case_timeout_does_not_launch_empty_worker(self):
-        with tempfile.TemporaryDirectory(dir=ROOT / 'tmp') as directory:
-            output, result = self.run_probe(Path(directory), '''
-import time
-from support import deadline
-
-def test_only_deadline_contract_probe():
-    with deadline.operation('last selected case blocks', .1):
-        time.sleep(60)
-''')
-            self.assertTrue(result['timed_out'], result)
-            self.assertFalse((output / 'continued').exists(),
-                             'a completed selection launched a no-tests worker')
-
-    def test_empty_isolated_desktop_is_a_valid_empty_enumeration(self):
-        with tempfile.TemporaryDirectory(dir=ROOT / 'tmp') as directory:
-            self.run_probe(Path(directory), '''
+    def test_late_successful_callback_and_truthy_wait_are_failures_not_success(self):
+        with self.runner('''
 from support import native as n
 
-def test_empty_deadline_contract_probe():
+def test_late_callback(request):
+    record(request, 'callback')
+    with deadline.operation('late successful callback', .1):
+        time.sleep(.2)
+
+def test_late_truthy_wait(request):
+    record(request, 'wait')
+    def late_result():
+        time.sleep(.2)
+        return True
+    n.wait(late_result, 'late truthy predicate', .1)
+
+def test_after(request):
+    record(request, 'after')
     assert n.top_level_windows() == []
     assert n.find_window(0, 'Winlex.Frame') is None
-''', exit_code=0)
+''') as runner:
+            runner.start()
+            result = self.final(runner, state='failed')
+            self.assertFalse(result['timed_out'], result)
+            self.assertEqual(self.executions(runner), ['callback', 'wait', 'after'])
+            self.assertEqual(result['case_counts'], dict(tests=3, failures=2, errors=0, skipped=0))
+            cases = ET.parse(runner.output / 'tests.xml').getroot().findall('.//testcase')
+            self.assertIn('late successful callback', ET.tostring(cases[0].find('failure'), encoding='unicode'))
+            self.assertIn('late truthy predicate', ET.tostring(cases[1].find('failure'), encoding='unicode'))
+            self.assertIsNone(cases[2].find('failure'))
+            self.assertIsNone(cases[2].find('error'))
+
+    def test_custody_exit_cancellation_or_expired_budget_gates_continuation(self):
+        for mode in ('completed cancellation', 'interrupted cancellation', 'interrupted budget'):
+            interrupted = mode != 'completed cancellation'
+            cancelled = mode != 'interrupted budget'
+            source = '''
+def test_interrupted():
+    with deadline.operation('timeout before cleanup cancellation', .5):
+        time.sleep(60)
+
+def test_after(request):
+    record(request, 'unexpected following case')
+''' if interrupted else 'def test_completed():\n    pass\n'
+            with self.subTest(mode=mode), self.runner(source, debug=True, timeout=30 if cancelled else 8) as runner:
+                runner.start()
+
+                def cancel(pid):
+                    attempt, = gui_probe.attempts(runner.output)
+                    evidence = json.loads((attempt / 'custody-result.json').read_text(encoding='utf-8'))
+                    self.assertTrue(evidence['cleanup_complete'], evidence)
+                    self.assertFalse((runner.output / 'run.json').exists())
+                    if cancelled:
+                        (runner.output / 'cancel').touch()
+                    else:
+                        invocation = json.loads((attempt / 'invocation.json').read_text(encoding='utf-8'))
+                        gui_probe.wait_for(lambda: time.monotonic() >= invocation['until'], 10,
+                                           'Original execution budget did not expire at the OS exit barrier')
+
+                gui_probe.hold_custody_exit(runner, cancel)
+                result = self.final(runner, state='cancelled' if cancelled else 'timed_out')
+                self.assertEqual(result['cancelled'], cancelled)
+                if not cancelled:
+                    self.assertEqual(result['termination_reason'], 'budget_exhausted')
+                self.assertEqual(result['timed_out'], interrupted)
+                self.assertEqual(result['case_counts'], dict(tests=1, failures=int(interrupted), errors=0, skipped=0))
+                self.assertEqual(len(gui_probe.attempts(runner.output)), 1)
+                self.assertFalse((runner.output / 'executions').exists())
+                case, = ET.parse(runner.output / 'tests.xml').getroot().findall('.//testcase')
+                self.assertEqual(case.get('name'), 'test_interrupted' if interrupted else 'test_completed')
+                self.assertIsNone(case.find('error'))
+                if interrupted:
+                    self.assertIsNotNone(case.find('failure'))
+                else:
+                    self.assertIsNone(case.find('failure'))
+
+    def test_suspended_cleanup_is_killed_at_parent_deadline_without_continuation(self):
+        import ctypes
+        from ctypes import wintypes
+        import win32api
+
+        with self.runner('''
+def test_active(request):
+    record(request, 'active')
+    tree(request)
+    (output(request) / 'snapshot.json').write_text(json.dumps({
+        'flags': 0, 'scheme': '', 'context': {}}), encoding='utf-8')
+    (output(request) / 'recoveries.jsonl').write_text(json.dumps({
+        'kind': 'high_contrast', 'snapshot': 'snapshot.json',
+        'receipt': 'missing-recovery-result.json'}) + '\\n', encoding='utf-8')
+    with deadline.operation('timeout before cleanup suspension', 2):
+        time.sleep(60)
+
+def test_after(request):
+    record(request, 'after')
+''', policy={'cleanup_receipt': 1}) as runner:
+            runner.start()
+            attempt, _ = runner.event('call', operation='timeout before cleanup suspension')
+            handles = self.handles(attempt)
+            pids = json.loads((attempt / 'processes.json').read_text(encoding='utf-8'))
+            suspend_handle = win32api.OpenProcess(0x0800, False, pids['custody'])
+            ntdll = ctypes.WinDLL('ntdll')
+            suspend = ntdll.NtSuspendProcess
+            resume = ntdll.NtResumeProcess
+            for function in (suspend, resume):
+                function.argtypes = [wintypes.HANDLE]
+                function.restype = ctypes.c_long
+            try:
+                runner.event('cleanup', prefix='runner-', operation='verify high-contrast recovery receipt')
+                self.assertEqual(suspend(int(suspend_handle)), 0, 'Cannot suspend real custody process')
+                result = self.final(runner, state='unsafe', cleanup=False)
+                self.assertIn('deadline', result['error'])
+                self.assertTrue(result['timed_out'])
+                self.assertEqual(self.executions(runner), ['active'])
+                self.assertEqual(len(gui_probe.attempts(runner.output)), 1)
+                self.assert_tree_dead(handles)
+            finally:
+                if handles['custody'].alive():
+                    resume(int(suspend_handle))
+                suspend_handle.Close()
+
+    def test_denied_input_ownership_never_consumes_protected_ledger(self):
+        import win32api
+        import win32event
+        mutex = win32event.CreateMutex(None, False, 'Local\\Winlex.Tests.Input')
+        owned = win32event.WaitForSingleObject(mutex, 0) in (0, 128)
+        if not owned:
+            mutex.Close()
+            self.skipTest('another test owns the real input mutex')
+        try:
+            with self.runner('''
+@pytest.mark.interactive
+def test_never():
+    raise AssertionError('denied input owner must never start pytest')
+''', extra=('--desktop', 'current', '--real-input'), debug=True) as runner:
+                protected = b'{"held": [], "foreground": 0, "cursor": [0, 0]}'
+
+                def prepare(pid):
+                    attempt, = gui_probe.attempts(runner.output)
+                    ledger = attempt / 'profiles' / 'input.json'
+                    ledger.parent.mkdir(parents=True, exist_ok=True)
+                    ledger.write_bytes(protected)
+
+                runner.start()
+                gui_probe.hold_custody_exit(runner, lambda pid: None, on_create=prepare)
+                result = self.final(runner, state='unsafe', cleanup=False)
+                attempt, = gui_probe.attempts(runner.output)
+                ledger = attempt / 'profiles' / 'input.json'
+                self.assertIn('Another test owns input', result['custody_error'])
+                self.assertEqual(ledger.read_bytes(), protected)
+                self.assertFalse((ledger.parent.parent / 'events.jsonl').exists())
+        finally:
+            win32event.ReleaseMutex(mutex)
+            win32api.CloseHandle(mutex)
 
 
 if __name__ == '__main__':

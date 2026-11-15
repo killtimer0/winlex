@@ -62,6 +62,21 @@ def message_button(dialog, identifier):
     return None
 
 
+@deadline.operation('set document window state via UIA')
+def window_state(hwnd, state):
+    pattern = uia.ControlFromHandle(hwnd).GetPattern(uia.PatternId.WindowPattern)
+    assert pattern.SetWindowVisualState(state, waitTime=0)
+    n.wait(lambda: (bool(n.is_zoomed(hwnd)), bool(win32gui.IsIconic(hwnd))) == (
+        state == uia.WindowVisualState.Maximized, state == uia.WindowVisualState.Minimized),
+        'requested native window state')
+
+
+@deadline.operation('resize document window via UIA')
+def resize(hwnd, width, height):
+    pattern = uia.ControlFromHandle(hwnd).GetPattern(uia.PatternId.TransformPattern)
+    assert pattern.Resize(width, height, waitTime=0)
+
+
 @deadline.operation('commit combo selection')
 def select_combo(value, label):
     combo = control(value)

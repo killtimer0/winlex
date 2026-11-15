@@ -4,6 +4,7 @@ import importlib.util
 import io
 import json
 import os
+import socket
 from pathlib import Path
 import struct
 import tempfile
@@ -96,15 +97,15 @@ class GuiArtifactContracts(unittest.TestCase):
 
     @unittest.skipUnless(os.name == "nt", "Windows extended paths")
     def test_long_artifact_paths(self):
-        with tempfile.TemporaryDirectory(dir=ROOT / "tmp") as folder:
+        with tempfile.TemporaryDirectory(dir=paths.extended(ROOT / "tmp")) as folder:
             self.check_extended_paths(Path(folder))
 
     @unittest.skipUnless(os.name == "nt", "Windows UNC paths")
     def test_unc_artifact_paths(self):
-        share = Path("\\\\localhost\\" + ROOT.drive[0] + "$" + str(ROOT)[2:])
+        share = Path("\\\\" + socket.gethostname() + "\\" + ROOT.drive[0] + "$" + str(ROOT)[2:])
         if not share.is_dir():
             self.skipTest("Local administrative share is unavailable")
-        with tempfile.TemporaryDirectory(dir=share / "tmp") as folder:
+        with tempfile.TemporaryDirectory(dir=paths.extended(share / "tmp")) as folder:
             self.check_extended_paths(Path(folder))
 
 
