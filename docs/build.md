@@ -165,7 +165,7 @@ python tests/gui/run.py --local --allow-local-desktop --exe target/x86_64-pc-win
 
 终端在每个用例（含 teardown）结束后追加 `.`（通过）、`S`（跳过）或 `F`（任一阶段失败）。本机直接读取 `progress.txt`，SSH 随现有结果轮询增量读取；硬退出前未完成的用例不追加标记。进度不代表整轮完成，最终状态以 `result.json` 为准。
 
-先检查输出目录的 `result.json`（退出码、超时及清理结果）和 `pytest.log`，pytest 报告为 `junit.xml`；硬超时可能来不及写出完整 JUnit。`input-hashes.json`、`execution-environment.json` 分别记录部署校验与环境，各用例目录保存进程和驱动记录。失败证据包括动作、窗口信息；目标另有可用 Pillow 时尝试截图。
+先检查输出目录的 `result.json`（退出码、超时及清理结果）和 `pytest.log`，pytest 报告为 `junit.xml`；硬超时可能来不及写出完整 JUnit。`input-hashes.json`、`execution-environment.json` 分别记录部署校验与环境，各用例目录保存进程和驱动记录。失败证据包括动作、窗口信息及 `screen.bmp` 截图；截图失败时查看 `screen-error.txt`。
 
 单例调用超时会终止整个 pytest，不重试或续跑剩余用例。`--timeout` 限制整轮预算，SSH 模式包括部署与等待；收尾和回收有界执行。每例使用独立应用 Job 和私有注册表配置，执行器另行核对应用退出及配置清理。
 

@@ -482,7 +482,47 @@ class Winlex:
         except Exception as error:
             (destination / 'windows-error.txt').write_text(repr(error), encoding='utf-8')
         try:
-            from PIL import ImageGrab
-            ImageGrab.grab(bbox=win32gui.GetWindowRect(self.frame)).save(str(destination / 'screen.png'))
+            left, top, right, bottom = win32gui.GetWindowRect(self.frame)
+            width, height = right - left, bottom - top
+            # Native GDI also works where legacy Python cannot load win32ui.
+            gdi = c.windll.gdi32
+            for name, result, arguments in [
+                ('CreateDCW', w.HDC, [w.LPCWSTR, w.LPCWSTR, w.LPCWSTR, c.c_void_p]),
+                ('CreateCompatibleDC', w.HDC, [w.HDC]),
+                ('CreateDIBSection', w.HBITMAP, [w.HDC, c.c_void_p, w.UINT,
+                                               c.POINTER(c.c_void_p), w.HANDLE, w.DWORD]),
+                ('SelectObject', w.HANDLE, [w.HDC, w.HANDLE]),
+                ('BitBlt', w.BOOL, [w.HDC, c.c_int, c.c_int, c.c_int, c.c_int,
+                                    w.HDC, c.c_int, c.c_int, w.DWORD]),
+                ('DeleteObject', w.BOOL, [w.HANDLE]),
+                ('DeleteDC', w.BOOL, [w.HDC]),
+            ]:
+                function = getattr(gdi, name)
+                function.argtypes, function.restype = arguments, result
+            screen = gdi.CreateDCW('DISPLAY', None, None, None)
+            assert screen, 'CreateDCW failed'
+            target = bitmap = previous = None
+            try:
+                target = gdi.CreateCompatibleDC(screen)
+                assert target, 'CreateCompatibleDC failed'
+                size = width * height * 4
+                header = struct.pack('<IiiHHIIiiII', 40, width, -height, 1, 32, 0, size, 0, 0, 0, 0)
+                bits = c.c_void_p()
+                bitmap = gdi.CreateDIBSection(screen, header, 0, c.byref(bits), None, 0)
+                assert bitmap and bits.value, 'CreateDIBSection failed'
+                previous = gdi.SelectObject(target, bitmap)
+                assert previous, 'SelectObject failed'
+                assert gdi.BitBlt(target, 0, 0, width, height, screen, left, top, win32con.SRCCOPY)
+                assert gdi.GdiFlush(), 'GdiFlush failed'
+                (destination / 'screen.bmp').write_bytes(
+                    struct.pack('<2sIHHI', b'BM', 54 + size, 0, 0, 54) + header + c.string_at(bits, size))
+            finally:
+                if previous:
+                    gdi.SelectObject(target, previous)
+                if bitmap:
+                    gdi.DeleteObject(bitmap)
+                if target:
+                    gdi.DeleteDC(target)
+                gdi.DeleteDC(screen)
         except Exception as error:
             (destination / 'screen-error.txt').write_text(repr(error), encoding='utf-8')
