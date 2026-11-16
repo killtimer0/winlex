@@ -133,7 +133,7 @@ def test_language_applies_only_after_restart_and_can_return_to_english(app, ui_t
     sheet.cancel()
 
 
-def test_theme_apply_preserves_reading_and_search_at_target_dpi(app, ui_text):
+def test_theme_apply_preserves_declaration_and_keeps_find_and_search_working(app, ui_text):
     class HighContrast(c.Structure):
         _fields_ = [('cbSize', w.UINT), ('dwFlags', w.DWORD), ('scheme', w.LPWSTR)]
     contrast = HighContrast(cbSize=c.sizeof(HighContrast))

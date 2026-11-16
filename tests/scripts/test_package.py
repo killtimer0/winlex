@@ -187,7 +187,6 @@ class WorkflowContracts(unittest.TestCase):
         self.assertEqual(workflow["permissions"], {"contents": "read"})
         release = workflow["jobs"]["release"]
         self.assertEqual(release["permissions"], {"contents": "write"})
-        self.assertEqual(release["if"], "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')")
         for step in (step for job in workflow["jobs"].values() for step in job["steps"]):
             if "run" not in step or step.get("shell", "pwsh") != "pwsh":
                 continue

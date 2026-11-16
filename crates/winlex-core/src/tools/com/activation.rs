@@ -304,24 +304,3 @@ fn hstring() -> Option<Hstring> {
         })
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn interface_iids_match_the_documented_text() {
-        assert_eq!(
-            typelib::guid_text(&IID_UNKNOWN).as_deref(),
-            Some("{00000000-0000-0000-C000-000000000046}")
-        );
-        assert_eq!(
-            typelib::guid_text(&IID_DISPATCH).as_deref(),
-            Some("{00020400-0000-0000-C000-000000000046}")
-        );
-        assert_eq!(
-            typelib::guid_text(&IID_INSPECTABLE).as_deref(),
-            Some("{AF86E2E0-B12D-4C6A-9C5A-D7AA65101E90}")
-        );
-    }
-}

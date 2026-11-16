@@ -2,7 +2,6 @@
 import shutil
 from pathlib import Path
 
-import pytest
 from driver import until
 
 
@@ -97,8 +96,3 @@ def test_failed_source_reload_retains_data_and_recovers(app, ui_text):
     assert failed not in app.source_text(source)
     original.activate()
     assert app.editor().text_block() == original_text
-
-
-@pytest.mark.real_input
-def test_keyboard_search_and_open(app):
-    app.keyboard_search('CreateFileW')

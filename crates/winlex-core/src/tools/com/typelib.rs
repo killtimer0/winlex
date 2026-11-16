@@ -641,11 +641,7 @@ mod tests {
     #[test]
     fn expands_the_standard_ole_type_library() {
         let guid = Guid::parse(STD_OLE).expect("GUID");
-        let library = match load(guid, 2, 0) {
-            Ok(library) => library,
-            Err(Error::NotRegistered) => return,
-            Err(error) => panic!("expand stdole2: {error}"),
-        };
+        let library = load(guid, 2, 0).expect("expand registered stdole2 type library");
         assert_eq!(library.guid, STD_OLE);
         let font = library
             .types
