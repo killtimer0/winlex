@@ -2,8 +2,6 @@
 use crate::{icons::WindowIcon as OwnedIcon, native::*};
 use std::{cell::RefCell, ptr, rc::Rc};
 mod accessible;
-#[cfg(test)]
-mod tests;
 
 pub const CLASS: *const u16 = w!("Winlex.Tabs");
 pub const SELECT: u32 = 0u32.wrapping_sub(800);

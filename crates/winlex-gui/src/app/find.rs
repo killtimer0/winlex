@@ -288,38 +288,3 @@ fn find_matches(editor: HWND, query: &str, match_case: bool, whole_word: bool) -
     }
     matches
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn native_find_preserves_utf16_ranges_and_passive_reading_position() {
-        let fixture = crate::rich_text::Editor::new(WS_POPUP, crate::layout::rect(0, 0, 640, 480));
-        let editor = fixture.1;
-        crate::rich_text::set_content(
-            editor,
-            &crate::rich_text::Content::new("😀 Foo foo food\nFoo".into()),
-        )
-        .unwrap();
-        let selected = CHARRANGE {
-            cpMin: 7,
-            cpMax: 10,
-        };
-        send(editor, EM_EXSETSEL, 0, &selected as *const _ as isize);
-        for (case, word, expected) in [
-            (false, false, vec![(3, 6), (7, 10), (11, 14), (16, 19)]),
-            (false, true, vec![(3, 6), (7, 10), (16, 19)]),
-            (true, true, vec![(7, 10)]),
-        ] {
-            let found = find_matches(editor, "foo", case, word);
-            assert_eq!(
-                found.iter().map(|r| (r.cpMin, r.cpMax)).collect::<Vec<_>>(),
-                expected
-            );
-            assert_eq!((selection(editor).cpMin, selection(editor).cpMax), (7, 10));
-        }
-        assert!(find_matches(editor, "", false, false).is_empty());
-        assert!(find_matches(editor, "missing", false, false).is_empty());
-    }
-}

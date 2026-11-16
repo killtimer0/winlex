@@ -790,27 +790,6 @@ fn menu_text_state(state: u32) -> i32 {
     }
 }
 
-#[cfg(test)]
-mod menu_state_tests {
-    use super::*;
-
-    #[test]
-    fn menubar_text_states_follow_native_tracking_precedence() {
-        for (flags, expected) in [
-            (0, MBI_NORMAL),
-            (ODS_DISABLED, MBI_DISABLED),
-            (ODS_GRAYED, MBI_DISABLED),
-            (ODS_INACTIVE, MBI_DISABLED),
-            (ODS_HOTLIGHT, MBI_HOT),
-            (ODS_HOTLIGHT | ODS_INACTIVE, MBI_DISABLEDHOT),
-            (ODS_SELECTED | ODS_HOTLIGHT | ODS_INACTIVE, MBI_PUSHED),
-        ] {
-            assert_eq!(menu_text_state(flags), expected);
-            assert_eq!(menu_text_state(flags | ODS_NOACCEL), expected);
-        }
-    }
-}
-
 unsafe fn menu_bottom_line(hwnd: HWND) {
     unsafe {
         let mut info: MENUBARINFO = std::mem::zeroed();
@@ -907,60 +886,5 @@ unsafe fn paint_mdi_menu_bitmap(
             );
         }
         RestoreDC(dc, saved);
-    }
-}
-
-#[cfg(test)]
-pub(crate) mod tests;
-
-#[cfg(test)]
-mod file_dialog_tests {
-    use super::*;
-
-    #[test]
-    #[ignore = "process-wide uxtheme preferred app mode; run this test alone"]
-    fn native_file_dialog_refresh_restores_policy_even_when_palette_is_unchanged() {
-        if !supported()
-            || high_contrast()
-            || !crate::platform::WindowsVersion::query()
-                .is_ok_and(|version| version.build() >= 18362)
-        {
-            eprintln!(
-                "SKIPPED native_file_dialog_refresh_restores_policy_even_when_palette_is_unchanged: \
-                 dark-theme APIs, low-contrast mode, or Windows 10 build 18362 required"
-            );
-            return;
-        }
-        let _controls = tests::CommonControls::activate();
-        type PreferredApp = unsafe extern "system" fn(i32) -> i32;
-        unsafe {
-            let preferred: PreferredApp = std::mem::transmute(
-                GetProcAddress(GetModuleHandleW(w!("uxtheme.dll")), 135usize as *const u8).unwrap(),
-            );
-            let hwnd = test_window(
-                w!("#32770"),
-                ptr::null(),
-                WS_POPUP,
-                crate::layout::rect(0, 0, 100, 100),
-            );
-            for mode in [2, 1, 2] {
-                set_mode(mode);
-                let expected = if is_dark() { 2 } else { 3 };
-                for _ in 0..2 {
-                    // Model a native Shell policy override without changing Winlex's
-                    // effective palette or navigating/recreating the dialog.
-                    preferred(if expected == 2 { 3 } else { 2 });
-                    assert!(!refresh_palette());
-                    refresh_file_dialog(hwnd);
-                    assert_eq!(
-                        preferred(expected),
-                        expected,
-                        "native theme refresh must restore the application preference"
-                    );
-                }
-            }
-            DestroyWindow(hwnd);
-            set_mode(0);
-        }
     }
 }

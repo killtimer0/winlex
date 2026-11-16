@@ -1,185 +1,211 @@
-import hashlib
+"""Explicit desktop authorization and per-test process/config isolation."""
 import json
 import os
-import platform
+from pathlib import Path
+import subprocess
 import struct
 import sys
-import importlib.metadata
-from pathlib import Path
+import time
+import uuid
 
 import pytest
-from support import deadline, lifecycle
-from support.policy import Policy
-import win32api
-import win32con
-import win32service
-from support.config import ConfigProfile
-from support.languages import LANGUAGES, language
-from support.pe import is_64_bit
-from support.artifacts import finish_fixtures
-from support.paths import extended
+from verify_faults import FAULT_MODES
 
 
 def pytest_addoption(parser):
-    parser.addoption("--exe", required=True)
-    parser.addoption("--winmd", default="inputs/Windows.Win32.winmd")
-    parser.addoption("--artifacts", default="tmp/gui-tests")
-    parser.addoption("--language", default="en-US", choices=[option.name for option in LANGUAGES])
-    parser.addoption("--dpi", default="auto")
-    parser.addoption('--hc-theme', help='Explicit .theme appearance expected by real high-contrast tests')
-    parser.addoption("--real-input", action="store_true",
-                     help="Run only interactive input/screen tests on the current desktop")
+    group = parser.getgroup('winlex')
+    group.addoption('--exe', help='Debug GUI executable')
+    group.addoption('--winmd', help='Metadata input')
+    group.addoption('--output', default='tmp/gui-results', help='Evidence directory')
+    group.addoption('--desktop-authorized', action='store_true', help='Authorize this input desktop')
+    group.addoption('--real-input', action='store_true', help='Include exclusive desktop input scenarios')
+    group.addoption('--dpi-mode', choices=('auto', 'pmv2', 'pmv1', 'system', 'unaware'),
+                    help='Set the application WINLEX_DPI preference for this run')
+    group.addoption('--fault-mode', choices=FAULT_MODES,
+                    help='Run one infrastructure fault probe')
 
 
 def pytest_configure(config):
-    config.pluginmanager.register(lifecycle, 'winlex-lifecycle')
-    config.addinivalue_line("markers", "interactive: requires an exclusive active input desktop")
-    config.addinivalue_line('markers', 'phase_timeout(seconds): maximum call duration for a long behavioral scenario')
-    output = Path(config.getoption('--artifacts'))
-    output.mkdir(parents=True, exist_ok=True)
-    deadline.configure(output)
-    deadline.phase('collection', 'collection', Policy.load().collection)
+    if config.option.collectonly:
+        return
+    if not config.getoption('--desktop-authorized'):
+        raise pytest.UsageError('GUI execution requires explicit desktop authorization; use tests/gui/run.py')
+    if os.name != 'nt':
+        raise pytest.UsageError('GUI tests require Windows')
+    for name in ('--exe', '--winmd'):
+        value = config.getoption(name)
+        if not value or not Path(value).is_file():
+            raise pytest.UsageError('{} must name an existing file'.format(name))
+    # Reject service/SSH window stations and locked or non-input desktops.
+    import win32con
+    from execute import require_interactive_desktop
+    try:
+        require_interactive_desktop()
+    except (OSError, RuntimeError) as error:
+        raise pytest.UsageError(str(error)) from error
+    import win32event
+    mutex = win32event.CreateMutex(None, False, 'Local\\Winlex.GuiTests.Desktop')
+    if win32event.WaitForSingleObject(mutex, 0) not in (win32con.WAIT_OBJECT_0, win32con.WAIT_ABANDONED):
+        mutex.Close()
+        raise pytest.UsageError('Another GUI test run owns this desktop')
+    config._winlex_desktop_mutex = mutex
+    from progress import CaseProgress
+    config.pluginmanager.register(CaseProgress(config.getoption('--output')), 'winlex-progress')
 
 
 def pytest_unconfigure(config):
-    deadline.close()
+    mutex = getattr(config, '_winlex_desktop_mutex', None)
+    if mutex is not None:
+        import win32event
+        win32event.ReleaseMutex(mutex)
+        mutex.Close()
 
 
-@pytest.hookimpl(hookwrapper=True, tryfirst=True)
 def pytest_collection_modifyitems(config, items):
-    interactive = config.getoption("--real-input")
-    selected, deselected = [], []
-    excluded_path = os.environ.get('WINLEX_TEST_EXCLUDE')
-    excluded = set(json.loads(Path(excluded_path).read_text(encoding='utf-8'))) if excluded_path else set()
     for item in items:
-        target = selected if (bool(item.get_closest_marker("interactive")) == interactive
-                              and item.nodeid not in excluded) else deselected
-        target.append(item)
-    items[:] = selected
-    config.hook.pytest_deselected(items=deselected)
-    # Record the final selection after pytest's -k/-m and other collection
-    # filters, not the larger interactive/noninteractive candidate set.
-    yield
-    (Path(config.getoption('--artifacts')) / 'selection.json').write_text(
-        json.dumps([item.nodeid for item in items]), encoding='utf-8')
+        if 'real_input' in item.keywords and not config.getoption('--real-input'):
+            item.add_marker(pytest.mark.skip(reason='use --real-input on an exclusive desktop'))
 
 
-@pytest.fixture(scope="session")
-def automation_client():
-    # CUIAutomation8 (Windows 8+) lets the client avoid implicit foreground
-    # requests when interacting with controls on an isolated desktop.
-    if sys.getwindowsversion() < (6, 2):
-        yield
-        return
-    import comtypes.client
-    import uiautomation.uiautomation as implementation
-
-    client = implementation._AutomationClient.instance()
-    core = client.UIAutomationCore
-    modern = comtypes.client.CreateObject(core.CUIAutomation8, interface=core.IUIAutomation2)
-    modern.AutoSetFocus = False
-    modern.ConnectionTimeout = 2000
-    modern.TransactionTimeout = 5000
-    assert not modern.AutoSetFocus
-    automation = modern.QueryInterface(core.IUIAutomation)
-    walker = automation.RawViewWalker
-    previous = client.IUIAutomation, client.ViewWalker
-    client.IUIAutomation, client.ViewWalker = automation, walker
-    try:
-        yield
-    finally:
-        client.IUIAutomation, client.ViewWalker = previous
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    report = (yield).get_result()
+    if report.failed:
+        app = item.funcargs.get('app')
+        if app is not None:
+            app.evidence(app.output / 'failure')
 
 
-@pytest.fixture(scope="session")
-def settings(request, automation_client):
-    from support import native as n
+@pytest.fixture
+def app(request):
+    import win32con
+    import win32event
+    import win32job
+    import win32process
+    import winreg
+    from driver import Winlex
+    from execute import process_identity, remove_private_config
 
-    if hasattr(n.user, "SetThreadDpiAwarenessContext"):
-        n.api(n.user, "SetThreadDpiAwarenessContext", n.c.c_void_p, n.c.c_void_p)(n.c.c_void_p(-4))
-    option = request.config.getoption
-    exe, winmd = Path(option("--exe")).resolve(), Path(option("--winmd")).resolve()
-    output = Path(option("--artifacts")).resolve()
+    output = Path(request.config.getoption('--output')).resolve() / request.node.name
     output.mkdir(parents=True, exist_ok=True)
-    version = sys.getwindowsversion()
-    info = {"exe": str(exe), "winmd": str(winmd), "os": platform.platform(),
-             "windows_version": {"major": version.major, "minor": version.minor, "build": version.build},
-             "python": sys.version, "python_executable": sys.executable, "python_bits": struct.calcsize("P") * 8,
-             "dependencies": {name: importlib.metadata.version(name)
-                              for name in ("pytest", "pywin32", "uiautomation", "comtypes")},
-            "hashes": {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in (exe, winmd)},
-            "language": option("--language"), "dpi": option("--dpi"), "capabilities": n.capabilities()}
-    info["exe_bits"] = 64 if is_64_bit(exe) else 32
-    info["test_group"] = "interactive" if option("--real-input") else "contracts"
-    info["desktop"] = win32service.GetUserObjectInformation(
-        int(win32service.GetThreadDesktop(win32api.GetCurrentThreadId())), win32con.UOI_NAME)
-    (output / "environment.json").write_text(json.dumps(info, indent=2), encoding="utf-8")
-    yield exe, winmd, output
-    finish_fixtures(extended(output), extended(winmd), info["hashes"][str(winmd)])
+    config_root = 'Software\\Winlex\\E2E\\' + uuid.uuid4().hex
+    environment = dict(os.environ, WINLEX_CONFIG_ROOT=config_root)
+    dpi_mode = request.config.getoption('--dpi-mode')
+    if dpi_mode:
+        environment['WINLEX_DPI'] = dpi_mode
+    executable = str(Path(request.config.getoption('--exe')).resolve())
+    metadata = str(Path(request.config.getoption('--winmd')).resolve())
+    inputs = [metadata]
+    job = win32job.CreateJobObject(None, 'Winlex.Gui.' + uuid.uuid4().hex)
+    limits = win32job.QueryInformationJobObject(job, win32job.JobObjectExtendedLimitInformation)
+    limits['BasicLimitInformation']['LimitFlags'] = win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    win32job.SetInformationJobObject(job, win32job.JobObjectExtendedLimitInformation, limits)
+    process = thread = None
+    started = time.monotonic()
+    pid = None
+    created = None
+    cleaned = True
+    assigned = False
+    app = None
 
+    def launch(empty=False):
+        nonlocal process, thread, pid, created, cleaned, assigned, app
+        assigned = False
+        pid = created = None
+        # A hard stop during launch must not be reported as an empty, clean run.
+        (output / 'process.json').write_text(json.dumps(dict(
+            pid=None, created=None, config_root=config_root,
+            cleanup_complete=False)), encoding='utf-8')
+        process, thread, pid, _ = win32process.CreateProcess(
+            executable, subprocess.list2cmdline([executable, *map(str, inputs)]), None, None, False,
+            win32con.CREATE_SUSPENDED | win32con.CREATE_UNICODE_ENVIRONMENT
+            | (subprocess.CREATE_BREAKAWAY_FROM_JOB if sys.getwindowsversion()[:2] < (6, 2) else 0),
+            environment, str(Path(executable).parent), win32process.STARTUPINFO())
+        cleaned = False
+        # No metadata queries or I/O in the suspended, not-yet-contained interval.
+        win32job.AssignProcessToJobObject(job, process)
+        assigned = True
+        created = process_identity(pid)
+        (output / 'process.json').write_text(json.dumps(dict(
+            pid=pid, created=created, config_root=config_root,
+            cleanup_complete=False)), encoding='utf-8')
+        win32process.ResumeThread(thread)
+        replacement = Winlex(pid, output)
+        if app is None:
+            app = replacement
+        else:
+            app.pid, app.frame = replacement.pid, replacement.frame
+        if not empty:
+            app.ready()
 
-@pytest.fixture
-def hc_appearance(request, settings):
-    from test_theme_compatibility import read_high_contrast_appearance
+    def restart(paths=None, empty=False):
+        nonlocal process, thread, cleaned, inputs
+        app.record('restart with saved preferences')
+        app.close()
+        assert win32event.WaitForSingleObject(process, 10000) == win32con.WAIT_OBJECT_0
+        cleaned = True
+        # Generations never overlap. Keep containment and preferences, but record
+        # the replacement identity before allowing it to execute application code.
+        for handle in (thread, process):
+            handle.Close()
+        process = thread = None
+        if paths is not None:
+            inputs = list(paths)
+        launch(empty=empty)
 
-    path = request.config.getoption('--hc-theme')
-    if not path:
-        pytest.fail('Real high-contrast tests require an explicit --hc-theme file', pytrace=False)
-    appearance = read_high_contrast_appearance(Path(path))
-    (settings[2] / 'hc-appearance-fixture.json').write_text(
-        json.dumps(appearance, indent=2), encoding='utf-8')
-    return appearance
-
-
-@pytest.fixture
-def ui_language(request):
-    return language(request.config.getoption("--language"))
-
-
-@pytest.fixture
-def profile(request):
-    with ConfigProfile(request.config.getoption("--language")) as value:
-        yield value
-
-
-@pytest.fixture
-def launch(request, settings, profile):
-    from support import native as n
-    from support.diagnostics import screenshot
-    from support.session import Session, invoke, message_button
-
-    sessions = []
-    def start(arguments=(), dpi=None, *, metadata_prompt=False):
-        session = Session(settings[0], profile, arguments, dpi or request.config.getoption("--dpi"))
-        sessions.append(session)
-        if not metadata_prompt and not arguments and profile.get("Version") == 1 and profile.get("AutoLoad") in (None, []):
-            prompt = n.wait(lambda: n.find_window(session.process.pid, '#32770', session.frame),
-                            'empty-startup metadata guide prompt', 10)
-            invoke(n.wait(lambda: message_button(prompt, win32con.IDNO), 'metadata prompt No button'))
-            n.wait(lambda: not n.is_window(prompt), "metadata guide prompt dismissed")
-        return session
-    yield start
-    errors = []
-    for index, session in enumerate(sessions):
+    try:
+        # Seed only once: restarting must exercise preferences saved by the GUI.
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, config_root) as key:
+            winreg.SetValueEx(key, 'Language', 0, winreg.REG_SZ, 'en-US')
+        launch()
+        app.restart = restart
+        yield app
+    except BaseException:
+        if app is not None:
+            app.evidence(output / 'failure')
+        raise
+    finally:
         try:
-            if session.process.poll() is None and getattr(request.node, "test_failed", False):
-                try:
-                    screenshot(session.frame, settings[2] / (request.node.name + "-%d.png" % index))
-                except Exception as error:
-                    (settings[2] / (request.node.name + "-capture-error.txt")).write_text(str(error), encoding="utf-8")
-                session.diagnostics(settings[2] / (request.node.name + "-%d-windows.json" % index))
-        except Exception as error:
-            errors.append(str(error))
+            if process is not None:
+                # Job termination is per-test containment, never a global process-name kill.
+                if assigned:
+                    win32job.TerminateJobObject(job, 1)
+                elif win32event.WaitForSingleObject(process, 0) != win32con.WAIT_OBJECT_0:
+                    win32process.TerminateProcess(process, 1)
+                cleaned = win32event.WaitForSingleObject(process, 10000) == win32con.WAIT_OBJECT_0
+                if not cleaned:
+                    pytest.exit('GUI process cleanup failed; stop the desktop batch', returncode=2)
         finally:
-            try:
-                session.close()
-            except Exception as error:
-                errors.append(str(error))
-            (settings[2] / (request.node.name + "-%d-process.json" % index)).write_text(json.dumps({
-                "pid": session.process.pid, "exit_code": session.process.poll(),
-                "actual_dpi": session.actual_dpi, "cleanup_complete": session.cleanup_complete}), encoding="utf-8")
-    (settings[2] / (request.node.name + "-cleanup.json")).write_text(json.dumps({
-        "cleanup_complete": not errors and all(s.cleanup_complete for s in sessions),
-        "errors": errors,
-    }), encoding="utf-8")
-    assert not errors, errors
+            for handle in (thread, process, job):
+                if handle is not None:
+                    handle.Close()
+            if cleaned:
+                remove_private_config(config_root)
+            (output / 'process.json').write_text(json.dumps(dict(
+                pid=pid, created=created, config_root=config_root, cleanup_complete=cleaned,
+                elapsed=time.monotonic() - started)), encoding='utf-8')
+
+
+@pytest.fixture
+def metadata(request):
+    return Path(request.config.getoption('--winmd')).resolve()
+
+
+@pytest.fixture
+def ui_text(request):
+    """Read the executable's English resources, matching the private preference."""
+    import win32api
+    library = win32api.LoadLibraryEx(str(Path(request.config.getoption('--exe')).resolve()), 0, 2)
+    def text(identifier):
+        block = win32api.LoadResource(library, 6, identifier // 16 + 1, 0x409)
+        offset = 0
+        for index in range(16):
+            length = struct.unpack_from('<H', block, offset)[0] * 2
+            offset += 2
+            if index == identifier % 16:
+                return block[offset:offset + length].decode('utf-16-le')
+            offset += length
+    try:
+        yield text
+    finally:
+        win32api.FreeLibrary(library)

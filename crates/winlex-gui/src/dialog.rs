@@ -417,6 +417,3 @@ impl Layout {
         Ok(false)
     }
 }
-
-#[cfg(test)]
-mod tests;

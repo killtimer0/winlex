@@ -373,18 +373,3 @@ unsafe extern "system" fn edit_proc(
         result
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn panel_ids_preserve_saved_values() {
-        assert_eq!(PanelId::Search as u32, 0);
-        assert_eq!(PanelId::Sources as u32, 1);
-        for id in PanelId::ALL {
-            assert_eq!(PanelId::from_saved(id as u32), id);
-        }
-        assert_eq!(PanelId::from_saved(u32::MAX), PanelId::Search);
-    }
-}

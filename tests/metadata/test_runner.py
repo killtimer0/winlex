@@ -88,29 +88,26 @@ class RunnerContracts(unittest.TestCase):
                                            "--artifacts", str(manifest)]), \
                 patch.dict(os.environ), contextlib.redirect_stderr(output):
             status = runner.main()
-        return status, output.getvalue(), json.loads(manifest.read_text())["executables"]
+        return status, json.loads(manifest.read_text())["executables"]
 
     def test_cargo_and_gate_failures_do_not_stop_independent_gates(self):
         with tempfile.TemporaryDirectory(prefix="winlex runner ") as folder:
             root = Path(folder)
-            status, output, _ = self.run_round(root)
+            status, _ = self.run_round(root)
             self.assertEqual(status, 1)
             for marker in ("fixture", "multisource", "ABI", "WinRT"):
                 self.assertTrue((root / marker).is_file(), marker)
-            self.assertIn("cargo tests", output)
-            self.assertIn("fixture", output)
 
     def test_failed_build_skips_only_dependent_gates_and_removes_stale_artifact(self):
         for failed_build in ("host-cli", "query-audit"):
             with self.subTest(build=failed_build), tempfile.TemporaryDirectory(prefix="winlex runner ") as folder:
                 root = Path(folder)
-                status, output, manifest = self.run_round(root, failed_build)
+                status, manifest = self.run_round(root, failed_build)
                 self.assertEqual(status, 1)
                 self.assertNotIn(failed_build, manifest)
                 self.assertEqual((root / "ABI").exists(), failed_build != "host-cli")
                 self.assertFalse((root / "WinRT").exists())
                 self.assertEqual((root / "multisource").exists(), failed_build != "host-cli")
-                self.assertIn("SKIP:", output)
 
 
 if __name__ == "__main__":

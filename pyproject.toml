@@ -6,20 +6,16 @@ dependencies = ["py7zr>=1.1.4"]
 
 [dependency-groups]
 tests = [
+    "pytest==8.3.5",
     "PyYAML>=6.0",
     "pywin32>=310; sys_platform == 'win32'",
 ]
 gui = [
     "pytest==8.3.5",
+    "pytest-timeout==2.3.1",
+    "PyAutoIt==0.6.5; sys_platform == 'win32'",
     "pywin32>=310; sys_platform == 'win32'",
-    "uiautomation==2.0.29; sys_platform == 'win32'",
-    "comtypes==1.4.12; sys_platform == 'win32'",
-]
-media = [
-    "uiautomation==2.0.29; sys_platform == 'win32'",
-    "comtypes==1.4.12; sys_platform == 'win32'",
-    "Pillow>=10",
-    "pywin32>=310; sys_platform == 'win32'",
+    "polling2==0.5.0",
 ]
 
 [tool.uv]

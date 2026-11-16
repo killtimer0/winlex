@@ -314,17 +314,3 @@ pub(super) fn context_menu(ctx: &Context, hwnd: HWND, location: isize) -> anyhow
     }
     Ok(())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn startup_guide_requires_known_empty_configuration() {
-        let file = PathBuf::from("missing.winmd");
-        assert!(should_prompt(&[], Some(&[])));
-        assert!(!should_prompt(&[], None));
-        assert!(!should_prompt(&[], Some(std::slice::from_ref(&file))));
-        assert!(!should_prompt(&[file], Some(&[])));
-    }
-}

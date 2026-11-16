@@ -1,0 +1,534 @@
+"""Winlex public actions using the official AutoItX control API and pywin32."""
+import ctypes as c
+from ctypes import wintypes as w
+import hashlib
+import importlib.util
+import json
+from pathlib import Path
+import struct
+import time
+
+import polling2
+import win32api
+import win32con
+import win32event
+import win32gui
+import win32process
+
+
+# Test input coordinates must be physical pixels, like AutoItX mouse actions.
+# XP has no DPI virtualization; newer systems expose this process-only opt-in.
+if hasattr(c.windll.user32, 'SetProcessDPIAware'):
+    c.windll.user32.SetProcessDPIAware()
+
+
+def until(description, condition, timeout=20):
+    try:
+        return polling2.poll(condition, step=.05, timeout=timeout,
+                             ignore_exceptions=(AssertionError, StopIteration, win32gui.error))
+    except polling2.TimeoutException as error:
+        raise TimeoutError(description) from error
+
+
+# PyAutoIt's wheel carries official AutoItX 3.3.12.0 (including XP RTM support).
+# Bind the small documented API subset directly: its Python wrapper strips
+# whitespace and has pointer-sized return-value defects. Never patch the library.
+package = Path(next(iter(importlib.util.find_spec('autoit').submodule_search_locations)))
+bits = struct.calcsize('P') * 8
+dll = package / 'lib' / ('AutoItX3_x64.dll' if bits == 64 else 'AutoItX3.dll')
+expected = {32: '7c860b9ae4549ca2dd81c607bdb641ab2e38895aa5431a549df6c5da75b3dd89',
+            64: '1e4c494b81714633a7c067ff2820d1303cd83d9fd66886dab8bbe369e6514830'}
+if hashlib.sha256(dll.read_bytes()).hexdigest() != expected[bits]:
+    raise RuntimeError('Unexpected AutoItX binary; reinstall the pinned PyAutoIt wheel')
+auto = c.WinDLL(str(dll))
+for name, result, arguments in [
+    ('Init', None, []),
+    ('error', c.c_int, []),
+    ('ControlGetTextByHandle', None, [w.HWND, w.HWND, w.LPWSTR, c.c_int]),
+    ('ControlSetTextByHandle', c.c_int, [w.HWND, w.HWND, w.LPCWSTR]),
+    ('ControlFocusByHandle', c.c_int, [w.HWND, w.HWND]),
+    ('ControlListViewByHandle', None, [w.HWND, w.HWND, w.LPCWSTR, w.LPCWSTR, w.LPCWSTR, w.LPWSTR, c.c_int]),
+    ('WinActivateByHandle', c.c_int, [w.HWND]),
+    ('Send', None, [w.LPCWSTR, c.c_int]),
+    ('MouseClick', c.c_int, [w.LPCWSTR, c.c_int, c.c_int, c.c_int, c.c_int]),
+]:
+    function = getattr(auto, 'AU3_' + name)
+    function.argtypes, function.restype = arguments, result
+auto.AU3_Init()
+
+
+class Declaration:
+    def __init__(self, app, hwnd):
+        self.app, self.handle = app, hwnd
+
+    def text_block(self):
+        return self.app.text(self.handle)
+
+    def window(self):
+        document = win32gui.GetParent(self.handle)
+        while win32gui.GetClassName(win32gui.GetParent(document)) != 'MDIClient':
+            document = win32gui.GetParent(document)
+            assert document, 'Declaration has no MDI document'
+        return document
+
+    def activate(self):
+        document = self.window()
+        self.app.record('activate document')
+        win32gui.SendMessage(win32gui.GetParent(document), win32con.WM_MDIACTIVATE, document, 0)
+        until('document activated', lambda: self.app.document() == document)
+
+    def select_architecture(self, name):
+        combo = self.app.child(1047, self.window())
+        self.app.record('select architecture ' + name)
+        select_combo(combo, name, win32con.CBN_SELENDOK)
+
+    def architecture(self):
+        return self.app.text(self.app.child(1047, self.window()))
+
+    def first_visible_line(self):
+        return win32gui.SendMessage(self.handle, win32con.EM_GETFIRSTVISIBLELINE, 0, 0)
+
+    def scroll_lines(self, lines):
+        self.app.record('scroll declaration {} lines'.format(lines))
+        win32gui.SendMessage(self.handle, win32con.EM_LINESCROLL, 0, lines)
+
+    def close(self):
+        self.activate()
+        document = self.window()
+        self.app.command(1015)
+        until('document closed', lambda: not win32gui.IsWindow(document))
+
+    def selection_indices(self):
+        # EM_GETSEL is below WM_USER and Windows marshals its two DWORD outputs.
+        # Unlike EM_EXGETSEL, it is safe with controller-local pointers.
+        start, end = w.DWORD(), w.DWORD()
+        send = c.windll.user32.SendMessageW
+        send.argtypes = [w.HWND, w.UINT, c.c_size_t, c.c_ssize_t]
+        send.restype = c.c_ssize_t
+        send(self.handle, win32con.EM_GETSEL, c.addressof(start), c.addressof(end))
+        return start.value, end.value
+
+    def select(self, start, end):
+        win32gui.SendMessage(self.handle, win32con.EM_SETSEL, start, end)
+
+    def selected_text(self):
+        start, end = self.selection_indices()
+        text = self.text_block().replace('\r\n', '\r').encode('utf-16-le')
+        return text[start * 2:end * 2].decode('utf-16-le')
+
+    def context_action(self, identifier):
+        self.activate()
+        assert auto.AU3_WinActivateByHandle(self.app.frame)
+        until('application foreground', lambda: win32gui.GetForegroundWindow() == self.app.frame)
+        assert auto.AU3_ControlFocusByHandle(self.app.frame, self.handle)
+        self.app.record('declaration context action {}'.format(identifier))
+        auto.AU3_Send('{APPSKEY}', 0)
+        menu_window = until('declaration context menu', lambda: next(
+            iter(self.app.windows('#32768')), None))
+        menu = win32gui.SendMessage(menu_window, 0x1E1, 0, 0)  # MN_GETHMENU
+        indices = [index for index in range(win32gui.GetMenuItemCount(menu))
+                   if win32gui.GetMenuItemID(menu, index) == identifier]
+        assert indices, 'Context action {} unavailable in {}'.format(identifier, [
+            win32gui.GetMenuItemID(menu, i)
+            for i in range(win32gui.GetMenuItemCount(menu))])
+        index = indices[0]
+        assert not win32gui.GetMenuState(menu, index, win32con.MF_BYPOSITION) & (
+            win32con.MF_DISABLED | win32con.MF_GRAYED)
+        rectangle = w.RECT()
+        get_rect = c.windll.user32.GetMenuItemRect
+        get_rect.argtypes, get_rect.restype = [w.HWND, w.HMENU, w.UINT, c.POINTER(w.RECT)], w.BOOL
+        assert get_rect(None, menu, index, c.byref(rectangle))
+        assert auto.AU3_MouseClick('left', (rectangle.left + rectangle.right) // 2,
+                                  (rectangle.top + rectangle.bottom) // 2, 1, 0)
+        until('context menu closed', lambda: not win32gui.IsWindow(menu_window))
+
+
+def select_combo(combo, text, notification=win32con.CBN_SELCHANGE):
+    # CB_FINDSTRINGEXACT is a system message; Windows marshals the UTF-16 string.
+    index = win32gui.SendMessage(combo, win32con.CB_FINDSTRINGEXACT, -1, text)
+    assert index != win32con.CB_ERR, 'Combo option not found: ' + text
+    win32gui.SendMessage(combo, win32con.CB_SETCURSEL, index, 0)
+    identifier = win32gui.GetDlgCtrlID(combo)
+    win32gui.SendMessage(win32gui.GetParent(combo), win32con.WM_COMMAND,
+                        identifier | (notification << 16), combo)
+
+
+class Settings:
+    def __init__(self, app, hwnd):
+        self.app, self.handle = app, hwnd
+
+    def control(self, identifier):
+        control = self.app.child(identifier, self.handle)
+        tabs = self.app.child(0x3020, self.handle)  # IDC_TABCONTROL
+        count = win32gui.SendMessage(tabs, 0x1304, 0, 0)  # TCM_GETITEMCOUNT
+        for index in range(count):
+            if win32gui.IsWindowVisible(control):
+                return control
+            win32gui.SendMessage(self.handle, win32con.WM_USER + 101, index, 0)  # PSM_SETCURSEL
+        assert win32gui.IsWindowVisible(control), 'Settings control is not visible'
+        return control
+
+    def select(self, identifier, text):
+        self.app.record('settings select {} {}'.format(identifier, text))
+        select_combo(self.control(identifier), text)
+
+    def value(self, identifier):
+        return self.app.text(self.control(identifier))
+
+    def checked(self, identifier):
+        return win32gui.SendMessage(self.control(identifier), win32con.BM_GETCHECK, 0, 0) == 1
+
+    def check(self, identifier, checked):
+        if self.checked(identifier) != checked:
+            self.app.record('settings check {} {}'.format(identifier, checked))
+            win32gui.SendMessage(self.control(identifier), win32con.BM_CLICK, 0, 0)
+        assert self.checked(identifier) == checked
+
+    def apply(self):
+        self.app.record('settings apply')
+        button = self.app.child(0x3021, self.handle)  # ID_APPLY_NOW
+        assert win32gui.IsWindowEnabled(button), 'No pending settings change'
+        win32gui.SendMessage(button, win32con.BM_CLICK, 0, 0)
+        assert win32gui.IsWindow(self.handle) and win32gui.IsWindowVisible(self.handle)
+
+    def finish(self, identifier):
+        self.app.record('settings close {}'.format(identifier))
+        win32gui.PostMessage(self.handle, win32con.WM_COMMAND, identifier, 0)
+        until('settings closed', lambda: not win32gui.IsWindow(self.handle))
+
+    def cancel(self):
+        self.finish(win32con.IDCANCEL)
+
+    def ok(self):
+        self.finish(win32con.IDOK)
+
+
+class Winlex:
+    def __init__(self, pid, output):
+        self.pid, self.output, self.actions = pid, Path(output), []
+        self.frame = until('Winlex frame', lambda: next(iter(self.windows('Winlex.Frame')), None), 15)
+        (self.output / 'driver.json').write_text(json.dumps(dict(
+            backend='AutoItX', version='3.3.12.0', bits=bits, sha256=expected[bits])), encoding='utf-8')
+
+    def windows(self, cls=None):
+        found = []
+        def visit(hwnd, unused):
+            if (win32process.GetWindowThreadProcessId(hwnd)[1] == self.pid
+                    and (cls is None or win32gui.GetClassName(hwnd) == cls)):
+                found.append(hwnd)
+            return True
+        win32gui.EnumWindows(visit, None)
+        return found
+
+    def record(self, action):
+        self.actions.append((time.monotonic(), action))
+
+    def child(self, identifier, parent=None):
+        found = []
+        def visit(hwnd, unused):
+            if win32gui.GetDlgCtrlID(hwnd) == identifier:
+                found.append(hwnd)
+            return True
+        win32gui.EnumChildWindows(parent or self.frame, visit, None)
+        return next(iter(found))
+
+    def text(self, hwnd):
+        length = win32gui.SendMessage(hwnd, win32con.WM_GETTEXTLENGTH, 0, 0)
+        # WM_GETTEXT can expand RichEdit's CR to CRLF; do not truncate or rstrip.
+        buffer = c.create_unicode_buffer(max(4, 2 * length + 2))
+        auto.AU3_ControlGetTextByHandle(self.frame, hwnd, buffer, len(buffer))
+        assert not auto.AU3_error(), 'AutoItX text read failed'
+        assert len(buffer.value.encode('utf-16-le')) // 2 < len(buffer) - 1, 'Text read filled its buffer'
+        return buffer.value
+
+    def set_text(self, hwnd, text):
+        assert auto.AU3_ControlSetTextByHandle(self.frame, hwnd, text), 'AutoItX edit failed'
+
+    def list_command(self, hwnd, command, extra=''):
+        result = c.create_unicode_buffer(4096)
+        auto.AU3_ControlListViewByHandle(self.frame, hwnd, command, extra, '', result, len(result))
+        assert not auto.AU3_error(), 'AutoItX ListView ' + command
+        return result.value
+
+    def ready(self):
+        until('loaded source available', lambda: self.source_count() > 0, 30)
+
+    def command(self, identifier):
+        self.record('command {}'.format(identifier))
+        win32gui.PostMessage(self.frame, win32con.WM_COMMAND, identifier, 0)
+
+    def search(self, name, expected=None):
+        self.record('search ' + name)
+        win32gui.SendMessage(self.frame, win32con.WM_COMMAND, 1024, 0)
+        self.set_text(self.child(1102), name)
+        return self.wait_result(expected or name)
+
+    def search_mode(self, text):
+        win32gui.SendMessage(self.frame, win32con.WM_COMMAND, 1024, 0)
+        self.record('search mode ' + text)
+        select_combo(self.child(1114), text, win32con.CBN_SELENDOK)
+
+    def completed_result_names(self, template):
+        def completed():
+            results = self.child(1103)
+            count = int(self.list_command(results, 'GetItemCount'))
+            if self.text(self.child(1105)) != template.replace('%1!s!', str(count)):
+                return None
+            # A tuple allows a completed empty result set to remain truthy.
+            names = [self.list_command(results, 'GetText', str(index)).split('\r\n', 1)[0]
+                     for index in range(count)]
+            return (names,)
+        return until('search completed', completed)[0]
+
+    def settings(self):
+        self.command(1051)
+        sheet = until('settings dialog', lambda: next((h for h in self.windows('#32770')
+                      if win32gui.IsWindowVisible(h)), None))
+        return Settings(self, sheet)
+
+    def wait_result(self, name):
+        results = self.child(1103)
+        def matching():
+            for index in range(int(self.list_command(results, 'GetItemCount'))):
+                full_name = self.list_command(results, 'GetText', str(index)).split('\r\n', 1)[0]
+                if full_name.rsplit('.', 1)[-1] == name:
+                    return results, index
+            return None
+        return until('search result ' + name, matching)
+
+    def select_result(self, name):
+        results, index = self.search(name)
+        self.list_command(results, 'SelectClear')
+        self.list_command(results, 'Select', str(index))
+        return results
+
+    def preview_symbol(self, name):
+        results = self.select_result(name)
+        self.record('preview ' + name)
+        win32gui.PostMessage(results, win32con.WM_KEYDOWN, win32con.VK_SPACE, 0)
+        win32gui.PostMessage(results, win32con.WM_KEYUP, win32con.VK_SPACE, 0)
+        return self.wait_declaration(name)
+
+    def open_symbol(self, name, new=False):
+        self.select_result(name)
+        identifier = 1049 if new else 1050
+        self.record('command {}'.format(identifier))
+        # Opening an already visible preview must finish pinning before the
+        # caller changes the selection; matching its current text is not a barrier.
+        win32gui.SendMessage(self.frame, win32con.WM_COMMAND, identifier, 0)
+        return self.wait_declaration(name)
+
+    def wait_declaration(self, name):
+        def declaration():
+            editor = self.editor()
+            assert name in editor.text_block(), 'Waiting for ' + name
+            return editor
+        return until('declaration ' + name, declaration)
+
+    def document(self):
+        found = []
+        win32gui.EnumChildWindows(self.frame, lambda h, _: found.append(h)
+                                 if win32gui.GetClassName(h) == 'MDIClient' else None, None)
+        active = win32gui.SendMessage(next(iter(found)), win32con.WM_MDIGETACTIVE, 0, 0)
+        assert active, 'No active document yet'
+        return active
+
+    def editor(self):
+        return Declaration(self, self.child(1203, self.document()))
+
+    def find_query(self, text):
+        win32gui.SendMessage(self.frame, win32con.WM_COMMAND, 1060, 0)
+        edit = until('find edit', lambda: self.child(1220, self.document()))
+        self.set_text(edit, text)
+        return edit
+
+    def find(self, text):
+        self.find_query(text)
+        editor = self.editor()
+        until('find selection matching ' + text,
+              lambda: editor.selected_text().casefold() == text.casefold())
+        return editor.selection_indices()
+
+    def file_dialog(self):
+        self.command(1020)
+        return until('file dialog', lambda: next((h for h in self.windows('#32770')
+                                                 if win32gui.IsWindowVisible(h)), None), 15)
+
+    def cancel_file_dialog(self):
+        dialog = self.file_dialog()
+        win32gui.PostMessage(dialog, win32con.WM_COMMAND, win32con.IDCANCEL, 0)
+        until('file dialog closed', lambda: not win32gui.IsWindow(dialog), 10)
+
+    def open_file(self, path):
+        dialog = self.file_dialog()
+        combo = self.child(1148, dialog)
+        edits = []
+        win32gui.EnumChildWindows(combo, lambda h, _: edits.append(h)
+                                 if win32gui.GetClassName(h) == 'Edit' else None, None)
+        self.set_text(next(iter(edits)), str(path))
+        win32gui.PostMessage(dialog, win32con.WM_COMMAND, win32con.IDOK, 0)
+        until('file dialog closed', lambda: not win32gui.IsWindow(dialog), 30)
+
+    def source_count(self):
+        return int(self.list_command(self.child(1112), 'GetItemCount'))
+
+    def source_index(self, path):
+        sources = self.child(1112)
+        def matching():
+            for index in range(int(self.list_command(sources, 'GetItemCount'))):
+                text = self.list_command(sources, 'GetText', str(index))
+                if Path(text.split('\r\n', 1)[0]) == path:
+                    return index + 1
+            return None
+        return until('source ' + str(path), matching) - 1
+
+    def source_text(self, path):
+        return self.list_command(self.child(1112), 'GetText', str(self.source_index(path)))
+
+    def select_source(self, path):
+        self.command(1021)
+        sources = self.child(1112)
+        index = self.source_index(path)
+        self.list_command(sources, 'SelectClear')
+        self.list_command(sources, 'Select', str(index))
+
+    def reload_source(self, path):
+        self.select_source(path)
+        until('reload action available', lambda: win32gui.IsWindowEnabled(self.child(1044)))
+        self.command(1044)
+
+    def close_source(self, path):
+        self.select_source(path)
+        self.command(1022)
+
+    def cancel_startup_prompt(self):
+        dialog = until('empty-source startup prompt', lambda: next((h for h in self.windows('#32770')
+                       if win32gui.IsWindowVisible(h)), None))
+        children = []
+        win32gui.EnumChildWindows(dialog, lambda h, _: children.append(h), None)
+        if any(win32gui.GetClassName(h) == 'DirectUIHWND' for h in children):
+            # TaskDialog: TDM_CLICK_BUTTON = WM_USER + 102.
+            win32gui.PostMessage(dialog, win32con.WM_USER + 102, win32con.IDNO, 0)
+        else:
+            win32gui.PostMessage(dialog, win32con.WM_COMMAND, win32con.IDNO, 0)
+        until('startup prompt dismissed', lambda: not win32gui.IsWindow(dialog))
+        assert self.source_count() == 0
+
+    def keyboard_search(self, name):
+        class GUIThreadInfo(c.Structure):
+            _fields_ = [('cbSize', w.DWORD), ('flags', w.DWORD),
+                        ('hwndActive', w.HWND), ('hwndFocus', w.HWND),
+                        ('hwndCapture', w.HWND), ('hwndMenuOwner', w.HWND),
+                        ('hwndMoveSize', w.HWND), ('hwndCaret', w.HWND), ('rcCaret', w.RECT)]
+        get_info = c.windll.user32.GetGUIThreadInfo
+        get_info.argtypes, get_info.restype = [w.DWORD, c.POINTER(GUIThreadInfo)], w.BOOL
+        thread = win32process.GetWindowThreadProcessId(self.frame)[0]
+        def focused(hwnd):
+            info = GUIThreadInfo(cbSize=c.sizeof(GUIThreadInfo))
+            assert get_info(thread, c.byref(info)), 'GetGUIThreadInfo failed'
+            return win32gui.GetForegroundWindow() == self.frame and info.hwndFocus == hwnd
+
+        self.record('keyboard search ' + name)
+        assert auto.AU3_WinActivateByHandle(self.frame)
+        until('application foreground', lambda: win32gui.GetForegroundWindow() == self.frame)
+        search = self.child(1102)
+        auto.AU3_Send('^l', 0)
+        until('search keyboard focus', lambda: focused(search), 5)
+        auto.AU3_Send(name, 1)
+        # Enter commits an active IME composition without changing input settings;
+        # with no composition it invokes the public search action instead.
+        auto.AU3_Send('{ENTER}', 0)
+        until('typed search text', lambda: self.text(search) == name)
+        results, index = self.wait_result(name)
+        def tab_to_results():
+            if focused(results):
+                return True
+            auto.AU3_Send('{TAB}', 0)
+            return False
+        until('results reachable by keyboard', tab_to_results, 5)
+        auto.AU3_Send('{HOME}', 0)
+        if index:
+            auto.AU3_Send('{DOWN ' + str(index) + '}', 0)
+        auto.AU3_Send('{ENTER}', 0)
+        until('keyboard-opened declaration', lambda: name in self.editor().text_block())
+
+    def is_running(self):
+        try:
+            handle = win32api.OpenProcess(win32con.SYNCHRONIZE, False, self.pid)
+        except win32api.error as error:
+            if error.winerror == 87:
+                return False
+            raise
+        try:
+            return win32event.WaitForSingleObject(handle, 0) == win32con.WAIT_TIMEOUT
+        finally:
+            handle.Close()
+
+    def close(self):
+        self.record('close')
+        win32gui.PostMessage(self.frame, win32con.WM_CLOSE, 0, 0)
+        until('process exit', lambda: not self.is_running(), 10)
+
+    def evidence(self, destination, window=None):
+        destination = Path(destination)
+        destination.mkdir(parents=True, exist_ok=True)
+        (destination / 'actions.txt').write_text(
+            '\n'.join('{:.6f} {}'.format(*action) for action in self.actions), encoding='utf-8')
+        try:
+            rows = []
+            for top_level in self.windows():
+                children = [top_level]
+                win32gui.EnumChildWindows(top_level, lambda h, _: children.append(h), None)
+                rows.extend(dict(hwnd=h, cls=win32gui.GetClassName(h), id=win32gui.GetDlgCtrlID(h),
+                                 text=win32gui.GetWindowText(h), rect=win32gui.GetWindowRect(h)) for h in children)
+            (destination / 'windows.json').write_text(json.dumps(rows, ensure_ascii=False), encoding='utf-8')
+            editor = self.editor()
+            (destination / 'declaration.txt').write_text(editor.text_block(), encoding='utf-8')
+            (destination / 'selection.json').write_text(json.dumps(editor.selection_indices()), encoding='utf-8')
+        except Exception as error:
+            (destination / 'windows-error.txt').write_text(repr(error), encoding='utf-8')
+        try:
+            left, top, right, bottom = win32gui.GetWindowRect(window or self.frame)
+            width, height = right - left, bottom - top
+            # Native GDI also works where legacy Python cannot load win32ui.
+            gdi = c.windll.gdi32
+            for name, result, arguments in [
+                ('CreateDCW', w.HDC, [w.LPCWSTR, w.LPCWSTR, w.LPCWSTR, c.c_void_p]),
+                ('CreateCompatibleDC', w.HDC, [w.HDC]),
+                ('CreateDIBSection', w.HBITMAP, [w.HDC, c.c_void_p, w.UINT,
+                                               c.POINTER(c.c_void_p), w.HANDLE, w.DWORD]),
+                ('SelectObject', w.HANDLE, [w.HDC, w.HANDLE]),
+                ('BitBlt', w.BOOL, [w.HDC, c.c_int, c.c_int, c.c_int, c.c_int,
+                                    w.HDC, c.c_int, c.c_int, w.DWORD]),
+                ('DeleteObject', w.BOOL, [w.HANDLE]),
+                ('DeleteDC', w.BOOL, [w.HDC]),
+            ]:
+                function = getattr(gdi, name)
+                function.argtypes, function.restype = arguments, result
+            screen = gdi.CreateDCW('DISPLAY', None, None, None)
+            assert screen, 'CreateDCW failed'
+            target = bitmap = previous = None
+            try:
+                target = gdi.CreateCompatibleDC(screen)
+                assert target, 'CreateCompatibleDC failed'
+                size = width * height * 4
+                header = struct.pack('<IiiHHIIiiII', 40, width, -height, 1, 32, 0, size, 0, 0, 0, 0)
+                bits = c.c_void_p()
+                bitmap = gdi.CreateDIBSection(screen, header, 0, c.byref(bits), None, 0)
+                assert bitmap and bits.value, 'CreateDIBSection failed'
+                previous = gdi.SelectObject(target, bitmap)
+                assert previous, 'SelectObject failed'
+                assert gdi.BitBlt(target, 0, 0, width, height, screen, left, top, win32con.SRCCOPY)
+                assert gdi.GdiFlush(), 'GdiFlush failed'
+                (destination / 'screen.bmp').write_bytes(
+                    struct.pack('<2sIHHI', b'BM', 54 + size, 0, 0, 54) + header + c.string_at(bits, size))
+            finally:
+                if previous:
+                    gdi.SelectObject(target, previous)
+                if bitmap:
+                    gdi.DeleteObject(bitmap)
+                if target:
+                    gdi.DeleteDC(target)
+                gdi.DeleteDC(screen)
+        except Exception as error:
+            (destination / 'screen-error.txt').write_text(repr(error), encoding='utf-8')

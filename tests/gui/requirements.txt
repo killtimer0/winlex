@@ -1,4 +1,6 @@
+# Target interpreters are Python 3.8; keep their environment independent of uv.
 pytest==8.3.5
+pytest-timeout==2.3.1
+PyAutoIt==0.6.5
+polling2==0.5.0
 pywin32==228
-uiautomation==2.0.29
-comtypes==1.4.12

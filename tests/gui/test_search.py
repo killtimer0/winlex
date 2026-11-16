@@ -1,256 +1,130 @@
-import time
-import json
-import subprocess
-import pytest
+"""Search recovery and source identity through public edits and result rows."""
+from pathlib import Path
+import re
+
 import win32con
 import win32gui
-import winreg
-import uiautomation as auto
-from support.diagnostics import capture, screenshot
-from support import deadline, messages, native as n
-from support.session import invoke, select_combo
-from test_search_help import open_help
+
+from driver import until
 
 
-@pytest.mark.interactive
-def test_result_rows_show_context_and_match_emphasis(launch, profile, settings):
-    # Keep the matched GUID visible rather than testing the folded {…} glyphs.
-    profile.set('SidebarWidth', winreg.REG_DWORD, 480)
-    app = launch([settings[1]])
-    mode = n.get_item(app.frame, 1114)
-    for index, query, prefix, name_match in [
-        (0, "CrtFlW", "Apis · ", True),
-        (1, 'name contains "access" and value = 5', "= 5 · ", False),
-        (1, 'guid = "0000000c-0000-0000-c000-000000000046"', "{0000000c-0000-0000-c000-000000000046} · ", False),
-    ]:
-        select_combo(mode, app.choices(mode)[index])
-        app.query(query)
-        row = app.named_rows("CreateFileW")[0] if name_match else 0
-        with deadline.operation('scroll result row into view'):
-            app.row(row).GetScrollItemPattern().ScrollIntoView()
-        lines = app.cell(row).splitlines()
-        detail = lines[2]
-        assert detail.startswith(prefix), detail
-        cell = app.cell(row)
-        name = lines[0].rsplit('.', 1)[-1]
-
-        def painted_row(row):
-            with deadline.operation('scroll compared result row into view'):
-                app.row(row).GetScrollItemPattern().ScrollIntoView()
-            with n.window_dpi_context(app.frame):
-                # Equal logical heights at different Y positions can span
-                # different physical pixels under fractional DPI scaling.
-                # Compare at the same viewport position, not with a tolerance.
-                n.send(app.results, messages.LVM_SCROLL, 0, app.item_rect(row)[1])
-                n.wait(lambda: app.item_rect(row)[1] == 0, 'compared row aligns with viewport top')
-                left, top, right, bottom = app.item_rect(row)
-                dc = win32gui.GetDC(app.results)
-                font = n.send(app.results, win32con.WM_GETFONT)
-                old = win32gui.SelectObject(dc, font)
-                try:
-                    text_width, _ = win32gui.GetTextExtentPoint32(dc, name if name_match else prefix)
-                finally:
-                    win32gui.SelectObject(dc, old)
-                    win32gui.ReleaseDC(app.results, dc)
-                # Exclude the trailing namespace and scrollbar: the number of
-                # results can change the list's available width, not its text.
-                right = min(right, left + text_width + bottom - top)
-                middle = (top + bottom) // 2
-                rect = (left, top, right, middle) if name_match else (left, middle, right, bottom)
-                with capture(app.results, client=True, rect=rect) as (_, header, pixels):
-                    return header, pixels
-
-        matched = painted_row(row)
-        screenshot(app.results, settings[2] / ("result-list-%d.png" % index))
-        select_combo(mode, app.choices(mode)[1])
-        # Double negation selects only this name without positive match spans;
-        # a whole namespace would require thousands of unrelated UIA reads.
-        baseline = 'not (not (name = ' + json.dumps(name) + '))'
-        app.query(baseline)
-        row = next(row for row in app.named_rows(name) if app.cell(row) == cell)
-        unmatched = painted_row(row)
-        assert matched[0] == unmatched[0], "matching must not change row geometry"
-        assert matched[1] != unmatched[1], (query, "matching must change the same text's rendering")
+FIXTURES = Path(__file__).with_name('fixtures')
 
 
-def test_search_modes_match_cli_order(launch, settings):
-    cli = settings[0].with_name("winlex.exe")
-    app = launch([settings[1]])
-    mode = n.get_item(app.frame, 1114)
-    for index, query, flag in [
-        (0, "CrtFlW", None), (1, 'name = "CreateFileW"', "--where"),
-    ]:
-        select_combo(mode, app.choices(mode)[index])
-        app.query(query)
-        command = [str(cli), str(settings[1]), "search"]
-        if flag:
-            command.append(flag)
-        command += [query, "--limit", "1000", "--json"]
-        with deadline.operation('query CLI search results'):
-            result = json.loads(subprocess.check_output(command, encoding="utf-8", timeout=45))["result"]
-        expected = result["matches"]
-        assert len(expected) < 1000
-        # The GUI's default categories exclude ordinary fields and type references.
-        expected = [hit for hit in expected if hit["kind"] not in {"field", "type_reference", "property", "event"}]
-        with deadline.operation('read complete result row names'):
-            names = [row.Name.splitlines()[0] for row in app.rows()]
-        assert names == [hit["full_name"] for hit in expected]
+def open_fixture(app, name):
+    path = (FIXTURES / ('search_' + name + '.winmd')).resolve()
+    before = app.source_count()
+    app.open_file(path)
+    until('search fixture committed: ' + name, lambda: app.source_count() == before + 1)
+    # The source panel can include a still-pending input. All callers are in
+    # quick mode here; a definition unique to this file proves catalog commit.
+    app.search('GuiSearch' + name.title() + 'Ready')
+    return path
 
 
-def test_search_mode_errors_and_navigation(launch, settings):
-    app = launch([settings[1]])
-    app.query("CrtFlW")
-    mode = n.get_item(app.frame, 1114)
-    chinese = app.toolbar_text(1040) == "搜索"
-    with deadline.operation('read quick search mode'):
-        assert auto.ControlFromHandle(mode).GetValuePattern().Value == app.choices(mode)[0]
-    assert app.named_rows("CreateFileW")
-
-    def choose(index):
-        select_combo(mode, app.choices(mode)[index])
-
-    choose(1)
-    n.wait(lambda: ("条件" if chinese else "condition") in app.status_text(), "condition error")
-    assert app.count() == 0
-    app.query('name = "CreateFileW"')
-    assert app.count() > 0
-    n.send(mode, win32con.CB_SETCURSEL, 0)
-    n.send(app.frame, win32con.WM_COMMAND, (win32con.CBN_SELENDCANCEL << 16) | 1114, mode)
-    with deadline.operation('read condition search mode'):
-        assert auto.ControlFromHandle(mode).GetValuePattern().Value == app.choices(mode)[1]
-    with deadline.operation('set incomplete search condition'):
-        auto.ControlFromHandle(app.search).GetValuePattern().SetValue('value =', waitTime=0)
-    n.wait(lambda: ("尚未输入完整" if chinese else "Incomplete") in app.status_text(), "incomplete condition")
-    assert app.count() == 0
-    with deadline.operation('set invalid search condition'):
-        auto.ControlFromHandle(app.search).GetValuePattern().SetValue('value < nan', waitTime=0)
-    n.wait(lambda: ("条件无效" if chinese else "Invalid condition") in app.status_text(), "NaN bound error")
-    assert app.count() == 0
-    app.focus(app.search)
-    win32gui.PostMessage(app.search, win32con.WM_KEYDOWN, win32con.VK_TAB, 1)
-    win32gui.PostMessage(app.search, win32con.WM_KEYUP, win32con.VK_TAB, -1073741823)
-    n.wait(lambda: app.focused() == mode, "Tab reaches mode selector")
-    win32gui.PostMessage(mode, win32con.WM_KEYDOWN, win32con.VK_TAB, 1)
-    win32gui.PostMessage(mode, win32con.WM_KEYUP, win32con.VK_TAB, -1073741823)
-    n.wait(lambda: app.focused() == app.results, "Tab reaches results")
+def change_query(app, query):
+    # Unlike app.search(), this deliberately does not wait for a matching row.
+    app.record('change query ' + query)
+    app.set_text(app.child(1102), query)
 
 
-def test_panel_switch_preserves_result_selection_and_scroll(launch, settings):
-    app = launch([settings[1]])
-    n.wait(lambda: app.status_text().startswith(("Ready.", "已就绪")), "loaded", 45)
-    app.query("file")
-    first, last = app.cell(0), app.cell(app.count() - 1)
-    app.select(3)
-    with deadline.operation('scroll last result row into view'):
-        app.row(-1).GetScrollItemPattern().ScrollIntoView()
-    top = app.top_row()
-    assert top > 0
-    anchor = app.cell(top)
-    offset = app.item_rect(top)[1]
-    app.command(1021)
-    assert n.is_visible(app.sources) and not n.is_visible(app.results)
-    app.command(1021)
-    assert not n.is_visible(app.sources)
-    app.command(1040)
-    assert (app.cell(0), app.cell(app.count() - 1)) == (first, last)
-    assert app.selected_row() == 3
-    top = app.top_row()
-    assert app.cell(top) == anchor
-    assert app.item_rect(top)[1] == offset
+def open_source_result(app, full_name, source, field):
+    """Select by the full name and source path exposed by the ListView row."""
+    results = app.child(1103)
+    matches = []
+    for index in range(int(app.list_command(results, 'GetItemCount'))):
+        lines = app.list_command(results, 'GetText', str(index)).split('\r\n')
+        if lines[0] == full_name and any(Path(line) == source for line in lines[1:]):
+            matches.append(index)
+    assert len(matches) == 1, (full_name, source, matches)
+    app.record('open result {} from {}'.format(full_name, source))
+    app.list_command(results, 'SelectClear')
+    app.list_command(results, 'Select', str(matches[0]))
+    win32gui.SendMessage(app.frame, win32con.WM_COMMAND, 1049, 0)  # Open in new window
+    until('source-specific declaration ' + field, lambda: field in app.editor().text_block())
+    return app.editor()
 
 
-def test_panel_refresh_and_programmatic_mode_selection_do_not_submit_search(launch, profile, settings):
-    app = launch([settings[1]])
-    app.query("CreateFileW")
-    app.select(0)
-    mode = n.get_item(app.frame, 1114)
-    before = (app.count(), app.cell(0), app.status_text(), profile.preferences())
-    with deadline.operation('expand search mode selector'):
-        combo = auto.ControlFromHandle(mode)
-        original_mode = combo.GetValuePattern().Value
-        combo.GetExpandCollapsePattern().Expand()
-    assert n.send(mode, win32con.CB_SETCURSEL, 1) == 1
-    with deadline.operation('read programmatically selected search mode'):
-        assert combo.GetValuePattern().Value != original_mode
-    n.send(app.frame, win32con.WM_SETTINGCHANGE)
-    app.command(1021)
-    app.command(1040)
-    assert (app.count(), app.cell(0), app.status_text(), profile.preferences()) == before
-    assert app.selected_row() == 0
-    with deadline.operation('collapse search mode selector'):
-        combo.GetExpandCollapsePattern().Collapse()
-    n.send(app.frame, win32con.WM_COMMAND, (win32con.CBN_SELENDCANCEL << 16) | 1114, mode)
-    with deadline.operation('read restored search mode'):
-        assert auto.ControlFromHandle(mode).GetValuePattern().Value == app.choices(mode)[0]
-    assert (app.count(), app.cell(0), app.status_text(), profile.preferences()) == before
-    assert app.selected_row() == 0
+def test_invalid_condition_recovers_in_condition_and_quick_modes(app, ui_text):
+    open_fixture(app, 'left')
+    app.search_mode(ui_text(2097))  # IDS_MODE_CONDITION
+    app.search('name = "GuiSearchFinalAmber"', expected='GuiSearchFinalAmber')
+    assert app.completed_result_names(ui_text(2025)) == ['GuiSearch.GuiSearchFinalAmber']
+
+    change_query(app, 'not_a_search_field = "GuiSearchFinalAmber"')
+    diagnostic = ui_text(2122)  # IDS_QUERY_FIELD
+    assert diagnostic
+    until('invalid condition diagnosed', lambda: diagnostic in app.text(app.child(1105)))
+    assert int(app.list_command(app.child(1103), 'GetItemCount')) == 0
+
+    app.search('name = "GuiSearchFinalCobalt"', expected='GuiSearchFinalCobalt')
+    assert app.completed_result_names(ui_text(2025)) == ['GuiSearch.GuiSearchFinalCobalt']
+    app.search_mode(ui_text(2090))  # IDS_MODE_COMBINED (quick search)
+    app.search('GuiSearchFinalQuartz')
+    assert app.completed_result_names(ui_text(2025)) == ['GuiSearch.GuiSearchFinalQuartz']
+    assert 'QuartzValue' in app.open_symbol('GuiSearchFinalQuartz').text_block()
 
 
-def test_search_after_scrolling_keeps_new_results_in_view(launch, settings):
-    app = launch([settings[1]])
-    n.wait(lambda: app.status_text().startswith(("Ready.", "已就绪")), "loaded", 45)
-    app.query("file")
-    for query in ("CreateFileW", "file"):
-        with deadline.operation('scroll results and read first row visibility'):
-            assert app.row(-1).GetScrollItemPattern().ScrollIntoView(waitTime=0)
-            n.wait(lambda: app.row(0).IsOffscreen, 'first result scrolled out of view', 15)
-        app.query(query)
-        with deadline.operation('read new result row visibility'):
-            assert not app.row(0).IsOffscreen
-        _, top, _, bottom = app.item_rect(0)
-        _, client_top, _, client_bottom = n.rectangle(app.results, client=True)
-        assert 0 <= top < bottom <= client_bottom - client_top
+def test_rapid_query_changes_leave_only_the_final_results(app, ui_text):
+    open_fixture(app, 'left')
+    app.search_mode(ui_text(2090))
+    # Exercise broad SDK searches as well as edits coalesced by the debounce.
+    # Each round has a new final name: a previous completed result cannot satisfy
+    # the positive barrier. No timing requirement assumes a worker was cancelled.
+    for suffix, field in [('Amber', 'AmberValue'), ('Cobalt', 'CobaltValue'),
+                          ('Quartz', 'QuartzValue')]:
+        for query in ['Windows', 'Create', '', 'Close', 'GuiSearchDiscard']:
+            change_query(app, query)
+            edit = app.child(1102)
+            win32gui.PostMessage(edit, win32con.WM_KEYDOWN, win32con.VK_RETURN, 0)
+            win32gui.PostMessage(edit, win32con.WM_KEYUP, win32con.VK_RETURN, 0)
+        name = 'GuiSearchFinal' + suffix
+        app.search(name)
+        assert app.completed_result_names(ui_text(2025)) == ['GuiSearch.' + name]
+        assert field in app.open_symbol(name).text_block()
 
 
-def test_ime_defers_search(launch, settings):
-    app = launch([settings[1]])
-    n.wait(lambda: app.status_text().startswith(("Ready.", "已就绪")), "loaded", 45)
-    idle_status = app.status_text()
+def test_same_named_results_open_the_selected_source(app, ui_text):
+    left = open_fixture(app, 'left')
+    right = open_fixture(app, 'right')
+    app.search_mode(ui_text(2097))
+    full_name = 'GuiSearch.GuiSearchSharedEntry'
+    app.search('fullname = "' + full_name + '"', expected='GuiSearchSharedEntry')
+    assert app.completed_result_names(ui_text(2025)) == [full_name, full_name]
 
-    def observe_composition():
-        # panel.rs::debounce schedules normal searches after 200 ms. Observe
-        # through that scheduling opportunity, not just one empty result count.
-        until = time.monotonic() + 0.2
-
-        def still_idle():
-            assert app.status_text() == idle_status, "search started during IME composition"
-            assert app.count() == 0, "results appeared during IME composition"
-            return time.monotonic() >= until
-
-        # Waiting already changes status (catalog.rs::search_status), so fail
-        # immediately even if the search has not produced any matching rows.
-        n.wait(still_idle, "search remains idle during IME composition", 15)
-
-    n.send(app.search, win32con.WM_IME_STARTCOMPOSITION)
-    with deadline.operation('set search text during IME composition'):
-        value = auto.ControlFromHandle(app.search).GetValuePattern()
-        assert value.SetValue('CreateFileW', waitTime=0)
-        n.wait(lambda: value.Value == 'CreateFileW', 'IME search text updated', 15)
-    app.focus(app.search)
-    n.send(app.search, win32con.WM_KEYDOWN, win32con.VK_RETURN, 1)
-    n.send(app.search, win32con.WM_KEYUP, win32con.VK_RETURN, -1073741823)
-    observe_composition()
-    n.send(app.search, win32con.WM_IME_ENDCOMPOSITION)
-    n.wait(lambda: app.count() > 0, "search after IME commit", 45)
-
-    mode = n.get_item(app.frame, 1114)
-    n.send(app.search, win32con.WM_IME_STARTCOMPOSITION)
-    with deadline.operation('set condition during IME composition'):
-        value = auto.ControlFromHandle(app.search).GetValuePattern()
-        assert value.SetValue('name = "CloseHandle"', waitTime=0)
-        n.wait(lambda: value.Value == 'name = "CloseHandle"', 'IME condition text updated', 15)
-    select_combo(mode, app.choices(mode)[1])
-    observe_composition()
-    n.send(app.search, win32con.WM_IME_ENDCOMPOSITION)
-    n.wait(lambda: app.named_rows("CloseHandle"), "mode search after IME commit", 45)
+    for source, present, absent in [(left, 'LeftOnlyValue', 'RightOnlyValue'),
+                                    (right, 'RightOnlyValue', 'LeftOnlyValue'),
+                                    (left, 'LeftOnlyValue', 'RightOnlyValue')]:
+        text = open_source_result(app, full_name, source, present).text_block()
+        assert present in text and absent not in text
 
 
-def test_search_syntax_help_preserves_query(launch, settings):
-    app = launch([settings[1]])
-    app.query("CrtFlW")
-    count = app.count()
-    dialog = open_help(app)
-    invoke(n.get_item(dialog, win32con.IDOK))
-    n.wait(lambda: not n.is_window(dialog), "help closed")
-    assert n.window_text(app.search) == "CrtFlW"
-    assert app.count() == count
+def test_adding_missing_dependency_resolves_field_layout(app, ui_text):
+    open_fixture(app, 'consumer')
+    app.search_mode(ui_text(2090))
+    original = app.open_symbol('GuiSearchHolder')
+    missing = original.text_block()
+    # The fixture embeds a two-int32 value type between uint32 fields, not a
+    # pointer. Without its definition the declaration survives but layout cannot.
+    assert 'GuiSearchPair Payload;' in missing
+    assert 'Layout unavailable:' in missing
+    assert 'size: 16 bytes, alignment: 4 bytes' not in missing
+
+    dependency = open_fixture(app, 'dependency')
+    app.search('GuiSearchPair')
+    app.completed_result_names(ui_text(2025))
+    # The consumer also contains a TypeRef with this name. Open the definition
+    # from the dependency rather than relying on the first result's kind/order.
+    pair = open_source_result(app, 'GuiSearchDependency.GuiSearchPair', dependency,
+                              'FirstValue').text_block()
+    assert 'FirstValue' in pair and 'SecondValue' in pair
+    assert 'size: 8 bytes, alignment: 4 bytes' in pair
+
+    resolved = app.open_symbol('GuiSearchHolder', new=True).text_block()
+    assert 'Layout unavailable:' not in resolved
+    assert 'size: 16 bytes, alignment: 4 bytes' in resolved
+    assert 'GuiSearchPair Payload;' in resolved
+    assert re.search(r'offset: 4 bytes, size: 8 bytes\s+[^\r\n]*\bPayload;', resolved)
+    assert re.search(r'offset: 12 bytes, size: 4 bytes\s+[^\r\n]*\bTailValue;', resolved)
+    original.activate()
+    assert original.text_block() == missing

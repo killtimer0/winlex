@@ -84,3 +84,7 @@ EMF+ resources for runtime tinting. The license text is included in
 
 [resvg-js 2.6.2](https://github.com/yisibl/resvg-js/tree/v2.6.2) is used to render
 the application icon under MPL-2.0. It is a development dependency.
+
+GUI tests use AutoItX under its separate AutoIt EULA and PyAutoIt under MIT.
+Their versions, binary provenance and complete license texts are retained in
+[tests/gui/licenses](tests/gui/licenses/THIRD-PARTY-NOTICES.md).

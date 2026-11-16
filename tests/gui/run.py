@@ -1,432 +1,530 @@
-"""Whole-run isolation, process-tree cleanup and a machine-readable final result."""
+"""Run GUI pytest once on an explicitly authorized local or SSH desktop."""
 import argparse
+import base64
+import hashlib
 import json
+import math
+import ntpath
 import os
-from pathlib import Path
-import re
+from pathlib import Path, PureWindowsPath
+import shutil
+import signal
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
-import winreg
-
-import support
-import win32api
-import win32con
-import win32event
-import win32job
-import win32process
-import win32service
-from support import atomic, engine
-from support import deadline as operation_deadline
-from support import jsonl, progress, supervisor
-from support.policy import Policy
-from support.results import merge, records
+import zipfile
 
 
-def arguments():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--desktop", choices=("isolated", "current"), default="isolated")
-    parser.add_argument("--timeout", type=float)
-    parser.add_argument("--case-timeout", type=float)
-    parser.add_argument("--stall-after", type=float)
-    parser.add_argument("--consecutive-stalls", type=int)
-    parser.add_argument("--engine", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--output")
-    args, tests = parser.parse_known_args()
-    interactive = "--real-input" in tests
-    if interactive and args.desktop != "current":
-        parser.error("--real-input requires --desktop current")
-    output = Path(args.output or ("tmp/gui-tests/" + uuid.uuid4().hex)).resolve()
-    if not args.engine and (output / "run.json").exists():
-        parser.error("Output contains a completed run; select a fresh directory")
-    output.mkdir(parents=True, exist_ok=True)
-    base = Policy.load()
-    args.policy = base.overrides(run=args.timeout, call=args.case_timeout,
-                                 stall=args.stall_after,
-                                 consecutive_stalls=args.consecutive_stalls)
-    if min(args.policy.run, args.policy.call, args.policy.stall,
-           args.policy.consecutive_stalls) <= 0:
-        parser.error("timeout budgets must be positive")
-    args.output_path = output
-    return args, tests
+HERE = Path(__file__).resolve().parent
+RESERVED = {"--exe", "--winmd", "--output", "--desktop-authorized", "--junitxml", "--junit-xml",
+            "-c", "--config-file", "--rootdir", "--confcutdir", "--pyargs"}
 
 
-def main():
-    args, tests = arguments()
-    if args.engine:
-        return engine_main(args, tests)
-    return supervised(args, tests)
+def clean_text(value, label):
+    if not isinstance(value, str) or not value or any(char in value for char in '\x00\r\n'):
+        raise ValueError(label + " must be a nonempty single-line string")
+    return value
 
 
-def supervised(args, tests):
-    policy = args.policy
-    output = args.output_path
-    # The engine must watch the directory this supervisor already resolved.
-    command = engine.command(output, tests, policy, args.desktop)
-    started = time.monotonic()
-    process = subprocess.Popen(command, env=os.environ.copy())
-    state = {'at': 0.0, 'key': None}
+def load_config(path):
+    config = json.loads(Path(path).read_text(encoding="utf-8-sig"))
+    if not isinstance(config, dict) or config.get("transport", "ssh") != "ssh":
+        raise ValueError("--config requires an SSH target; local execution requires --local")
+    host = clean_text(config.get("host"), "host")
+    if host.startswith("-") or any(char.isspace() for char in host):
+        raise ValueError("host must be a single SSH destination, not options")
+    for field in ("python", "root"):
+        value = clean_text(config.get(field), field)
+        if not PureWindowsPath(value).is_absolute():
+            raise ValueError(field + " must be an absolute Windows path")
+    # These characters are expanded by cmd.exe even in quoted executable paths.
+    if any(char in config["python"] for char in '%!"'):
+        raise ValueError("python path contains unsupported command-shell expansion characters")
+    if PureWindowsPath(config["python"]).name.casefold() != "python.exe":
+        raise ValueError("python must name python.exe (with pythonw.exe alongside it)")
+    port = config.get("port", 22)
+    if type(port) is not int or not 1 <= port <= 65535:
+        raise ValueError("port must be an integer from 1 to 65535")
+    config["port"] = port
+    config["key_file"] = str(Path(clean_text(config.get("key_file"), "key_file")).expanduser().resolve())
+    if not Path(config["key_file"]).is_file():
+        raise ValueError("key_file does not exist: " + config["key_file"])
+    if "sftp_drive_root" in config:
+        prefix = clean_text(config["sftp_drive_root"], "sftp_drive_root")
+        if not prefix.startswith("/") or '"' in prefix:
+            raise ValueError("sftp_drive_root must be an absolute SFTP prefix")
+    return config
 
-    def report(path, now):
-        current = progress.active(path)
-        if not current or not current.get('active') or current['elapsed'] < policy.slow_case:
-            return
-        key = (current['nodeid'], current['phase'], current.get('operation'))
-        if key == state['key'] and now - state['at'] < 5:
-            return
-        state.update(at=now, key=key)
-        print('[slow] %6.1fs %s %s: %s' % (current['elapsed'], current['nodeid'],
-                                           current['phase'], current.get('operation', '')),
-              flush=True)
 
-    try:
-        safe = supervisor.supervise_runner(process, output, policy.run, started,
-                                           on_tick=report, policy=policy)
-    except KeyboardInterrupt:
-        (output / 'cancel').touch()
+def sftp_path(path, config):
+    value = ntpath.normpath(str(path))
+    if value.startswith("\\\\?\\UNC\\"):
+        value = "\\\\" + value[8:]
+    elif value.startswith("\\\\?\\"):
+        value = value[4:]
+    if "sftp_drive_root" in config:
+        drive, tail = ntpath.splitdrive(value)
+        if len(drive) != 2 or drive[1] != ":":
+            raise ValueError("sftp_drive_root mapping requires a drive-letter path, not UNC")
+        return config["sftp_drive_root"].rstrip("/") + "/" + drive[0] + tail.replace("\\", "/")
+    return value.replace("\\", "/")
+
+
+def sftp_quote(path):
+    text = clean_text(str(path), "SFTP path")
+    return '"' + text.replace("\\", "/").replace('"', '\\"') + '"'
+
+
+def python_command(python, source):
+    encoded = base64.b64encode(source.encode("utf-8")).decode("ascii")
+    # Bitvise/cmd requires an outer pair in addition to the executable's quotes.
+    return ('""{}" -c "import sys,base64;sys.stdout.reconfigure(encoding=\'utf-8\');'
+            'sys.stderr.reconfigure(encoding=\'utf-8\');exec(base64.b64decode(\'{}\'))""'
+            .format(python, encoded))
+
+
+class SSH:
+    def __init__(self, config, deadline):
+        self.config = config
+        self.deadline = deadline
+
+    def options(self):
+        result = ["-oBatchMode=yes", "-oConnectTimeout=10"]
+        if "key_file" in self.config:
+            result += ["-i", self.config["key_file"]]
+        return result
+
+    def call(self, source, *, cleanup=False):
+        timeout = 25 if cleanup else max(0.01, min(25, self.deadline - time.monotonic()))
+        command = ["ssh", *self.options(), "-p", str(self.config["port"]), "--",
+                   self.config["host"], python_command(self.config["python"], source)]
+        completed = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   stdin=subprocess.DEVNULL, timeout=timeout)
+        if completed.returncode:
+            raise RuntimeError("SSH failed ({}): {}".format(
+                completed.returncode, completed.stderr.decode("utf-8", errors="replace").strip()))
+        return completed.stdout.decode("utf-8-sig").strip()
+
+    def transfer(self, commands, *, cleanup=False):
+        timeout = 40 if cleanup else max(0.01, self.deadline - time.monotonic())
+        command = ["sftp", *self.options(), "-P", str(self.config["port"]), "-b", "-", "--",
+                   self.config["host"]]
+        completed = subprocess.run(command, input=("\n".join(commands) + "\n").encode("utf-8"),
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
+        if completed.returncode:
+            raise RuntimeError("SFTP failed ({}): {}".format(
+                completed.returncode, completed.stderr.decode("utf-8", errors="replace").strip()))
+
+
+PREFLIGHT = r'''
+import ctypes, getpass, importlib.util, json, os, shutil, sys
+from ctypes import wintypes
+from pathlib import Path
+if os.name != 'nt' or sys.version_info < (3, 8):
+    raise RuntimeError('Target requires Windows and Python 3.8+')
+for module in ('pytest', 'pytest_timeout'):
+    if importlib.util.find_spec(module) is None:
+        raise RuntimeError('Target Python is missing ' + module)
+pythonw = Path(sys.executable).with_name('pythonw.exe')
+windows = list(sys.getwindowsversion()[:2])
+if not pythonw.is_file() or not shutil.which('taskkill.exe'):
+    raise RuntimeError('pythonw.exe and taskkill.exe are required')
+if windows[0] < 6:
+    from win32com.taskscheduler import taskscheduler
+elif not shutil.which('schtasks.exe'):
+    raise RuntimeError('schtasks.exe is required')
+class Session(ctypes.Structure):
+    _fields_ = [('id', wintypes.DWORD), ('station', wintypes.LPWSTR), ('state', ctypes.c_int)]
+wts = ctypes.WinDLL('wtsapi32', use_last_error=True)
+wts.WTSEnumerateSessionsW.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD,
+                                    ctypes.POINTER(ctypes.POINTER(Session)), ctypes.POINTER(wintypes.DWORD)]
+wts.WTSQuerySessionInformationW.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.c_int,
+                                         ctypes.POINTER(wintypes.LPWSTR), ctypes.POINTER(wintypes.DWORD)]
+wts.WTSFreeMemory.argtypes = [wintypes.LPVOID]
+sessions = ctypes.POINTER(Session)()
+count = wintypes.DWORD()
+if not wts.WTSEnumerateSessionsW(None, 0, 1, ctypes.byref(sessions), ctypes.byref(count)):
+    raise ctypes.WinError(ctypes.get_last_error())
+active = []
+try:
+    for session in sessions[:count.value]:
+        if session.state != 0:
+            continue
+        name, size = wintypes.LPWSTR(), wintypes.DWORD()
+        if not wts.WTSQuerySessionInformationW(None, session.id, 5, ctypes.byref(name), ctypes.byref(size)):
+            raise ctypes.WinError(ctypes.get_last_error())
         try:
-            safe = supervisor.supervise_runner(process, output, policy.run, started,
-                                               on_tick=report, policy=policy)
-        except KeyboardInterrupt:
-            process.kill()
-            process.wait()
-            raise
-    if not safe:
-        record = output / 'supervisor.json'
-        if record.exists():
-            print(json.loads(record.read_text(encoding='utf-8')).get('error', 'Runner failed'),
-                  file=sys.stderr, flush=True)
-        return 1
-    report_file = output / 'run.json'
-    if not report_file.exists():
-        print('Runner exited without run.json', file=sys.stderr, flush=True)
-        return 1
-    result = json.loads(report_file.read_text(encoding='utf-8'))
-    timing = progress.summary(output, policy.slow_case)
-    if timing['cases']:
-        print('GUI: %d cases, %.1fs, %d slow (>=%.0fs)' %
-              (timing['cases'], timing['seconds'], timing['slow'], policy.slow_case), flush=True)
-        for row in timing['slowest'][:10]:
-            print('  %6.1fs %s' % (row.get('duration', 0), row['nodeid']), flush=True)
-    return 0 if (result.get('exit_code') == 0 and result.get('cleanup_complete')
-                 and not result.get('cancelled') and not result.get('timed_out')) else 1
-
-
-def _cleanup(result, description, budget, action, *args):
-    """Run one bounded cleanup step and retain its failure."""
-    try:
-        with operation_deadline.operation(description, budget):
-            action(*args)
-    except Exception as error:
-        result['cleanup_errors'].append(str(error))
-
-
-def remove_profile(entry):
-    profile_root = entry.read_text(encoding='utf-8')
-    assert profile_root == "Software\\Winlex\\Tests\\" + entry.stem
-    try:
-        winreg.DeleteKey(winreg.HKEY_CURRENT_USER, profile_root)
-    except FileNotFoundError:
-        pass
-    entry.unlink()
-
-
-def recover_ledger(path):
-    from support.input_state import recover
-    recover(path)
-
-
-def read_report(result, report):
-    recorded = json.loads(report.read_text(encoding='utf-8'))
-    if not recorded['cleanup_complete']:
-        result['cleanup_errors'].extend(recorded['errors'])
-
-
-def verify_receipt(receipt, budget):
-    until = time.monotonic() + budget
-    while not receipt.exists() and time.monotonic() < until:
-        time.sleep(.05)
-    if not receipt.exists() or not json.loads(receipt.read_text(encoding='utf-8')).get('ok'):
-        raise RuntimeError('High-contrast recovery incomplete: ' + str(receipt))
-
-
-def release_input(mutex, owned):
-    if owned:
-        win32event.ReleaseMutex(mutex)
-    win32api.CloseHandle(mutex)
-
-
-def engine_main(args, tests):
-    policy = args.policy
-    output = args.output_path
-    args.until = time.monotonic() + policy.run
-    os.environ['WINLEX_TEST_POLICY'] = policy.dump()
-    attempts, excluded = [], set()
-    stalls = 0
-    folder = output
-    operation_deadline.configure(output, prefix='runner-')
-    operation_deadline.phase('runner', 'startup', policy.startup)
-    while True:
-        with (output / 'attempts.jsonl').open('a', encoding='utf-8') as stream:
-            stream.write(json.dumps({'directory': str(folder.relative_to(output))}) + '\n')
-        result = run_attempt(args, tests, folder, output, excluded, policy)
-        attempts.append((folder, result))
-        timeout = result.get('timeout')
-        if (output / "cancel").exists():
-            result['cancelled'] = True
-        if not timeout or not result['cleanup_complete'] or result['cancelled']:
-            break
-        selection_path = folder / 'selection.json'
-        if not selection_path.exists():
-            break
-        selection = json.loads(selection_path.read_text(encoding='utf-8'))
-        if timeout['nodeid'] not in selection:
-            break  # A collection failure has no safely resumable case boundary.
-        timings = records(folder / 'timings.jsonl')
-        excluded.update(row['nodeid'] for row in timings if row['phase'] == 'teardown')
-        excluded.add(timeout['nodeid'])
-        remaining = args.until - time.monotonic()
-        if not any(nodeid not in excluded for nodeid in selection) or remaining <= operation_deadline.DIAGNOSTIC_GRACE:
-            break
-        # A stall inside a case that already completed work is an isolated hang.
-        # Only a retry that completes nothing keeps the environment unproductive.
-        progressed = any(row['phase'] == 'teardown' for row in timings)
-        stalls = stalls + 1 if result.get('stalled') and not progressed else 0
-        if stalls >= policy.consecutive_stalls:
-            result['termination_reason'] = 'repeated_stalls'
-            break
-        folder = output / 'continued' / str(len(attempts))
-        operation_deadline.phase('runner', 'startup', min(policy.startup, remaining))
-    if any(result.get('timeout') for _, result in attempts):
-        counts = merge(attempts, output)
-        timeouts = [row['timeout'] for _, row in attempts if row.get('timeout')]
-        source = next((row for _, row in attempts
-                       if row.get('timeout') and row.get('termination_reason')), None)
-        result = dict(result, exit_code=1, timed_out=True, case_counts=counts,
-                      timeout=timeouts[0], case_timeouts=timeouts,
-                      termination_reason=(result.get('termination_reason') or
-                                          (source or {}).get('termination_reason') or
-                                          'case_timeout'),
-                      stalled=any(row.get('stalled') for _, row in attempts))
-    elif result['cleanup_complete'] and (result['timed_out'] or result['cancelled']):
-        # A stopped first worker cannot flush pytest's JUnit. Retain committed
-        # phases and mark its interrupted case without authorizing continuation.
-        result['case_counts'] = merge(attempts, output)
-    if result.get('timed_out') or result.get('cancelled'):
-        selection_path = output / 'selection.json'
-        if selection_path.exists():
-            selection = json.loads(selection_path.read_text(encoding='utf-8'))
-            completed = [row['nodeid'] for folder, _ in attempts
-                         for row in records(folder / 'timings.jsonl')
-                         if row['phase'] == 'teardown']
-            if completed:
-                result['last_completed'] = completed[-1]
-            timed_out = {row['timeout']['nodeid'] for _, row in attempts if row.get('timeout')}
-            result['remaining'] = sum(1 for nodeid in selection
-                                      if nodeid not in completed and nodeid not in timed_out)
-    atomic.write_json(output / 'run.json', result)
-    operation_deadline.close()
-    return 0 if (result['exit_code'] == 0 and result['cleanup_complete']
-                 and not result['cancelled'] and not result['timed_out']) else 1
-
-
-def run_attempt(args, tests, output, root, excluded, policy):
-    interactive = '--real-input' in tests
-    output.mkdir(parents=True, exist_ok=True)
-    job = win32job.CreateJobObject(None, "")
-    # CreateProcess inherits standard handles below, but must never inherit the
-    # kill-on-close job: a wedged descendant must not keep its own job alive.
-    win32api.SetHandleInformation(job, win32con.HANDLE_FLAG_INHERIT, 0)
-    limits = win32job.QueryInformationJobObject(job, win32job.JobObjectExtendedLimitInformation)
-    limits["BasicLimitInformation"]["LimitFlags"] = win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-    win32job.SetInformationJobObject(job, win32job.JobObjectExtendedLimitInformation, limits)
-    desktop = None
-    process = thread = None
-    assigned = False
-    input_mutex = None
-    input_owned = False
-    result = {"exit_code": None, "timed_out": False, "cancelled": False, "cleanup_complete": False, "cleanup_errors": []}
-    try:
-        if interactive:
-            input_mutex = win32event.CreateMutex(None, False, "Local\\Winlex.Tests.Input")
-            if win32event.WaitForSingleObject(input_mutex, 0) not in (win32con.WAIT_OBJECT_0, win32con.WAIT_ABANDONED):
-                win32api.CloseHandle(input_mutex)
-                input_mutex = None
-                raise RuntimeError("Another test owns input on this logon session")
-            input_owned = True
-            from support.input_state import InputState
-            InputState(output / "profiles" / "run-input.json").__enter__()
-        startup = win32process.STARTUPINFO()
-        if args.desktop == "isolated":
-            name = "Winlex.Test." + uuid.uuid4().hex
-            desktop = win32service.CreateDesktop(name, 0, 0x1ff, None)
-            startup.lpDesktop = "winsta0\\" + name
-        # pytest is a console program. Pass this runner's redirected handles
-        # explicitly: inheriting a console that a detached worker no longer has
-        # leaves pytest without usable stdout and exits before writing evidence.
-        startup.dwFlags |= win32process.STARTF_USESTDHANDLES
-        startup.hStdInput = win32api.GetStdHandle(win32api.STD_INPUT_HANDLE)
-        startup.hStdOutput = win32api.GetStdHandle(win32api.STD_OUTPUT_HANDLE)
-        startup.hStdError = win32api.GetStdHandle(win32api.STD_ERROR_HANDLE)
-        command = subprocess.list2cmdline([
-            sys.executable, "-X", "utf8", "-m", "pytest",
-            "--rootdir", str(Path(__file__).resolve().parents[2]), str(Path(__file__).parent),
-            "--artifacts", str(output), "--junitxml", str(output / "tests.xml"),
-            "-o", "cache_dir=" + str(output / "cache"), *tests,
-        ])
-        environment = {**os.environ, "WINLEX_TEST_LEDGER": str(output / "profiles"),
-                       "WINLEX_TEST_POLICY": policy.dump()}
-        environment['WINLEX_TEST_DEADLINE'] = str(args.until)
-        exclusion_file = output / 'excluded.json'
-        exclusion_file.write_text(json.dumps(sorted(excluded)), encoding='utf-8')
-        environment['WINLEX_TEST_EXCLUDE'] = str(exclusion_file)
-        environment.pop("WINLEX_TEST_REAL_INPUT", None)
-        if interactive:
-            environment["WINLEX_TEST_REAL_INPUT"] = "1"
-        # pytest inherits this runner's redirected handles. Handles received from
-        # the worker lost the inherit flag, so restore it for the child spawns.
-        console_handles = {int(value) for value in
-                           (startup.hStdInput, startup.hStdOutput, startup.hStdError) if value}
-        saved = {handle: win32api.GetHandleInformation(handle) for handle in console_handles}
-        for handle in console_handles:
-            win32api.SetHandleInformation(handle, win32con.HANDLE_FLAG_INHERIT,
-                                          win32con.HANDLE_FLAG_INHERIT)
-        try:
-            process, thread, _, _ = win32process.CreateProcess(
-                None, command, None, None, True, win32process.CREATE_SUSPENDED,
-                environment, str(Path(__file__).resolve().parents[2]), startup)
+            if name.value and name.value.casefold() == getpass.getuser().casefold():
+                active.append(session.id)
         finally:
-            for handle, flags in saved.items():
-                win32api.SetHandleInformation(handle, win32con.HANDLE_FLAG_INHERIT, flags)
-        win32job.AssignProcessToJobObject(job, process)
-        assigned = True
-        win32process.ResumeThread(thread)
-        operation_deadline.phase('runner', 'execution', max(.001, args.until - time.monotonic()))
-        outcome = supervisor.monitor_pytest(
-            process, output, policy, args.until, root / 'cancel',
-            on_tick=operation_deadline.progress,
-            poll=lambda: (None if win32event.WaitForSingleObject(process, 0) == win32con.WAIT_TIMEOUT
-                          else win32process.GetExitCodeProcess(process)))
-        if outcome.get('cancelled'):
-            result['cancelled'] = True
-        elif outcome.get('timed_out'):
-            result['timed_out'] = True
-            result['stalled'] = bool(outcome.get('stalled'))
-            result['termination_reason'] = ('stalled' if outcome.get('stalled') else
-                                            'budget_exhausted' if outcome.get('budget_exhausted') else
-                                            'case_timeout')
-            if outcome.get('timeout'):
-                result['timeout'] = outcome['timeout']
-            if outcome.get('budget_exhausted'):
-                result['budget_deadline'] = args.until
-                result['active_context'] = jsonl.committed(output / 'deadlines.jsonl')
-                result['pytest_stack'] = str(output / 'timeout-stacks.log')
-        else:
-            result['exit_code'] = outcome.get('exit_code')
-    except KeyboardInterrupt:
-        result["cancelled"] = True
-    except Exception as error:
-        result["error"] = str(error)
-    finally:
-        # Stop writers before freezing the cleanup inventory. This preparation
-        # has its own absolute ceiling; it cannot renew the execution budget.
-        cleanup_started = time.monotonic()
-        inventory_budget = policy.inventory + (policy.inventory if process and not assigned else 0) + policy.inventory
-        operation_deadline.phase('runner', 'cleanup-inventory', inventory_budget)
-        try:
-            if result.get('termination_reason') == 'budget_exhausted':
-                # Give the pytest timer its diagnostic grace before stopping
-                # the job. This neither renews execution nor resumes a case.
-                time.sleep(max(0, args.until + operation_deadline.DIAGNOSTIC_GRACE - time.monotonic()))
-            if process and not assigned:
-                win32process.TerminateProcess(process, 1)
-                if win32event.WaitForSingleObject(process, int(policy.cleanup_wait * 1000)) != win32con.WAIT_OBJECT_0:
-                    raise RuntimeError("Unassigned test process did not terminate")
-            win32job.TerminateJobObject(job, 1)
-            deadline = time.monotonic() + policy.cleanup_wait
-            while win32job.QueryInformationJobObject(job, win32job.JobObjectBasicAccountingInformation)["ActiveProcesses"]:
-                if time.monotonic() > deadline:
-                    raise RuntimeError("Job still has active processes")
-                time.sleep(.05)
-        except Exception as error:
-            result["cleanup_errors"].append(str(error))
-        profiles = list((output / 'profiles').glob('*.profile'))
-        reports = list(output.glob('*-cleanup.json'))
-        receipts, registered = set(), {}
-        for marker in output.iterdir():
-            # Other probes also publish ready/result files. Only this owned
-            # task-ID naming scheme denotes a high-contrast watchdog receipt.
-            match = re.fullmatch(r'(.+)\.([0-9a-f]{32})\.(?:ready|result\.json|recovery\.json)', marker.name)
-            if match:
-                stem, task_id = match.groups()
-                receipt = output / (stem + '.' + task_id + '.result.json')
-                receipts.add(receipt)
-                registered.setdefault(output / (stem + '.json'), set()).add(receipt)
-        # Ready files are transient. A registered snapshot or a completed result
-        # remains an obligation even after the watchdog removes its ready file.
-        for snapshot in output.glob('*.json'):
-            try:
-                saved = json.loads(snapshot.read_text(encoding='utf-8'))
-                if not isinstance(saved, dict) or not {'flags', 'scheme', 'context'} <= saved.keys():
-                    if snapshot in registered:
-                        raise RuntimeError('Invalid registered high-contrast snapshot: ' + str(snapshot))
-                    continue
-                if snapshot not in registered:
-                    result['cleanup_errors'].append('High-contrast recovery incomplete: no owned watchdog receipt for ' + str(snapshot))
-            except Exception as error:
-                if snapshot in registered:
-                    result['cleanup_errors'].append(str(error))
-        ledgers = [path for path in (output / 'profiles' / name for name in ('input.json', 'run-input.json'))
-                   if path.exists()]
-        ledger_budgets = {}
-        for path in ledgers:
-            try:
-                state = json.loads(path.read_text(encoding='utf-8'))
-                ledger_budgets[path] = policy.ledger_budget(len(state['held']), state.get('ime'))
-            except Exception as error:
-                result['cleanup_errors'].append(str(error))
-        handles = [handle for handle in (thread, process, job) if handle]
-        # A watchdog may need its native recovery cap (10s) followed by task
-        # cleanup (5s). A recovery marker alone is not a final success receipt.
-        cleanup_budget = inventory_budget + policy.cleanup_receipt * len(receipts) + policy.cleanup_step * (len(profiles) + len(reports) + len(handles)
-                               + bool(input_mutex) + bool(desktop) + 1) + sum(ledger_budgets.values())
-        plan = {'attempt': str(output.relative_to(root)), 'deadline': cleanup_started + cleanup_budget,
-                'budget': cleanup_budget, 'profiles': len(profiles), 'receipts': len(receipts),
-                'ledgers': len(ledgers), 'reports': len(reports), 'handles': len(handles),
-                'inventory_budget': inventory_budget}
-        with (root / 'runner-cleanup.jsonl').open('a', encoding='utf-8') as stream:
-            stream.write(json.dumps(plan) + '\n')
-        operation_deadline.phase('runner', 'cleanup', max(.001, plan['deadline'] - time.monotonic()))
-        for entry in profiles:
-            _cleanup(result, 'remove test profile', policy.cleanup_step, remove_profile, entry)
-        if input_owned and ledgers:
-            for path in ledgers:
-                if path in ledger_budgets:
-                    _cleanup(result, 'recover owned input ledger', ledger_budgets[path],
-                             recover_ledger, path)
-        elif ledgers:
-            result["cleanup_errors"].append("Input ledger exists without ownership of the active desktop")
-        for report in reports:
-            _cleanup(result, 'read cleanup report', policy.cleanup_step, read_report, result, report)
-        for receipt in receipts:
-            _cleanup(result, 'verify high-contrast recovery receipt', policy.cleanup_receipt,
-                     verify_receipt, receipt, policy.cleanup_receipt)
-        for handle in handles:
-            _cleanup(result, 'close test process/job handle', policy.cleanup_step,
-                     win32api.CloseHandle, handle)
-        if input_mutex:
-            _cleanup(result, 'release input ownership', policy.cleanup_step,
-                     release_input, input_mutex, input_owned)
-        if desktop:
-            _cleanup(result, 'close test desktop', policy.cleanup_step, desktop.CloseDesktop)
-        result["cleanup_complete"] = not result["cleanup_errors"]
-        # The root run.json is the queue's whole-run completion signal. Keep
-        # first-attempt evidence without publishing completion before resumes.
-        report = output / ('attempt-result.json' if output == root else 'run.json')
-        atomic.write_json(report, result)
+            wts.WTSFreeMemory(name)
+finally:
+    wts.WTSFreeMemory(sessions)
+if len(active) != 1:
+    raise RuntimeError('Exactly one logged-in active session for the SSH user is required')
+print(json.dumps({'pythonw': str(pythonw), 'session': active[0],
+                  'windows': windows, 'platform': sys.platform}))
+'''
+
+
+LEGACY_SCHEDULER = r'''
+import pythoncom
+from win32com.taskscheduler import taskscheduler
+scheduler = pythoncom.CoCreateInstance(taskscheduler.CLSID_CTaskScheduler, None,
+    pythoncom.CLSCTX_INPROC_SERVER, taskscheduler.IID_ITaskScheduler)
+'''
+
+
+def suite_files():
+    files = sorted(HERE.glob("*.py")) + [HERE / "pytest.ini"]
+    if not files[-1].is_file():
+        raise ValueError("GUI suite is missing pytest.ini")
+    files += sorted(path for path in (HERE / "licenses").rglob("*") if path.is_file())
+    files += sorted((HERE / "fixtures").glob("*.winmd"))
+    return files
+
+
+def input_hashes(sources):
+    result = []
+    for source, destination in sources:
+        with source.open("rb") as stream:
+            digest = hashlib.sha256()
+            for block in iter(lambda: stream.read(1024 * 1024), b''):
+                digest.update(block)
+        result.append({"path": str(destination), "sha256": digest.hexdigest()})
     return result
 
 
+def manifest(exe, winmd, output, args, timeout, files, probe_job=False, explicit_nodes=False):
+    return {"exe": str(exe), "winmd": str(winmd), "output": str(output),
+            "desktop_authorized": True, "timeout": timeout, "pytest_args": args, "files": files,
+            "probe_job": probe_job, "explicit_nodes": explicit_nodes}
+
+
+def extract_artifacts(archive, output):
+    with zipfile.ZipFile(archive) as package:
+        for name in package.namelist():
+            path = PureWindowsPath(name)
+            if path.root or path.drive or ".." in path.parts:
+                raise ValueError("Unsafe artifact archive member: " + name)
+        package.extractall(output)
+
+
+class TerminalProgress:
+    def __init__(self):
+        self.offset = 0
+        self.open_line = False
+
+    def append(self, text):
+        if text:
+            print(text, end='', flush=True)
+            self.offset += len(text)
+            self.open_line = True
+
+    def read(self, output):
+        try:
+            with (output / 'progress.txt').open('rb') as stream:
+                stream.seek(self.offset)
+                self.append(stream.read().decode('ascii'))
+        except FileNotFoundError:
+            pass
+
+    def finish(self):
+        if self.open_line:
+            print(flush=True)
+            self.open_line = False
+
+
+def remote_run(config, args, output, run_id):
+    deadline = time.monotonic() + args.timeout
+    ssh = SSH(config, deadline)
+    # No deployment, task creation or GUI launch before this read-only probe.
+    capability = json.loads(ssh.call(PREFLIGHT))
+    legacy = capability["windows"][0] < 6
+    remote = PureWindowsPath(config["root"]) / run_id
+    task = "WinlexGui-" + run_id
+    print("Target run: {}  task: {}".format(remote, task), flush=True)
+    launched = False
+    task_created = False
+    result_received = False
+    progress = TerminalProgress()
+    try:
+        ssh.call("from pathlib import Path\np=Path({!r})\np.mkdir(parents=True, exist_ok=False)\n"
+                 "[(p/n).mkdir() for n in ('bin', 'input', 'output')]".format(str(remote)))
+        with tempfile.TemporaryDirectory(prefix="winlex-gui-") as staging:
+            staging = Path(staging)
+            originals = [(path, path.relative_to(HERE).as_posix()) for path in suite_files()]
+            originals += [(args.exe, "bin/" + args.exe.name), (args.winmd, "input/" + args.winmd.name)]
+            sources = []
+            for source, relative in originals:
+                staged = staging / relative
+                staged.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, staged)
+                sources.append((staged, remote / relative))
+            value = manifest(remote / "bin" / args.exe.name, remote / "input" / args.winmd.name,
+                             remote / "output", args.pytest_args,
+                             max(0.01, deadline - time.monotonic()), input_hashes(sources),
+                             args.probe_job, args.explicit_nodes)
+            staged_manifest = staging / "manifest.json"
+            staged_manifest.write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
+            sources.append((staged_manifest, remote / "manifest.json"))
+            suite_dirs = sorted({str(destination.parent) for _, destination in sources})
+            ssh.call("from pathlib import Path\n"
+                     "[Path(p).mkdir(parents=True, exist_ok=True) for p in {!r}]".format(suite_dirs))
+            ssh.transfer(["put {} {}".format(sftp_quote(source),
+                                             sftp_quote(sftp_path(destination, config)))
+                          for source, destination in sources])
+        ssh.call("import sys,json\nfrom pathlib import Path\nsys.path.insert(0,{!r})\n"
+                 "from execute import verify_deployment,require_pytest_dependencies\n"
+                 "require_pytest_dependencies()\n"
+                 "verify_deployment(json.loads(Path({!r}).read_text(encoding='utf-8')))".format(
+                     str(remote), str(remote / "manifest.json")))
+        # Update only the remaining budget after transfer, not a new timeout.
+        ssh.call("import json\nfrom pathlib import Path\np=Path({!r})\n"
+                 "v=json.loads(p.read_text(encoding='utf-8'))\nv['timeout']={!r}\n"
+                 "p.write_text(json.dumps(v),encoding='utf-8')".format(
+                     str(remote / "manifest.json"), max(0.01, deadline - time.monotonic())))
+        command = subprocess.list2cmdline([capability["pythonw"], str(remote / "execute.py"),
+                                          "--manifest", str(remote / "manifest.json")])
+        task_created = True  # A lost SSH reply may still have created this UUID task.
+        if legacy:
+            ssh.call(LEGACY_SCHEDULER + "import win32api\n"
+                     "task=scheduler.NewWorkItem({!r})\n"
+                     "task.SetApplicationName({!r})\n"
+                     "task.SetParameters({!r})\n"
+                     "task.SetWorkingDirectory({!r})\n"
+                     "task.SetFlags(taskscheduler.TASK_FLAG_RUN_ONLY_IF_LOGGED_ON)\n"
+                     "task.SetAccountInformation(win32api.GetUserName(),None)\n"
+                     "task.QueryInterface(pythoncom.IID_IPersistFile).Save(None,True)".format(
+                         task, capability["pythonw"],
+                         subprocess.list2cmdline([str(remote / "execute.py"), "--manifest",
+                                                  str(remote / "manifest.json")]), str(remote)))
+        else:
+            # Today's midnight is in the past: only the explicit /Run starts this task.
+            create = ["schtasks.exe", "/Create", "/SC", "ONCE", "/ST", "00:00", "/TN", task,
+                      "/TR", command, "/IT"]
+            ssh.call("import subprocess\nfrom datetime import datetime\nnow=datetime.now()\n"
+                     "if now.hour == 0 and now.minute == 0:\n"
+                     " raise RuntimeError('Refusing midnight task creation: /ST must be in the past')\n"
+                     "subprocess.run({!r},check=True,stdin=subprocess.DEVNULL,"
+                     "stdout=subprocess.PIPE,stderr=subprocess.STDOUT)".format(create))
+        launched = True  # Treat an uncertain /Run response as potentially started.
+        if legacy:
+            ssh.call(LEGACY_SCHEDULER + "scheduler.Activate({!r}).Run()".format(task))
+        else:
+            ssh.call("import subprocess\nsubprocess.run({!r},check=True,stdin=subprocess.DEVNULL,"
+                     "stdout=subprocess.PIPE,stderr=subprocess.STDOUT)".format(
+                         ["schtasks.exe", "/Run", "/TN", task]))
+        while time.monotonic() < deadline:
+            # Read completion first: a published result guarantees the progress
+            # writer has exited, so this same query also drains the final bytes.
+            state = json.loads(ssh.call("import json\nfrom pathlib import Path\np=Path({!r})\n"
+                                       "r=p/'result.json'\n"
+                                       "result=json.loads(r.read_text(encoding='utf-8')) if r.is_file() else None\n"
+                                       "try:\n"
+                                       " with (p/'progress.txt').open('rb') as f:\n"
+                                       "  f.seek({!r})\n  progress=f.read().decode('ascii')\n"
+                                       "except FileNotFoundError:\n progress=''\n"
+                                       "print(json.dumps(dict(result=result,progress=progress)))".format(
+                                           str(remote / "output"), progress.offset)))
+            progress.append(state['progress'])
+            if state['result'] is not None:
+                result = state['result']
+                result_received = True
+                break
+            time.sleep(min(1, max(0, deadline - time.monotonic())))
+        else:
+            raise TimeoutError("Whole-run timeout expired")
+        progress.finish()
+        # Collection has a bounded grace period; it never restarts target execution.
+        ssh.call("import zipfile\nfrom pathlib import Path\np=Path({!r})\n"
+                 "with zipfile.ZipFile(str(p/'artifacts.zip'),'w',zipfile.ZIP_DEFLATED) as z:\n"
+                 " for f in (p/'output').rglob('*'):\n"
+                 "  if f.is_file(): z.write(str(f),str(f.relative_to(p/'output')))".format(str(remote)),
+                 cleanup=True)
+        archive = output / "artifacts.zip"
+        ssh.transfer(["get {} {}".format(sftp_quote(sftp_path(remote / "artifacts.zip", config)),
+                                        sftp_quote(archive))], cleanup=True)
+        extract_artifacts(archive, output)
+        archive.unlink()
+        return int(result["exit_code"])
+    except BaseException:
+        progress.finish()
+        if launched and not result_received:
+            try:
+                stop = (LEGACY_SCHEDULER + "scheduler.Activate({!r}).Terminate()".format(task)
+                        if legacy else "import subprocess\nsubprocess.run({!r},check=True,"
+                        "stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)"
+                        .format(["schtasks.exe", "/End", "/TN", task]))
+                detail = ssh.call("import sys,json\nfrom pathlib import Path\nsys.path.insert(0,{!r})\n"
+                                  "from execute import cancel_run\ndirectory=Path({!r})\n"
+                                  "if not (directory/'output'/'result.json').is_file():\n"
+                                  " (directory/'cancel.requested').touch()\n"
+                                  " if not (directory/'execute.pid').is_file():\n"
+                                  "  try:\n   exec({!r})\n"
+                                  "  except Exception as error:\n"
+                                  "   print('Task stop unconfirmed: '+str(error),file=sys.stderr)\n"
+                                  "print(json.dumps(cancel_run(directory)))"
+                                  .format(str(remote), str(remote), stop), cleanup=True)
+                print("Cancellation check: " + detail, file=sys.stderr)
+                (output / 'result.json').write_text(detail, encoding='utf-8')
+            except Exception as error:
+                print("RESULT UNKNOWN; target cleanup unconfirmed: {}".format(error), file=sys.stderr)
+        elif result_received:
+            print("Target completed, but artifact retrieval failed; do not replay.", file=sys.stderr)
+        print("Preserved target run: {}  task: {}".format(remote, task), file=sys.stderr)
+        raise
+    finally:
+        progress.finish()
+        if task_created:
+            try:
+                if legacy:
+                    ssh.call(LEGACY_SCHEDULER + "scheduler.Delete({!r})".format(task), cleanup=True)
+                else:
+                    ssh.call("import subprocess\nsubprocess.run({!r},check=True,stdin=subprocess.DEVNULL,"
+                             "stdout=subprocess.PIPE,stderr=subprocess.STDOUT)".format(
+                                 ["schtasks.exe", "/Delete", "/TN", task, "/F"]), cleanup=True)
+            except Exception as error:
+                print("Could not delete this run's task {}: {}".format(task, error), file=sys.stderr)
+
+
+def local_run(args, output):
+    # This branch is unreachable without both explicit local authorization flags.
+    import execute
+    execute.require_pytest_dependencies()
+    execute.require_interactive_desktop()
+    # Keep this run's source and manifest available even after uncertain cancellation.
+    folder = output / "suite"
+    folder.mkdir()
+    sources = []
+    for source in suite_files():
+        target = folder / source.relative_to(HERE)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+        sources.append((target, target))
+    sources += [(args.exe, args.exe), (args.winmd, args.winmd)]
+    path = folder / "manifest.json"
+    path.write_text(json.dumps(manifest(args.exe, args.winmd, output,
+                                        args.pytest_args, args.timeout, input_hashes(sources),
+                                        args.probe_job, args.explicit_nodes)),
+                    encoding="utf-8")
+    process = subprocess.Popen([sys.executable, str(folder / "execute.py"), "--manifest", str(path)],
+                               creationflags=subprocess.CREATE_NO_WINDOW)
+    progress = TerminalProgress()
+    try:
+        deadline = time.monotonic() + args.timeout + 20
+        while process.poll() is None:
+            progress.read(output)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(process.args, args.timeout + 20)
+            try:
+                process.wait(timeout=min(0.1, remaining))
+            except subprocess.TimeoutExpired:
+                pass
+        progress.read(output)
+        return process.returncode
+    except BaseException:
+        progress.finish()
+        try:
+            result_path = output / "result.json"
+            if process.poll() is None:
+                termination = execute.terminate_tree(process.pid)
+                process.wait(timeout=10)
+                if termination["taskkill_exit_code"] != 0:
+                    raise RuntimeError("Local execute tree termination unconfirmed")
+                if not result_path.is_file():
+                    cleanup = execute.cleanup_applications(output)
+                    cleanup.update(termination)
+                    execute.write_result(output, {"exit_code": 130, "timed_out": False,
+                                                   "cancelled": True, "cleanup": cleanup})
+            if not result_path.is_file():
+                raise RuntimeError("Execute ended without a final result; remaining tree unknown")
+            print("Cancellation check: " + result_path.read_text(encoding="utf-8"), file=sys.stderr)
+        except Exception as error:
+            print("RESULT UNKNOWN; cleanup unconfirmed: {}; run: {}".format(error, folder), file=sys.stderr)
+        raise
+    finally:
+        progress.finish()
+
+
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__, epilog="Pass pytest options after --.")
+    transport = parser.add_mutually_exclusive_group(required=True)
+    transport.add_argument("--local", action="store_true", help="use this computer's desktop")
+    transport.add_argument("--config", type=Path, help="SSH target JSON (never falls back locally)")
+    parser.add_argument("--allow-local-desktop", action="store_true", help="authorize local GUI activity")
+    parser.add_argument("--exe", required=True, type=Path, help="existing target-architecture Debug GUI EXE")
+    parser.add_argument("--winmd", required=True, type=Path, help="WinMD input to deploy")
+    parser.add_argument("--output", type=Path, help="empty local result directory")
+    parser.add_argument("--timeout", type=float, default=120, help="whole-run budget in seconds (default: 120)")
+    parser.add_argument("--probe-job", action="store_true", help="check Job containment only; never launch GUI/pytest")
+    parser.add_argument("pytest_args", nargs=argparse.REMAINDER)
+    args = parser.parse_args(argv)
+    if args.local and not args.allow_local_desktop:
+        parser.error("--local also requires --allow-local-desktop")
+    if args.config and args.allow_local_desktop:
+        parser.error("--allow-local-desktop is only valid with --local")
+    if not math.isfinite(args.timeout) or args.timeout <= 0:
+        parser.error("--timeout must be positive and finite")
+    if args.pytest_args[:1] == ["--"]:
+        args.pytest_args = args.pytest_args[1:]
+    if any(option.split("=", 1)[0] in RESERVED for option in args.pytest_args):
+        parser.error("pytest arguments must not override runner paths or desktop authorization")
+    # Catch accidental external test nodes, not every possible plugin argument grammar.
+    value_options = {"-k", "-m", "-o", "--override-ini", "--fault-mode", "--tb", "--capture",
+                     "--color", "--durations", "--maxfail", "--timeout", "--timeout-method",
+                     "--dpi-mode"}
+    skip = False
+    suite_names = {path.name for path in HERE.glob("test_*.py")} | {'fault_probe.py'}
+    args.explicit_nodes = False
+    for option in args.pytest_args:
+        if skip:
+            skip = False
+            continue
+        if option in value_options:
+            skip = True
+            continue
+        if option.startswith("-"):
+            continue
+        node = option.split("::", 1)[0]
+        path = PureWindowsPath(node)
+        if path.root or path.drive or ".." in path.parts:
+            parser.error("explicit pytest nodes must stay inside this GUI suite")
+        if node.endswith(".py") or "::" in option:
+            if len(path.parts) != 1 or path.name not in suite_names:
+                parser.error("explicit pytest nodes must be files in this GUI suite")
+            args.explicit_nodes = True
+    return args
+
+
+def main(argv=None):
+    if hasattr(signal, 'SIGBREAK'):
+        signal.signal(signal.SIGBREAK, signal.default_int_handler)
+    args = parse_args(argv)
+    try:
+        config = load_config(args.config) if args.config else None
+        for field in ("exe", "winmd"):
+            path = getattr(args, field).expanduser().resolve()
+            if not path.is_file():
+                raise ValueError("{} does not exist: {}".format(field, path))
+            setattr(args, field, path)
+        run_id = uuid.uuid4().hex
+        output = (args.output or HERE.parents[1] / "tmp" / "gui-tests" / run_id).expanduser().resolve()
+        if output.exists() and (not output.is_dir() or any(output.iterdir())):
+            raise ValueError("--output must be absent or empty")
+        output.mkdir(parents=True, exist_ok=True)
+        print("Local artifacts: " + str(output), flush=True)
+        return remote_run(config, args, output, run_id) if config else local_run(args, output)
+    except KeyboardInterrupt:
+        print("Cancelled; no run was replayed.", file=sys.stderr)
+        return 130
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError, TimeoutError) as error:
+        print(str(error), file=sys.stderr)
+        return 2
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    sys.exit(main())

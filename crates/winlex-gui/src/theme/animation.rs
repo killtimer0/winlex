@@ -80,10 +80,6 @@ thread_local! {
 }
 
 pub(super) fn animation<T: Default>(action: impl FnOnce(&AnimationApis) -> T) -> T {
-    #[cfg(test)]
-    if let Some(api) = test_support::OVERRIDE.with(|slot| slot.get()) {
-        return api.as_ref().map(action).unwrap_or_default();
-    }
     ANIMATION.with(|api| api.as_ref().map(action).unwrap_or_default())
 }
 
@@ -101,50 +97,5 @@ pub(super) fn client_animation_enabled() -> bool {
             0,
         ) != 0
             && enabled != 0
-    }
-}
-
-#[cfg(test)]
-pub(super) mod test_support {
-    use super::*;
-    use std::cell::Cell;
-
-    pub(in crate::theme) const EXPORTS: [&[u8]; 6] = [
-        b"BufferedPaintInit\0",
-        b"BufferedPaintUnInit\0",
-        b"BufferedPaintStopAllAnimations\0",
-        b"BufferedPaintRenderAnimation\0",
-        b"BeginBufferedAnimation\0",
-        b"EndBufferedAnimation\0",
-    ];
-
-    thread_local! {
-        pub(super) static OVERRIDE: Cell<Option<Option<AnimationApis>>> = const { Cell::new(None) };
-    }
-
-    pub(in crate::theme) fn scoped<T>(api: Option<AnimationApis>, action: impl FnOnce() -> T) -> T {
-        struct Restore(Option<Option<AnimationApis>>);
-        impl Drop for Restore {
-            fn drop(&mut self) {
-                OVERRIDE.with(|slot| slot.set(self.0));
-            }
-        }
-        let _restore = Restore(OVERRIDE.with(|slot| slot.replace(Some(api))));
-        action()
-    }
-
-    pub(in crate::theme) fn real() -> Option<AnimationApis> {
-        AnimationApis::load()
-    }
-
-    pub(in crate::theme) fn without(missing: &[u8]) -> Option<AnimationApis> {
-        let module = unsafe { GetModuleHandleW(w!("uxtheme.dll")) };
-        AnimationApis::load_with(|name| {
-            if name == missing {
-                None
-            } else {
-                unsafe { GetProcAddress(module, name.as_ptr()) }
-            }
-        })
     }
 }

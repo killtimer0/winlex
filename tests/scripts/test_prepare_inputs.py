@@ -7,6 +7,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
+import py7zr
 
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "prepare-inputs.py"
@@ -46,49 +47,51 @@ class PrepareInputsContracts(unittest.TestCase):
             prepare.install(path, b"expected", sha(b"expected"))
             self.assertEqual(path.read_bytes(), b"expected")
 
-    def test_default_prepares_only_build_dependencies(self):
-        with tempfile.TemporaryDirectory() as folder:
-            root = Path(folder)
-            inputs = root / "inputs"
-            inputs.mkdir()
-            thunks = {"version": "1", "url": "thunks", "archive_sha256": "thunks-hash",
-                      "objects": {"x86": sha(b"object")}}
-            ltl = {"version": "2", "url": "ltl", "archive_sha256": "ltl-hash",
-                   "libraries": {"platform": [{"name": "lib.lib", "sha256": sha(b"library")}]}}
-            (inputs / "yy-thunks-source.json").write_text(json.dumps(thunks), encoding="utf-8")
-            (inputs / "vc-ltl-source.json").write_text(json.dumps(ltl), encoding="utf-8")
-            (inputs / "targets.json").write_text(json.dumps({"x86": {
-                "thunks_arch": "x86", "vc_ltl_platform": "platform"}}), encoding="utf-8")
-            deps = root / "deps"
-            library = deps / "vc-ltl-2/sdk/TargetPlatform/platform/lib.lib"
-            library.parent.mkdir(parents=True)
-            library.write_bytes(b"library")
-            archive = deps / "yy-thunks-1/objects.zip"
-            archive.parent.mkdir()
-            with prepare.zipfile.ZipFile(archive, "w") as package:
-                package.writestr("objects/x86/YY_Thunks_for_WinXP.obj", b"object")
-            with patch.object(prepare, "ROOT", root), patch.object(prepare, "DEPS", deps), \
-                 patch("sys.argv", [str(SCRIPT)]), \
-                 patch.object(prepare, "download", side_effect=lambda url, path, digest: path) as download, \
-                 patch("py7zr.SevenZipFile"):
-                prepare.main()
-                self.assertEqual({(call.args[0], call.args[2]) for call in download.call_args_list},
-                                 {(item["url"], item["archive_sha256"]) for item in (thunks, ltl)})
-                self.assertEqual((deps / "yy-thunks-1/x86/YY_Thunks_for_WinXP.obj").read_bytes(), b"object")
-                library.write_bytes(b"corrupt")
-                with self.assertRaisesRegex(ValueError, "SHA256 mismatch"):
+    def test_prepares_selected_dependencies_from_verified_archives(self):
+        thunks_zip, ltl_7z = io.BytesIO(), io.BytesIO()
+        with prepare.zipfile.ZipFile(thunks_zip, 'w') as package:
+            package.writestr('objects/x86/YY_Thunks_for_WinXP.obj', b'object')
+        with py7zr.SevenZipFile(ltl_7z, 'w') as package:
+            for platform in ('x86', 'arm64'):
+                package.writestr(platform.encode(), 'TargetPlatform/' + platform + '/lib.lib')
+        thunks = dict(version='1', url='https://example.invalid/thunks',
+                      archive_sha256=sha(thunks_zip.getvalue()), objects={'x86': sha(b'object')})
+        ltl = dict(version='2', url='https://example.invalid/ltl',
+                   archive_sha256=sha(ltl_7z.getvalue()), libraries={
+                       arch: [dict(name='lib.lib', sha256=sha(arch.encode()))] for arch in ('x86', 'arm64')})
+        for architecture in (None, 'arm64'):
+            with self.subTest(architecture=architecture), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                inputs, deps = root / 'inputs', root / 'deps'
+                inputs.mkdir()
+                manifests = {'yy-thunks-source.json': thunks, 'vc-ltl-source.json': ltl,
+                             'targets.json': {arch: dict(vc_ltl_platform=arch,
+                                                        thunks_arch='x86' if arch == 'x86' else None)
+                                              for arch in ('x86', 'arm64')}}
+                for name, value in manifests.items():
+                    (inputs / name).write_text(json.dumps(value), encoding='utf-8')
+                payloads = {ltl['url']: ltl_7z.getvalue()}
+                if architecture is None:
+                    payloads[thunks['url']] = thunks_zip.getvalue()
+                def fetch(url, **kwargs):
+                    return io.BytesIO(payloads[url])
+                options = ['--architecture', architecture] if architecture else []
+                with patch.object(prepare, 'ROOT', root), patch.object(prepare, 'DEPS', deps), \
+                     patch('sys.argv', [str(SCRIPT), *options]), \
+                     patch.object(prepare.urllib.request, 'urlopen', side_effect=fetch):
                     prepare.main()
-
-    def test_arm64_preparation_does_not_fetch_thunks(self):
-        ltl = prepare.manifest("vc-ltl-source.json")
-        thunks = prepare.manifest("yy-thunks-source.json")
-        with patch("sys.argv", [str(SCRIPT), "--architecture", "arm64"]), \
-             patch.object(prepare, "download", side_effect=lambda url, path, digest: path) as download, \
-             patch("py7zr.SevenZipFile"), patch.object(prepare, "check"):
-            prepare.main()
-            urls = {call.args[0] for call in download.call_args_list}
-            self.assertIn(ltl["url"], urls)
-            self.assertNotIn(thunks["url"], urls)
+                    for arch in (('arm64',) if architecture else ('x86', 'arm64')):
+                        library = deps / 'vc-ltl-2/sdk/TargetPlatform' / arch / 'lib.lib'
+                        self.assertEqual(library.read_bytes(), arch.encode())
+                    obj = deps / 'yy-thunks-1/x86/YY_Thunks_for_WinXP.obj'
+                    if architecture:
+                        self.assertFalse((deps / 'yy-thunks-1').exists())
+                    else:
+                        self.assertEqual(obj.read_bytes(), b'object')
+                    self.assertFalse(list(inputs.glob('*.winmd')))
+                    (deps / 'vc-ltl-2/sdk.7z').write_bytes(b'corrupt')
+                    with self.assertRaisesRegex(ValueError, 'SHA256 mismatch'):
+                        prepare.main()
 
     def test_verify_local_inputs_checks_required_libraries_and_allows_extra_files(self):
         with tempfile.TemporaryDirectory(dir=SCRIPT.parents[1] / "tmp") as folder:
