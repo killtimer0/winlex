@@ -197,3 +197,24 @@ pub fn menu() -> anyhow::Result<HMENU> {
 pub fn dialog(id: u16) -> anyhow::Result<&'static [u8]> {
     data(5usize as *const u16, id)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn language_options_round_trip_without_ambiguity() {
+        for value in [Language::Auto, Language::English, Language::Chinese] {
+            assert_eq!(Language::from_name(value.name()), Some(value));
+            assert_eq!(LANGUAGES.iter().filter(|o| o.value == value).count(), 1);
+        }
+        for (i, option) in LANGUAGES.iter().enumerate() {
+            assert_ne!(option.label, 0);
+            for other in &LANGUAGES[..i] {
+                assert_ne!(option.name, other.name);
+                assert_ne!(option.label, other.label);
+            }
+        }
+        assert_eq!(Language::from_name("invalid"), None);
+    }
+}

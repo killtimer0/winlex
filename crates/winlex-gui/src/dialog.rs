@@ -417,3 +417,52 @@ impl Layout {
         Ok(false)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Header fields follow the documented DLGTEMPLATE and DLGTEMPLATEEX
+    // layouts. Distinct positions ensure x/y cannot be mistaken for cx/cy.
+    fn templates(cx: i16, cy: i16) -> [Vec<u8>; 2] {
+        let mut standard = Vec::new();
+        standard.extend_from_slice(&0u32.to_le_bytes()); // style
+        standard.extend_from_slice(&0u32.to_le_bytes()); // extended style
+        standard.extend_from_slice(&0u16.to_le_bytes()); // item count
+        let mut extended = Vec::new();
+        extended.extend_from_slice(&1u16.to_le_bytes()); // version
+        extended.extend_from_slice(&0xffffu16.to_le_bytes()); // signature
+        extended.extend_from_slice(&0u32.to_le_bytes()); // help ID
+        extended.extend_from_slice(&0u32.to_le_bytes()); // extended style
+        extended.extend_from_slice(&0u32.to_le_bytes()); // style
+        extended.extend_from_slice(&0u16.to_le_bytes()); // item count
+        for template in [&mut standard, &mut extended] {
+            for word in [-12i16, 27, cx, cy, 0, 0, 0] {
+                template.extend_from_slice(&word.to_le_bytes());
+            }
+        }
+        [standard, extended]
+    }
+
+    #[test]
+    fn standard_and_extended_templates_report_dialog_units() {
+        for template in templates(240, 135) {
+            let size = template_size(&template).unwrap();
+            assert_eq!((size.cx, size.cy), (240, 135));
+        }
+    }
+
+    #[test]
+    fn template_sizes_reject_truncation_and_nonpositive_dimensions() {
+        for (template, header_size) in templates(240, 135).into_iter().zip([18, 26]) {
+            for end in 0..header_size {
+                assert!(template_size(&template[..end]).is_err());
+            }
+        }
+        for (cx, cy) in [(0, 135), (240, 0), (-1, 135), (240, -1)] {
+            for template in templates(cx, cy) {
+                assert!(template_size(&template).is_err());
+            }
+        }
+    }
+}

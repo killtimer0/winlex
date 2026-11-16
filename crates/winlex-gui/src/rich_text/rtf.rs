@@ -71,3 +71,26 @@ fn append(out: &mut Vec<u8>, text: &[u16]) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn text_escapes_rtf_syntax_and_control_characters() {
+        let mut output = Vec::new();
+        append(
+            &mut output,
+            &"a\\{b}\t\rc".encode_utf16().collect::<Vec<_>>(),
+        );
+        assert_eq!(output, br"a\\\{b\}\tab \par c");
+    }
+
+    #[test]
+    fn unicode_uses_signed_utf16_units_with_fallbacks() {
+        let mut output = Vec::new();
+        append(&mut output, &"中😀".encode_utf16().collect::<Vec<_>>());
+        // RTF \u takes signed 16-bit values, including each surrogate unit.
+        assert_eq!(output, br"\u20013?\u-10179?\u-8704?");
+    }
+}

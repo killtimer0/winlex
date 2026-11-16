@@ -21,6 +21,7 @@ const THEMES: &[(Theme, &str, u16)] = &[
     (Theme::Light, "light", crate::resources::IDS_THEME_LIGHT),
     (Theme::Dark, "dark", crate::resources::IDS_THEME_DARK),
 ];
+
 impl Theme {
     fn name(self) -> &'static str {
         THEMES[self as usize].1
@@ -277,5 +278,58 @@ pub(super) fn save_window(ctx: &Context, hwnd: HWND) -> anyhow::Result<()> {
         .collect();
         key.set_bytes("Window", &bytes)?;
         ctx.with_sidebar(|sidebar| sidebar.save(&key))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_options_round_trip_without_ambiguity() {
+        for value in [Theme::System, Theme::Light, Theme::Dark] {
+            assert_eq!(Theme::from_name(value.name()), Some(value));
+            assert_eq!(THEMES.iter().filter(|o| o.0 == value).count(), 1);
+        }
+        for value in [
+            SearchEngine::Google,
+            SearchEngine::Bing,
+            SearchEngine::Baidu,
+        ] {
+            assert_eq!(SearchEngine::from_name(value.name()), Some(value));
+            assert_eq!(SEARCH_ENGINES.iter().filter(|o| o.0 == value).count(), 1);
+        }
+        for options in [
+            THEMES.iter().map(|o| (o.1, o.2)).collect::<Vec<_>>(),
+            SEARCH_ENGINES.iter().map(|o| (o.1, o.2)).collect(),
+        ] {
+            for (i, &(name, label)) in options.iter().enumerate() {
+                assert_ne!(label, 0);
+                for &(other_name, other_label) in &options[..i] {
+                    assert_ne!(name, other_name);
+                    assert_ne!(label, other_label);
+                }
+            }
+        }
+        assert_eq!(Theme::from_name("invalid"), None);
+        assert_eq!(SearchEngine::from_name("invalid"), None);
+    }
+
+    #[test]
+    fn search_urls_percent_encode_utf8_query_components() {
+        for (engine, prefix) in [
+            (SearchEngine::Google, "https://www.google.com/search?q="),
+            (SearchEngine::Bing, "https://www.bing.com/search?q="),
+            (SearchEngine::Baidu, "https://www.baidu.com/s?wd="),
+        ] {
+            for (query, encoded) in [
+                ("", ""),
+                ("AZaz09-_.~", "AZaz09-_.~"),
+                ("中 &+%#?=/", "%E4%B8%AD%20%26%2B%25%23%3F%3D%2F"),
+                ("😀", "%F0%9F%98%80"),
+            ] {
+                assert_eq!(engine.url(query), format!("{prefix}{encoded}"));
+            }
+        }
     }
 }

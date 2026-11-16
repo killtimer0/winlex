@@ -127,3 +127,41 @@ pub(super) unsafe extern "system" fn callback(
     let text = unsafe { std::slice::from_raw_parts(text, length as usize) };
     word_break(text, current.max(0) as usize, action)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn word_movement_does_not_split_surrogate_pairs() {
+        let text: Vec<_> = "a😀b".encode_utf16().collect();
+        for action in [
+            WB_LEFT,
+            WB_LEFTBREAK,
+            WB_MOVEWORDLEFT,
+            WB_RIGHT,
+            WB_RIGHTBREAK,
+            WB_MOVEWORDRIGHT,
+        ] {
+            for position in 0..=text.len() {
+                let result = word_break(&text, position, action);
+                assert!((0..=text.len() as i32).contains(&result));
+                assert_ne!(result, 2, "stopped inside surrogate pair");
+            }
+        }
+        assert_eq!(word_break(&text, 1, WB_MOVEWORDRIGHT), 3);
+        assert_eq!(word_break(&text, 3, WB_MOVEWORDLEFT), 1);
+    }
+
+    #[test]
+    fn word_movement_does_not_split_crlf() {
+        let text: Vec<_> = "a\r\nb".encode_utf16().collect();
+        assert_eq!(word_break(&text, 1, WB_MOVEWORDRIGHT), 3);
+        assert_eq!(word_break(&text, 3, WB_MOVEWORDLEFT), 1);
+        for action in [WB_MOVEWORDLEFT, WB_MOVEWORDRIGHT] {
+            for position in 0..=text.len() {
+                assert_ne!(word_break(&text, position, action), 2);
+            }
+        }
+    }
+}

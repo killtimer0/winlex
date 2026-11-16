@@ -268,3 +268,53 @@ fn decode_paths(bytes: &[u8]) -> Option<Vec<PathBuf>> {
     }
     Some(paths)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn multi_sz_preserves_windows_paths() {
+        let long = format!(r"\\?\C:\{}\元数据.winmd", "segment\\".repeat(40));
+        let paths = [r"C:\元数据\😀.winmd", r"\\server\share\types.winmd", &long];
+        // Independent REG_MULTI_SZ fixture: UTF-16 paths separated by NUL,
+        // with one additional terminating NUL after the final string.
+        let input = format!("{}\0\0", paths.join("\0"));
+        let bytes: Vec<_> = input.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        assert_eq!(
+            decode_paths(&bytes),
+            Some(paths.map(PathBuf::from).to_vec())
+        );
+    }
+
+    #[test]
+    fn multi_sz_preserves_unpaired_surrogates_in_paths() {
+        // Windows paths are WCHAR sequences, not necessarily Unicode strings.
+        let units = [0x43, 0x3a, 0x5c, 0xd800, 0x2e, 0x77];
+        let bytes: Vec<_> = units
+            .into_iter()
+            .chain([0, 0])
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        let paths = decode_paths(&bytes).unwrap();
+        assert_eq!(paths.len(), 1);
+        assert_eq!(
+            paths[0].as_os_str().encode_wide().collect::<Vec<_>>(),
+            units
+        );
+    }
+
+    #[test]
+    fn multi_sz_rejects_truncated_data() {
+        assert_eq!(decode_paths(&[0, 0, 0, 0]), Some(Vec::new()));
+        for bytes in [
+            &[][..],
+            &[0x41],
+            &[0x41, 0],
+            &[0x41, 0, 0, 0],
+            &[0x41, 0, 0, 0, 0],
+        ] {
+            assert!(decode_paths(bytes).is_none(), "{bytes:?}");
+        }
+    }
+}
