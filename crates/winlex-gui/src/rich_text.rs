@@ -6,8 +6,9 @@ use windows::Win32::UI::Controls::RichEdit::{
     CFM_BOLD, CFM_CHARSET, CFM_COLOR, CFM_FACE, CFM_ITALIC, CFM_SIZE, CFM_UNDERLINE, CHARFORMAT2W,
     CHARFORMATW, CHARRANGE, EDITSTREAM, EM_EXGETSEL, EM_EXSETSEL, EM_GETCHARFORMAT,
     EM_GETOLEINTERFACE, EM_GETSELTEXT, EM_GETZOOM, EM_SETBKGNDCOLOR, EM_SETCHARFORMAT,
-    EM_SETPARAFORMAT, EM_SETSCROLLPOS, EM_SETZOOM, EM_STREAMIN, IRichEditOle, ITextDocument,
-    PARAFORMAT, PARAFORMAT2, PFM_LINESPACING, PFM_RIGHTINDENT, PFM_STARTINDENT, SCF_ALL, SF_RTF,
+    EM_SETEDITSTYLE, EM_SETPARAFORMAT, EM_SETSCROLLPOS, EM_SETZOOM, EM_STREAMIN, IRichEditOle,
+    ITextDocument, PARAFORMAT, PARAFORMAT2, PFM_LINESPACING, PFM_RIGHTINDENT, PFM_STARTINDENT,
+    SCF_ALL, SES_NOIME, SF_RTF,
 };
 use windows_core::Interface;
 use winlex_core::DeclarationTarget;
@@ -333,6 +334,14 @@ pub fn create(parent: HWND, id: u16) -> anyhow::Result<HWND> {
             id,
         )
     }?;
+    // Read-only results never compose text. IME position queries can otherwise
+    // scroll the selection into view after the reading position was restored.
+    send(
+        hwnd,
+        EM_SETEDITSTYLE,
+        SES_NOIME as usize,
+        SES_NOIME as isize,
+    );
     let state = Box::into_raw(Box::new(EditorState {
         wheel: scroll::WheelState::default(),
         height: 0,

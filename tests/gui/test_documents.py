@@ -1,6 +1,9 @@
 """Document identity and lifetime contracts from the public GUI guide."""
 
-from driver import until
+import pytest
+import win32gui
+
+from driver import auto, until
 
 
 def test_preview_reuses_document_until_pinned(app):
@@ -70,7 +73,10 @@ def test_close_active_document_preserves_survivor_and_allows_reopen(app):
     assert survivor.selection_indices() == next_selection
 
 
+@pytest.mark.real_input
 def test_history_restores_reading_position_and_reopens_closed_declaration(app):
+    assert auto.AU3_WinActivateByHandle(app.frame)
+    until('history application foreground', lambda: win32gui.GetForegroundWindow() == app.frame)
     survivor = app.open_symbol('CloseHandle')
     survivor.select_architecture('x86')
     until('x86 architecture selected', lambda: survivor.architecture() == 'x86')
