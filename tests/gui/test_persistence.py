@@ -2,7 +2,28 @@
 from pathlib import Path
 
 import pytest
+import win32api
+import win32con
+import win32gui
 from driver import until
+
+
+def test_window_placement_survives_restart(app):
+    win32gui.ShowWindow(app.frame, win32con.SW_RESTORE)
+    original = win32gui.GetWindowRect(app.frame)
+    left, top, right, bottom = win32api.GetMonitorInfo(
+        win32api.MonitorFromWindow(app.frame))['Work']
+    width, height = min(900, right - left - 80), min(600, bottom - top - 80)
+    win32gui.SetWindowPos(app.frame, 0, right - width - 40, bottom - height - 40,
+                          width, height, win32con.SWP_NOZORDER)
+    saved = win32gui.GetWindowRect(app.frame)
+    assert saved != original
+    app.open_symbol('CreateFileW')
+    app.restart()
+    restored = win32gui.GetWindowRect(app.frame)
+    assert all(abs(a - b) <= 2 for a, b in zip(saved, restored)), (saved, restored)
+    app.open_symbol('CreateFileW')
+    app.find('lpFileName')
 
 
 @pytest.mark.timeout(120)

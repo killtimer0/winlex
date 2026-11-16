@@ -10,10 +10,8 @@ def test_search_read_find_and_exit(app):
     editor = app.open_symbol('CreateFileW')
     text = editor.text_block()
     assert 'CreateFileW' in text and 'HANDLE' in text
-    start, end = app.find('CreateFileW')
-    # Native selection offsets are UTF-16 units, not Python code point offsets.
-    selected = text.replace('\r\n', '\r').encode('utf-16-le')[start * 2:end * 2].decode('utf-16-le')
-    assert selected == 'CreateFileW'
+    app.find('CreateFileW')
+    assert editor.selected_text() == 'CreateFileW'
     app.close()
 
 
@@ -26,21 +24,19 @@ def test_history_returns_to_previous_declaration(app):
     until('history forward', lambda: 'CloseHandle' in app.editor().text_block())
 
 
-def test_file_dialog_cancel_preserves_search(app):
+def test_file_dialog_cancel_preserves_search(app, ui_text):
+    app.search('CloseHandle')
+    before = app.completed_result_names(ui_text(2025))
     app.cancel_file_dialog()
-    assert 'CloseHandle' in app.open_symbol('CloseHandle').text_block()
+    assert app.text(app.child(1102)) == 'CloseHandle'
+    assert app.completed_result_names(ui_text(2025)) == before
 
 
-def test_file_dialog_opens_metadata(app, metadata):
-    # A different source path must actually be committed; an ignored dialog
-    # cannot pass by reusing the catalog loaded through the command line.
-    app.command(1021)
-    before = app.source_count()
+def test_file_dialog_opens_metadata(app):
     added = app.output / 'additional 输入.winmd'
-    shutil.copyfile(metadata, added)
+    shutil.copyfile(Path(__file__).with_name('fixtures') / 'before.winmd', added)
     app.open_file(added)
-    until('additional source committed', lambda: app.source_count() == before + 1, 30)
-    assert 'CreateFileW' in app.open_symbol('CreateFileW').text_block()
+    assert 'OriginalField' in app.open_symbol('ReloadSnapshot').text_block()
 
 
 def test_source_reload_preserves_open_document_snapshot(app):

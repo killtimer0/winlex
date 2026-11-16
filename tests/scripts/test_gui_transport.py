@@ -138,7 +138,8 @@ def test_incomplete():
                 self.assertNotIn("Local artifacts:", result.stdout)
 
     def test_pytest_selection_fault_and_input_options_are_forwarded_unchanged(self):
-        options = ["-k", "space 中文", "--fault-mode", "driver-hang", "--real-input"]
+        options = ["-k", "space 中文", "--fault-mode", "driver-hang", "--real-input",
+                   "--dpi-mode", "pmv1"]
         args = transport.parse_args(["--config", "target.json", "--exe", "gui.exe",
                                      "--winmd", "input.winmd", "--", *options])
         self.assertEqual(args.pytest_args, options)

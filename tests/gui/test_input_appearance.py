@@ -52,11 +52,7 @@ def test_keyboard_regions_find_escape_history_and_close(app):
     auto.AU3_Send('lpFileName', 1)
     auto.AU3_Send('{ENTER}', 0)  # Commit possible IME composition, as in keyboard_search.
     until('typed find query', lambda: app.text(edit) == 'lpFileName')
-    def selected_parameter():
-        start, end = first.selection_indices()
-        text = first.text_block().replace('\r\n', '\r').encode('utf-16-le')
-        return text[start * 2:end * 2].decode('utf-16-le') == 'lpFileName'
-    until('keyboard find selects parameter', selected_parameter)
+    until('keyboard find selects parameter', lambda: first.selected_text() == 'lpFileName')
     auto.AU3_Send('{ESC}', 0)
     until('Escape returns to body', lambda: focused(app) == first.handle
           and not win32gui.IsWindowVisible(edit))

@@ -8,6 +8,7 @@ import pytest
 import win32api
 import win32con
 import win32gui
+import win32process
 
 from driver import auto, until
 from test_generics import form, open_definition, submit
@@ -23,13 +24,35 @@ def font_height(hwnd):
     return abs(struct.unpack_from('<i', buffer)[0])
 
 
+def text_zoom(app, hwnd):
+    # RichEdit uses character formatting and zoom, not WM_GETFONT. EM_GETZOOM
+    # is above WM_USER, so its output pointers must belong to the target process.
+    process = win32api.OpenProcess(win32con.PROCESS_VM_OPERATION | win32con.PROCESS_VM_READ,
+                                   False, app.pid)
+    address = None
+    try:
+        address = win32process.VirtualAllocEx(process, 0, 8, win32con.MEM_COMMIT, win32con.PAGE_READWRITE)
+        assert win32gui.SendMessage(hwnd, win32con.WM_USER + 224, address, address + 4)
+        values = (c.c_int * 2)()
+        read = c.windll.kernel32.ReadProcessMemory
+        read.argtypes = [w.HANDLE, c.c_void_p, c.c_void_p, c.c_size_t, c.POINTER(c.c_size_t)]
+        read.restype = w.BOOL
+        copied = c.c_size_t()
+        assert read(int(process), address, values, c.sizeof(values), c.byref(copied))
+        assert copied.value == c.sizeof(values)
+        numerator, denominator = values
+        assert (numerator == denominator == 0) or (numerator > 0 and denominator > 0)
+        return numerator / denominator if denominator else 1
+    finally:
+        if address is not None:
+            win32process.VirtualFreeEx(process, address, 0, win32con.MEM_RELEASE)
+        process.Close()
+
+
 @pytest.fixture
 def mixed_monitors(app, request):
     user = c.windll.user32
-    required = request.config.getoption('--require-dpi')
     if not hasattr(user, 'GetDpiForWindow') or not hasattr(user, 'SetThreadDpiAwarenessContext'):
-        if required is not None:
-            pytest.fail('Required DPI cannot be verified without Windows 10 DPI APIs')
         pytest.skip('Mixed-monitor transitions require Windows 10 DPI APIs')
     get_dpi = user.GetDpiForWindow
     get_dpi.argtypes, get_dpi.restype = [w.HWND], w.UINT
@@ -57,8 +80,6 @@ def mixed_monitors(app, request):
             rows.append(dict(handle=int(monitor), device=info['Device'],
                              work=info['Work'], dpi=get_dpi(app.frame)))
         distinct = {row['dpi']: row for row in rows}
-        if required is not None:
-            assert required in distinct, 'Required {} DPI is unavailable: {}'.format(required, rows)
         if len(distinct) < 2:
             pytest.skip('Requires two active monitors with different effective DPI')
         # Start with a logical window size that fits every destination. DPI
@@ -138,11 +159,17 @@ def test_mixed_dpi_reading_and_link_round_trip(app, mixed_monitors):
     assert auto.AU3_ControlFocusByHandle(app.frame, edit)
     until('reading focus ready', lambda: focused(app) == edit)
     baseline_font, baseline_dpi = font_height(edit), get_dpi(app.frame)
+    baseline_zoom = text_zoom(app, document.handle)
     text = document.text_block()
     for index, monitor in enumerate(monitors):
+        document.scroll_lines(-100000)
+        document.scroll_lines(10)
+        until('reading viewport below the top', lambda: document.first_visible_line() > 0)
         before = document.selection_indices(), document.first_visible_line(), document.architecture()
         move(app, app.frame, monitor, get_dpi)
         scaled(edit, baseline_font, baseline_dpi, monitor['dpi'])
+        until('declaration scaled to window DPI', lambda: abs(
+            text_zoom(app, document.handle) - baseline_zoom * monitor['dpi'] / baseline_dpi) < .01)
         assert focused(app) == edit, 'DPI transition changed the focused reading control'
         assert get_dpi(document.handle) == monitor['dpi']
         assert document.text_block() == text

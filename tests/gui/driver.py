@@ -111,6 +111,11 @@ class Declaration:
     def select(self, start, end):
         win32gui.SendMessage(self.handle, win32con.EM_SETSEL, start, end)
 
+    def selected_text(self):
+        start, end = self.selection_indices()
+        text = self.text_block().replace('\r\n', '\r').encode('utf-16-le')
+        return text[start * 2:end * 2].decode('utf-16-le')
+
     def context_action(self, identifier):
         self.activate()
         assert auto.AU3_WinActivateByHandle(self.app.frame)
@@ -340,7 +345,8 @@ class Winlex:
     def find(self, text):
         self.find_query(text)
         editor = self.editor()
-        until('find selection', lambda: editor.selection_indices()[1] > editor.selection_indices()[0])
+        until('find selection matching ' + text,
+              lambda: editor.selected_text().casefold() == text.casefold())
         return editor.selection_indices()
 
     def file_dialog(self):

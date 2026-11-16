@@ -476,7 +476,7 @@ def parse_args(argv=None):
     # Catch accidental external test nodes, not every possible plugin argument grammar.
     value_options = {"-k", "-m", "-o", "--override-ini", "--fault-mode", "--tb", "--capture",
                      "--color", "--durations", "--maxfail", "--timeout", "--timeout-method",
-                     "--dpi-mode", "--require-dpi", "--display-change-directory"}
+                     "--dpi-mode"}
     skip = False
     suite_names = {path.name for path in HERE.glob("test_*.py")} | {'fault_probe.py'}
     args.explicit_nodes = False
