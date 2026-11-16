@@ -92,6 +92,13 @@ pub(super) unsafe extern "system" fn document_proc(
                 return result;
             }
             WM_CREATE => {
+                // Default MDI creation does not support WS_CLIPCHILDREN in dwStyle.
+                // Keep background erasure from painting over hosted controls.
+                SetWindowLongW(
+                    hwnd,
+                    GWL_STYLE,
+                    GetWindowLongW(hwnd, GWL_STYLE) | WS_CLIPCHILDREN as i32,
+                );
                 let create = &*(l as *const CREATESTRUCTW);
                 let mdi_create = &*(create.lpCreateParams as *const MDICREATESTRUCTW);
                 let init = &mut *(mdi_create.lParam as *mut Init);

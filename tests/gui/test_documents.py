@@ -1,9 +1,37 @@
 """Document identity and lifetime contracts from the public GUI guide."""
 
+import ctypes
+from ctypes import wintypes
+
 import pytest
+import win32con
 import win32gui
 
 from driver import auto, until
+
+
+def test_document_background_drawing_excludes_hosted_editor(app):
+    editor = app.open_symbol('CreateFileW')
+    document = editor.window()
+    visible = ctypes.WinDLL('gdi32').PtVisible
+    visible.argtypes = [wintypes.HDC, ctypes.c_int, ctypes.c_int]
+    visible.restype = wintypes.BOOL
+    for state in (win32con.SW_RESTORE, win32con.SW_MAXIMIZE):
+        win32gui.ShowWindow(document, state)
+
+        def clipped():
+            x1, y1, x2, y2 = win32gui.GetWindowRect(editor.handle)
+            point = win32gui.ScreenToClient(document, ((x1 + x2) // 2, (y1 + y2) // 2))
+            dc = win32gui.GetDC(document)
+            assert dc
+            try:
+                assert visible(dc, 0, 0), 'Document background must remain drawable'
+                assert not visible(dc, *point), 'Parent background must not overwrite editor pixels'
+            finally:
+                win32gui.ReleaseDC(document, dc)
+            return True
+
+        until('document drawing excludes its editor', clipped)
 
 
 def test_preview_reuses_document_until_pinned(app):
