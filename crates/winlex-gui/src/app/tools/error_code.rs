@@ -56,6 +56,8 @@ pub(in crate::app) struct View {
     browse: HWND,
     query: HWND,
     tooltip: HWND,
+    // Programmatic control updates must not invalidate the current query.
+    setting: Cell<bool>,
     revision: Cell<u64>,
     query_ticket: Cell<Option<u64>>,
     languages_ticket: Cell<Option<u64>>,
@@ -85,6 +87,7 @@ impl View {
             browse: std::ptr::null_mut(),
             query: std::ptr::null_mut(),
             tooltip: std::ptr::null_mut(),
+            setting: Cell::new(true),
             revision: Cell::new(0),
             query_ticket: Cell::new(None),
             languages_ticket: Cell::new(None),
@@ -117,7 +120,7 @@ impl View {
         self.execute();
         self.focus();
     }
-    fn command(&self, id: u16, code: u32) -> bool {
+    pub(super) fn command(&self, id: u16, code: u32) -> bool {
         if self.setting.get() {
             return false;
         }
@@ -544,10 +547,6 @@ impl View {
             self.input,
             || self.execute(),
         )
-    }
-    pub fn message(&self, msg: u32, w: usize, l: isize) -> Option<isize> {
-        self.shell
-            .message(msg, w, l, |id, code| self.command(id, code))
     }
     pub fn destroy(&self) {
         if let Some(id) = self.query_ticket.take() {

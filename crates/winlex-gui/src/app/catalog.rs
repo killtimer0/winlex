@@ -250,14 +250,14 @@ pub(super) fn input_changed(ctx: &Context) {
         ctx,
         super::status::StatusContext::Panel(super::panel::PanelId::Search),
     );
-    let (input, composing) = super::panel::cancel_debounce(ctx);
+    let (input, composing) = super::search::cancel_debounce(ctx);
     let cancelled = ctx.with_session_mut(|session| session.reset_search());
     if let Some(id) = cancelled {
         ctx.cancel_job(id);
     }
     update_results(ctx);
     if !composing && !text(input).trim().is_empty() {
-        let state = match super::panel::debounce(ctx, input) {
+        let state = match super::search::debounce(ctx, input) {
             Ok(()) => Search::Waiting,
             Err(e) => Search::Failed(e),
         };
@@ -266,12 +266,12 @@ pub(super) fn input_changed(ctx: &Context) {
     super::status::refresh_status(ctx);
 }
 pub(super) fn search(ctx: &Context) {
-    let (input, composing) = super::panel::cancel_debounce(ctx);
+    let (input, composing) = super::search::cancel_debounce(ctx);
     if composing {
         return;
     }
     let query = text(input).trim().to_owned();
-    let mode = super::panel::search_mode(ctx);
+    let mode = super::search::search_mode(ctx);
     let categories = settings::categories(ctx);
     let mut submitted = None;
     let cancelled = ctx.with_session_mut(|session| {

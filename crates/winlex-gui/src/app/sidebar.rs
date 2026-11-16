@@ -1,7 +1,8 @@
 //! Sidebar visibility, toolbar, width and focus handoff.
 use super::{
     bind,
-    panel::{self, Panel, PanelId, Search},
+    panel::{Panel, PanelId},
+    search::{self, Search},
 };
 use crate::app::context::Context;
 use crate::{
@@ -54,7 +55,7 @@ impl Sidebar {
     pub fn owner(&self, hwnd: HWND) -> Option<Rc<Panel>> {
         self.panels
             .iter()
-            .find(|p| p.controls.contains(&hwnd))
+            .find(|p| p.controls().any(|control| control == hwnd))
             .cloned()
     }
     /// The visible panel, if the sidebar is expanded.
@@ -132,7 +133,12 @@ pub(super) fn create(ctx: &Context, frame: HWND) -> anyhow::Result<()> {
             anyhow::bail!("Add panel toolbar button failed");
         }
     }
-    let (panels, search) = panel::create(ctx, frame)?;
+    let (search_panel, search) = search::create(ctx, frame)?;
+    let panels = [
+        search_panel,
+        super::sources::create(ctx, frame)?,
+        super::tools::panel::create(ctx, frame)?,
+    ];
     ctx.with_sidebar_mut(|sidebar| {
         sidebar.panels = panels.into();
         sidebar.search = Some(search);
@@ -170,7 +176,7 @@ fn sync_visibility(ctx: &Context) {
             id.presentation().0 as usize,
             isize::from(visible),
         );
-        for &control in &panel.controls {
+        for control in panel.controls() {
             crate::native::show(control, visible);
         }
     }
@@ -193,7 +199,7 @@ pub(super) fn prepare(ctx: &Context) {
     for panel in panels {
         panel.prepare(ctx, &m);
     }
-    super::tools::refresh(ctx);
+    super::tools::panel::refresh(ctx);
     ctx.checked(search(ctx).prepare(&m));
 }
 fn update_images(ctx: &Context, toolbar: HWND, size: i32) {
@@ -235,7 +241,7 @@ pub(super) fn layout(ctx: &Context, bottom: i32, positions: &mut Vec<(HWND, RECT
     match panel.id {
         PanelId::Search => search(ctx).layout(ctx, &mut area, &m, positions),
         PanelId::Sources | PanelId::Tools => {
-            m.buttons(&mut area, panel.controls[1..].iter().copied(), positions)
+            m.buttons(&mut area, panel.buttons.iter().copied(), positions)
         }
     }
     positions.push((panel.list.hwnd, area));

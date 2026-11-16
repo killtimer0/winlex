@@ -1,5 +1,5 @@
 //! Frame menu commands and their enabled/checked state.
-use super::{catalog, help, history, panel, settings, sidebar, sources, status, tools, workspace};
+use super::{help, history, panel, settings, sidebar, sources, status, workspace};
 use crate::app::context::Context;
 use crate::{layout::Arrangement, native::*, resources::*};
 use windows_sys::Win32::System::SystemServices::{
@@ -91,10 +91,7 @@ pub(super) fn command(ctx: &Context, id: u16) -> bool {
             }
         }
         CLOSE => workspace::close_document(ctx, workspace::active(ctx)),
-        OPEN_RESULT if sidebar::active(ctx) == panel::PanelId::Tools => tools::selected(ctx, false),
-        OPEN_NEW if sidebar::active(ctx) == panel::PanelId::Tools => tools::selected(ctx, true),
-        OPEN_RESULT => catalog::open_selected(ctx, catalog::Open::Pin),
-        OPEN_NEW => catalog::open_selected(ctx, catalog::Open::New),
+        OPEN_RESULT | OPEN_NEW => panel::open_selected(ctx, id == OPEN_NEW),
         EXIT => {
             send(ctx.frame(), WM_CLOSE, 0, 0);
         }

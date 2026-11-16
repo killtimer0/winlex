@@ -136,7 +136,6 @@ impl View {
         }
         send(self.input, EM_SETLIMITTEXT, 4096, 0);
         self.shell.subclass_text(self.input)?;
-        self.setting.set(false);
         Ok(())
     }
     fn execute(&self) {
@@ -207,14 +206,20 @@ impl View {
             render_activation(&mut output, activated, &labels);
         }
         let copy = output.text.trim_end().to_owned();
-        let status = resources::format(
-            IDS_COM_STATUS,
-            &[
-                &report.groups.len().to_string(),
-                &self.type_libraries.borrow().len().to_string(),
-                &warnings.len().to_string(),
-            ],
-        );
+        let status = if self.activate_ticket.get().is_some() {
+            resources::text(IDS_COM_ACTIVATE_RUNNING)
+        } else if self.type_lib_ticket.get().is_some() {
+            resources::text(IDS_COM_TYPELIB_LOADING)
+        } else {
+            resources::format(
+                IDS_COM_STATUS,
+                &[
+                    &report.groups.len().to_string(),
+                    &self.type_libraries.borrow().len().to_string(),
+                    &warnings.len().to_string(),
+                ],
+            )
+        };
         self.shell
             .show(crate::rich_text::Content::from(output), copy, &status);
         self.update_actions();
@@ -266,7 +271,6 @@ impl View {
         }
         if self.submit(&self.activate_ticket, ToolJob::Activate { guid }) {
             self.activated.replace(None);
-            self.set_status(&resources::text(IDS_COM_ACTIVATE_RUNNING));
             self.present();
         }
     }
@@ -404,8 +408,8 @@ impl View {
                 self.execute()
             })
     }
-    pub fn message(&self, msg: u32, w: usize, l: isize) -> Option<isize> {
-        self.shell.message(msg, w, l, |id, code| match id {
+    pub(super) fn command(&self, id: u16, code: u32) -> bool {
+        match id {
             COM_QUERY if code == BN_CLICKED => {
                 self.execute();
                 true
@@ -423,13 +427,13 @@ impl View {
                 true
             }
             COM_KIND | COM_VIEW if code == CBN_SELENDOK => {
-                if !self.setting.get() && !text(self.input).is_empty() {
+                if !text(self.input).is_empty() {
                     self.execute();
                 }
                 true
             }
             _ => false,
-        })
+        }
     }
     pub fn destroy(&self) {
         if let Some(id) = self.type_lib_ticket.take() {

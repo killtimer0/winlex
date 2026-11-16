@@ -180,8 +180,8 @@ impl View {
     pub fn key(&self, msg: &MSG) -> bool {
         self.ctrl_a(msg, &[self.input, self.result])
     }
-    pub fn message(&self, msg: u32, w: usize, l: isize) -> Option<isize> {
-        self.shell.message(msg, w, l, |id, code| match id {
+    pub(super) fn command(&self, id: u16, code: u32) -> bool {
+        match id {
             DEMANGLE_INPUT if code == EN_CHANGE => {
                 self.refresh();
                 true
@@ -195,7 +195,7 @@ impl View {
                 true
             }
             _ => false,
-        })
+        }
     }
     pub fn destroy(&self) {}
 }

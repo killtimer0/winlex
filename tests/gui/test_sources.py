@@ -1,7 +1,23 @@
 """Closing a source removes search candidates, not open document snapshots."""
 from pathlib import Path
 
+import pytest
+import win32con
+import win32gui
+
 from driver import until
+
+
+@pytest.mark.parametrize('command', [1050, 1049])  # Open / open in new document
+def test_source_panel_open_does_not_use_hidden_search_selection(app, command):
+    original = app.open_symbol('CloseHandle')
+    document = app.document()
+    declaration = original.text_block()
+    app.select_result('CreateFileW')
+    win32gui.SendMessage(app.frame, win32con.WM_COMMAND, 1021, 0)  # Sources
+    win32gui.SendMessage(app.frame, win32con.WM_COMMAND, command, 0)
+    assert app.document() == document
+    assert original.text_block() == declaration
 
 
 def test_closed_source_keeps_document_and_architecture_switching(app, metadata, ui_text):

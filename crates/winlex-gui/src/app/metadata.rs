@@ -233,16 +233,20 @@ impl MetadataView {
         self.set_content(crate::rich_text::Content::new(body));
     }
     fn set_content(&self, content: crate::rich_text::Content) {
+        if super::status::report(
+            self.ctx(),
+            crate::rich_text::set_content(self.editor, &content),
+        )
+        .is_none()
+        {
+            return;
+        }
         let content = Rc::new(content);
         {
             let mut state = self.state.borrow_mut();
             state.clear_interactions();
             state.content = Some(content.clone());
         }
-        super::status::report(
-            self.ctx(),
-            crate::rich_text::set_content(self.editor, &content),
-        );
         self.find.refresh(self.editor, false);
     }
     fn select_architecture(&self, code: u32) {
@@ -615,8 +619,30 @@ impl MetadataView {
         }
         true
     }
-    pub(super) fn color(&self, control: HWND, dc: HDC) -> Option<isize> {
-        self.info.color(control, dc)
+    pub(super) fn message(&self, msg: u32, w: usize, l: isize) -> Option<isize> {
+        match msg {
+            document::FOLLOW_REFERENCE => {
+                if self.id == w as u32 as u64 | ((l as u32 as u64) << 32) {
+                    self.follow_reference();
+                }
+                Some(0)
+            }
+            WM_NOTIFY => {
+                let header = unsafe { (l as *const NMHDR).read_unaligned() };
+                if header.hwndFrom == self.editor
+                    && header.code == windows::Win32::UI::Controls::RichEdit::EN_SELCHANGE
+                {
+                    self.find.count(self.editor, false);
+                    Some(0)
+                } else {
+                    None
+                }
+            }
+            WM_COMMAND if self.command(w as u16, (w >> 16) as u32) => Some(0),
+            WM_CONTEXTMENU if self.context_menu(w as HWND, l) => Some(0),
+            WM_CTLCOLORSTATIC => self.info.color(l as HWND, w as HDC),
+            _ => None,
+        }
     }
     pub(super) fn destroy(&self) {
         if let Some(ticket) = &self.state.borrow().ticket {
@@ -628,9 +654,6 @@ impl MetadataView {
         self.find
             .key(self.editor, msg)
             .is_some_and(|id| self.command(id, 0))
-    }
-    pub(super) fn selection_changed(&self) {
-        self.find.count(self.editor, false);
     }
 
     fn open_target(&self, binding: Binding, target: DeclarationTarget) {

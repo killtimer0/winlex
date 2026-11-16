@@ -1,10 +1,9 @@
-//! Tool identity, list presentation and instance hosting.
+//! Tool identity and document instance hosting.
 use super::{history, workspace};
 use crate::app::context::Context;
 use crate::{
     icons::Icon,
     layout::{self, Placement},
-    list::{Display, TextSegment},
     native::*,
     resources::{self, *},
 };
@@ -14,6 +13,7 @@ use std::rc::Rc;
 mod com;
 mod demangle;
 mod error_code;
+pub(in crate::app) mod panel;
 
 /// Shared tool subclass: Tab stays inside single-line inputs and IME composition
 /// is flagged so Enter does not submit a half-composed value.
@@ -72,9 +72,6 @@ pub(super) struct Shell {
     body: RefCell<crate::rich_text::Content>,
     plain: RefCell<String>,
     find: super::find::Find,
-    /// Set while the view updates its own controls, so their notifications are
-    /// not mistaken for user edits.
-    pub(super) setting: Cell<bool>,
 }
 
 impl Shell {
@@ -94,7 +91,6 @@ impl Shell {
             body: RefCell::new(crate::rich_text::Content::new(String::new())),
             plain: RefCell::new(String::new()),
             find: super::find::Find::default(),
-            setting: Cell::new(true),
         }
     }
     fn ctx(&self) -> &Context {
@@ -177,7 +173,9 @@ impl Shell {
     }
     fn recolor(&self) {
         self.update_icons();
-        let _ = crate::rich_text::recolor(self.result, &self.body.borrow());
+        if let Err(error) = crate::rich_text::recolor(self.result, &self.body.borrow()) {
+            self.set_status(&format!("{error:#}"));
+        }
     }
     fn show(&self, content: crate::rich_text::Content, copy: String, status: &str) {
         if let Err(error) = crate::rich_text::set_content(self.result, &content) {
@@ -344,20 +342,6 @@ impl Shell {
         let _ = crate::rich_text::context_menu(self.result, l, &[]);
         Some(0)
     }
-    /// Decode the tool message protocol; `command` handles the command id and code.
-    fn message(
-        &self,
-        msg: u32,
-        w: usize,
-        l: isize,
-        command: impl FnOnce(u16, u32) -> bool,
-    ) -> Option<isize> {
-        match msg {
-            WM_COMMAND if command(w as u16, (w >> 16) as u32) => Some(0),
-            WM_CONTEXTMENU => self.result_context_menu(w, l),
-            _ => None,
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -462,7 +446,7 @@ impl ToolView {
         let shell = self.shell();
         let visible = shell.find.visible();
         if !shell.find.command(shell.result, id, code) {
-            return false;
+            return forward!(self, view, view.command(id, code));
         }
         if shell.find.visible() != visible {
             self.layout();
@@ -477,19 +461,19 @@ impl ToolView {
         }
     }
     pub fn id(&self) -> u64 {
-        forward!(self, view, view.id)
+        self.shell().id
     }
     pub fn hwnd(&self) -> HWND {
-        forward!(self, view, view.hwnd)
+        self.shell().hwnd
     }
     fn recent(&self) -> u64 {
-        forward!(self, view, view.recent.get())
+        self.shell().recent.get()
     }
     pub fn placement(&self) -> Option<Placement> {
-        forward!(self, view, view.placement.get())
+        self.shell().placement.get()
     }
     pub fn set_placement(&self, placement: Placement) {
-        forward!(self, view, view.placement.set(Some(placement)))
+        self.shell().placement.set(Some(placement));
     }
     pub fn focus(&self) {
         forward!(self, view, view.focus())
@@ -501,10 +485,10 @@ impl ToolView {
         forward!(self, view, view.prepare())
     }
     pub fn recolor(&self) {
-        forward!(self, view, view.recolor())
+        self.shell().recolor();
     }
     pub fn status(&self) -> String {
-        forward!(self, view, view.status())
+        self.shell().status()
     }
     pub fn key(&self, msg: &MSG) -> bool {
         let shell = self.shell();
@@ -531,13 +515,17 @@ impl ToolView {
                 return Some(0);
             }
         }
-        forward!(self, view, view.message(msg, w, l))
+        if msg == WM_CONTEXTMENU {
+            self.shell().result_context_menu(w, l)
+        } else {
+            None
+        }
     }
     pub fn destroy(&self) {
         forward!(self, view, view.destroy())
     }
     pub fn activated(&self) {
-        forward!(self, view, view.activated())
+        self.shell().activated();
     }
     pub fn complete(&self, id: u64, completion: crate::tasks::tools::Completion) {
         match self {
@@ -615,34 +603,6 @@ pub(super) fn open_with(ctx: &Context, request: Request) -> Option<Rc<ToolView>>
     Some(view)
 }
 
-pub(super) fn open_row(ctx: &Context, row: usize, new: bool) {
-    if let Some(descriptor) = TOOLS.get(row) {
-        open(ctx, descriptor.kind, new);
-    }
-}
-
-pub(super) fn list(ctx: &Context) -> HWND {
-    unsafe { GetDlgItem(ctx.frame(), TOOL_LIST as i32) }
-}
-pub(super) fn refresh(ctx: &Context) {
-    let list = list(ctx);
-    crate::list::State::capture(list).apply(list, TOOLS.len());
-    super::panel::update_actions(ctx, super::panel::PanelId::Tools);
-}
-pub(super) fn update_actions(ctx: &Context) {
-    unsafe {
-        EnableWindow(
-            GetDlgItem(ctx.frame(), TOOL_NEW as i32),
-            i32::from(crate::list::selected(list(ctx)).is_some_and(|row| row < TOOLS.len())),
-        );
-    }
-}
-pub(super) fn selected(ctx: &Context, new: bool) {
-    if let Some(row) = crate::list::selected(list(ctx)) {
-        open_row(ctx, row, new);
-    }
-}
-
 /// The model value of the selected combo row, or `fallback` when none is.
 fn combo_value<T: Copy>(combo: HWND, values: &[(u16, T)], fallback: T) -> T {
     let selected = send(combo, CB_GETCURSEL, 0, 0);
@@ -650,51 +610,4 @@ fn combo_value<T: Copy>(combo: HWND, values: &[(u16, T)], fallback: T) -> T {
         .get(selected.max(0) as usize)
         .map(|&(_, value)| value)
         .unwrap_or(fallback)
-}
-pub(super) fn row(index: usize, visit: &mut dyn FnMut(&Display)) {
-    let Some(descriptor) = TOOLS.get(index) else {
-        return;
-    };
-    let description = resources::text(descriptor.description);
-    let mut display = Display {
-        title: resources::text(descriptor.title).encode_utf16().collect(),
-        icon: Some(descriptor.icon),
-        tooltip: description.encode_utf16().collect(),
-        ..Default::default()
-    };
-    display.detail.push(TextSegment::plain(&description));
-    visit(&display);
-}
-pub(super) fn row_text(index: usize) -> Vec<u16> {
-    let Some(descriptor) = TOOLS.get(index) else {
-        return Vec::new();
-    };
-    format!(
-        "{}\r\n{}",
-        resources::text(descriptor.title),
-        resources::text(descriptor.description)
-    )
-    .encode_utf16()
-    .collect()
-}
-pub(super) fn context_menu(ctx: &Context, hwnd: HWND, l: isize) -> anyhow::Result<()> {
-    let Some((row, point)) = crate::list::context_target(hwnd, l) else {
-        return Ok(());
-    };
-    let Some(descriptor) = TOOLS.get(row) else {
-        return Ok(());
-    };
-    let menu = Popup::new()?;
-    menu.item(1, resources::wide_text(IDS_OPEN), true)?;
-    menu.item(2, resources::wide_text(IDS_TOOL_NEW), true)?;
-    match menu.track(ctx.frame(), point) {
-        1 => {
-            open(ctx, descriptor.kind, false);
-        }
-        2 => {
-            open(ctx, descriptor.kind, true);
-        }
-        _ => {}
-    }
-    Ok(())
 }

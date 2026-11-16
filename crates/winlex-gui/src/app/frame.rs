@@ -189,11 +189,7 @@ pub(super) unsafe extern "system" fn frame_proc(hwnd: HWND, msg: u32, w: usize, 
                     && panel.list.hwnd == w as HWND
                 {
                     status::begin_status(ctx, status::StatusContext::Panel(panel.id));
-                    let result = match panel.id {
-                        panel::PanelId::Search => super::catalog::context_menu(ctx, w as HWND, l),
-                        panel::PanelId::Sources => sources::context_menu(ctx, w as HWND, l),
-                        panel::PanelId::Tools => super::tools::context_menu(ctx, w as HWND, l),
-                    };
+                    let result = panel::context_menu(ctx, &panel, l);
                     status::report(ctx, result);
                     return 0;
                 }

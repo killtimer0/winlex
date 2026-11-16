@@ -103,6 +103,9 @@ impl Content {
     pub fn command(&self, id: u16, code: u32) -> bool {
         forward!(self, v, v.command(id, code))
     }
+    pub fn message(&self, msg: u32, w: usize, l: isize) -> Option<isize> {
+        forward!(self, v, v.message(msg, w, l))
+    }
     pub fn destroy(&self) {
         forward!(self, v, v.destroy())
     }

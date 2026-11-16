@@ -22,6 +22,7 @@ mod keys;
 mod metadata;
 mod panel;
 mod result_value;
+mod search;
 mod settings;
 mod sidebar;
 mod sources;
@@ -257,7 +258,7 @@ fn poll_completions(ctx: &Context) {
                 for content in workspace::contents(ctx) {
                     content.worker_stopped();
                 }
-                panel::cancel_debounce(ctx);
+                search::cancel_debounce(ctx);
                 return;
             }
         }

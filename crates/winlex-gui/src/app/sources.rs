@@ -1,5 +1,8 @@
 //! The source panel projects the committed catalog; opening files is a load transaction.
-use super::catalog;
+use super::{
+    catalog,
+    panel::{Panel, PanelId},
+};
 use crate::app::context::Context;
 use crate::{
     icons::Icon,
@@ -8,7 +11,43 @@ use crate::{
     native::*,
     resources::{self, *},
 };
-use std::{os::windows::ffi::OsStrExt, path::PathBuf};
+use std::{os::windows::ffi::OsStrExt, path::PathBuf, rc::Rc};
+
+pub(super) fn create(ctx: &Context, frame: HWND) -> anyhow::Result<Rc<Panel>> {
+    let state = ctx as *const Context;
+    let list = crate::list::List::new(
+        frame,
+        SOURCE_LIST,
+        move |index, visit| row(unsafe { &*state }, index, visit),
+        move |index| row_text(unsafe { &*state }, index),
+        None,
+        ctx.system_version(),
+    )?;
+    let mut buttons = vec![];
+    for (id, label) in [
+        (LOAD_METADATA, IDS_LOAD_METADATA),
+        (RELOAD_SOURCE, IDS_RELOAD),
+        (REMOVE_SOURCE, IDS_UNLOAD),
+    ] {
+        buttons.push(unsafe {
+            child(
+                frame,
+                w!("BUTTON"),
+                resources::wide_text(label),
+                WS_TABSTOP,
+                id,
+            )
+        }?);
+    }
+    update_actions(ctx);
+    Ok(Rc::new(Panel {
+        id: PanelId::Sources,
+        focus: list.hwnd,
+        fields: vec![],
+        buttons,
+        list,
+    }))
+}
 
 const METADATA_RELEASES: &str = "https://github.com/killtimer0/winmd-collection/releases";
 
@@ -209,7 +248,10 @@ fn choose_add(ctx: &Context) {
     }
 }
 
-pub(super) fn command(ctx: &Context, id: u16) -> bool {
+pub(super) fn command(ctx: &Context, id: u16, code: u32) -> bool {
+    if code != BN_CLICKED {
+        return false;
+    }
     if matches!(
         id,
         LOAD_METADATA | RELOAD_SOURCE | REMOVE_SOURCE | COPY_SOURCE_PATH

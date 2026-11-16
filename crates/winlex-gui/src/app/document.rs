@@ -1,6 +1,6 @@
 //! Native MDI shell lifecycle and content-specific message dispatch.
 use super::content::Content;
-use super::{history, metadata::MetadataView, workspace};
+use super::{history, workspace};
 use crate::app::context::Context;
 use crate::native::*;
 use std::{cell::RefCell, rc::Rc};
@@ -189,54 +189,10 @@ pub(super) unsafe extern "system" fn document_proc(
                 }
                 _ => {}
             }
-            match content {
-                Content::Declaration(document) => document.message(msg, w, l),
-                Content::Tool(tool) => tool
-                    .message(msg, w, l)
-                    .unwrap_or_else(|| DefMDIChildProcW(hwnd, msg, w, l)),
-            }
+            content
+                .message(msg, w, l)
+                .unwrap_or_else(|| DefMDIChildProcW(hwnd, msg, w, l))
         } else {
-            DefMDIChildProcW(hwnd, msg, w, l)
-        }
-    }
-}
-impl MetadataView {
-    unsafe fn message(&self, msg: u32, w: usize, l: isize) -> isize {
-        let hwnd = self.hwnd;
-        unsafe {
-            match msg {
-                FOLLOW_REFERENCE => {
-                    if self.id == w as u32 as u64 | ((l as u32 as u64) << 32) {
-                        self.follow_reference();
-                    }
-                    return 0;
-                }
-                WM_NOTIFY => {
-                    let header = (l as *const NMHDR).read_unaligned();
-                    if header.code == windows::Win32::UI::Controls::RichEdit::EN_SELCHANGE {
-                        self.selection_changed();
-                        return 0;
-                    }
-                }
-                WM_COMMAND => {
-                    let id = (w & 0xffff) as u16;
-                    let code = (w >> 16) as u32;
-                    if self.command(id, code) {
-                        return 0;
-                    }
-                }
-                WM_CONTEXTMENU => {
-                    if self.context_menu(w as HWND, l) {
-                        return 0;
-                    }
-                }
-                WM_CTLCOLORSTATIC => {
-                    if let Some(brush) = self.color(l as HWND, w as HDC) {
-                        return brush;
-                    }
-                }
-                _ => {}
-            }
             DefMDIChildProcW(hwnd, msg, w, l)
         }
     }
