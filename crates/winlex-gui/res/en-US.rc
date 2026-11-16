@@ -104,7 +104,7 @@ BEGIN
     IDS_ERROR_CODE_BROWSE "Browse..."
     IDS_QUERY "Query"
     IDS_ERROR_CODE_HINT "Decimal, 0x hex, 0o octal, 0b binary; leading zero means octal (010 = 8)."
-    IDS_ERROR_CODE_STALE "Inputs changed. Run the query again."
+    IDS_TOOL_STALE "Inputs changed. Run the query again."
     IDS_ERROR_CODE_READY "Enter a code and choose Query."
     IDS_AUTO "Automatic"
     IDS_ERROR_CODE_WIN32 "Win32"

@@ -189,7 +189,7 @@ impl View {
     }
     fn changed(&self) {
         self.revision.set(self.revision.get() + 1);
-        self.set_status(&resources::text(IDS_ERROR_CODE_STALE));
+        self.set_status(&resources::text(IDS_TOOL_STALE));
     }
     fn selected_language(&self) -> (String, Option<u16>) {
         let selected = send(self.language, CB_GETCURSEL, 0, 0);
@@ -297,7 +297,7 @@ impl View {
             Err(error) => format!("{}: {error:#}", resources::text(IDS_ERROR_CODE_FAILED)),
         };
         let status = if revision != self.revision.get() {
-            resources::text(IDS_ERROR_CODE_STALE)
+            resources::text(IDS_TOOL_STALE)
         } else {
             String::new()
         };
@@ -516,7 +516,7 @@ impl View {
             }
         }
         show(self.browse, self.custom());
-        m.buttons(&mut area, [self.query, self.copy], &mut positions);
+        m.buttons(&mut area, [self.query], &mut positions);
         self.finish_layout(&m, &mut area, self.labels[4], &mut positions);
     }
     pub fn focus(&self) {

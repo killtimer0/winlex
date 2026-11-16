@@ -5,10 +5,12 @@ import re
 import uuid
 import winreg
 
+import pytest
+import win32clipboard
 import win32con
 import win32gui
 
-from driver import select_combo, until
+from driver import auto, select_combo, until
 
 
 class Tool:
@@ -100,6 +102,12 @@ def test_error_code_system_message_invalid_and_recovery(app, ui_text):
         return until('system error {} result'.format(code), complete)
 
     previous = query(5, denied)  # ERROR_ACCESS_DENIED, independently defined by Win32
+    tool.enter('6')
+    assert tool.body() == previous
+    assert app.text(app.child(1105)) == ui_text(2312)
+    tool.select(1811, ui_text(2314))  # Auto; option changes also require Query.
+    assert tool.body() == previous
+    assert app.text(app.child(1105)) == ui_text(2312)
     tool.enter('0xGG')
     tool.click(1815)
 
@@ -213,7 +221,7 @@ def test_com_builtin_registration_missing_and_recovery(app, ui_text):
     tool.click(1833)
     until('built-in Shell.Application registration', positive)
 
-    tool.select(1831, ui_text(2408))  # GUID (may query the previous input)
+    tool.select(1831, ui_text(2408))  # GUID; changing options requires Query.
     tool.enter(missing)
     tool.click(1833)
     diagnostic = ui_text(2434).replace('%1!s!', missing)
@@ -231,3 +239,72 @@ def test_com_builtin_registration_missing_and_recovery(app, ui_text):
     tool.click(1833)
     until('COM registration recovers after absent CLSID', positive)
     # Deliberately never invoke COM_TYPELIB (1836) or COM_ACTIVATE (1837).
+
+
+def test_com_conditions_require_explicit_query(app, ui_text):
+    tool = Tool(app, ui_text, 2400, 1830, 1835)
+    tool.enter('Shell.Application')
+    tool.select(1832, ui_text(2411))  # Explicit x86 view.
+    tool.click(1833)
+    clsid = '{13709620-C279-11CE-A49E-444553540000}'
+
+    def queried():
+        assert clsid in tool.body().upper()
+        assert win32gui.IsWindowEnabled(tool.control(1837))
+        return tool.body()
+
+    previous = until('COM result ready for activation', queried)
+
+    def stale():
+        assert tool.body() == previous, 'Conditions must not implicitly replace results'
+        assert not win32gui.IsWindowEnabled(tool.control(1836))
+        assert not win32gui.IsWindowEnabled(tool.control(1837))
+        assert app.text(app.child(1105)) == ui_text(2312)
+        return True
+
+    tool.enter(clsid)
+    until('edited COM input invalidates old actions', stale)
+    tool.click(1833)
+    previous = until('COM input submitted explicitly', queried)
+    tool.select(1831, ui_text(2408))  # GUID.
+    until('COM kind change preserves stale result', stale)
+    tool.click(1833)
+    previous = until('COM kind submitted explicitly', queried)
+    tool.select(1832, ui_text(2314))  # Auto view.
+    until('COM view change preserves stale result', stale)
+    tool.click(1833)
+    until('explicit COM query restores actions', queried)
+
+
+@pytest.mark.real_input
+@pytest.mark.parametrize('title,input_id,result_id,copy_id,value,expected', [
+    (2303, 1810, 1816, 1818, '5', '0x00000005'),
+    (2350, 1820, 1823, 1822, '_Z3fooi', 'foo(int)'),
+    (2400, 1830, 1835, 1834, 'Shell.Application',
+     '{13709620-C279-11CE-A49E-444553540000}'),
+])
+def test_tool_keyboard_and_copy(app, ui_text, title, input_id, result_id,
+                               copy_id, value, expected):
+    tool = Tool(app, ui_text, title, input_id, result_id)
+    tool.enter(value)
+    assert auto.AU3_WinActivateByHandle(app.frame)
+    assert auto.AU3_ControlFocusByHandle(app.frame, tool.control(input_id))
+    if input_id != 1820:  # Multiline symbol input remains live; Enter is a newline.
+        auto.AU3_Send('{ENTER}', 0)
+    until('keyboard tool result', lambda: expected in tool.body())
+    win32clipboard.OpenClipboard()
+    try:
+        win32clipboard.EmptyClipboard()
+    finally:
+        win32clipboard.CloseClipboard()
+    tool.click(copy_id)
+
+    def copied():
+        win32clipboard.OpenClipboard()
+        try:
+            return expected in win32clipboard.GetClipboardData(win32con.CF_UNICODETEXT)
+        finally:
+            win32clipboard.CloseClipboard()
+
+    until('copy tool result', copied)
+    app.evidence(app.output / ('tool-' + str(input_id)))

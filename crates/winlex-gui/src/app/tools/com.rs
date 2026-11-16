@@ -42,6 +42,7 @@ pub(in crate::app) struct View {
     query: HWND,
     type_lib: HWND,
     activate: HWND,
+    stale: Cell<bool>,
     report: RefCell<Option<Report>>,
     type_libraries: RefCell<Vec<TypeLibrary>>,
     type_lib_errors: RefCell<Vec<String>>,
@@ -72,6 +73,7 @@ impl View {
             query: std::ptr::null_mut(),
             type_lib: std::ptr::null_mut(),
             activate: std::ptr::null_mut(),
+            stale: Cell::new(false),
             report: RefCell::new(None),
             type_libraries: RefCell::new(Vec::new()),
             type_lib_errors: RefCell::new(Vec::new()),
@@ -139,6 +141,7 @@ impl View {
         Ok(())
     }
     fn execute(&self) {
+        self.stale.set(false);
         let target = text(self.input);
         let target = target.trim();
         if let Some(id) = self.type_lib_ticket.take() {
@@ -206,7 +209,9 @@ impl View {
             render_activation(&mut output, activated, &labels);
         }
         let copy = output.text.trim_end().to_owned();
-        let status = if self.activate_ticket.get().is_some() {
+        let status = if self.stale.get() {
+            resources::text(IDS_TOOL_STALE)
+        } else if self.activate_ticket.get().is_some() {
             resources::text(IDS_COM_ACTIVATE_RUNNING)
         } else if self.type_lib_ticket.get().is_some() {
             resources::text(IDS_COM_TYPELIB_LOADING)
@@ -231,14 +236,17 @@ impl View {
             .is_some_and(|report| !type_library_references(report).is_empty());
         let has_class = report.as_ref().and_then(first_class).is_some();
         drop(report);
-        let libraries = has_library && self.type_lib_ticket.get().is_none();
-        let activate = has_class && self.activate_ticket.get().is_none();
+        let libraries = !self.stale.get() && has_library && self.type_lib_ticket.get().is_none();
+        let activate = !self.stale.get() && has_class && self.activate_ticket.get().is_none();
         unsafe {
             EnableWindow(self.type_lib, if libraries { 1 } else { 0 });
             EnableWindow(self.activate, if activate { 1 } else { 0 });
         }
     }
     fn read_type_libraries(&self) {
+        if self.stale.get() {
+            return;
+        }
         let report = self.report.borrow();
         let Some(report) = report.as_ref() else {
             return;
@@ -254,6 +262,9 @@ impl View {
         }
     }
     fn activate(&self) {
+        if self.stale.get() {
+            return;
+        }
         let report = self.report.borrow();
         let Some(guid) = report.as_ref().and_then(first_class) else {
             drop(report);
@@ -380,7 +391,7 @@ impl View {
         }
         m.buttons(
             &mut area,
-            [self.query, self.type_lib, self.activate, self.copy],
+            [self.query, self.type_lib, self.activate],
             &mut positions,
         );
         self.finish_layout(&m, &mut area, self.labels[3], &mut positions);
@@ -426,14 +437,21 @@ impl View {
                 self.copy_plain();
                 true
             }
+            COM_INPUT if code == EN_CHANGE => {
+                self.changed();
+                true
+            }
             COM_KIND | COM_VIEW if code == CBN_SELENDOK => {
-                if !text(self.input).is_empty() {
-                    self.execute();
-                }
+                self.changed();
                 true
             }
             _ => false,
         }
+    }
+    fn changed(&self) {
+        self.stale.set(true);
+        self.set_status(&resources::text(IDS_TOOL_STALE));
+        self.update_actions();
     }
     pub fn destroy(&self) {
         if let Some(id) = self.type_lib_ticket.take() {

@@ -148,26 +148,17 @@ impl View {
         positions.push((self.input, line));
         layout::take_top(&mut area, gap);
 
-        let copy = m.button_size(self.copy);
         let combo = bounds(self.abi, self.hwnd);
-        let row_height = (combo.bottom - combo.top).max(copy.cy);
+        let row_height = (combo.bottom - combo.top).max(m.height);
         let mut line = layout::take_top(&mut area, row_height);
         let label = layout::take_left(&mut line, label_width);
         positions.push((self.labels[1], layout::center_vertical(label, m.height)));
         layout::take_left(&mut line, label_gap);
-        let right = line.right;
-        line.right = (right - copy.cx - gap).max(line.left);
         positions.push((
             self.abi,
             layout::center_vertical(line, combo.bottom - combo.top),
         ));
-        positions.push((
-            self.copy,
-            layout::center_vertical(
-                layout::rect(right - copy.cx, line.top, copy.cx, row_height),
-                copy.cy,
-            ),
-        ));
+        layout::take_top(&mut area, gap);
         self.finish_layout(&m, &mut area, self.labels[2], &mut positions);
     }
     pub fn focus(&self) {

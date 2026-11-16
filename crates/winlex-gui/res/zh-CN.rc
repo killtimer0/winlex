@@ -104,7 +104,7 @@ BEGIN
     IDS_ERROR_CODE_BROWSE "浏览..."
     IDS_QUERY "查询"
     IDS_ERROR_CODE_HINT "十进制、0x 十六进制、0o 八进制、0b 二进制；前导零表示八进制（010 = 8）。"
-    IDS_ERROR_CODE_STALE "输入已修改，请重新查询。"
+    IDS_TOOL_STALE "输入已修改，请重新查询。"
     IDS_ERROR_CODE_READY "输入代码后点击查询。"
     IDS_AUTO "自动"
     IDS_ERROR_CODE_WIN32 "Win32"

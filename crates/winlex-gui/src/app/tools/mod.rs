@@ -206,6 +206,7 @@ impl Shell {
         label: HWND,
         positions: &mut Vec<(HWND, RECT)>,
     ) {
+        metrics.buttons(area, [self.copy], positions);
         layout::take_top(area, metrics.px(4));
         positions.push((
             label,
