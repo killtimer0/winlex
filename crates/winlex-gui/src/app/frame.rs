@@ -19,6 +19,7 @@ fn prepare(ctx: &Context) {
     let (font, _) = ctx.font_for(value);
     super::bind(tabs, font);
     super::bind(status, font);
+    send(status, WM_SIZE, 0, 0);
     sidebar::prepare(ctx);
     layout_frame(ctx);
     for content in docs {
@@ -44,7 +45,10 @@ pub(super) fn layout_frame(ctx: &Context) {
     if mdi.is_null() {
         return;
     }
-    send(status, WM_SIZE, 0, 0);
+    let view = sidebar::current(ctx).map(|panel| {
+        let state = crate::list::State::capture(panel.list.hwnd);
+        (panel, state)
+    });
     let m = ctx.metrics(frame);
     let mut area = client(frame);
     area.bottom = bounds(status, frame).top;
@@ -53,11 +57,11 @@ pub(super) fn layout_frame(ctx: &Context) {
     layout::take_left(&mut area, sidebar);
     positions.push((tabs, layout::take_top(&mut area, m.height + m.px(8))));
     positions.push((mdi, area));
-    if ctx.checked(place_all(&positions)).is_some() {
-        let panel = sidebar::current(ctx);
-        if let Some(panel) = panel {
-            crate::list::fit(panel.list.hwnd);
-        }
+    if ctx.checked(place_all(&positions)).is_some()
+        && let Some((panel, state)) = view
+    {
+        crate::list::fit(panel.list.hwnd);
+        state.restore_view(panel.list.hwnd);
     }
 }
 pub(super) unsafe extern "system" fn frame_proc(hwnd: HWND, msg: u32, w: usize, l: isize) -> isize {
@@ -115,6 +119,7 @@ pub(super) unsafe extern "system" fn frame_proc(hwnd: HWND, msg: u32, w: usize, 
                     sidebar::create(ctx, hwnd)?;
                     windows_sys::Win32::UI::Shell::DragAcceptFiles(hwnd, 1);
                     prepare(ctx);
+                    super::tools::panel::initialize(ctx);
                     crate::theme::apply(hwnd);
                     ctx.notify_worker_window(hwnd, WM_WORKER_READY);
                     Ok(())
@@ -131,6 +136,7 @@ pub(super) unsafe extern "system" fn frame_proc(hwnd: HWND, msg: u32, w: usize, 
             }
             WM_SIZE => {
                 if w != SIZE_MINIMIZED as usize {
+                    send(ctx.status_bar(), WM_SIZE, 0, 0);
                     layout_frame(ctx);
                 }
                 return 0;

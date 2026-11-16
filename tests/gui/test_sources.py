@@ -1,11 +1,49 @@
 """Closing a source removes search candidates, not open document snapshots."""
 from pathlib import Path
+import shutil
 
 import pytest
 import win32con
 import win32gui
 
 from driver import until
+
+
+def test_long_source_list_starts_at_first_row_and_preserves_view_on_refresh(app, ui_text):
+    fixture = Path(__file__).with_name('fixtures') / 'search_left.winmd'
+    inputs = app.output / 'sources'
+    inputs.mkdir()
+    paths = [inputs / ('source-{:03d}.winmd'.format(index)) for index in range(100)]
+    for path in paths:
+        shutil.copyfile(fixture, path)
+    app.restart(paths=paths)
+    app.search('GuiSearchLeftReady')
+    app.completed_result_names(ui_text(2025))
+    app.command(1021)  # Sources: first layout follows hidden data initialization.
+    listing = app.child(1112)
+    until('sources visible', lambda: win32gui.IsWindowVisible(listing))
+    assert app.list_item_rect(listing, 0)[1] == 0, 'First display must not skip the first source'
+
+    row = app.list_item_rect(listing, 0)
+    win32gui.SendMessage(listing, 0x1014, 0, 30 * (row[3] - row[1]))  # LVM_SCROLL
+    top = win32gui.SendMessage(listing, 0x1027, 0, 0)  # LVM_GETTOPINDEX
+    assert top > 0, 'Exercise an actually scrolled list'
+    anchor = app.list_command(listing, 'GetText', str(top)).split('\r\n', 1)[0]
+    offset = app.list_item_rect(listing, top)[1]
+
+    extra = inputs / 'additional.winmd'
+    shutil.copyfile(fixture, extra)
+    app.open_file(extra)
+    until('additional source loaded', lambda: app.source_count() == len(paths) + 1
+          and ui_text(2050) in app.source_text(extra))  # IDS_LOADED
+    index = app.source_index(Path(anchor))
+    assert app.list_item_rect(listing, index)[1] == offset, 'Refresh must preserve the reading anchor'
+    app.search('GuiSearchLeftReady')
+    app.completed_result_names(ui_text(2025))
+    app.command(1021)
+    until('sources visible again', lambda: win32gui.IsWindowVisible(listing))
+    index = app.source_index(Path(anchor))
+    assert app.list_item_rect(listing, index)[1] == offset, 'Refresh and panel switching must preserve the reading anchor'
 
 
 @pytest.mark.parametrize('command', [1050, 1049])  # Open / open in new document

@@ -250,6 +250,29 @@ class Winlex:
         assert not auto.AU3_error(), 'AutoItX ListView ' + command
         return result.value
 
+    def list_item_rect(self, hwnd, index):
+        # LVM_GETITEMRECT is above WM_USER: its RECT must live in the target.
+        # A fresh zeroed allocation supplies LVIR_BOUNDS in RECT.left.
+        process = win32api.OpenProcess(win32con.PROCESS_VM_OPERATION | win32con.PROCESS_VM_READ,
+                                       False, self.pid)
+        address = None
+        try:
+            address = win32process.VirtualAllocEx(process, 0, 16, win32con.MEM_COMMIT,
+                                                  win32con.PAGE_READWRITE)
+            assert win32gui.SendMessage(hwnd, 0x100e, index, address)  # LVM_GETITEMRECT
+            rect = w.RECT()
+            copied = c.c_size_t()
+            read = c.windll.kernel32.ReadProcessMemory
+            read.argtypes = [w.HANDLE, c.c_void_p, c.c_void_p, c.c_size_t, c.POINTER(c.c_size_t)]
+            read.restype = w.BOOL
+            assert read(int(process), address, c.byref(rect), c.sizeof(rect), c.byref(copied))
+            assert copied.value == c.sizeof(rect)
+            return rect.left, rect.top, rect.right, rect.bottom
+        finally:
+            if address is not None:
+                win32process.VirtualFreeEx(process, address, 0, win32con.MEM_RELEASE)
+            process.Close()
+
     def ready(self):
         until('loaded source available', lambda: self.source_count() > 0, 30)
 

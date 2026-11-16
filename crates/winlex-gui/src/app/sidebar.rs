@@ -199,7 +199,6 @@ pub(super) fn prepare(ctx: &Context) {
     for panel in panels {
         panel.prepare(ctx, &m);
     }
-    super::tools::panel::refresh(ctx);
     ctx.checked(search(ctx).prepare(&m));
 }
 fn update_images(ctx: &Context, toolbar: HWND, size: i32) {
@@ -283,8 +282,16 @@ pub(super) unsafe extern "system" fn splitter_proc(
                     ctx.dpi().window(frame) as i32,
                 )
                 .clamp(MIN_WIDTH, MAX_WIDTH);
-                ctx.with_sidebar_mut(|sidebar| sidebar.width = width);
-                super::frame::layout_frame(ctx);
+                let changed = ctx.with_sidebar_mut(|sidebar| {
+                    if sidebar.width == width {
+                        return false;
+                    }
+                    sidebar.width = width;
+                    true
+                });
+                if changed {
+                    super::frame::layout_frame(ctx);
+                }
                 return 0;
             }
             WM_LBUTTONUP => {

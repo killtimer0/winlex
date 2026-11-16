@@ -55,9 +55,8 @@ fn open_row(ctx: &Context, row: usize, new: bool) {
 fn list(ctx: &Context) -> HWND {
     unsafe { GetDlgItem(ctx.frame(), TOOL_LIST as i32) }
 }
-pub(in crate::app) fn refresh(ctx: &Context) {
-    let list = list(ctx);
-    crate::list::State::capture(list).apply(list, TOOLS.len());
+pub(in crate::app) fn initialize(ctx: &Context) {
+    send(list(ctx), LVM_SETITEMCOUNT, TOOLS.len(), 0);
     update_actions(ctx);
 }
 pub(in crate::app) fn update_actions(ctx: &Context) {

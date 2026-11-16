@@ -15,13 +15,38 @@ import win32process
 from driver import auto, until
 
 
+@pytest.mark.real_input
+def test_splitter_drag_keeps_first_tool_row_at_top(app):
+    app.command(1800)  # Tools
+    listing = until('tools list', lambda: app.child(1801))
+    until('sidebar visible', lambda: win32gui.IsWindowVisible(listing))
+    assert app.list_item_rect(listing, 0)[1] == 0, 'First item must start at the top of an unscrolled list'
+    children = []
+    win32gui.EnumChildWindows(app.frame, lambda hwnd, _: children.append(hwnd), None)
+    splitter = next(hwnd for hwnd in children if win32gui.GetClassName(hwnd) == 'Winlex.Splitter')
+    assert auto.AU3_WinActivateByHandle(app.frame)
+    until('splitter application foreground', lambda: win32gui.GetForegroundWindow() == app.frame)
+    x, y, _, _ = win32gui.GetWindowRect(splitter)
+    win32api.SetCursorPos((x, y + 80))
+    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0)
+    try:
+        until('splitter captures drag', lambda: gui_thread_info(app).hwndCapture == splitter)
+        for offset in (60, 120, 0, -60, 0):
+            win32api.SetCursorPos((x + offset, y + 80))
+            until('splitter follows pointer',
+                  lambda: abs(win32gui.GetWindowRect(splitter)[0] - (x + offset)) <= 1)
+            assert app.list_item_rect(listing, 0)[1] == 0, 'Dragging must not introduce a blank row above the first item'
+    finally:
+        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0)
+
+
 def capture(app, name):
     destination = app.output / name
     app.evidence(destination)
     assert (destination / 'screen.bmp').is_file(), 'Missing appearance evidence: ' + str(destination)
 
 
-def focused(app):
+def gui_thread_info(app):
     class GUIThreadInfo(c.Structure):
         _fields_ = [('cbSize', w.DWORD), ('flags', w.DWORD),
                     ('hwndActive', w.HWND), ('hwndFocus', w.HWND),
@@ -31,6 +56,11 @@ def focused(app):
     get_info = c.windll.user32.GetGUIThreadInfo
     get_info.argtypes, get_info.restype = [w.DWORD, c.POINTER(GUIThreadInfo)], w.BOOL
     assert get_info(win32process.GetWindowThreadProcessId(app.frame)[0], c.byref(info))
+    return info
+
+
+def focused(app):
+    info = gui_thread_info(app)
     return info.hwndFocus if win32gui.GetForegroundWindow() == app.frame else None
 
 

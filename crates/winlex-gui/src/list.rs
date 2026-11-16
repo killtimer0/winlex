@@ -502,13 +502,19 @@ pub fn context_target(hwnd: HWND, location: isize) -> Option<(usize, POINT)> {
     };
     Some((index, point))
 }
+fn has_viewport(area: &RECT) -> bool {
+    area.right > 0 && area.bottom > 0
+}
 pub fn fit(hwnd: HWND) {
-    send(
-        hwnd,
-        LVM_SETCOLUMNWIDTH,
-        0,
-        client(hwnd).right.max(1) as isize,
-    );
+    let area = client(hwnd);
+    if !has_viewport(&area) {
+        return;
+    }
+    let width = area.right;
+    if send(hwnd, LVM_GETCOLUMNWIDTH, 0, 0) == width as isize {
+        return;
+    }
+    send(hwnd, LVM_SETCOLUMNWIDTH, 0, width as isize);
 }
 pub fn item_rect(hwnd: HWND, index: usize) -> Option<RECT> {
     let mut area = RECT {
@@ -525,13 +531,17 @@ pub fn selected(hwnd: HWND) -> Option<usize> {
 pub struct State {
     pub indices: [isize; 4],
     previous: [isize; 2],
-    top: isize,
-    offset: i32,
+    offset: Option<i32>,
 }
 impl State {
     pub fn capture(hwnd: HWND) -> Self {
         let top = send(hwnd, LVM_GETTOPINDEX, 0, 0);
-        let rect = item_rect(hwnd, top as usize);
+        let area = client(hwnd);
+        // Restoring scroll in a zero-sized ListView can shift its origin before the
+        // first layout. Capture only an existing reading position in a valid viewport.
+        let rect = (has_viewport(&area) && top >= 0 && send(hwnd, LVM_GETITEMCOUNT, 0, 0) > 0)
+            .then(|| item_rect(hwnd, top as usize))
+            .flatten();
         let indices = [
             selected(hwnd).map_or(-1, |index| index as isize),
             send(hwnd, LVM_GETNEXTITEM, usize::MAX, LVNI_FOCUSED as isize),
@@ -541,8 +551,7 @@ impl State {
         Self {
             indices,
             previous: [indices[0], indices[1]],
-            top,
-            offset: rect.map_or(0, |r| r.top),
+            offset: rect.map(|r| r.top),
         }
     }
     pub fn apply(&self, hwnd: HWND, count: usize) {
@@ -566,20 +575,30 @@ impl State {
             set_item_state(hwnd, index, flag, flag);
         }
         send(hwnd, LVM_SETSELECTIONMARK, 0, self.indices[2]);
-        if self.indices[3] >= 0 {
-            send(hwnd, LVM_ENSUREVISIBLE, self.indices[3] as usize, 0);
-            if let Some(now) = item_rect(hwnd, self.indices[3] as usize) {
-                send(hwnd, LVM_SCROLL, 0, (now.top - self.offset) as isize);
-            }
-        } else if self.top == 0 && count != 0 {
-            send(hwnd, LVM_ENSUREVISIBLE, 0, 0);
-        }
         if visible {
             send(hwnd, WM_SETREDRAW, 1, 0);
         }
-        fit(hwnd);
         unsafe {
             InvalidateRect(hwnd, std::ptr::null(), 0);
+        }
+    }
+    /// Restore an existing reading position only after native layout and column sizing.
+    pub fn restore_view(&self, hwnd: HWND) {
+        let Some(offset) = self.offset else {
+            return;
+        };
+        let area = client(hwnd);
+        let count = send(hwnd, LVM_GETITEMCOUNT, 0, 0);
+        if !has_viewport(&area) || count == 0 {
+            return;
+        }
+        let top = self.indices[3].max(0).min(count - 1) as usize;
+        if item_rect(hwnd, top).is_some_and(|rect| rect.top == offset) {
+            return;
+        }
+        send(hwnd, LVM_ENSUREVISIBLE, top, 0);
+        if let Some(now) = item_rect(hwnd, top) {
+            send(hwnd, LVM_SCROLL, 0, (now.top - offset) as isize);
         }
     }
 }

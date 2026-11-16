@@ -322,6 +322,8 @@ pub(super) fn refresh(ctx: &Context) {
     let count = rows.len();
     ctx.with_sources_mut(|sources| sources.rows = rows);
     state.apply(list, count);
+    crate::list::fit(list);
+    state.restore_view(list);
     super::sidebar::panel(ctx, super::panel::PanelId::Sources)
         .list
         .refresh_tooltip();

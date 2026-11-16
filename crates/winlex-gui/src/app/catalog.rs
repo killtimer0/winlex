@@ -375,6 +375,8 @@ pub(super) fn flush_results(ctx: &Context) {
         merge_results(&mut s.results, &mut s.pending_results, &mut state.indices);
     });
     state.apply(hwnd, ctx.with_session(|session| session.results.len()));
+    crate::list::fit(hwnd);
+    state.restore_view(hwnd);
     super::sidebar::panel(ctx, super::panel::PanelId::Search)
         .list
         .refresh_tooltip();
