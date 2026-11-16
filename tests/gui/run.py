@@ -182,6 +182,7 @@ def suite_files():
     if not files[-1].is_file():
         raise ValueError("GUI suite is missing pytest.ini")
     files += sorted(path for path in (HERE / "licenses").rglob("*") if path.is_file())
+    files += sorted((HERE / "fixtures").glob("*.winmd"))
     return files
 
 
@@ -269,10 +270,9 @@ def remote_run(config, args, output, run_id):
             staged_manifest = staging / "manifest.json"
             staged_manifest.write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
             sources.append((staged_manifest, remote / "manifest.json"))
-            license_dirs = sorted({str(destination.parent) for _, destination in sources
-                                   if remote / "licenses" in destination.parents})
+            suite_dirs = sorted({str(destination.parent) for _, destination in sources})
             ssh.call("from pathlib import Path\n"
-                     "[Path(p).mkdir(parents=True, exist_ok=True) for p in {!r}]".format(license_dirs))
+                     "[Path(p).mkdir(parents=True, exist_ok=True) for p in {!r}]".format(suite_dirs))
             ssh.transfer(["put {} {}".format(sftp_quote(source),
                                              sftp_quote(sftp_path(destination, config)))
                           for source, destination in sources])

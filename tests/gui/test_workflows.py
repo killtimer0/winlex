@@ -1,5 +1,6 @@
 """Public behavior smoke coverage; no transient loading-window assertions."""
 import shutil
+from pathlib import Path
 
 import pytest
 from driver import until
@@ -40,6 +41,32 @@ def test_file_dialog_opens_metadata(app, metadata):
     app.open_file(added)
     until('additional source committed', lambda: app.source_count() == before + 1, 30)
     assert 'CreateFileW' in app.open_symbol('CreateFileW').text_block()
+
+
+def test_source_reload_preserves_open_document_snapshot(app):
+    fixtures = Path(__file__).with_name('fixtures')
+    source = app.output / 'reload 输入.winmd'
+    shutil.copyfile(fixtures / 'before.winmd', source)
+    app.open_file(source)
+    original = app.open_symbol('ReloadSnapshot')
+    original_text = original.text_block()
+    assert 'OriginalField' in original_text and 'UpdatedField' not in original_text
+
+    shutil.copyfile(fixtures / 'after.winmd', source)
+    app.reload_source(source)
+    # Only the replacement defines this type: no status text or stale result
+    # can serve as evidence that the new catalog has been committed.
+    app.search('ReloadVersionTwo')
+    app.open_symbol('ReloadSnapshot')
+    until('updated declaration', lambda: 'UpdatedField' in app.editor().text_block())
+    updated = app.editor()
+    updated_text = updated.text_block()
+    assert 'OriginalField' not in updated_text
+
+    original.activate()
+    assert app.editor().text_block() == original_text
+    updated.activate()
+    assert app.editor().text_block() == updated_text
 
 
 @pytest.mark.real_input

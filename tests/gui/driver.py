@@ -56,6 +56,15 @@ class Declaration:
     def text_block(self):
         return self.app.text(self.handle)
 
+    def activate(self):
+        document = win32gui.GetParent(self.handle)
+        while win32gui.GetClassName(win32gui.GetParent(document)) != 'MDIClient':
+            document = win32gui.GetParent(document)
+            assert document, 'Declaration has no MDI document'
+        self.app.record('activate document')
+        win32gui.SendMessage(win32gui.GetParent(document), win32con.WM_MDIACTIVATE, document, 0)
+        until('document activated', lambda: self.app.document() == document)
+
     def selection_indices(self):
         # EM_GETSEL is below WM_USER and Windows marshals its two DWORD outputs.
         # Unlike EM_EXGETSEL, it is safe with controller-local pointers.
@@ -189,6 +198,21 @@ class Winlex:
 
     def source_count(self):
         return int(self.list_command(self.child(1112), 'GetItemCount'))
+
+    def reload_source(self, path):
+        self.command(1021)
+        sources = self.child(1112)
+        def matching():
+            for index in range(int(self.list_command(sources, 'GetItemCount'))):
+                text = self.list_command(sources, 'GetText', str(index))
+                if Path(text.split('\r\n', 1)[0]) == path:
+                    return index + 1
+            return None
+        index = until('source ' + str(path), matching) - 1
+        self.list_command(sources, 'SelectClear')
+        self.list_command(sources, 'Select', str(index))
+        until('reload action available', lambda: win32gui.IsWindowEnabled(self.child(1044)))
+        self.command(1044)
 
     def keyboard_search(self, name):
         class GUIThreadInfo(c.Structure):

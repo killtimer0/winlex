@@ -4,6 +4,10 @@ version.workspace = true
 edition = "2024"
 license.workspace = true
 
+[[example]]
+name = "gui-fixtures"
+path = "../../tests/gui/fixtures/generate.rs"
+
 [dependencies]
 serde.workspace = true
 windows-metadata.workspace = true
