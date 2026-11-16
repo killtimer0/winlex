@@ -8,6 +8,10 @@ license.workspace = true
 name = "gui-fixtures"
 path = "../../tests/gui/fixtures/generate.rs"
 
+[[example]]
+name = "gui-search-fixtures"
+path = "../../tests/gui/fixtures/search_generate.rs"
+
 [dependencies]
 serde.workspace = true
 windows-metadata.workspace = true

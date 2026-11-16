@@ -11,3 +11,14 @@ Regenerate both inputs from the repository root:
 ```powershell
 cargo run -p winlex-core --example gui-fixtures --locked
 ```
+
+## Search and dependency inputs
+
+`search_generate.rs` defines two sources with a shared type name but different
+fields, distinct query targets, and a consumer with an external value-type field.
+The dependency declares two int32 fields; the consumer places it between uint32
+fields, giving a 16-byte structure with field offsets 0, 4, and 12.
+
+```powershell
+cargo run -p winlex-core --example gui-search-fixtures --locked -- tests/gui/fixtures
+```
