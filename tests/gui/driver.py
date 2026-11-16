@@ -56,14 +56,26 @@ class Declaration:
     def text_block(self):
         return self.app.text(self.handle)
 
-    def activate(self):
+    def window(self):
         document = win32gui.GetParent(self.handle)
         while win32gui.GetClassName(win32gui.GetParent(document)) != 'MDIClient':
             document = win32gui.GetParent(document)
             assert document, 'Declaration has no MDI document'
+        return document
+
+    def activate(self):
+        document = self.window()
         self.app.record('activate document')
         win32gui.SendMessage(win32gui.GetParent(document), win32con.WM_MDIACTIVATE, document, 0)
         until('document activated', lambda: self.app.document() == document)
+
+    def select_architecture(self, name):
+        combo = self.app.child(1047, self.window())
+        self.app.record('select architecture ' + name)
+        select_combo(combo, name, win32con.CBN_SELENDOK)
+
+    def architecture(self):
+        return self.app.text(self.app.child(1047, self.window()))
 
     def selection_indices(self):
         # EM_GETSEL is below WM_USER and Windows marshals its two DWORD outputs.
@@ -74,6 +86,66 @@ class Declaration:
         send.restype = c.c_ssize_t
         send(self.handle, win32con.EM_GETSEL, c.addressof(start), c.addressof(end))
         return start.value, end.value
+
+
+def select_combo(combo, text, notification=win32con.CBN_SELCHANGE):
+    # CB_FINDSTRINGEXACT is a system message; Windows marshals the UTF-16 string.
+    index = win32gui.SendMessage(combo, win32con.CB_FINDSTRINGEXACT, -1, text)
+    assert index != win32con.CB_ERR, 'Combo option not found: ' + text
+    win32gui.SendMessage(combo, win32con.CB_SETCURSEL, index, 0)
+    identifier = win32gui.GetDlgCtrlID(combo)
+    win32gui.SendMessage(win32gui.GetParent(combo), win32con.WM_COMMAND,
+                        identifier | (notification << 16), combo)
+
+
+class Settings:
+    def __init__(self, app, hwnd):
+        self.app, self.handle = app, hwnd
+
+    def control(self, identifier):
+        control = self.app.child(identifier, self.handle)
+        tabs = self.app.child(0x3020, self.handle)  # IDC_TABCONTROL
+        count = win32gui.SendMessage(tabs, 0x1304, 0, 0)  # TCM_GETITEMCOUNT
+        for index in range(count):
+            if win32gui.IsWindowVisible(control):
+                return control
+            win32gui.SendMessage(self.handle, win32con.WM_USER + 101, index, 0)  # PSM_SETCURSEL
+        assert win32gui.IsWindowVisible(control), 'Settings control is not visible'
+        return control
+
+    def select(self, identifier, text):
+        self.app.record('settings select {} {}'.format(identifier, text))
+        select_combo(self.control(identifier), text)
+
+    def value(self, identifier):
+        return self.app.text(self.control(identifier))
+
+    def checked(self, identifier):
+        return win32gui.SendMessage(self.control(identifier), win32con.BM_GETCHECK, 0, 0) == 1
+
+    def check(self, identifier, checked):
+        if self.checked(identifier) != checked:
+            self.app.record('settings check {} {}'.format(identifier, checked))
+            win32gui.SendMessage(self.control(identifier), win32con.BM_CLICK, 0, 0)
+        assert self.checked(identifier) == checked
+
+    def apply(self):
+        self.app.record('settings apply')
+        button = self.app.child(0x3021, self.handle)  # ID_APPLY_NOW
+        assert win32gui.IsWindowEnabled(button), 'No pending settings change'
+        win32gui.SendMessage(button, win32con.BM_CLICK, 0, 0)
+        assert win32gui.IsWindow(self.handle) and win32gui.IsWindowVisible(self.handle)
+
+    def finish(self, identifier):
+        self.app.record('settings close {}'.format(identifier))
+        win32gui.PostMessage(self.handle, win32con.WM_COMMAND, identifier, 0)
+        until('settings closed', lambda: not win32gui.IsWindow(self.handle))
+
+    def cancel(self):
+        self.finish(win32con.IDCANCEL)
+
+    def ok(self):
+        self.finish(win32con.IDOK)
 
 
 class Winlex:
@@ -130,11 +202,29 @@ class Winlex:
         self.record('command {}'.format(identifier))
         win32gui.PostMessage(self.frame, win32con.WM_COMMAND, identifier, 0)
 
-    def search(self, name):
+    def search(self, name, expected=None):
         self.record('search ' + name)
         win32gui.SendMessage(self.frame, win32con.WM_COMMAND, 1024, 0)
         self.set_text(self.child(1102), name)
-        return self.wait_result(name)
+        return self.wait_result(expected or name)
+
+    def completed_result_names(self, template):
+        def completed():
+            results = self.child(1103)
+            count = int(self.list_command(results, 'GetItemCount'))
+            if self.text(self.child(1105)) != template.replace('%1!s!', str(count)):
+                return None
+            # A tuple allows a completed empty result set to remain truthy.
+            names = [self.list_command(results, 'GetText', str(index)).split('\r\n', 1)[0]
+                     for index in range(count)]
+            return (names,)
+        return until('search completed', completed)[0]
+
+    def settings(self):
+        self.command(1051)
+        sheet = until('settings dialog', lambda: next((h for h in self.windows('#32770')
+                      if win32gui.IsWindowVisible(h)), None))
+        return Settings(self, sheet)
 
     def wait_result(self, name):
         results = self.child(1103)
@@ -146,11 +236,29 @@ class Winlex:
             return None
         return until('search result ' + name, matching)
 
-    def open_symbol(self, name):
+    def select_result(self, name):
         results, index = self.search(name)
         self.list_command(results, 'SelectClear')
         self.list_command(results, 'Select', str(index))
-        self.command(1050)
+        return results
+
+    def preview_symbol(self, name):
+        results = self.select_result(name)
+        self.record('preview ' + name)
+        win32gui.PostMessage(results, win32con.WM_KEYDOWN, win32con.VK_SPACE, 0)
+        win32gui.PostMessage(results, win32con.WM_KEYUP, win32con.VK_SPACE, 0)
+        return self.wait_declaration(name)
+
+    def open_symbol(self, name, new=False):
+        self.select_result(name)
+        identifier = 1049 if new else 1050
+        self.record('command {}'.format(identifier))
+        # Opening an already visible preview must finish pinning before the
+        # caller changes the selection; matching its current text is not a barrier.
+        win32gui.SendMessage(self.frame, win32con.WM_COMMAND, identifier, 0)
+        return self.wait_declaration(name)
+
+    def wait_declaration(self, name):
         def declaration():
             editor = self.editor()
             assert name in editor.text_block(), 'Waiting for ' + name

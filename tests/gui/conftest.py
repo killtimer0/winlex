@@ -102,14 +102,15 @@ def app(request):
     cleaned = True
     assigned = False
     app = None
-    try:
+
+    def launch():
+        nonlocal process, thread, pid, created, cleaned, assigned, app
+        assigned = False
+        pid = created = None
         # A hard stop during launch must not be reported as an empty, clean run.
         (output / 'process.json').write_text(json.dumps(dict(
             pid=None, created=None, config_root=config_root,
             cleanup_complete=False)), encoding='utf-8')
-        # Select the public language preference in this test's private root only.
-        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, config_root) as key:
-            winreg.SetValueEx(key, 'Language', 0, winreg.REG_SZ, 'en-US')
         process, thread, pid, _ = win32process.CreateProcess(
             executable, command, None, None, False,
             win32con.CREATE_SUSPENDED | win32con.CREATE_UNICODE_ENVIRONMENT
@@ -124,8 +125,32 @@ def app(request):
             pid=pid, created=created, config_root=config_root,
             cleanup_complete=False)), encoding='utf-8')
         win32process.ResumeThread(thread)
-        app = Winlex(pid, output)
+        replacement = Winlex(pid, output)
+        if app is None:
+            app = replacement
+        else:
+            app.pid, app.frame = replacement.pid, replacement.frame
         app.ready()
+
+    def restart():
+        nonlocal process, thread, cleaned
+        app.record('restart with saved preferences')
+        app.close()
+        assert win32event.WaitForSingleObject(process, 10000) == win32con.WAIT_OBJECT_0
+        cleaned = True
+        # Generations never overlap. Keep containment and preferences, but record
+        # the replacement identity before allowing it to execute application code.
+        for handle in (thread, process):
+            handle.Close()
+        process = thread = None
+        launch()
+
+    try:
+        # Seed only once: restarting must exercise preferences saved by the GUI.
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, config_root) as key:
+            winreg.SetValueEx(key, 'Language', 0, winreg.REG_SZ, 'en-US')
+        launch()
+        app.restart = restart
         yield app
     except BaseException:
         if app is not None:
