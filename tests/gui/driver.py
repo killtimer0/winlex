@@ -16,6 +16,12 @@ import win32gui
 import win32process
 
 
+# Test input coordinates must be physical pixels, like AutoItX mouse actions.
+# XP has no DPI virtualization; newer systems expose this process-only opt-in.
+if hasattr(c.windll.user32, 'SetProcessDPIAware'):
+    c.windll.user32.SetProcessDPIAware()
+
+
 def until(description, condition, timeout=20):
     try:
         return polling2.poll(condition, step=.05, timeout=timeout,
@@ -40,9 +46,11 @@ for name, result, arguments in [
     ('error', c.c_int, []),
     ('ControlGetTextByHandle', None, [w.HWND, w.HWND, w.LPWSTR, c.c_int]),
     ('ControlSetTextByHandle', c.c_int, [w.HWND, w.HWND, w.LPCWSTR]),
+    ('ControlFocusByHandle', c.c_int, [w.HWND, w.HWND]),
     ('ControlListViewByHandle', None, [w.HWND, w.HWND, w.LPCWSTR, w.LPCWSTR, w.LPCWSTR, w.LPWSTR, c.c_int]),
     ('WinActivateByHandle', c.c_int, [w.HWND]),
     ('Send', None, [w.LPCWSTR, c.c_int]),
+    ('MouseClick', c.c_int, [w.LPCWSTR, c.c_int, c.c_int, c.c_int, c.c_int]),
 ]:
     function = getattr(auto, 'AU3_' + name)
     function.argtypes, function.restype = arguments, result
@@ -99,6 +107,35 @@ class Declaration:
         send.restype = c.c_ssize_t
         send(self.handle, win32con.EM_GETSEL, c.addressof(start), c.addressof(end))
         return start.value, end.value
+
+    def select(self, start, end):
+        win32gui.SendMessage(self.handle, win32con.EM_SETSEL, start, end)
+
+    def context_action(self, identifier):
+        self.activate()
+        assert auto.AU3_WinActivateByHandle(self.app.frame)
+        until('application foreground', lambda: win32gui.GetForegroundWindow() == self.app.frame)
+        assert auto.AU3_ControlFocusByHandle(self.app.frame, self.handle)
+        self.app.record('declaration context action {}'.format(identifier))
+        auto.AU3_Send('{APPSKEY}', 0)
+        menu_window = until('declaration context menu', lambda: next(
+            iter(self.app.windows('#32768')), None))
+        menu = win32gui.SendMessage(menu_window, 0x1E1, 0, 0)  # MN_GETHMENU
+        indices = [index for index in range(win32gui.GetMenuItemCount(menu))
+                   if win32gui.GetMenuItemID(menu, index) == identifier]
+        assert indices, 'Context action {} unavailable in {}'.format(identifier, [
+            win32gui.GetMenuItemID(menu, i)
+            for i in range(win32gui.GetMenuItemCount(menu))])
+        index = indices[0]
+        assert not win32gui.GetMenuState(menu, index, win32con.MF_BYPOSITION) & (
+            win32con.MF_DISABLED | win32con.MF_GRAYED)
+        rectangle = w.RECT()
+        get_rect = c.windll.user32.GetMenuItemRect
+        get_rect.argtypes, get_rect.restype = [w.HWND, w.HMENU, w.UINT, c.POINTER(w.RECT)], w.BOOL
+        assert get_rect(None, menu, index, c.byref(rectangle))
+        assert auto.AU3_MouseClick('left', (rectangle.left + rectangle.right) // 2,
+                                  (rectangle.top + rectangle.bottom) // 2, 1, 0)
+        until('context menu closed', lambda: not win32gui.IsWindow(menu_window))
 
 
 def select_combo(combo, text, notification=win32con.CBN_SELCHANGE):
@@ -294,10 +331,14 @@ class Winlex:
     def editor(self):
         return Declaration(self, self.child(1203, self.document()))
 
-    def find(self, text):
-        self.command(1060)
+    def find_query(self, text):
+        win32gui.SendMessage(self.frame, win32con.WM_COMMAND, 1060, 0)
         edit = until('find edit', lambda: self.child(1220, self.document()))
         self.set_text(edit, text)
+        return edit
+
+    def find(self, text):
+        self.find_query(text)
         editor = self.editor()
         until('find selection', lambda: editor.selection_indices()[1] > editor.selection_indices()[0])
         return editor.selection_indices()
@@ -422,6 +463,9 @@ class Winlex:
                 rows.extend(dict(hwnd=h, cls=win32gui.GetClassName(h), id=win32gui.GetDlgCtrlID(h),
                                  text=win32gui.GetWindowText(h), rect=win32gui.GetWindowRect(h)) for h in children)
             (destination / 'windows.json').write_text(json.dumps(rows, ensure_ascii=False), encoding='utf-8')
+            editor = self.editor()
+            (destination / 'declaration.txt').write_text(editor.text_block(), encoding='utf-8')
+            (destination / 'selection.json').write_text(json.dumps(editor.selection_indices()), encoding='utf-8')
         except Exception as error:
             (destination / 'windows-error.txt').write_text(repr(error), encoding='utf-8')
         try:

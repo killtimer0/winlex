@@ -12,6 +12,12 @@ fn main() -> Result<(), Box<dyn Error>> {
             | TypeAttributes::WindowsRuntime;
         file.TypeDef("GuiFixture", "ReloadSnapshot", base, flags);
         file.Field(field, &Type::I32, FieldAttributes::Public);
+        file.TypeDef("GuiFixture", "ReloadHolder", base, flags);
+        file.Field(
+            "value",
+            &Type::value_named("GuiFixture", "ReloadSnapshot"),
+            FieldAttributes::Public,
+        );
         if version == "after" {
             file.TypeDef("GuiFixture", "ReloadVersionTwo", base, flags);
             file.Field("value", &Type::I32, FieldAttributes::Public);
