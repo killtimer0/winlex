@@ -21,6 +21,10 @@ def pytest_addoption(parser):
     group.addoption('--real-input', action='store_true', help='Include exclusive desktop input scenarios')
     group.addoption('--dpi-mode', choices=('auto', 'pmv2', 'pmv1', 'system', 'unaware'),
                     help='Set the application WINLEX_DPI preference for this run')
+    group.addoption('--require-dpi', type=int,
+                    help='Fail DPI scenarios unless this effective monitor DPI is available')
+    group.addoption('--display-change-directory',
+                    help='Coordination directory of an external display restoration guardian')
     group.addoption('--fault-mode', choices=FAULT_MODES,
                     help='Run one infrastructure fault probe')
 
@@ -138,7 +142,7 @@ def app(request):
         if not empty:
             app.ready()
 
-    def restart(paths=None, empty=False):
+    def restart(paths=None, empty=False, before_launch=None):
         nonlocal process, thread, cleaned, inputs
         app.record('restart with saved preferences')
         app.close()
@@ -149,6 +153,8 @@ def app(request):
         for handle in (thread, process):
             handle.Close()
         process = thread = None
+        if before_launch is not None:
+            before_launch()
         if paths is not None:
             inputs = list(paths)
         launch(empty=empty)

@@ -26,7 +26,10 @@ def font_height(hwnd):
 @pytest.fixture
 def mixed_monitors(app, request):
     user = c.windll.user32
+    required = request.config.getoption('--require-dpi')
     if not hasattr(user, 'GetDpiForWindow') or not hasattr(user, 'SetThreadDpiAwarenessContext'):
+        if required is not None:
+            pytest.fail('Required DPI cannot be verified without Windows 10 DPI APIs')
         pytest.skip('Mixed-monitor transitions require Windows 10 DPI APIs')
     get_dpi = user.GetDpiForWindow
     get_dpi.argtypes, get_dpi.restype = [w.HWND], w.UINT
@@ -54,8 +57,20 @@ def mixed_monitors(app, request):
             rows.append(dict(handle=int(monitor), device=info['Device'],
                              work=info['Work'], dpi=get_dpi(app.frame)))
         distinct = {row['dpi']: row for row in rows}
+        if required is not None:
+            assert required in distinct, 'Required {} DPI is unavailable: {}'.format(required, rows)
         if len(distinct) < 2:
             pytest.skip('Requires two active monitors with different effective DPI')
+        # Start with a logical window size that fits every destination. DPI
+        # scaling itself must not be confused with dragging an oversized frame
+        # onto a physically smaller desktop.
+        left, top, right, bottom = win32gui.GetWindowRect(app.frame)
+        current_dpi = get_dpi(app.frame)
+        width = min(right - left, min((row['work'][2] - row['work'][0] - 64)
+                    * current_dpi // row['dpi'] for row in rows))
+        height = min(bottom - top, min((row['work'][3] - row['work'][1] - 64)
+                     * current_dpi // row['dpi'] for row in rows))
+        win32gui.SetWindowPos(app.frame, 0, left, top, width, height, win32con.SWP_NOZORDER)
         yield get_dpi, [distinct[max(distinct)], distinct[min(distinct)], distinct[max(distinct)]]
     finally:
         (app.output / 'dpi-environment.json').write_text(json.dumps(dict(

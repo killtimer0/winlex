@@ -475,7 +475,8 @@ def parse_args(argv=None):
         parser.error("pytest arguments must not override runner paths or desktop authorization")
     # Catch accidental external test nodes, not every possible plugin argument grammar.
     value_options = {"-k", "-m", "-o", "--override-ini", "--fault-mode", "--tb", "--capture",
-                     "--color", "--durations", "--maxfail", "--timeout", "--timeout-method"}
+                     "--color", "--durations", "--maxfail", "--timeout", "--timeout-method",
+                     "--dpi-mode", "--require-dpi", "--display-change-directory"}
     skip = False
     suite_names = {path.name for path in HERE.glob("test_*.py")} | {'fault_probe.py'}
     args.explicit_nodes = False
