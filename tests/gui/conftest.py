@@ -90,7 +90,7 @@ def app(request):
     environment = dict(os.environ, WINLEX_CONFIG_ROOT=config_root)
     executable = str(Path(request.config.getoption('--exe')).resolve())
     metadata = str(Path(request.config.getoption('--winmd')).resolve())
-    command = subprocess.list2cmdline([executable, metadata])
+    inputs = [metadata]
     job = win32job.CreateJobObject(None, 'Winlex.Gui.' + uuid.uuid4().hex)
     limits = win32job.QueryInformationJobObject(job, win32job.JobObjectExtendedLimitInformation)
     limits['BasicLimitInformation']['LimitFlags'] = win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
@@ -103,7 +103,7 @@ def app(request):
     assigned = False
     app = None
 
-    def launch():
+    def launch(empty=False):
         nonlocal process, thread, pid, created, cleaned, assigned, app
         assigned = False
         pid = created = None
@@ -112,7 +112,7 @@ def app(request):
             pid=None, created=None, config_root=config_root,
             cleanup_complete=False)), encoding='utf-8')
         process, thread, pid, _ = win32process.CreateProcess(
-            executable, command, None, None, False,
+            executable, subprocess.list2cmdline([executable, *map(str, inputs)]), None, None, False,
             win32con.CREATE_SUSPENDED | win32con.CREATE_UNICODE_ENVIRONMENT
             | (subprocess.CREATE_BREAKAWAY_FROM_JOB if sys.getwindowsversion()[:2] < (6, 2) else 0),
             environment, str(Path(executable).parent), win32process.STARTUPINFO())
@@ -130,10 +130,11 @@ def app(request):
             app = replacement
         else:
             app.pid, app.frame = replacement.pid, replacement.frame
-        app.ready()
+        if not empty:
+            app.ready()
 
-    def restart():
-        nonlocal process, thread, cleaned
+    def restart(paths=None, empty=False):
+        nonlocal process, thread, cleaned, inputs
         app.record('restart with saved preferences')
         app.close()
         assert win32event.WaitForSingleObject(process, 10000) == win32con.WAIT_OBJECT_0
@@ -143,7 +144,9 @@ def app(request):
         for handle in (thread, process):
             handle.Close()
         process = thread = None
-        launch()
+        if paths is not None:
+            inputs = list(paths)
+        launch(empty=empty)
 
     try:
         # Seed only once: restarting must exercise preferences saved by the GUI.

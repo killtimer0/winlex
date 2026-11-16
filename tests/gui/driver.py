@@ -395,6 +395,19 @@ class Winlex:
         self.select_source(path)
         self.command(1022)
 
+    def cancel_startup_prompt(self):
+        dialog = until('empty-source startup prompt', lambda: next((h for h in self.windows('#32770')
+                       if win32gui.IsWindowVisible(h)), None))
+        children = []
+        win32gui.EnumChildWindows(dialog, lambda h, _: children.append(h), None)
+        if any(win32gui.GetClassName(h) == 'DirectUIHWND' for h in children):
+            # TaskDialog: TDM_CLICK_BUTTON = WM_USER + 102.
+            win32gui.PostMessage(dialog, win32con.WM_USER + 102, win32con.IDNO, 0)
+        else:
+            win32gui.PostMessage(dialog, win32con.WM_COMMAND, win32con.IDNO, 0)
+        until('startup prompt dismissed', lambda: not win32gui.IsWindow(dialog))
+        assert self.source_count() == 0
+
     def keyboard_search(self, name):
         class GUIThreadInfo(c.Structure):
             _fields_ = [('cbSize', w.DWORD), ('flags', w.DWORD),

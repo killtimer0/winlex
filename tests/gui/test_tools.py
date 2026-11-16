@@ -1,0 +1,233 @@
+"""Representative public tool workflows with Windows/ABI reference values."""
+import ctypes
+from ctypes import wintypes
+import re
+import uuid
+import winreg
+
+import win32con
+import win32gui
+
+from driver import select_combo, until
+
+
+class Tool:
+    """Test-local wrapper for a tool's standard public controls."""
+
+    def __init__(self, app, ui_text, title_id, input_id, result_id):
+        self.app = app
+        app.command(1800)  # PANEL_TOOLS
+        listing = until('tools launcher', lambda: app.child(1801))
+        title = ui_text(title_id)
+
+        def row():
+            for index in range(int(app.list_command(listing, 'GetItemCount'))):
+                if app.list_command(listing, 'GetText', str(index)).split('\r\n', 1)[0] == title:
+                    return index + 1
+            return None
+
+        index = until('tool launcher row ' + title, row) - 1
+        app.record('open tool ' + title)
+        app.list_command(listing, 'SelectClear')
+        app.list_command(listing, 'Select', str(index))
+        app.command(1802)  # TOOL_NEW
+
+        def opened():
+            document = app.document()
+            app.child(input_id, document)
+            app.child(result_id, document)
+            return document
+
+        self.handle = until('tool document ' + title, opened)
+        self.input_id, self.result_id = input_id, result_id
+
+    def control(self, identifier):
+        return self.app.child(identifier, self.handle)
+
+    def enter(self, value):
+        self.app.record('tool input ' + value)
+        self.app.set_text(self.control(self.input_id), value)
+        if self.input_id == 1820:
+            # Multiline Edit WM_SETTEXT does not generate EN_CHANGE. Deliver
+            # the standard edit notification after setting its public text.
+            win32gui.SendMessage(self.handle, win32con.WM_COMMAND,
+                                 self.input_id | (win32con.EN_CHANGE << 16),
+                                 self.control(self.input_id))
+
+    def select(self, identifier, value):
+        self.app.record('tool select {} {}'.format(identifier, value))
+        select_combo(self.control(identifier), value, win32con.CBN_SELENDOK)
+
+    def click(self, identifier):
+        self.app.record('tool click {}'.format(identifier))
+        win32gui.SendMessage(self.control(identifier), win32con.BM_CLICK, 0, 0)
+
+    def body(self):
+        return self.app.text(self.control(self.result_id))
+
+
+def system_message(code):
+    """Independent Windows message lookup, in the target's default language."""
+    buffer = ctypes.create_unicode_buffer(4096)
+    format_message = ctypes.WinDLL('kernel32', use_last_error=True).FormatMessageW
+    format_message.argtypes = [wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD,
+                              wintypes.DWORD, wintypes.LPWSTR, wintypes.DWORD,
+                              ctypes.c_void_p]
+    format_message.restype = wintypes.DWORD
+    count = format_message(0x1000 | 0x200, None, code, 0, buffer, len(buffer), None)
+    assert count, 'Independent FormatMessageW({}) failed: {}'.format(code, ctypes.get_last_error())
+    message = buffer.value.rstrip('\r\n')
+    assert message, 'Independent system message is empty'
+    return message
+
+
+def test_error_code_system_message_invalid_and_recovery(app, ui_text):
+    denied, invalid_handle = system_message(5), system_message(6)
+    tool = Tool(app, ui_text, 2303, 1810, 1816)
+    tool.select(1811, ui_text(2315))  # Win32
+    tool.select(1812, ui_text(2319))  # Automatic language
+
+    def query(code, message):
+        tool.enter(str(code))
+        tool.click(1815)
+
+        def complete():
+            body = tool.body()
+            assert win32gui.IsWindowEnabled(tool.control(1815))
+            assert '0x{:08X}'.format(code) in body and message in body
+            return body
+
+        return until('system error {} result'.format(code), complete)
+
+    previous = query(5, denied)  # ERROR_ACCESS_DENIED, independently defined by Win32
+    tool.enter('0xGG')
+    tool.click(1815)
+
+    def rejected():
+        assert app.text(app.child(1105)).startswith(ui_text(2334))
+        assert tool.body() == previous
+        return True
+
+    until('invalid code preserves successful result', rejected)
+    recovered = query(6, invalid_handle)  # ERROR_INVALID_HANDLE
+    assert denied not in recovered
+
+
+def test_demangle_known_cpp_symbols_and_live_updates(app, ui_text):
+    tool = Tool(app, ui_text, 2350, 1820, 1823)
+
+    def restored(patterns, absent=()):
+        def complete():
+            body = tool.body()
+            for pattern in patterns:
+                assert re.search(pattern, body, re.MULTILINE), body
+            for text in absent:
+                assert text not in body
+            return True
+        until('independently known demangled signatures', complete)
+
+    # Itanium grammar: 3foo is the name, i is its int parameter.
+    tool.select(1821, ui_text(2356))
+    tool.enter('_Z3fooi')
+    foo = r'^\s*foo\(int\)\s*$'
+    restored([foo])
+
+    # MSVC free function: int __cdecl func(int).
+    tool.enter('?func@@YAHH@Z')
+    tool.select(1821, ui_text(2355))
+    func = r'^\s*int\s+__cdecl\s+func\(int\)\s*$'
+    restored([func], ('foo(int)',))
+
+    tool.select(1821, ui_text(2314))  # Auto detects both independent ABIs.
+    tool.enter('_Z3fooi\r\n?func@@YAHH@Z')
+    restored([foo, func])
+    tool.enter('_Z3bari')  # EN_CHANGE alone must replace the old result.
+    restored([r'^\s*bar\(int\)\s*$'], ('foo(int)', 'func(int)'))
+
+
+REGISTRY_ROOTS = (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE)
+CLASSES = 'Software\\Classes\\'
+
+
+def registry_default(root, path):
+    """Read the same explicit 32-bit OS view independently of Winlex."""
+    try:
+        with winreg.OpenKey(root, path, 0, winreg.KEY_READ | winreg.KEY_WOW64_32KEY) as key:
+            try:
+                value, kind = winreg.QueryValueEx(key, '')
+            except FileNotFoundError:
+                return None
+    except FileNotFoundError:
+        return None
+    assert kind in (winreg.REG_SZ, winreg.REG_EXPAND_SZ), 'Unexpected registry string type: ' + path
+    return winreg.ExpandEnvironmentStrings(value) if kind == winreg.REG_EXPAND_SZ else value
+
+
+def registry_key_exists(root, path):
+    try:
+        with winreg.OpenKey(root, path, 0, winreg.KEY_READ | winreg.KEY_WOW64_32KEY):
+            return True
+    except FileNotFoundError:
+        return False
+
+
+def test_com_builtin_registration_missing_and_recovery(app, ui_text):
+    progid = 'Shell.Application'
+    clsid = '{13709620-C279-11CE-A49E-444553540000}'
+    mappings = [registry_default(root, CLASSES + progid + '\\CLSID')
+                for root in REGISTRY_ROOTS]
+    mappings = [value for value in mappings if value]
+    assert mappings, 'Prerequisite missing: Shell.Application registration in explicit 32-bit registry view'
+    assert all(value.upper() == clsid for value in mappings), 'Unexpected Shell.Application CLSID: ' + repr(mappings)
+
+    descriptions, registered_progids = set(), set()
+    for root in REGISTRY_ROOTS:
+        path = CLASSES + 'CLSID\\' + clsid
+        description = registry_default(root, path)
+        if description:
+            descriptions.add(description)
+        for subkey in ('ProgID', 'VersionIndependentProgID'):
+            value = registry_default(root, path + '\\' + subkey)
+            if value:
+                registered_progids.add(value)
+    assert descriptions and registered_progids, (
+        'Prerequisite missing: Shell.Application class description/ProgID in 32-bit registry view')
+
+    # Verify absence in both real roots before asking Winlex; never write keys.
+    missing = '{' + str(uuid.uuid4()).upper() + '}'
+    assert not any(registry_key_exists(root, CLASSES + 'CLSID\\' + missing)
+                   for root in REGISTRY_ROOTS), 'Generated missing CLSID unexpectedly registered'
+
+    tool = Tool(app, ui_text, 2400, 1830, 1835)
+    tool.select(1831, ui_text(2407))  # ProgID
+    tool.select(1832, ui_text(2411))  # Explicit x86 registry view, not process default
+
+    def positive():
+        body = tool.body()
+        assert clsid in body.upper()
+        for value in descriptions | registered_progids:
+            assert value in body
+        return True
+
+    tool.enter(progid)
+    tool.click(1833)
+    until('built-in Shell.Application registration', positive)
+
+    tool.select(1831, ui_text(2408))  # GUID (may query the previous input)
+    tool.enter(missing)
+    tool.click(1833)
+    diagnostic = ui_text(2434).replace('%1!s!', missing)
+
+    def not_found():
+        body = tool.body()
+        assert diagnostic in body
+        assert clsid not in body.upper()
+        for value in descriptions | registered_progids:
+            assert value not in body
+        return True
+
+    until('verified absent CLSID replaces positive report', not_found)
+    tool.enter(clsid)
+    tool.click(1833)
+    until('COM registration recovers after absent CLSID', positive)
+    # Deliberately never invoke COM_TYPELIB (1836) or COM_ACTIVATE (1837).

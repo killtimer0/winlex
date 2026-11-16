@@ -22,3 +22,15 @@ fields, giving a 16-byte structure with field offsets 0, 4, and 12.
 ```powershell
 cargo run -p winlex-core --example gui-search-fixtures --locked -- tests/gui/fixtures
 ```
+
+## C# generic inputs
+
+`ReaderFixtures.winmd` is the unchanged managed assembly built from
+[`tests/metadata/ReaderFixtures`](../../metadata/ReaderFixtures). Its C# definitions
+provide an independent input for generic substitution and architecture checks.
+No CLR or compiler is required on GUI targets.
+
+```powershell
+dotnet build tests/metadata/ReaderFixtures/ReaderFixtures.csproj -c Debug -o tmp/verify/reader-fixtures --nologo
+Copy-Item tmp/verify/reader-fixtures/ReaderFixtures.dll tests/gui/fixtures/ReaderFixtures.winmd
+```
