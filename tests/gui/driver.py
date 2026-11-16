@@ -199,8 +199,7 @@ class Winlex:
     def source_count(self):
         return int(self.list_command(self.child(1112), 'GetItemCount'))
 
-    def reload_source(self, path):
-        self.command(1021)
+    def source_index(self, path):
         sources = self.child(1112)
         def matching():
             for index in range(int(self.list_command(sources, 'GetItemCount'))):
@@ -208,7 +207,15 @@ class Winlex:
                 if Path(text.split('\r\n', 1)[0]) == path:
                     return index + 1
             return None
-        index = until('source ' + str(path), matching) - 1
+        return until('source ' + str(path), matching) - 1
+
+    def source_text(self, path):
+        return self.list_command(self.child(1112), 'GetText', str(self.source_index(path)))
+
+    def reload_source(self, path):
+        self.command(1021)
+        sources = self.child(1112)
+        index = self.source_index(path)
         self.list_command(sources, 'SelectClear')
         self.list_command(sources, 'Select', str(index))
         until('reload action available', lambda: win32gui.IsWindowEnabled(self.child(1044)))

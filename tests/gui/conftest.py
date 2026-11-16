@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import struct
 import sys
 import time
 import uuid
@@ -155,3 +156,23 @@ def app(request):
 @pytest.fixture
 def metadata(request):
     return Path(request.config.getoption('--winmd')).resolve()
+
+
+@pytest.fixture
+def ui_text(request):
+    """Read the executable's English resources, matching the private preference."""
+    import win32api
+    library = win32api.LoadLibraryEx(str(Path(request.config.getoption('--exe')).resolve()), 0, 2)
+    def text(identifier):
+        block = win32api.LoadResource(library, 6, identifier // 16 + 1, 0x409)
+        offset = 0
+        for index in range(16):
+            length = struct.unpack_from('<H', block, offset)[0] * 2
+            offset += 2
+            if index == identifier % 16:
+                return block[offset:offset + length].decode('utf-16-le')
+            offset += length
+    try:
+        yield text
+    finally:
+        win32api.FreeLibrary(library)

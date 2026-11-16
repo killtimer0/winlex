@@ -69,6 +69,40 @@ def test_source_reload_preserves_open_document_snapshot(app):
     assert app.editor().text_block() == updated_text
 
 
+def test_failed_source_reload_retains_data_and_recovers(app, ui_text):
+    fixtures = Path(__file__).with_name('fixtures')
+    source = app.output / 'recover 输入.winmd'
+    shutil.copyfile(fixtures / 'before.winmd', source)
+    app.open_file(source)
+    original = app.open_symbol('ReloadSnapshot')
+    original_text = original.text_block()
+    assert 'OriginalField' in original_text and 'UpdatedField' not in original_text
+
+    source.write_bytes(b'not a metadata file')
+    app.reload_source(source)
+    # A retained document alone cannot prove that a reload was attempted.
+    # Read the diagnostic resource rather than duplicate localized wording.
+    failed = ui_text(2102)  # IDS_RELOAD_FAILED
+    assert failed
+    until('source reload failure reported', lambda: failed in app.source_text(source))
+    original.activate()
+    assert app.editor().text_block() == original_text
+    # Navigate away before searching again, so an untouched active editor
+    # cannot stand in for a working search over the retained catalog.
+    app.open_symbol('CloseHandle')
+    assert app.open_symbol('ReloadSnapshot').text_block() == original_text
+
+    shutil.copyfile(fixtures / 'after.winmd', source)
+    app.reload_source(source)
+    app.search('ReloadVersionTwo')
+    app.open_symbol('ReloadSnapshot')
+    until('recovered declaration', lambda: 'UpdatedField' in app.editor().text_block())
+    assert 'OriginalField' not in app.editor().text_block()
+    assert failed not in app.source_text(source)
+    original.activate()
+    assert app.editor().text_block() == original_text
+
+
 @pytest.mark.real_input
 def test_keyboard_search_and_open(app):
     app.keyboard_search('CreateFileW')
