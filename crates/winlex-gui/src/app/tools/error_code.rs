@@ -55,7 +55,6 @@ pub(in crate::app) struct View {
     module: HWND,
     browse: HWND,
     query: HWND,
-    tooltip: HWND,
     // Programmatic control updates must not invalidate the current query.
     setting: Cell<bool>,
     revision: Cell<u64>,
@@ -86,7 +85,6 @@ impl View {
             module: std::ptr::null_mut(),
             browse: std::ptr::null_mut(),
             query: std::ptr::null_mut(),
-            tooltip: std::ptr::null_mut(),
             setting: Cell::new(true),
             revision: Cell::new(0),
             query_ticket: Cell::new(None),
@@ -408,27 +406,21 @@ impl View {
             *control = self.shell.create_button(hwnd, label, id, style)?;
         }
         self.shell.create_copy_button(hwnd, ERROR_CODE_COPY_ALL)?;
-        let tool = tooltip_info(
-            self.input,
-            resources::wide_text(IDS_ERROR_CODE_HINT)
-                .as_ptr()
-                .cast_mut(),
-        );
-        self.shell.create_result(hwnd, ERROR_CODE_RESULT)?;
+        self.shell
+            .create_result(hwnd, ERROR_CODE_RESULT, IDS_ERROR_CODE_HINT)?;
         send(self.input, EM_SETLIMITTEXT, 4096, 0);
         send(self.module, EM_SETLIMITTEXT, 32767, 0);
         for control in [self.input, self.module] {
             self.shell.subclass_text(control)?;
         }
-        self.tooltip = tooltip(hwnd, &tool)?;
         self.setting.set(false);
         Ok(())
     }
     pub fn layout(&self) {
-        let Some((m, mut area, gap, label_gap)) = self.layout_start() else {
+        let mut positions = vec![];
+        let Some((m, mut area, gap, label_gap)) = self.layout_start(&mut positions) else {
             return;
         };
-        let mut positions = vec![];
         let label_width = self.label_column(
             &m,
             &[
@@ -531,13 +523,9 @@ impl View {
                 self.module,
                 self.browse,
                 self.query,
-                self.tooltip,
             ],
             &[self.scope, self.language],
         );
-        let ctx = self.ctx();
-        let m = ctx.metrics(self.hwnd);
-        send(self.tooltip, TTM_SETMAXTIPWIDTH, 0, m.px(480) as isize);
         self.layout();
     }
     pub fn key(&self, msg: &MSG) -> bool {
@@ -553,9 +541,6 @@ impl View {
             self.ctx().cancel_job(id);
         }
         self.cancel_languages();
-        unsafe {
-            DestroyWindow(self.tooltip);
-        }
     }
     pub(in crate::app) fn worker_stopped(&self) {
         let querying = self.query_ticket.take().is_some();

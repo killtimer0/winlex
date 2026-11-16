@@ -66,6 +66,7 @@ pub(super) struct Shell {
     icons: RefCell<Option<Rc<crate::icons::WindowIcons>>>,
     icon: Icon,
     pub labels: Vec<HWND>,
+    hint: HWND,
     result: HWND,
     copy: HWND,
     status: RefCell<String>,
@@ -85,6 +86,7 @@ impl Shell {
             icons: RefCell::new(None),
             icon,
             labels: Vec::new(),
+            hint: std::ptr::null_mut(),
             result: std::ptr::null_mut(),
             copy: std::ptr::null_mut(),
             status: RefCell::new(status),
@@ -115,6 +117,7 @@ impl Shell {
             .copied()
             .chain(controls.iter().copied())
             .chain(Some(self.copy))
+            .chain(Some(self.hint))
         {
             super::bind(h, m.font);
         }
@@ -188,14 +191,30 @@ impl Shell {
         self.set_status(status);
     }
     /// Shared tool layout: inset area and the row gaps above the result.
-    fn layout_start(&self) -> Option<(layout::Metrics, RECT, i32, i32)> {
+    fn layout_start(
+        &self,
+        positions: &mut Vec<(HWND, RECT)>,
+    ) -> Option<(layout::Metrics, RECT, i32, i32)> {
         if self.result.is_null() {
             return None;
         }
         let metrics = self.ctx().metrics(self.hwnd);
-        let area = layout::inset(client(self.hwnd), metrics.px(8));
+        let mut area = layout::inset(client(self.hwnd), metrics.px(8));
         let gap = metrics.px(4);
         let label_gap = metrics.px(8);
+        let guidance = text_wide(self.hint);
+        let mut measured = layout::rect(0, 0, (area.right - area.left).max(1), 0);
+        with_window_font(self.hint, metrics.font, |dc| unsafe {
+            DrawTextW(
+                dc,
+                guidance.as_ptr().cast_mut(),
+                -1,
+                &mut measured,
+                DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX,
+            );
+        });
+        positions.push((self.hint, layout::take_top(&mut area, measured.bottom)));
+        layout::take_top(&mut area, gap);
         Some((metrics, area, gap, label_gap))
     }
     /// Every tool ends with the result caption and the editor filling the rest.
@@ -313,8 +332,17 @@ impl Shell {
         }
         send(combo, CB_SETCURSEL, 0, 0);
     }
-    /// Create the result section's caption and rich-text editor.
-    fn create_result(&mut self, hwnd: HWND, id: u16) -> anyhow::Result<()> {
+    /// Create persistent input guidance and the result section.
+    fn create_result(&mut self, hwnd: HWND, id: u16, hint: u16) -> anyhow::Result<()> {
+        self.hint = unsafe {
+            child(
+                hwnd,
+                w!("STATIC"),
+                resources::wide_text(hint),
+                windows_sys::Win32::System::SystemServices::SS_NOPREFIX,
+                TOOL_HINT,
+            )
+        }?;
         self.create_label(hwnd, IDS_RESULT_LABEL)?;
         self.result = crate::rich_text::create(hwnd, id)?;
         self.find.create(hwnd, self.result)?;

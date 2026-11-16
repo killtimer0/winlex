@@ -79,7 +79,8 @@ impl View {
         self.shell
             .populate_combo(self.abi, ABIS.iter().map(|&(label, _)| label));
         self.shell.create_copy_button(hwnd, DEMANGLE_COPY_ALL)?;
-        self.shell.create_result(hwnd, DEMANGLE_RESULT)?;
+        self.shell
+            .create_result(hwnd, DEMANGLE_RESULT, IDS_DEMANGLE_HINT)?;
         send(self.input, EM_SETLIMITTEXT, MAX_UNITS, 0);
         Ok(())
     }
@@ -128,10 +129,10 @@ impl View {
         status
     }
     pub fn layout(&self) {
-        let Some((m, mut area, gap, label_gap)) = self.layout_start() else {
+        let mut positions = vec![];
+        let Some((m, mut area, gap, label_gap)) = self.layout_start(&mut positions) else {
             return;
         };
-        let mut positions = vec![];
         let label_width = self.label_column(
             &m,
             &[IDS_DEMANGLE_LABEL, IDS_DEMANGLE_ABI, IDS_RESULT_LABEL],

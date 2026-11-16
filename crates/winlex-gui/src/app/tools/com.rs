@@ -131,7 +131,7 @@ impl View {
             *control = self.shell.create_button(hwnd, label, id, style)?;
         }
         self.shell.create_copy_button(hwnd, COM_COPY_ALL)?;
-        self.shell.create_result(hwnd, COM_RESULT)?;
+        self.shell.create_result(hwnd, COM_RESULT, IDS_COM_HINT)?;
         unsafe {
             EnableWindow(self.type_lib, 0);
             EnableWindow(self.activate, 0);
@@ -357,10 +357,10 @@ impl View {
         self.execute();
     }
     pub fn layout(&self) {
-        let Some((m, mut area, gap, label_gap)) = self.layout_start() else {
+        let mut positions = vec![];
+        let Some((m, mut area, gap, label_gap)) = self.layout_start(&mut positions) else {
             return;
         };
-        let mut positions = vec![];
         let label_width = self.label_column(
             &m,
             &[IDS_COM_LABEL, IDS_COM_KIND, IDS_COM_VIEW],
