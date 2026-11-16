@@ -56,3 +56,22 @@ def test_documents_keep_independent_architectures(app):
     wait_layout(duplicate, 'x64')
     original.activate()
     wait_layout(original, 'arm64')
+
+
+def test_history_restores_declaration_and_architecture(app):
+    document = app.open_symbol('SECURITY_ATTRIBUTES')
+    document.select_architecture('x86')
+    wait_layout(document, 'x86')
+    document.select_architecture('x64')
+    wait_layout(document, 'x64')
+    app.open_symbol('CloseHandle')
+
+    app.command(1055)  # Navigation > Back
+    document = app.wait_declaration('SECURITY_ATTRIBUTES')
+    wait_layout(document, 'x64')
+    app.command(1055)
+    wait_layout(document, 'x86')
+    app.command(1056)  # Navigation > Forward
+    wait_layout(document, 'x64')
+    app.command(1056)
+    app.wait_declaration('CloseHandle')

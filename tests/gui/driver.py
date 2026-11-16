@@ -77,6 +77,19 @@ class Declaration:
     def architecture(self):
         return self.app.text(self.app.child(1047, self.window()))
 
+    def first_visible_line(self):
+        return win32gui.SendMessage(self.handle, win32con.EM_GETFIRSTVISIBLELINE, 0, 0)
+
+    def scroll_lines(self, lines):
+        self.app.record('scroll declaration {} lines'.format(lines))
+        win32gui.SendMessage(self.handle, win32con.EM_LINESCROLL, 0, lines)
+
+    def close(self):
+        self.activate()
+        document = self.window()
+        self.app.command(1015)
+        until('document closed', lambda: not win32gui.IsWindow(document))
+
     def selection_indices(self):
         # EM_GETSEL is below WM_USER and Windows marshals its two DWORD outputs.
         # Unlike EM_EXGETSEL, it is safe with controller-local pointers.
@@ -208,6 +221,11 @@ class Winlex:
         self.set_text(self.child(1102), name)
         return self.wait_result(expected or name)
 
+    def search_mode(self, text):
+        win32gui.SendMessage(self.frame, win32con.WM_COMMAND, 1024, 0)
+        self.record('search mode ' + text)
+        select_combo(self.child(1114), text, win32con.CBN_SELENDOK)
+
     def completed_result_names(self, template):
         def completed():
             results = self.child(1103)
@@ -320,14 +338,21 @@ class Winlex:
     def source_text(self, path):
         return self.list_command(self.child(1112), 'GetText', str(self.source_index(path)))
 
-    def reload_source(self, path):
+    def select_source(self, path):
         self.command(1021)
         sources = self.child(1112)
         index = self.source_index(path)
         self.list_command(sources, 'SelectClear')
         self.list_command(sources, 'Select', str(index))
+
+    def reload_source(self, path):
+        self.select_source(path)
         until('reload action available', lambda: win32gui.IsWindowEnabled(self.child(1044)))
         self.command(1044)
+
+    def close_source(self, path):
+        self.select_source(path)
+        self.command(1022)
 
     def keyboard_search(self, name):
         class GUIThreadInfo(c.Structure):
