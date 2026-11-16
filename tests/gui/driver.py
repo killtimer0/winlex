@@ -463,16 +463,16 @@ class Winlex:
         win32gui.PostMessage(self.frame, win32con.WM_CLOSE, 0, 0)
         until('process exit', lambda: not self.is_running(), 10)
 
-    def evidence(self, destination):
+    def evidence(self, destination, window=None):
         destination = Path(destination)
         destination.mkdir(parents=True, exist_ok=True)
         (destination / 'actions.txt').write_text(
             '\n'.join('{:.6f} {}'.format(*action) for action in self.actions), encoding='utf-8')
         try:
             rows = []
-            for window in self.windows():
-                children = [window]
-                win32gui.EnumChildWindows(window, lambda h, _: children.append(h), None)
+            for top_level in self.windows():
+                children = [top_level]
+                win32gui.EnumChildWindows(top_level, lambda h, _: children.append(h), None)
                 rows.extend(dict(hwnd=h, cls=win32gui.GetClassName(h), id=win32gui.GetDlgCtrlID(h),
                                  text=win32gui.GetWindowText(h), rect=win32gui.GetWindowRect(h)) for h in children)
             (destination / 'windows.json').write_text(json.dumps(rows, ensure_ascii=False), encoding='utf-8')
@@ -482,7 +482,7 @@ class Winlex:
         except Exception as error:
             (destination / 'windows-error.txt').write_text(repr(error), encoding='utf-8')
         try:
-            left, top, right, bottom = win32gui.GetWindowRect(self.frame)
+            left, top, right, bottom = win32gui.GetWindowRect(window or self.frame)
             width, height = right - left, bottom - top
             # Native GDI also works where legacy Python cannot load win32ui.
             gdi = c.windll.gdi32

@@ -169,6 +169,8 @@ python tests/gui/run.py --local --allow-local-desktop --exe target/x86_64-pc-win
 
 `--output` 是调度机上的不存在或空目录；`--exe`、`--winmd` 均为调度机输入路径。x86 验证改用 x86 EXE 和 x86 目标 Python。`--` 后传 pytest 参数，不需要真实输入时省略 `--real-input`，用 `-k` 或套件内测试节点缩小范围。入口参数见 `--help`，单例超时配置见 [`pytest.ini`](../tests/gui/pytest.ini)。
 
+跨屏 DPI 专项在 `--` 后使用 `--real-input --dpi-mode pmv2 test_dpi.py`，再以 `--dpi-mode pmv1` 验证兼容路径。它要求远程桌面有两块有效 DPI 不同的活动显示器；条件不满足时明确跳过。测试实际移动窗口，不模拟 `WM_DPICHANGED`，不更改系统缩放或显示器配置；核对阅读状态、字体缩放、对话框未提交输入、菜单／按钮点击及下拉列表边界，并保留各显示器截图与 `dpi-environment.json`。`--dpi-mode` 只设置被测应用已有的 `WINLEX_DPI` 环境选项，默认不覆盖。
+
 ### 结果、超时与中断
 
 终端在每个用例（含 teardown）结束后追加 `.`（通过）、`S`（跳过）或 `F`（任一阶段失败）。本机直接读取 `progress.txt`，SSH 随现有结果轮询增量读取；硬退出前未完成的用例不追加标记。进度不代表整轮完成，最终状态以 `result.json` 为准。

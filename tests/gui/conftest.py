@@ -19,6 +19,8 @@ def pytest_addoption(parser):
     group.addoption('--output', default='tmp/gui-results', help='Evidence directory')
     group.addoption('--desktop-authorized', action='store_true', help='Authorize this input desktop')
     group.addoption('--real-input', action='store_true', help='Include exclusive desktop input scenarios')
+    group.addoption('--dpi-mode', choices=('auto', 'pmv2', 'pmv1', 'system', 'unaware'),
+                    help='Set the application WINLEX_DPI preference for this run')
     group.addoption('--fault-mode', choices=FAULT_MODES,
                     help='Run one infrastructure fault probe')
 
@@ -88,6 +90,9 @@ def app(request):
     output.mkdir(parents=True, exist_ok=True)
     config_root = 'Software\\Winlex\\E2E\\' + uuid.uuid4().hex
     environment = dict(os.environ, WINLEX_CONFIG_ROOT=config_root)
+    dpi_mode = request.config.getoption('--dpi-mode')
+    if dpi_mode:
+        environment['WINLEX_DPI'] = dpi_mode
     executable = str(Path(request.config.getoption('--exe')).resolve())
     metadata = str(Path(request.config.getoption('--winmd')).resolve())
     inputs = [metadata]
