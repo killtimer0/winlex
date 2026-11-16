@@ -115,6 +115,14 @@ python tests/fixtures/build_message_fixtures.py --x86-build "$x86Cli.build.json"
 
 `$x86Cli` 和 `$x64Cli` 为对应 CLI 的完整路径；资源 DLL 写入 `tmp/message-fixtures/`。
 
+使用已有的原生 Debug CLI 独立验证消息资源，不构建程序、不运行 GUI：
+
+```powershell
+python tests/fixtures/message_gate.py --x86-cli "$x86Cli" --x64-cli "$x64Cli" --fixtures tmp/message-fixtures
+```
+
+gate 验证两种 CLI 位数分别读取两种 DLL 位数，覆盖精确／自动／中性语言、Unicode 与 ANSI 原始插入模板、缺失消息／语言／资源／模块和损坏 DLL，以及 Unicode 和扩展长路径。结果及每次调用输出写入 `tmp/verify/messages/report.json`，失败返回非零。自动语言按实际选中的资源语言核对文本，不依赖系统界面语言。可用 `--unc-fixtures '\\server\share\message-fixtures'` 指向已有共享中的同一组资源 DLL，增加 UNC 查询；未提供时明确记录跳过，不创建共享。
+
 ### GUI 执行端准备
 
 `tests/gui` 使用 pytest、AutoItX 和 pywin32。目标端准备 Python 3.8，解释器位数须与被测 GUI EXE 一致；XP 所需的兼容版解释器需自行准备。在该解释器中安装目标依赖：
