@@ -8,7 +8,6 @@ mod api;
 mod button;
 mod controls;
 mod input;
-mod static_text;
 mod task_dialog;
 
 pub(crate) use api::supported;
@@ -461,7 +460,7 @@ fn apply_one(hwnd: HWND) {
                     };
                     send_ref(hwnd, TB_SETCOLORSCHEME, 0, &scheme);
                 }
-                "static" => static_text::install(hwnd),
+                "static" => crate::static_text::install(hwnd),
                 "syslink" => {}
                 _ => set_native_theme(hwnd, "DarkMode_Explorer", None),
             }
@@ -638,7 +637,7 @@ unsafe fn control_color(hwnd: HWND, msg: u32, w: usize, l: isize) -> isize {
         let class = class_name(l as HWND);
         let child = l as HWND;
         let enabled = if class == "static" {
-            static_text::enabled(child)
+            crate::static_text::enabled(child)
         } else {
             IsWindowEnabled(child) != 0
         };

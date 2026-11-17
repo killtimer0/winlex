@@ -15,6 +15,7 @@ mod platform;
 mod resources;
 mod results;
 mod rich_text;
+mod static_text;
 mod tabs;
 mod tasks;
 mod theme;

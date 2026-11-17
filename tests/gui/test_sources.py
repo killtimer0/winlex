@@ -31,6 +31,13 @@ def test_long_source_list_starts_at_first_row_and_preserves_view_on_refresh(app,
     anchor = app.list_command(listing, 'GetText', str(top)).split('\r\n', 1)[0]
     offset = app.list_item_rect(listing, top)[1]
 
+    frame = win32gui.GetWindowRect(app.frame)
+    for width in (frame[2] - frame[0] - 160, frame[2] - frame[0]):
+        win32gui.SetWindowPos(app.frame, 0, 0, 0, width, frame[3] - frame[1],
+                              win32con.SWP_NOMOVE | win32con.SWP_NOZORDER | win32con.SWP_NOACTIVATE)
+        assert app.list_item_rect(listing, top)[1] == offset, 'Resize must preserve the reading anchor'
+        assert not win32gui.GetWindowLong(listing, win32con.GWL_STYLE) & win32con.WS_HSCROLL
+
     extra = inputs / 'additional.winmd'
     shutil.copyfile(fixture, extra)
     app.open_file(extra)

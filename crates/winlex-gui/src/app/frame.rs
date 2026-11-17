@@ -45,24 +45,20 @@ pub(super) fn layout_frame(ctx: &Context) {
     if mdi.is_null() {
         return;
     }
-    let view = sidebar::current(ctx).map(|panel| {
-        let state = crate::list::State::capture(panel.list.hwnd);
-        (panel, state)
-    });
     let m = ctx.metrics(frame);
     let mut area = client(frame);
     area.bottom = bounds(status, frame).top;
     let mut positions = Vec::new();
-    let sidebar = sidebar::layout(ctx, area.bottom, &mut positions);
+    let (sidebar, list) = sidebar::layout(ctx, area.bottom, &mut positions);
     layout::take_left(&mut area, sidebar);
     positions.push((tabs, layout::take_top(&mut area, m.height + m.px(8))));
     positions.push((mdi, area));
-    if ctx.checked(place_all(&positions)).is_some()
-        && let Some((panel, state)) = view
-    {
-        crate::list::fit(panel.list.hwnd);
-        state.restore_view(panel.list.hwnd);
-    }
+    let result = if let Some((panel, area)) = list {
+        panel.list.with_resize(area, || place_all(&positions))
+    } else {
+        place_all(&positions)
+    };
+    ctx.checked(result);
 }
 pub(super) unsafe extern "system" fn frame_proc(hwnd: HWND, msg: u32, w: usize, l: isize) -> isize {
     unsafe {

@@ -218,7 +218,11 @@ pub(super) fn recolor(ctx: &Context) {
         panel.recolor(ctx);
     }
 }
-pub(super) fn layout(ctx: &Context, bottom: i32, positions: &mut Vec<(HWND, RECT)>) -> i32 {
+pub(super) fn layout(
+    ctx: &Context,
+    bottom: i32,
+    positions: &mut Vec<(HWND, RECT)>,
+) -> (i32, Option<(Rc<Panel>, RECT)>) {
     let frame = ctx.frame();
     let (toolbar, splitter, width, panel) = ctx.with_sidebar(|sidebar| {
         (
@@ -229,12 +233,16 @@ pub(super) fn layout(ctx: &Context, bottom: i32, positions: &mut Vec<(HWND, RECT
         )
     });
     let m = ctx.metrics(frame);
-    let s = |n| m.px(n);
-    let x = (send(toolbar, TB_GETBUTTONSIZE, 0, 0) & 0xffff) as i32 + s(8);
-    let width = s(width).min((client(frame).right - x - s(160)).max(0));
-    positions.push((toolbar, layout::rect(s(4), s(4), x - s(8), bottom - s(8))));
+    let x = (send(toolbar, TB_GETBUTTONSIZE, 0, 0) & 0xffff) as i32 + m.px(8);
+    let width = m
+        .px(width)
+        .min((client(frame).right - x - m.px(160)).max(0));
+    positions.push((
+        toolbar,
+        layout::rect(m.px(4), m.px(4), x - m.px(8), bottom - m.px(8)),
+    ));
     let Some(panel) = panel else {
-        return x;
+        return (x, None);
     };
     let mut area = layout::inset(layout::rect(x, 0, width, bottom), m.px(4));
     match panel.id {
@@ -244,8 +252,8 @@ pub(super) fn layout(ctx: &Context, bottom: i32, positions: &mut Vec<(HWND, RECT
         }
     }
     positions.push((panel.list.hwnd, area));
-    positions.push((splitter, layout::rect(x + width, 0, s(3), bottom)));
-    x + width + s(3)
+    positions.push((splitter, layout::rect(x + width, 0, m.px(3), bottom)));
+    (x + width + m.px(3), Some((panel, area)))
 }
 pub(super) unsafe fn translate(ctx: &Context, frame: HWND, msg: &MSG) -> bool {
     let (toolbar, panel) = ctx.with_sidebar(|sidebar| (sidebar.toolbar, sidebar.owner(msg.hwnd)));
@@ -291,6 +299,13 @@ pub(super) unsafe extern "system" fn splitter_proc(
                 });
                 if changed {
                     super::frame::layout_frame(ctx);
+                    // Finish pending paints before processing the next drag position.
+                    RedrawWindow(
+                        frame,
+                        ptr::null(),
+                        ptr::null_mut(),
+                        RDW_UPDATENOW | RDW_ALLCHILDREN,
+                    );
                 }
                 return 0;
             }

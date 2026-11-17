@@ -323,7 +323,8 @@ impl Info {
             layout::take_left(&mut row, m.px(8));
         }
         place_button(self.online, &mut row, online, positions);
-        positions.push((self.line, layout::take_top(area, m.px(2))));
+        // The native etched edge occupies two physical pixels and does not fill its client area.
+        positions.push((self.line, layout::take_top(area, 2)));
         layout::take_top(area, m.px(8));
     }
     pub fn open_online(

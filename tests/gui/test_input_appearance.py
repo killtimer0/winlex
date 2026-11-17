@@ -36,6 +36,9 @@ def test_splitter_drag_keeps_first_tool_row_at_top(app):
             until('splitter follows pointer',
                   lambda: abs(win32gui.GetWindowRect(splitter)[0] - (x + offset)) <= 1)
             assert app.list_item_rect(listing, 0)[1] == 0, 'Dragging must not introduce a blank row above the first item'
+            assert not (
+                win32gui.GetWindowLong(listing, win32con.GWL_STYLE) & win32con.WS_HSCROLL
+            ), 'The single-column list must fit without horizontal scrolling after a drag update'
     finally:
         win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0)
 

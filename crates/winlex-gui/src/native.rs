@@ -160,6 +160,7 @@ pub unsafe fn child_ex(
         let failure = std::io::Error::last_os_error();
         Err(anyhow::Error::new(failure).context(format!("Create child control {id}")))
     } else {
+        crate::static_text::install(hwnd);
         Ok(hwnd)
     }
 }
@@ -278,8 +279,6 @@ pub fn place_all(positions: &[(HWND, RECT)]) -> anyhow::Result<()> {
             return Err(error("Begin layout"));
         }
         for &(hwnd, r) in changed {
-            // Resizing can reflow content inside the old client area as well.
-            // Let each control repaint instead of preserving stale pixels.
             batch = DeferWindowPos(
                 batch,
                 hwnd,
@@ -288,7 +287,7 @@ pub fn place_all(positions: &[(HWND, RECT)]) -> anyhow::Result<()> {
                 r.top,
                 (r.right - r.left).max(0),
                 (r.bottom - r.top).max(0),
-                SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOCOPYBITS,
+                SWP_NOZORDER | SWP_NOACTIVATE,
             );
             if batch.is_null() {
                 return Err(error("Defer layout"));

@@ -5,7 +5,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 // https://github.com/ozone10/win32-darkmodelib
-//! Let native static text honor the parent's disabled foreground, without embossing.
+//! Native static text reflow and disabled foreground without embossing.
 use crate::native::*;
 use std::{cell::Cell, ptr, rc::Rc};
 use windows_sys::Win32::System::SystemServices::{
@@ -24,6 +24,11 @@ struct StaticText {
 /// Keep tracking in light mode, but leave its native rendering and WM_ENABLE alone.
 pub(super) fn install(hwnd: HWND) {
     unsafe {
+        let mut name = [0u16; 32];
+        let length = GetClassNameW(hwnd, name.as_mut_ptr(), name.len() as i32);
+        if !String::from_utf16_lossy(&name[..length as usize]).eq_ignore_ascii_case("static") {
+            return;
+        }
         let kind = GetWindowLongW(hwnd, GWL_STYLE) as u32 & SS_TYPEMASK;
         if !matches!(
             kind,
@@ -47,7 +52,9 @@ pub(super) fn install(hwnd: HWND) {
 pub(super) fn enabled(hwnd: HWND) -> bool {
     unsafe {
         let mut data = 0;
-        if super::is_dark() && GetWindowSubclass(hwnd, Some(subclass), SUBCLASS, &mut data) != 0 {
+        if crate::theme::is_dark()
+            && GetWindowSubclass(hwnd, Some(subclass), SUBCLASS, &mut data) != 0
+        {
             return (*(data as *const StaticText)).enabled.get();
         }
         IsWindowEnabled(hwnd) != 0
@@ -73,9 +80,13 @@ unsafe extern "system" fn subclass(
             drop(Rc::from_raw(raw));
             return default_subclass(hwnd, msg, w, l);
         }
+        if msg == WM_SIZE && GetWindowLongW(hwnd, GWL_STYLE) as u32 & SS_TYPEMASK == SS_LEFT {
+            // Wrapped text can reflow within the preserved client pixels.
+            InvalidateRect(hwnd, ptr::null(), 1);
+        }
         if msg == WM_ENABLE {
             state.enabled.set(w != 0);
-            if super::is_dark() {
+            if crate::theme::is_dark() {
                 state.redraw_depth.set(state.redraw_depth.get() + 1);
                 let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
                 if style & WS_DISABLED != 0 {

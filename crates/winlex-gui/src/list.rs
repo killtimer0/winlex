@@ -272,6 +272,40 @@ impl List {
             tooltip_item: Cell::new(-1),
         })
     }
+    /// Keep native sizing, column fitting and the reading position in one update.
+    pub fn with_resize(
+        &self,
+        area: RECT,
+        commit: impl FnOnce() -> anyhow::Result<()>,
+    ) -> anyhow::Result<()> {
+        let old = bounds(self.hwnd, unsafe { GetParent(self.hwnd) });
+        if old.right - old.left == (area.right - area.left).max(0)
+            && old.bottom - old.top == (area.bottom - area.top).max(0)
+        {
+            return commit();
+        }
+        let state = State::capture(self.hwnd);
+        let visible = unsafe { IsWindowVisible(self.hwnd) != 0 };
+        if visible {
+            send(self.hwnd, WM_SETREDRAW, 0, 0);
+        }
+        let result = commit();
+        if result.is_ok() {
+            state.restore_view(self.hwnd);
+        }
+        if visible {
+            send(self.hwnd, WM_SETREDRAW, 1, 0);
+            unsafe {
+                RedrawWindow(
+                    self.hwnd,
+                    ptr::null(),
+                    ptr::null_mut(),
+                    RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN,
+                );
+            }
+        }
+        result
+    }
     pub fn prepare(&self, m: &layout::Metrics) -> anyhow::Result<()> {
         let visuals = Visuals::new(m)?;
         unsafe {
@@ -654,6 +688,12 @@ unsafe extern "system" fn list_proc(
     _data: usize,
 ) -> isize {
     unsafe {
+        // Nonclient-only changes can be nested inside the native resize handler.
+        if msg == WM_WINDOWPOSCHANGED && (*(l as *const WINDOWPOS)).flags & SWP_NOSIZE == 0 {
+            let result = default_subclass(h, msg, w, l);
+            fit(h);
+            return result;
+        }
         if matches!(msg, WM_THEMECHANGED | WM_SETTINGCHANGE | WM_SYSCOLORCHANGE) {
             let result = default_subclass(h, msg, w, l);
             refresh_palette(h);
