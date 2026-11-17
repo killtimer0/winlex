@@ -40,6 +40,18 @@ rustup target add i686-pc-windows-msvc x86_64-pc-windows-msvc
 CI 工具版本见 [工作流](../.github/workflows/build.yml)，.NET SDK 以 `global.json` 为准。本地可设置 `WINLEX_SDK_VERSION` 强制选择 SDK，缺失或不符时报错；未设置时使用 Visual Studio 默认值。Dist 不回退搜索其他 SDK。
 构建会校验兼容库哈希，显示 EXE 路径，并生成记录源码、工具和依赖的 `.build.json`，供 fixture 生成与[打包](release.md)使用。
 
+## 生成 README 示例图
+
+使用现有 Debug GUI EXE，按下文“GUI 执行端准备”配置录制环境；录制端和开发机的 `PATH` 均需提供 FFmpeg。
+
+```powershell
+uv run --locked --group gui python scripts/readme-media.py --config tests/gui/config/target.json --exe target/x86_64-pc-windows-msvc/debug/winlex-gui.exe --output tmp/readme-media-preview
+```
+
+本机录制将 `--config ...` 替换为 `--local`；录制期间不要操作该桌面。检查输出的 `themes.png` 和 `workflow.gif` 后，将两份文件复制到 `docs/images/`。
+
+脚本会打印原始素材目录；可用 `--from-captures <目录>/record_media --output <输出目录>` 重新合成，无需再次录制。
+
 ## 更新图标资源
 
 在项目根目录使用 Node.js 和 Windows PowerShell 运行：
