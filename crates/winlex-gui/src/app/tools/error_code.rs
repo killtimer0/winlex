@@ -114,7 +114,6 @@ impl View {
         self.system_languages(false);
         self.setting.set(false);
         self.changed();
-        self.layout();
         self.execute();
         self.focus();
     }
@@ -145,7 +144,6 @@ impl View {
                 } else {
                     self.system_languages(true);
                 }
-                self.layout();
             }
             ERROR_CODE_LANGUAGE if code == CBN_EDITCHANGE || code == CBN_SELENDOK => self.changed(),
             ERROR_CODE_QUERY if code == BN_CLICKED => {
@@ -224,6 +222,7 @@ impl View {
         }
         self.languages.replace(ids);
         self.setting.set(was_setting);
+        self.layout();
     }
     fn system_languages(&self, preserve: bool) {
         let mut ids = core::system_languages();
@@ -432,45 +431,68 @@ impl View {
             area.right - area.left,
         );
         let label_column = label_width + label_gap;
-        let browse = m.button_size(self.browse);
         let dpi = self.ctx().dpi();
-        let heights = [
-            m.edit_height(self.input, dpi),
-            {
-                let r = bounds(self.scope, self.hwnd);
-                r.bottom - r.top
-            },
-            {
-                let r = bounds(self.language, self.hwnd);
-                r.bottom - r.top
-            },
-            m.edit_height(self.module, dpi),
+        let input_height = m.edit_height(self.input, dpi);
+        let mut line = layout::take_top(&mut area, input_height.max(m.height));
+        let label = layout::take_left(&mut line, label_width);
+        positions.push((self.labels[0], layout::center_vertical(label, m.height)));
+        layout::take_left(&mut line, label_gap);
+        positions.push((self.input, layout::center_vertical(line, input_height)));
+        layout::take_top(&mut area, gap);
+
+        let language_width = m.combo_width(self.language).max(m.px(80));
+        send(
+            self.language,
+            CB_SETDROPPEDWIDTH,
+            language_width as usize,
+            0,
+        );
+        let fields = [
+            (self.labels[1], self.scope),
+            (self.labels[2], self.language),
         ];
-        let paired = area.right - area.left >= label_column * 2 + m.px(360);
-        for (index, control) in [self.input, self.scope, self.language, self.module]
-            .into_iter()
-            .enumerate()
-        {
-            let visible = index != 3 || self.custom();
-            show(self.labels[index], visible);
-            show(control, visible);
-            if !visible || index == 2 && paired {
-                continue;
+        let items = fields.map(|(_, control)| {
+            let r = bounds(control, self.hwnd);
+            let stretch = control == self.language;
+            layout::FlowItem {
+                size: SIZE {
+                    cx: label_column
+                        + if stretch {
+                            language_width
+                        } else {
+                            m.combo_width(control)
+                        },
+                    cy: (r.bottom - r.top).max(m.height),
+                },
+                stretch,
             }
-            let wrap_browse =
-                index == 3 && area.right - area.left < label_column + m.px(80) + gap + browse.cx;
-            let mut row = heights[index].max(m.height);
-            if index == 1 && paired {
-                row = row.max(heights[2]);
-            }
-            if index == 3 && !wrap_browse {
-                row = row.max(browse.cy);
-            }
-            let mut line = layout::take_top(&mut area, row);
-            let label = layout::take_left(&mut line, label_width);
-            positions.push((self.labels[index], layout::center_vertical(label, m.height)));
+        });
+        let rows = layout::flow(&mut area, &items, label_gap, gap);
+        for ((label, control), mut line) in fields.into_iter().zip(rows) {
+            let label_area = layout::take_left(&mut line, label_width);
+            positions.push((label, layout::center_vertical(label_area, m.height)));
             layout::take_left(&mut line, label_gap);
-            if index == 3 && !wrap_browse {
+            let r = bounds(control, self.hwnd);
+            positions.push((control, layout::center_vertical(line, r.bottom - r.top)));
+        }
+
+        let custom = self.custom();
+        for control in [self.labels[3], self.module, self.browse] {
+            show(control, custom);
+        }
+        if custom {
+            let browse = m.button_size(self.browse);
+            let height = m.edit_height(self.module, dpi);
+            let wrap_browse = area.right - area.left < label_column + m.px(80) + gap + browse.cx;
+            let mut row_height = height.max(m.height);
+            if !wrap_browse {
+                row_height = row_height.max(browse.cy);
+            }
+            let mut line = layout::take_top(&mut area, row_height);
+            let label = layout::take_left(&mut line, label_width);
+            positions.push((self.labels[3], layout::center_vertical(label, m.height)));
+            layout::take_left(&mut line, label_gap);
+            if !wrap_browse {
                 let right = line.right;
                 line.right = (right - browse.cx - gap).max(line.left);
                 positions.push((
@@ -486,17 +508,7 @@ impl View {
                     ),
                 ));
             }
-            if index == 1 && paired {
-                let mut language = line;
-                let width = (line.right - line.left - label_column - label_gap) / 2;
-                line.right = line.left + width;
-                language.left = line.right + label_gap;
-                let label = layout::take_left(&mut language, label_width);
-                positions.push((self.labels[2], layout::center_vertical(label, m.height)));
-                layout::take_left(&mut language, label_gap);
-                positions.push((self.language, layout::center_vertical(language, heights[2])));
-            }
-            positions.push((control, layout::center_vertical(line, heights[index])));
+            positions.push((self.module, layout::center_vertical(line, height)));
             layout::take_top(&mut area, gap);
             if wrap_browse {
                 let mut line = layout::take_top(&mut area, browse.cy);
@@ -507,7 +519,6 @@ impl View {
                 layout::take_top(&mut area, gap);
             }
         }
-        show(self.browse, self.custom());
         m.buttons(&mut area, [self.query], &mut positions);
         self.finish_layout(&m, &mut area, self.labels[4], &mut positions);
     }

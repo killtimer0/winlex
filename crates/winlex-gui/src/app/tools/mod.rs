@@ -98,13 +98,13 @@ impl Shell {
     fn ctx(&self) -> &Context {
         unsafe { &*self.ctx }
     }
-    /// Dropdown lists need their collapsed height set from the font metrics; a
-    /// later resize only sets the dropdown, not the closed control.
+    /// Configure dropdown extent and content width after binding the current font.
     fn size_combos(&self, controls: &[HWND]) {
         let ctx = self.ctx();
         let m = ctx.metrics(self.hwnd);
         for &combo in controls {
             ctx.checked(collapse_combo(combo, m.row(), 9));
+            send(combo, CB_SETDROPPEDWIDTH, m.combo_width(combo) as usize, 0);
         }
     }
     /// Font the labels, controls, copy button and result editor, then lay out.

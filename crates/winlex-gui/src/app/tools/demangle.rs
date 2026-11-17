@@ -155,6 +155,7 @@ impl View {
         let label = layout::take_left(&mut line, label_width);
         positions.push((self.labels[1], layout::center_vertical(label, m.height)));
         layout::take_left(&mut line, label_gap);
+        let line = layout::take_left(&mut line, m.combo_width(self.abi));
         positions.push((
             self.abi,
             layout::center_vertical(line, combo.bottom - combo.top),

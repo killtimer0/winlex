@@ -367,27 +367,35 @@ impl View {
             area.right - area.left,
         );
         let dpi = self.ctx().dpi();
-        let kind = bounds(self.kind, self.hwnd);
-        let view = bounds(self.registry_view, self.hwnd);
-        let heights = [
-            m.edit_height(self.input, dpi),
-            kind.bottom - kind.top,
-            view.bottom - view.top,
-        ];
-        for (index, (label, control)) in [
-            (self.labels[0], self.input),
+        let input_height = m.edit_height(self.input, dpi);
+        let mut line = layout::take_top(&mut area, input_height.max(m.height));
+        let label = layout::take_left(&mut line, label_width);
+        positions.push((self.labels[0], layout::center_vertical(label, m.height)));
+        layout::take_left(&mut line, label_gap);
+        positions.push((self.input, layout::center_vertical(line, input_height)));
+        layout::take_top(&mut area, gap);
+
+        let fields = [
             (self.labels[1], self.kind),
             (self.labels[2], self.registry_view),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let mut line = layout::take_top(&mut area, heights[index].max(m.height));
+        ];
+        let items = fields.map(|(_, control)| {
+            let r = bounds(control, self.hwnd);
+            layout::FlowItem {
+                size: SIZE {
+                    cx: label_width + label_gap + m.combo_width(control),
+                    cy: (r.bottom - r.top).max(m.height),
+                },
+                stretch: false,
+            }
+        });
+        let rows = layout::flow(&mut area, &items, label_gap, gap);
+        for ((label, control), mut line) in fields.into_iter().zip(rows) {
             let label_area = layout::take_left(&mut line, label_width);
             positions.push((label, layout::center_vertical(label_area, m.height)));
             layout::take_left(&mut line, label_gap);
-            positions.push((control, layout::center_vertical(line, heights[index])));
-            layout::take_top(&mut area, gap);
+            let r = bounds(control, self.hwnd);
+            positions.push((control, layout::center_vertical(line, r.bottom - r.top)));
         }
         m.buttons(
             &mut area,

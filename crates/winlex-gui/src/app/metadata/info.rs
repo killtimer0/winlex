@@ -230,9 +230,17 @@ impl Info {
         let generic = m.button_size(self.generic);
         let combo = bounds(self.architecture, ptr::null_mut());
         let combo_height = combo.bottom - combo.top;
+        let combo_width = m.combo_width(self.architecture);
+        send(
+            self.architecture,
+            CB_SETDROPPEDWIDTH,
+            combo_width as usize,
+            0,
+        );
         let label_width = m.text_width(resources::wide_text(IDS_ARCHITECTURE)) + m.px(8);
         let generic_visible = self.generic_visible.get();
-        let mut actions_width = label_width + m.px(70 + 8) + button.cx + m.px(8) + online.cx;
+        let mut actions_width =
+            label_width + combo_width + m.px(8) + button.cx + m.px(8) + online.cx;
         if generic_visible {
             actions_width += generic.cx + m.px(8);
         }
@@ -294,7 +302,8 @@ impl Info {
             self.architecture_label,
             layout::center_vertical(layout::take_left(&mut row, label_width), m.height),
         ));
-        let selector = layout::center_vertical(layout::take_left(&mut row, m.px(70)), combo_height);
+        let selector =
+            layout::center_vertical(layout::take_left(&mut row, combo_width), combo_height);
         show(
             self.architecture,
             selector.bottom - selector.top >= combo_height,

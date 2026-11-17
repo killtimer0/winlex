@@ -83,6 +83,30 @@ def system_message(code):
     return message
 
 
+@pytest.mark.parametrize('title,input_id,result_id,options', [
+    (2303, 1810, 1816, (1811,)),
+    (2350, 1820, 1823, (1821,)),
+    (2400, 1830, 1835, (1831, 1832)),
+])
+def test_fixed_options_stay_compact_while_input_grows(app, ui_text, title, input_id, result_id, options):
+    tool = Tool(app, ui_text, title, input_id, result_id)
+    win32gui.ShowWindow(tool.handle, win32con.SW_RESTORE)
+    available = win32gui.GetClientRect(win32gui.GetParent(tool.handle))
+
+    def widths(width):
+        win32gui.SetWindowPos(tool.handle, 0, 0, 0, width, available[3],
+                              win32con.SWP_NOZORDER | win32con.SWP_NOACTIVATE)
+        return [win32gui.GetClientRect(tool.control(identifier))[2]
+                for identifier in (*options, input_id)]
+
+    narrow = widths(available[2] * 4 // 5)
+    wide = widths(available[2])
+    # Fixed choices do not absorb extra space; free-form input does.
+    assert all(narrow) and all(wide)
+    assert wide[:-1] == narrow[:-1]
+    assert wide[-1] > narrow[-1]
+
+
 def test_error_code_system_message_invalid_and_recovery(app, ui_text):
     denied, invalid_handle = system_message(5), system_message(6)
     tool = Tool(app, ui_text, 2303, 1810, 1816)

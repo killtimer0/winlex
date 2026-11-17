@@ -43,6 +43,51 @@ pub fn center_vertical(mut row: RECT, height: i32) -> RECT {
     row.bottom = row.top + height;
     row
 }
+
+pub struct FlowItem {
+    pub size: SIZE,
+    pub stretch: bool,
+}
+
+/// Pack measured items into rows; share spare width among stretching items.
+/// Items stay in order, are limited to the available width, and consume a trailing row gap.
+pub fn flow(area: &mut RECT, items: &[FlowItem], column_gap: i32, row_gap: i32) -> Vec<RECT> {
+    let available = (area.right - area.left).max(0);
+    let mut positions = Vec::with_capacity(items.len());
+    let mut start = 0;
+    while start < items.len() {
+        let (mut end, mut used, mut height, mut stretching) = (start, 0, 0, 0);
+        while end < items.len() {
+            let item = &items[end];
+            let width = item.size.cx.max(0).min(available);
+            let gap = if end == start { 0 } else { column_gap };
+            if end != start && used + gap + width > available {
+                break;
+            }
+            used += gap + width;
+            height = height.max(item.size.cy);
+            stretching += i32::from(item.stretch);
+            end += 1;
+        }
+        let mut row = take_top(area, height);
+        let mut spare = available - used;
+        for item in &items[start..end] {
+            let mut width = item.size.cx.max(0).min(available);
+            if item.stretch {
+                let extra = spare / stretching;
+                width += extra;
+                spare -= extra;
+                stretching -= 1;
+            }
+            positions.push(take_left(&mut row, width));
+            take_left(&mut row, column_gap);
+        }
+        take_top(area, row_gap);
+        start = end;
+    }
+    positions
+}
+
 pub fn limit_sizing(area: &mut RECT, edge: u32, minimum: SIZE) {
     if area.right - area.left < minimum.cx {
         if matches!(edge, WMSZ_LEFT | WMSZ_TOPLEFT | WMSZ_BOTTOMLEFT) {
@@ -96,7 +141,7 @@ impl Metrics {
     pub fn button_size(&self, hwnd: HWND) -> SIZE {
         let mut size = SIZE { cx: 0, cy: 0 };
         if send_mut(hwnd, BCM_GETIDEALSIZE, 0, &mut size) == 0 || size.cx <= 0 || size.cy <= 0 {
-            size.cx = self.label_width(std::iter::once(text_wide(hwnd)), 0);
+            size.cx = self.text_width(&text_wide(hwnd)) + self.px(24);
             size.cy = self.row();
             let style = unsafe { GetWindowLongPtrW(hwnd, GWL_STYLE) as i32 } & BS_TYPEMASK;
             if matches!(
@@ -112,14 +157,38 @@ impl Metrics {
         }
         size
     }
-    pub fn label_width<T: AsRef<[u16]>>(
-        &self,
-        labels: impl Iterator<Item = T>,
-        minimum: i32,
-    ) -> i32 {
-        labels.fold(self.px(minimum), |width, label| {
-            width.max(self.text_width(label.as_ref()) + self.px(24))
-        })
+    /// Preferred closed width for the current items, independent of selection.
+    pub fn combo_width(&self, hwnd: HWND) -> i32 {
+        // Legacy child nonclient metrics can remain at system DPI after a move.
+        let arrow = unsafe {
+            GetSystemMetrics(SM_CXVSCROLL).max(
+                windows_sys::Win32::UI::HiDpi::GetSystemMetricsForDpi(SM_CXVSCROLL, self.dpi),
+            )
+        };
+        let mut width = 0;
+        with_window_font(hwnd, self.font, |dc| {
+            for index in 0..send(hwnd, CB_GETCOUNT, 0, 0).max(0) {
+                let length = send(hwnd, CB_GETLBTEXTLEN, index as usize, 0);
+                if length < 0 {
+                    continue;
+                }
+                let mut text = vec![0u16; length as usize + 1];
+                let length = send(
+                    hwnd,
+                    CB_GETLBTEXT,
+                    index as usize,
+                    text.as_mut_ptr() as isize,
+                );
+                let mut size = SIZE { cx: 0, cy: 0 };
+                if length > 0 {
+                    // Combo items display ampersands literally, unlike button captions.
+                    unsafe { GetTextExtentPoint32W(dc, text.as_ptr(), length as i32, &mut size) };
+                }
+                width = width.max(size.cx);
+            }
+        });
+        // A conservative allowance for borders and text padding, not an exact native inset.
+        width + arrow + self.px(8)
     }
     pub fn buttons(
         &self,
@@ -133,28 +202,14 @@ impl Metrics {
         }
         let gap = self.px(4);
         let size = self.button_group_size(&controls);
-        let width = size.cx;
-        let available = (area.right - area.left).max(0);
-        let columns = ((available + gap) / (width + gap)).max(1);
-        let width = width.min(available);
-        let row = size.cy;
-        let bounds = take_top(
-            area,
-            (controls.len() as i32 + columns - 1) / columns * (row + gap),
-        );
-        for (i, h) in controls.into_iter().enumerate() {
-            let i = i as i32;
-            let y = (bounds.top + i / columns * (row + gap)).min(bounds.bottom);
-            positions.push((
-                h,
-                rect(
-                    bounds.left + i % columns * (width + gap),
-                    y,
-                    width,
-                    row.min(bounds.bottom - y),
-                ),
-            ));
-        }
+        let items: Vec<_> = controls
+            .iter()
+            .map(|_| FlowItem {
+                size,
+                stretch: false,
+            })
+            .collect();
+        positions.extend(controls.into_iter().zip(flow(area, &items, gap, gap)));
     }
     pub fn button_group_size(&self, controls: &[HWND]) -> SIZE {
         controls.iter().map(|&h| self.button_size(h)).fold(
@@ -192,4 +247,70 @@ pub enum Arrangement {
     Free,
     Columns,
     Rows,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn item(width: i32, height: i32, stretch: bool) -> FlowItem {
+        FlowItem {
+            size: SIZE {
+                cx: width,
+                cy: height,
+            },
+            stretch,
+        }
+    }
+
+    #[test]
+    fn flow_wraps_whole_items_and_shares_spare_width() {
+        let mut area = rect(10, 20, 101, 100);
+        let items = [
+            item(30, 10, false),
+            item(20, 20, true),
+            item(20, 15, true),
+            item(60, 12, false),
+            item(60, 8, false),
+        ];
+        let positions: Vec<_> = flow(&mut area, &items, 5, 3)
+            .into_iter()
+            .map(|r| (r.left, r.top, r.right, r.bottom))
+            .collect();
+        assert_eq!(
+            positions,
+            [
+                (10, 20, 40, 40),
+                (45, 20, 75, 40),
+                (80, 20, 111, 40),
+                (10, 43, 70, 55),
+                (10, 58, 70, 66),
+            ]
+        );
+        assert_eq!(area.top, 69);
+    }
+
+    #[test]
+    fn flow_limits_oversized_items_and_handles_exhausted_space() {
+        let mut area = rect(10, 20, 15, 10);
+        let positions: Vec<_> = flow(&mut area, &[item(120, 20, true), item(30, 10, false)], 5, 3)
+            .into_iter()
+            .map(|r| (r.left, r.top, r.right, r.bottom))
+            .collect();
+        assert_eq!(positions, [(10, 20, 25, 30), (10, 30, 25, 30)]);
+        assert_eq!(area.top, 30);
+        let mut empty = rect(10, 20, 0, 0);
+        assert!(flow(&mut empty, &[], 5, 3).is_empty());
+        let positions = flow(&mut empty, &[item(30, 10, true)], 5, 3);
+        assert_eq!(positions.len(), 1);
+        assert_eq!(
+            (
+                positions[0].left,
+                positions[0].top,
+                positions[0].right,
+                positions[0].bottom
+            ),
+            (10, 20, 10, 20)
+        );
+    }
 }

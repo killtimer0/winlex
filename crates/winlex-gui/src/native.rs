@@ -256,7 +256,7 @@ pub fn set_bounds(hwnd: HWND, r: RECT) -> anyhow::Result<()> {
     }
     Ok(())
 }
-/// Set the closed height of a combo box to `rows` text rows, keeping its width.
+/// Set a combo's dropdown extent; the native control determines its closed height.
 pub fn collapse_combo(hwnd: HWND, row: i32, rows: i32) -> anyhow::Result<()> {
     let mut rect = bounds(hwnd, unsafe { GetParent(hwnd) });
     rect.bottom = rect.top + row * rows;
