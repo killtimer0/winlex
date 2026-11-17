@@ -269,7 +269,9 @@ impl View {
         match completion {
             Completion::Query { revision, result } => self.query_complete(id, revision, result),
             Completion::Languages { path, result } => self.languages_complete(id, path, result),
-            Completion::TypeLibraries { .. } | Completion::Activate { .. } => {}
+            Completion::TypeLibraries { .. }
+            | Completion::Activate { .. }
+            | Completion::Demangle { .. } => {}
         }
     }
     fn query_complete(&self, id: u64, revision: u64, result: anyhow::Result<QueryResult>) {

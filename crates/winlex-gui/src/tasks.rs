@@ -121,7 +121,7 @@ pub fn run(job: Job, ticket: &Ticket, publish: &dyn Fn(Completion) -> anyhow::Re
         Job::Tool { document, job } => Completion::Tool {
             id,
             document,
-            completion: tools::run(job),
+            completion: tools::run(job, ticket),
         },
     };
     let _ = publish(completion);

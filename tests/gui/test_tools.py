@@ -145,7 +145,7 @@ def test_error_code_system_message_invalid_and_recovery(app, ui_text):
     assert denied not in recovered
 
 
-def test_demangle_known_cpp_symbols_and_live_updates(app, ui_text):
+def test_demangle_known_cpp_symbols_and_explicit_submission(app, ui_text):
     tool = Tool(app, ui_text, 2350, 1820, 1823)
 
     def restored(patterns, absent=()):
@@ -161,20 +161,32 @@ def test_demangle_known_cpp_symbols_and_live_updates(app, ui_text):
     # Itanium grammar: 3foo is the name, i is its int parameter.
     tool.select(1821, ui_text(2356))
     tool.enter('_Z3fooi')
+    tool.click(1824)
     foo = r'^\s*foo\(int\)\s*$'
     restored([foo])
 
     # MSVC free function: int __cdecl func(int).
     tool.enter('?func@@YAHH@Z')
     tool.select(1821, ui_text(2355))
+    tool.click(1824)
     func = r'^\s*int\s+__cdecl\s+func\(int\)\s*$'
     restored([func], ('foo(int)',))
 
     tool.select(1821, ui_text(2314))  # Auto detects both independent ABIs.
     tool.enter('_Z3fooi\r\n?func@@YAHH@Z')
+    tool.click(1824)
     restored([foo, func])
-    tool.enter('_Z3bari')  # EN_CHANGE alone must replace the old result.
+    previous = tool.body()
+    tool.enter('_Z3bari')
+    assert tool.body() == previous
+    tool.click(1824)
     restored([r'^\s*bar\(int\)\s*$'], ('foo(int)', 'func(int)'))
+
+    # More than the former 1000-line limit must be processed, including the tail.
+    tool.enter('_Z3fooi\r\n' * 1000 + '_Z3bari')
+    tool.click(1824)
+    until('all symbols restored', lambda: len(re.findall(foo, tool.body(), re.MULTILINE)) == 1000
+          and re.search(r'^\s*bar\(int\)\s*$', tool.body(), re.MULTILINE))
 
 
 REGISTRY_ROOTS = (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE)
@@ -313,7 +325,13 @@ def test_tool_keyboard_and_copy(app, ui_text, title, input_id, result_id,
     tool.enter(value)
     assert auto.AU3_WinActivateByHandle(app.frame)
     assert auto.AU3_ControlFocusByHandle(app.frame, tool.control(input_id))
-    if input_id != 1820:  # Multiline symbol input remains live; Enter is a newline.
+    if input_id == 1820:
+        previous = tool.body()
+        auto.AU3_Send('{ENTER}', 0)
+        until('multiline newline', lambda: '\n' in app.text(tool.control(input_id)))
+        assert tool.body() == previous
+        auto.AU3_Send('^{ENTER}', 0)
+    else:
         auto.AU3_Send('{ENTER}', 0)
     until('keyboard tool result', lambda: expected in tool.body())
     win32clipboard.OpenClipboard()

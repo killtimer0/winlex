@@ -1,6 +1,5 @@
-//! Symbol demangle tool: multi-line input, ABI selection and semantic results.
-use super::Shell;
-use super::combo_value;
+//! Symbol demangle tool: explicit batch submission and semantic results.
+use super::{Shell, combo_value};
 use crate::app::context::Context;
 use crate::native::text;
 use crate::{
@@ -8,13 +7,13 @@ use crate::{
     layout,
     native::*,
     resources::{self, *},
+    tasks::tools::{Completion, Job, demangle::MAX_INPUT_UNITS},
 };
-use std::ops::{Deref, DerefMut};
-use winlex_core::tools::demangle::{self, Abi, SymbolKind};
-use winlex_format::declaration::{Region, Rendered, SymbolRole};
-
-const MAX_LINES: usize = 1000;
-const MAX_UNITS: usize = 256 * 1024;
+use std::{
+    cell::Cell,
+    ops::{Deref, DerefMut},
+};
+use winlex_core::tools::demangle::Abi;
 
 const ABIS: &[(u16, Abi)] = &[
     (IDS_AUTO, Abi::Auto),
@@ -26,6 +25,9 @@ pub(in crate::app) struct View {
     shell: Shell,
     input: HWND,
     abi: HWND,
+    query: HWND,
+    ticket: Cell<Option<u64>>,
+    revision: Cell<u64>,
 }
 
 impl Deref for View {
@@ -46,6 +48,9 @@ impl View {
             shell: Shell::new(ctx, resources::text(IDS_DEMANGLE_EMPTY), icon),
             input: std::ptr::null_mut(),
             abi: std::ptr::null_mut(),
+            query: std::ptr::null_mut(),
+            ticket: Cell::new(None),
+            revision: Cell::new(0),
         }
     }
     pub fn create(&mut self, hwnd: HWND) -> anyhow::Result<()> {
@@ -78,55 +83,57 @@ impl View {
         }
         self.shell
             .populate_combo(self.abi, ABIS.iter().map(|&(label, _)| label));
+        self.query = self.shell.create_button(
+            hwnd,
+            IDS_DEMANGLE_QUERY,
+            DEMANGLE_QUERY,
+            BS_DEFPUSHBUTTON as u32,
+        )?;
         self.shell.create_copy_button(hwnd, DEMANGLE_COPY_ALL)?;
         self.shell
             .create_result(hwnd, DEMANGLE_RESULT, IDS_DEMANGLE_HINT)?;
-        send(self.input, EM_SETLIMITTEXT, MAX_UNITS, 0);
+        send(self.input, EM_SETLIMITTEXT, MAX_INPUT_UNITS, 0);
+        self.shell.subclass_text(self.input)?;
         Ok(())
     }
-    fn refresh(&self) {
-        if self.result.is_null() {
+    fn execute(&self) {
+        if unsafe { IsWindowEnabled(self.query) } == 0 {
             return;
         }
-        let abi = combo_value(self.abi, ABIS, Abi::Auto);
-        let raw = text(self.input);
-        let (symbols, truncated) = split_input(&raw);
-        let (content, copy, status) = if symbols.is_empty() {
-            let empty = resources::text(IDS_DEMANGLE_EMPTY);
-            (
-                crate::rich_text::Content::new(empty.clone()),
-                String::new(),
-                empty,
-            )
-        } else {
-            let labels = Labels::from_resources();
-            let output = render(&symbols, abi, &labels, truncated);
-            let status = self.status_text(&output);
-            (
-                crate::rich_text::Content::from(output.body),
-                output.copy,
-                status,
-            )
+        let job = Job::Demangle {
+            revision: self.revision.get(),
+            input: text(self.input),
+            abi: combo_value(self.abi, ABIS, Abi::Auto),
         };
-        self.shell.show(content, copy, &status);
+        if self.submit(&self.ticket, job) {
+            unsafe { EnableWindow(self.query, 0) };
+            self.set_status(&resources::text(IDS_DEMANGLE_QUERYING));
+        }
     }
-    fn status_text(&self, output: &Output) -> String {
-        let total = (output.restored + output.failed).to_string();
-        let restored = output.restored.to_string();
-        let failed = output.failed.to_string();
-        let mut status = resources::format(IDS_DEMANGLE_STATUS, &[&total, &restored, &failed]);
-        if let Some(error) = &output.first_error {
-            status.push(' ');
-            status.push_str(error);
+    fn changed(&self) {
+        self.revision.set(self.revision.get() + 1);
+        self.set_status(&resources::text(IDS_TOOL_STALE));
+    }
+    pub fn complete(&self, id: u64, completion: Completion) {
+        let Completion::Demangle { revision, result } = completion else {
+            return;
+        };
+        if self.ticket.get() != Some(id) {
+            return;
         }
-        if output.truncated {
-            status.push(' ');
-            status.push_str(&resources::format(
-                IDS_DEMANGLE_TRUNCATED,
-                &[&MAX_LINES.to_string(), &MAX_UNITS.to_string()],
-            ));
+        self.ticket.set(None);
+        unsafe { EnableWindow(self.query, 1) };
+        match result {
+            Ok(output) => {
+                let status = if revision != self.revision.get() {
+                    resources::text(IDS_TOOL_STALE)
+                } else {
+                    output.status
+                };
+                self.shell.show(output.content, output.copy, &status);
+            }
+            Err(error) => self.set_status(&format!("{error:#}")),
         }
-        status
     }
     pub fn layout(&self) {
         let mut positions = vec![];
@@ -148,7 +155,6 @@ impl View {
         layout::take_left(&mut line, label_gap);
         positions.push((self.input, line));
         layout::take_top(&mut area, gap);
-
         let combo = bounds(self.abi, self.hwnd);
         let row_height = (combo.bottom - combo.top).max(m.height);
         let mut line = layout::take_top(&mut area, row_height);
@@ -161,174 +167,45 @@ impl View {
             layout::center_vertical(line, combo.bottom - combo.top),
         ));
         layout::take_top(&mut area, gap);
+        m.buttons(&mut area, [self.query], &mut positions);
         self.finish_layout(&m, &mut area, self.labels[2], &mut positions);
     }
     pub fn focus(&self) {
         focus(self.input)
     }
     pub fn prepare(&self) {
-        self.prepare_common(&[self.input, self.abi], &[self.abi]);
+        self.prepare_common(&[self.input, self.abi, self.query], &[self.abi]);
         self.layout();
     }
     pub fn key(&self, msg: &MSG) -> bool {
-        self.ctrl_a(msg, &[self.input, self.result])
+        if self.ctrl_a(msg, &[self.input, self.result]) {
+            return true;
+        }
+        if unsafe { GetKeyState(VK_CONTROL as i32) } < 0 && self.submits(msg, self.input) {
+            self.execute();
+            return true;
+        }
+        false
     }
     pub(super) fn command(&self, id: u16, code: u32) -> bool {
         match id {
-            DEMANGLE_INPUT if code == EN_CHANGE => {
-                self.refresh();
-                true
-            }
-            DEMANGLE_ABI if code == CBN_SELENDOK => {
-                self.refresh();
-                true
-            }
-            DEMANGLE_COPY_ALL if code == BN_CLICKED => {
-                self.copy_plain();
-                true
-            }
-            _ => false,
+            DEMANGLE_INPUT if code == EN_CHANGE => self.changed(),
+            DEMANGLE_ABI if code == CBN_SELENDOK => self.changed(),
+            DEMANGLE_QUERY if code == BN_CLICKED => self.execute(),
+            DEMANGLE_COPY_ALL if code == BN_CLICKED => self.copy_plain(),
+            _ => return false,
+        }
+        true
+    }
+    pub fn destroy(&self) {
+        if let Some(id) = self.ticket.take() {
+            self.ctx().cancel_job(id);
         }
     }
-    pub fn destroy(&self) {}
-}
-
-struct Labels {
-    msvc: String,
-    itanium: String,
-    function: String,
-    data: String,
-    special: String,
-    unknown: String,
-    no_return: String,
-    error: String,
-}
-
-impl Labels {
-    fn from_resources() -> Self {
-        Self {
-            msvc: resources::text(IDS_DEMANGLE_MSVC),
-            itanium: resources::text(IDS_DEMANGLE_ITANIUM),
-            function: resources::text(IDS_FUNCTION),
-            data: resources::text(IDS_DEMANGLE_DATA),
-            special: resources::text(IDS_DEMANGLE_SPECIAL),
-            unknown: resources::text(IDS_DEMANGLE_UNKNOWN),
-            no_return: resources::text(IDS_DEMANGLE_NO_RETURN),
-            error: resources::text(IDS_DEMANGLE_ERROR),
+    pub fn worker_stopped(&self) {
+        if self.ticket.take().is_some() {
+            unsafe { EnableWindow(self.query, 1) };
+            self.set_status(&resources::text(IDS_WORKER_STOPPED));
         }
     }
-    fn abi(&self, abi: Abi) -> &str {
-        match abi {
-            Abi::Msvc => &self.msvc,
-            Abi::Itanium => &self.itanium,
-            Abi::Auto => "",
-        }
-    }
-    fn kind(&self, kind: SymbolKind) -> &str {
-        match kind {
-            SymbolKind::Function => &self.function,
-            SymbolKind::Data => &self.data,
-            SymbolKind::Special => &self.special,
-            SymbolKind::Unknown => &self.unknown,
-        }
-    }
-}
-
-struct Output {
-    body: Rendered,
-    copy: String,
-    restored: usize,
-    failed: usize,
-    first_error: Option<String>,
-    truncated: bool,
-}
-
-fn render(symbols: &[&str], abi: Abi, labels: &Labels, truncated: bool) -> Output {
-    let mut body = Rendered::default();
-    let mut copy = String::new();
-    let mut restored = 0;
-    let mut failed = 0;
-    let mut first_error = None;
-    for (index, symbol) in symbols.iter().enumerate() {
-        if index != 0 {
-            body.text.push('\n');
-        }
-        body.text.push_str(symbol);
-        body.text.push('\n');
-        match demangle::demangle(symbol, abi) {
-            Ok(result) => {
-                restored += 1;
-                let start = body.text.encode_utf16().count();
-                body.text.push_str(&result.text);
-                body.text.push('\n');
-                for span in &result.spans {
-                    body.regions.push(Region::symbol(
-                        start + span.start..start + span.end,
-                        SymbolRole::Method,
-                    ));
-                }
-                body.text.push_str("  ");
-                body.text.push_str(labels.abi(result.abi));
-                body.text.push_str(" · ");
-                body.text.push_str(labels.kind(result.kind));
-                if let Some(convention) = result.convention {
-                    body.text.push_str(" · ");
-                    body.text.push_str(convention.name());
-                } else if result.abi == Abi::Itanium && result.kind == SymbolKind::Function {
-                    body.text.push_str(" · ");
-                    body.text.push_str(&labels.no_return);
-                }
-                body.text.push('\n');
-                if !copy.is_empty() {
-                    copy.push('\n');
-                }
-                copy.push_str(&result.text);
-            }
-            Err(error) => {
-                failed += 1;
-                let message = format!("{}: {}", labels.error, error);
-                first_error.get_or_insert_with(|| format!("{symbol}: {message}"));
-                body.text.push_str("  ");
-                body.text.push_str(&message);
-                body.text.push('\n');
-            }
-        }
-    }
-    Output {
-        body,
-        copy,
-        restored,
-        failed,
-        first_error,
-        truncated,
-    }
-}
-
-fn split_input(value: &str) -> (Vec<&str>, bool) {
-    let mut truncated = value.encode_utf16().count() > MAX_UNITS;
-    let value = if truncated {
-        let mut units = 0;
-        let mut end = 0;
-        for (index, character) in value.char_indices() {
-            let width = character.len_utf16();
-            if units + width > MAX_UNITS {
-                break;
-            }
-            units += width;
-            end = index + character.len_utf8();
-        }
-        &value[..end]
-    } else {
-        value
-    };
-    let mut lines: Vec<&str> = value
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .collect();
-    if lines.len() > MAX_LINES {
-        truncated = true;
-        lines.truncate(MAX_LINES);
-    }
-    (lines, truncated)
 }

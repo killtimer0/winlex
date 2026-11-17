@@ -2,6 +2,9 @@
 use anyhow::{Context, ensure};
 use serde::Serialize;
 
+/// Maximum UTF-8 size of one expanded symbol.
+pub const MAX_OUTPUT_BYTES: usize = 1024 * 1024;
+
 /// ABI selection for a demangle request. Results always carry a resolved ABI.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -123,6 +126,10 @@ fn msvc(symbol: &str) -> anyhow::Result<Demangled> {
         "Rust v0 symbols are not supported"
     );
     if let Some((name, convention)) = c_decoration(symbol, false) {
+        ensure!(
+            name.len() <= MAX_OUTPUT_BYTES,
+            "demangled symbol exceeds output limit"
+        );
         let text = name.to_owned();
         return Ok(Demangled {
             symbol: symbol.to_owned(),
@@ -137,6 +144,10 @@ fn msvc(symbol: &str) -> anyhow::Result<Demangled> {
         .with_context(|| format!("invalid Visual C++ symbol {symbol:?}"))?;
     let flags = msvc_demangler::DemangleFlags::llvm();
     let text = msvc_demangler::serialize(&parsed, flags);
+    ensure!(
+        text.len() <= MAX_OUTPUT_BYTES,
+        "demangled symbol exceeds output limit"
+    );
     ensure!(!text.is_empty(), "Visual C++ symbol demangled to nothing");
     let name = msvc_demangler::serialize(&parsed, flags | msvc_demangler::DemangleFlags::NAME_ONLY);
     Ok(Demangled {
@@ -222,7 +233,13 @@ fn itanium(symbol: &str) -> anyhow::Result<Demangled> {
     let mut writer = NameWriter::default();
     parsed
         .structured_demangle(&mut writer, &cpp_demangle::DemangleOptions::default())
-        .map_err(|error| anyhow::anyhow!("cannot demangle {symbol:?}: {error}"))?;
+        .map_err(|error| {
+            if writer.limited {
+                anyhow::anyhow!("demangled symbol exceeds output limit")
+            } else {
+                anyhow::anyhow!("cannot demangle {symbol:?}: {error}")
+            }
+        })?;
     let spans = writer.name_span().into_iter().collect();
     let text = writer.text;
     ensure!(!text.is_empty(), "Itanium symbol demangled to nothing");
@@ -244,6 +261,7 @@ fn itanium(symbol: &str) -> anyhow::Result<Demangled> {
 #[derive(Default)]
 struct NameWriter {
     text: String,
+    limited: bool,
     utf16: usize,
     stack: Vec<(cpp_demangle::DemangleNodeType, usize)>,
     nested_start: Option<usize>,
@@ -261,6 +279,10 @@ impl cpp_demangle::DemangleWrite for NameWriter {
         self.stack.push((node, self.utf16));
     }
     fn write_string(&mut self, value: &str) -> std::fmt::Result {
+        if value.len() > MAX_OUTPUT_BYTES.saturating_sub(self.text.len()) {
+            self.limited = true;
+            return Err(std::fmt::Error);
+        }
         self.text.push_str(value);
         self.utf16 += value.encode_utf16().count();
         Ok(())
@@ -333,6 +355,16 @@ fn span(text: &str, byte: usize, end: usize) -> Span {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn itanium_substitution_expansion_is_bounded() {
+        // A class type followed by S_ refers to that same type again.
+        let ordinary = demangle("_Z1f4TypeS_", Abi::Itanium).expect("type substitution");
+        assert_eq!(ordinary.text, "f(Type, Type)");
+        let symbol = format!("_Z1f1024{}{}", "A".repeat(1024), "S_".repeat(1024));
+        let error = demangle(&symbol, Abi::Itanium).expect_err("expanded output exceeds 1 MiB");
+        assert!(error.to_string().contains("output limit"), "{error:#}");
+    }
 
     fn span_text(result: &Demangled) -> Vec<String> {
         let units: Vec<u16> = result.text.encode_utf16().collect();

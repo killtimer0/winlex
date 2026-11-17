@@ -17,14 +17,34 @@ const ACTIVATE_TIMEOUT: Duration = Duration::from_secs(10);
 /// A child may leave its pipe open in an inherited handle; never block on it.
 const OUTPUT_GRACE: Duration = Duration::from_secs(2);
 
+pub mod demangle;
+
 pub enum Job {
-    Query { revision: u64, request: Request },
-    Languages { path: PathBuf },
-    TypeLibraries { libraries: Vec<(Guid, u16, u16)> },
-    Activate { guid: Guid },
+    Demangle {
+        revision: u64,
+        input: String,
+        abi: winlex_core::tools::demangle::Abi,
+    },
+    Query {
+        revision: u64,
+        request: Request,
+    },
+    Languages {
+        path: PathBuf,
+    },
+    TypeLibraries {
+        libraries: Vec<(Guid, u16, u16)>,
+    },
+    Activate {
+        guid: Guid,
+    },
 }
 
 pub enum Completion {
+    Demangle {
+        revision: u64,
+        result: anyhow::Result<demangle::Output>,
+    },
     Query {
         revision: u64,
         result: anyhow::Result<QueryResult>,
@@ -51,8 +71,16 @@ pub enum ActivationError {
     Failed(String),
 }
 
-pub fn run(job: Job) -> Completion {
+pub fn run(job: Job, ticket: &crate::worker::Ticket) -> Completion {
     match job {
+        Job::Demangle {
+            revision,
+            input,
+            abi,
+        } => Completion::Demangle {
+            revision,
+            result: demangle::run(&input, abi, ticket),
+        },
         Job::Query { revision, request } => Completion::Query {
             revision,
             result: error_code::query(&request),

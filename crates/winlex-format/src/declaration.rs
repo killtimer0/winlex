@@ -227,6 +227,11 @@ impl Write for Rendered {
 }
 
 impl Rendered {
+    /// Current output position in UTF-16 code units, as used by region ranges.
+    pub fn position(&self) -> usize {
+        self.position
+    }
+
     fn context<T>(
         &mut self,
         pad: &str,

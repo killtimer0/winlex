@@ -15,7 +15,7 @@ mod demangle;
 mod error_code;
 pub(in crate::app) mod panel;
 
-/// Shared tool subclass: Tab stays inside single-line inputs and IME composition
+/// Shared tool subclass: Tab navigates controls and IME composition
 /// is flagged so Enter does not submit a half-composed value.
 const TEXT_SUBCLASS: usize = 1810;
 
@@ -348,7 +348,7 @@ impl Shell {
         self.find.create(hwnd, self.result)?;
         Ok(())
     }
-    /// Subclass a single-line tool input for Tab and IME composition handling.
+    /// Subclass a tool input for Tab and IME composition handling.
     fn subclass_text(&self, control: HWND) -> anyhow::Result<()> {
         anyhow::ensure!(
             unsafe { set_subclass(control, Some(text_proc), TEXT_SUBCLASS, 0) } != 0,
@@ -560,14 +560,14 @@ impl ToolView {
         match self {
             Self::ErrorCode(view) => view.complete(id, completion),
             Self::Com(view) => view.complete(id, completion),
-            Self::Demangle(_) => {}
+            Self::Demangle(view) => view.complete(id, completion),
         }
     }
     pub fn worker_stopped(&self) {
         match self {
             Self::ErrorCode(view) => view.worker_stopped(),
             Self::Com(view) => view.worker_stopped(),
-            Self::Demangle(_) => {}
+            Self::Demangle(view) => view.worker_stopped(),
         }
     }
     pub fn description(&self) -> String {
